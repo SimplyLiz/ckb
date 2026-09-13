@@ -5,6 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/@tastehub/ckb.svg)](https://www.npmjs.com/package/@tastehub/ckb)
 [![Website](https://img.shields.io/badge/website-codeknowledge.dev-teal.svg)](https://codeknowledge.dev)
 [![Documentation](https://img.shields.io/badge/docs-codeknowledge.dev-blue.svg)](https://codeknowledge.dev/docs)
+[![MCP Badge](https://lobehub.com/badge/mcp/simplyliz-codemcp)](https://lobehub.com/mcp/simplyliz-codemcp)
 [![LIP](https://img.shields.io/crates/v/lip-cli.svg?label=LIP&color=orange)](https://crates.io/crates/lip-cli)
 [![LIP docs](https://img.shields.io/badge/LIP-docs-blue.svg)](https://lip-sigma.vercel.app/docs)
 
