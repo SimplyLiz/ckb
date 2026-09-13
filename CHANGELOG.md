@@ -2,6 +2,36 @@
 
 All notable changes to CKB will be documented in this file.
 
+## [9.3.1] - 2026-09-13
+
+### Fixed — linux binaries would not start on glibc < 2.39 ([#243](https://github.com/SimplyLiz/ckb/issues/243))
+
+The 9.3.0 linux binaries declared a `GLIBC_2.39` requirement and so refused to
+start on Ubuntu 22.04 LTS, Debian 12, RHEL 9 / Rocky 9 and Amazon Linux 2023 —
+`version 'GLIBC_2.39' not found`. Nothing in the binary needed glibc 2.39.
+
+9.3.0 moved the release to a native cgo matrix so the Cartographer fast tier
+could be linked in. A cgo build's glibc requirement is set by the runner image,
+not by the source: the linker stamps each undefined libc symbol with the version
+the build host defines it at. `ubuntu-latest` had migrated to 24.04 (glibc 2.39),
+and two weak symbols Rust's std references for its `posix_spawn` fast path —
+`pidfd_spawnp`, `pidfd_getpid` — resolved against 2.39 and put a `GLIBC_2.39`
+entry in `.gnu.version_r`, which the loader enforces before the process starts.
+Both `linux-x64` and `linux-arm64` were affected.
+
+The linux targets now build on `ubuntu-22.04` / `ubuntu-22.04-arm`, where those
+symbols do not exist to link against; an unresolved weak symbol emits no version
+requirement, so the floor drops to the next real one, **GLIBC_2.34**. That
+covers RHEL 9 / Rocky 9 / Amazon Linux 2023 (2.34), Ubuntu 22.04 (2.35) and
+Debian 12 (2.36). The Cartographer fast tier is unaffected — it stays linked.
+
+`scripts/check-glibc-floor.go` now enforces the floor in CI and in the release
+build, so a binary that cannot start on a supported distro fails the build
+instead of shipping.
+
+**Affected users:** upgrade with `npm install -g @tastehub/ckb@9.3.1` (or
+`brew upgrade ckb`). No 9.2.0 downgrade needed any more.
+
 ## [9.3.0] - 2026-07-13
 
 ### Added — `ckb doctor` reports the Cartographer fast tier
