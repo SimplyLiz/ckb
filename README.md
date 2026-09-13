@@ -113,9 +113,10 @@ npx @tastehub/ckb init
 ### Option 2: Homebrew (macOS/Linux)
 
 ```bash
-brew tap SimplyLiz/ckb
-brew install ckb
+brew install simplyliz/ckb/ckb
 ```
+
+> Use the fully-qualified name. Homebrew 6.0 requires third-party taps to be trusted before it loads them; installing this way grants that trust for this one formula. Tapping first and installing by short name fails with `Refusing to load formula ... from untrusted tap`.
 
 ### Option 3: Build from Source
 

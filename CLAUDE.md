@@ -109,7 +109,7 @@ npx @tastehub/ckb setup
 
 ## MCP Integration
 
-CKB provides 80+ code intelligence tools via MCP. Supports Claude Code, Cursor, Windsurf, VS Code, OpenCode, Grok, and Claude Desktop.
+CKB provides 110 code intelligence tools via MCP. Supports Claude Code, Cursor, Windsurf, VS Code, OpenCode, Grok, and Claude Desktop.
 
 ```bash
 # Auto-configure (interactive)
@@ -157,7 +157,7 @@ claude mcp add ckb -- npx @tastehub/ckb mcp
 
 ## A2A Integration
 
-CKB also supports the A2A (Agent-to-Agent) protocol v0.3, enabling agent-to-agent communication over HTTP. All 80+ MCP tools are exposed as A2A skills.
+CKB also supports the A2A (Agent-to-Agent) protocol v0.3, enabling agent-to-agent communication over HTTP. All 110 MCP tools are exposed as A2A skills.
 
 ```bash
 # Start the A2A server
@@ -199,7 +199,7 @@ Storage Layer (internal/storage/) - SQLite for caching and symbol mappings
 - **internal/identity/**: Stable symbol IDs that survive refactoring. Uses fingerprinting and alias chains.
 - **internal/compression/**: Response budget enforcement for LLM-optimized output.
 - **internal/impact/**: Change impact analysis with visibility detection and risk scoring.
-- **internal/mcp/**: Model Context Protocol server (80+ tools).
+- **internal/mcp/**: Model Context Protocol server (110 tools).
 - **internal/a2a/**: Agent-to-Agent protocol server (v0.3). Wraps MCP tools as A2A skills with task persistence, SSE streaming, push notifications.
 - **internal/ownership/**: CODEOWNERS parsing + git-blame analysis with time decay.
 - **internal/responsibilities/**: Module responsibility extraction from READMEs and code.
