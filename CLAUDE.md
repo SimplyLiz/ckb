@@ -88,11 +88,26 @@ Releases are fully automated via `.github/workflows/release.yml`, triggered by p
 3. Merge to main, tag `vX.Y.Z`, push the tag
 4. The pipeline handles everything else:
    - Runs `go test -race ./...`
-   - GoReleaser builds cross-platform binaries and uploads to GitHub Releases
+   - Builds each target on a native runner (cgo + the prebuilt Cartographer
+     static lib) and uploads the archives straight to the GitHub Release
    - Updates Homebrew tap (`SimplyLiz/homebrew-ckb`)
    - Publishes `@tastehub/ckb` + 5 platform packages to npm
 
-**Do not manually `npm publish`** — the pipeline does it with checksummed binaries from GoReleaser.
+**Do not manually `npm publish`** — the pipeline does it with checksummed binaries from the release build.
+
+### glibc floor (linux targets)
+
+The linux jobs are pinned to `ubuntu-22.04` / `ubuntu-22.04-arm` and **must not
+move to `-latest`**. A cgo build's glibc requirement comes from the runner image,
+not from anything in this repo: the linker stamps every undefined libc symbol
+with the version the build host defines it at. Building on 24.04 (glibc 2.39)
+shipped a 9.3.0 binary that refused to start on Ubuntu 22.04, Debian 12, RHEL 9
+and Amazon Linux 2023 — no compile error, no warning, and for `ckb mcp` not even
+a visible failure (#243).
+
+`scripts/check-glibc-floor.go` enforces the floor (`GLIBC_FLOOR`, currently
+2.34) in both CI and the release build. Raising it drops distros; do that
+deliberately.
 
 ## npm Distribution (v7.0)
 

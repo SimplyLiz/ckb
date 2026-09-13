@@ -12,6 +12,13 @@ concurrency:
 permissions:
   contents: write
 
+env:
+  # Oldest glibc the released linux binaries must run on. 2.34 covers RHEL 9 /
+  # Rocky 9 and Amazon Linux 2023 (2.34), Ubuntu 22.04 LTS (2.35) and Debian 12
+  # (2.36). Raising this drops those distros — do it deliberately, not by
+  # letting a runner label drift.
+  GLIBC_FLOOR: "2.34"
+
 # Cross-platform binaries are built with cgo on native runners so the
 # Cartographer fast tier (prebuilt static lib fetched from SimplyLiz/
 # CodeCartographer) is linked in — CGO_ENABLED=0 cross-compiling from one runner
@@ -109,11 +116,18 @@ jobs:
             goarch: amd64
             cartographer: true
             cc: "clang -arch x86_64"
-          - os: ubuntu-latest
+          # Pinned to 22.04 (glibc 2.35) on purpose — do not move to -latest.
+          # A cgo build's glibc requirement is decided by the runner image, not
+          # by this repo: the linker stamps each undefined libc symbol with the
+          # version the build host defines it at. Building on 24.04 (glibc 2.39)
+          # shipped a binary that refused to start on Ubuntu 22.04, Debian 12,
+          # RHEL 9 and Amazon Linux 2023 (#243). The glibc floor step below
+          # enforces this; it is the check, this pin is the fix.
+          - os: ubuntu-22.04
             goos: linux
             goarch: amd64
             cartographer: true
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-22.04-arm
             goos: linux
             goarch: arm64
             cartographer: true
@@ -162,6 +176,14 @@ jobs:
           else
             export CGO_ENABLED=0
             GOOS="$GOOS" GOARCH="$GOARCH" go build -ldflags "$LDFLAGS" -o "$OUT" ./cmd/ckb
+          fi
+
+          # Refuse to ship a linux binary that cannot start on the distros we
+          # claim to support. Catches runner-image drift, which produces no
+          # compile error and no warning — only a loader failure on the user's
+          # machine, and for `ckb mcp` not even a visible one.
+          if [ "$GOOS" = "linux" ]; then
+            go run scripts/check-glibc-floor.go --max "$GLIBC_FLOOR" "$OUT"
           fi
 
           # Package with the exact GoReleaser-compatible name so the npm platform
