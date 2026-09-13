@@ -6,7 +6,7 @@ package version
 // go build -ldflags "-X github.com/SimplyLiz/CodeMCP/internal/version.Version=1.0.0 -X github.com/SimplyLiz/CodeMCP/internal/version.Commit=abc123"
 var (
 	// Version is the semantic version of CKB
-	Version = "9.3.0"
+	Version = "9.3.1"
 
 	// Commit is the git commit hash (set at build time)
 	Commit = "unknown"

@@ -218,6 +218,12 @@ func TestGolden_SARIF(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
 		t.Fatalf("unmarshal SARIF: %v", err)
 	}
+	// The driver version is version.Version, so pinning it in the fixture would
+	// make every release bump break this test and turn a golden file into a
+	// place the version has to be maintained. Only the tool's own version is
+	// replaced — runs[].tool.driver — never the SARIF schema version at the top
+	// level, which is genuinely fixed.
+	normalizeDriverVersion(t, parsed, "0.0.0-golden")
 	normalized, _ := json.MarshalIndent(parsed, "", "  ")
 	checkGolden(t, "sarif.json", string(normalized))
 }
@@ -290,5 +296,45 @@ func checkGolden(t *testing.T, filename, actual string) {
 				return
 			}
 		}
+	}
+}
+
+// normalizeDriverVersion replaces runs[].tool.driver.{version,semanticVersion}
+// in a decoded SARIF document with a fixed placeholder.
+func normalizeDriverVersion(t *testing.T, doc interface{}, placeholder string) {
+	t.Helper()
+	root, ok := doc.(map[string]interface{})
+	if !ok {
+		t.Fatalf("SARIF root is %T, want object", doc)
+	}
+	runs, ok := root["runs"].([]interface{})
+	if !ok || len(runs) == 0 {
+		t.Fatalf("SARIF has no runs to normalize")
+	}
+	replaced := 0
+	for _, r := range runs {
+		run, ok := r.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		tool, ok := run["tool"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		driver, ok := tool["driver"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, key := range []string{"version", "semanticVersion"} {
+			if _, present := driver[key]; present {
+				driver[key] = placeholder
+				replaced++
+			}
+		}
+	}
+	// Guard against the formatter renaming or dropping the fields, which would
+	// otherwise make this normalization silently vacuous.
+	if replaced == 0 {
+		t.Fatal("no driver version fields found to normalize — did the SARIF formatter change?")
 	}
 }

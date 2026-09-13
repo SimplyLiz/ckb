@@ -83,16 +83,59 @@ golangci-lint run
 Releases are fully automated via `.github/workflows/release.yml`, triggered by pushing a `v*` tag.
 
 **Steps to release:**
-1. Bump version in `internal/version/version.go`, `npm/package.json`, `testdata/review/sarif.json`
+1. `go run scripts/sync-version.go X.Y.Z` (see below)
 2. Update `CHANGELOG.md`
 3. Merge to main, tag `vX.Y.Z`, push the tag
 4. The pipeline handles everything else:
    - Runs `go test -race ./...`
-   - GoReleaser builds cross-platform binaries and uploads to GitHub Releases
+   - Builds each target on a native runner (cgo + the prebuilt Cartographer
+     static lib) and uploads the archives straight to the GitHub Release
    - Updates Homebrew tap (`SimplyLiz/homebrew-ckb`)
    - Publishes `@tastehub/ckb` + 5 platform packages to npm
 
-**Do not manually `npm publish`** — the pipeline does it with checksummed binaries from GoReleaser.
+**Do not manually `npm publish`** — the pipeline does it with checksummed binaries from the release build.
+
+### Version: one source of truth
+
+`internal/version/version.go` is the **only** place the version is written down.
+Everything that has to repeat it is derived from there by
+`scripts/sync-version.go`:
+
+| Site | What |
+|---|---|
+| `internal/version/version.go` | source — the Go build-time default |
+| `npm/package.json` `version` | package manifest |
+| `npm/package.json` `optionalDependencies` | platform package pins |
+| `README.md` | MCP banner sample output |
+
+```bash
+go run scripts/sync-version.go 9.4.0   # set everywhere
+go run scripts/sync-version.go         # propagate the current source value
+go run scripts/sync-version.go --check # CI runs this; fails on drift
+```
+
+`testdata/review/sarif.json` is deliberately *not* on that list: the golden test
+normalizes the driver version, so the fixture no longer pins one. (The SARIF
+schema version `2.1.0` in the same file is a real constant — leave it.)
+
+Nothing here is optional bookkeeping. Before the check existed, the platform
+pins sat at 9.0.0 for three releases, because the release pipeline rewrites them
+from the tag at publish time and nothing else ever looked — which also meant
+Dependabot kept opening PRs against a field whose checked-in value is never used.
+
+### glibc floor (linux targets)
+
+The linux jobs are pinned to `ubuntu-22.04` / `ubuntu-22.04-arm` and **must not
+move to `-latest`**. A cgo build's glibc requirement comes from the runner image,
+not from anything in this repo: the linker stamps every undefined libc symbol
+with the version the build host defines it at. Building on 24.04 (glibc 2.39)
+shipped a 9.3.0 binary that refused to start on Ubuntu 22.04, Debian 12, RHEL 9
+and Amazon Linux 2023 — no compile error, no warning, and for `ckb mcp` not even
+a visible failure (#243).
+
+`scripts/check-glibc-floor.go` enforces the floor (`GLIBC_FLOOR`, currently
+2.34) in both CI and the release build. Raising it drops distros; do that
+deliberately.
 
 ## npm Distribution (v7.0)
 

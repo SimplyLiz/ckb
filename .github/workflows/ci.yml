@@ -13,6 +13,12 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Keep in sync with release.yml. The released linux binaries must start on
+  # RHEL 9 / Amazon Linux 2023 (glibc 2.34), Ubuntu 22.04 (2.35) and Debian 12
+  # (2.36); see scripts/check-glibc-floor.go and #243.
+  GLIBC_FLOOR: "2.34"
+
 jobs:
   lint:
     name: Lint
@@ -109,7 +115,7 @@ jobs:
           fi
 
   tidycheck:
-    name: Go Mod Tidy
+    name: Repo Hygiene
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -129,6 +135,14 @@ jobs:
             git diff go.mod go.sum
             exit 1
           fi
+
+      # internal/version.Version is the only place the version is written down.
+      # Everything that has to repeat it is derived; this fails if any of them
+      # drifted. npm/package.json's platform pins sat three releases behind
+      # before this check existed, because the release pipeline overwrites them
+      # at publish time and nothing else ever looked.
+      - name: Check version sites are in sync
+        run: go run scripts/sync-version.go --check
 
   security:
     name: Security Scan
@@ -182,6 +196,44 @@ jobs:
           name: ckb-linux-amd64
           path: ckb
           retention-days: 7
+
+  glibc-floor:
+    name: glibc floor (${{ matrix.goarch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            goarch: amd64
+          - os: ubuntu-22.04-arm
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      # Mirrors the release build exactly — same runner image, same cgo +
+      # cartographer link. A plain `go build` would not reproduce the problem,
+      # because the symbols that caused #243 come from the Rust static lib.
+      - name: Build the way the release does
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          bash scripts/fetch-cartographer-lib.sh linux ${{ matrix.goarch }}
+          CGO_ENABLED=1 go build -tags cartographer -ldflags="-s -w" -o ckb ./cmd/ckb
+
+      - name: Check glibc floor
+        run: go run scripts/check-glibc-floor.go --max "$GLIBC_FLOOR" ./ckb
+
+      - name: Verify it runs
+        run: ./ckb version
 
   pr-review:
     name: PR Review
