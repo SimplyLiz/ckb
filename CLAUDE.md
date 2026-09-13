@@ -83,7 +83,7 @@ golangci-lint run
 Releases are fully automated via `.github/workflows/release.yml`, triggered by pushing a `v*` tag.
 
 **Steps to release:**
-1. Bump version in `internal/version/version.go`, `npm/package.json`, `testdata/review/sarif.json`
+1. `go run scripts/sync-version.go X.Y.Z` (see below)
 2. Update `CHANGELOG.md`
 3. Merge to main, tag `vX.Y.Z`, push the tag
 4. The pipeline handles everything else:
@@ -94,6 +94,34 @@ Releases are fully automated via `.github/workflows/release.yml`, triggered by p
    - Publishes `@tastehub/ckb` + 5 platform packages to npm
 
 **Do not manually `npm publish`** — the pipeline does it with checksummed binaries from the release build.
+
+### Version: one source of truth
+
+`internal/version/version.go` is the **only** place the version is written down.
+Everything that has to repeat it is derived from there by
+`scripts/sync-version.go`:
+
+| Site | What |
+|---|---|
+| `internal/version/version.go` | source — the Go build-time default |
+| `npm/package.json` `version` | package manifest |
+| `npm/package.json` `optionalDependencies` | platform package pins |
+| `README.md` | MCP banner sample output |
+
+```bash
+go run scripts/sync-version.go 9.4.0   # set everywhere
+go run scripts/sync-version.go         # propagate the current source value
+go run scripts/sync-version.go --check # CI runs this; fails on drift
+```
+
+`testdata/review/sarif.json` is deliberately *not* on that list: the golden test
+normalizes the driver version, so the fixture no longer pins one. (The SARIF
+schema version `2.1.0` in the same file is a real constant — leave it.)
+
+Nothing here is optional bookkeeping. Before the check existed, the platform
+pins sat at 9.0.0 for three releases, because the release pipeline rewrites them
+from the tag at publish time and nothing else ever looked — which also meant
+Dependabot kept opening PRs against a field whose checked-in value is never used.
 
 ### glibc floor (linux targets)
 

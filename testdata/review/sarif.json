@@ -268,8 +268,8 @@
               }
             }
           ],
-          "semanticVersion": "9.3.0",
-          "version": "9.3.0"
+          "semanticVersion": "0.0.0-golden",
+          "version": "0.0.0-golden"
         }
       }
     }

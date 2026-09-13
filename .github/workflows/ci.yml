@@ -115,7 +115,7 @@ jobs:
           fi
 
   tidycheck:
-    name: Go Mod Tidy
+    name: Repo Hygiene
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -135,6 +135,14 @@ jobs:
             git diff go.mod go.sum
             exit 1
           fi
+
+      # internal/version.Version is the only place the version is written down.
+      # Everything that has to repeat it is derived; this fails if any of them
+      # drifted. npm/package.json's platform pins sat three releases behind
+      # before this check existed, because the release pipeline overwrites them
+      # at publish time and nothing else ever looked.
+      - name: Check version sites are in sync
+        run: go run scripts/sync-version.go --check
 
   security:
     name: Security Scan

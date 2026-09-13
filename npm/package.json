@@ -50,11 +50,11 @@
     "bin"
   ],
   "optionalDependencies": {
-    "@tastehub/ckb-darwin-arm64": "9.0.0",
-    "@tastehub/ckb-darwin-x64": "9.0.0",
-    "@tastehub/ckb-linux-x64": "9.0.0",
-    "@tastehub/ckb-linux-arm64": "9.0.0",
-    "@tastehub/ckb-win32-x64": "9.0.0"
+    "@tastehub/ckb-darwin-arm64": "9.3.0",
+    "@tastehub/ckb-darwin-x64": "9.3.0",
+    "@tastehub/ckb-linux-x64": "9.3.0",
+    "@tastehub/ckb-linux-arm64": "9.3.0",
+    "@tastehub/ckb-win32-x64": "9.3.0"
   },
   "engines": {
     "node": ">=16"
