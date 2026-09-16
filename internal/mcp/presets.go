@@ -97,7 +97,8 @@ var Presets = map[string][]string{
 		"findDeadCode",       // Dead code in changes
 		"findUnwiredModules", // Exported symbols not reachable from entrypoints
 		"auditRisk",          // Multi-factor risk scoring
-		"analyzeChange",      // Change analysis
+		"assessChange",       // Change analysis (post-change counterpart to prepareChange)
+		"analyzeChange",      // Deprecated alias of assessChange
 		"getFileComplexity",  // File complexity for review
 		"listEntrypoints",    // Key entry points in changed code
 		"auditCompliance",    // Regulatory compliance audit

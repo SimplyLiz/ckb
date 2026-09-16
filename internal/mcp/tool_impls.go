@@ -1304,8 +1304,16 @@ func (s *MCPServer) toolAnalyzeOutgoingImpact(params map[string]interface{}) (*e
 		Build(), nil
 }
 
-// toolAnalyzeChange implements the analyzeChange tool
+// toolAnalyzeChange is a deprecated alias of toolAssessChange, kept for two
+// minor versions. See tools.go's "analyzeChange" registration.
 func (s *MCPServer) toolAnalyzeChange(params map[string]interface{}) (*envelope.Response, error) {
+	return s.toolAssessChange(params)
+}
+
+// toolAssessChange implements the assessChange tool: the post-change
+// counterpart to prepareChange. "analyzeChange" is a deprecated alias of
+// this same handler (see tools.go).
+func (s *MCPServer) toolAssessChange(params map[string]interface{}) (*envelope.Response, error) {
 	timer := NewWideResultTimer()
 
 	// Extract parameters with defaults
@@ -1344,7 +1352,7 @@ func (s *MCPServer) toolAnalyzeChange(params map[string]interface{}) (*envelope.
 		strict = v
 	}
 
-	s.logger.Debug("Executing analyzeChange",
+	s.logger.Debug("Executing assessChange",
 		"staged", staged,
 		"baseBranch", baseBranch,
 		"depth", depth,
@@ -1375,7 +1383,7 @@ func (s *MCPServer) toolAnalyzeChange(params map[string]interface{}) (*envelope.
 		truncatedCount = resp.TruncationInfo.OriginalCount - resp.TruncationInfo.ReturnedCount
 	}
 	RecordWideResult(WideResultMetrics{
-		ToolName:        "analyzeChange",
+		ToolName:        "assessChange",
 		TotalResults:    totalAffected + truncatedCount,
 		ReturnedResults: totalAffected,
 		TruncatedCount:  truncatedCount,
@@ -1384,10 +1392,32 @@ func (s *MCPServer) toolAnalyzeChange(params map[string]interface{}) (*envelope.
 		ExecutionMs:     timer.ElapsedMs(),
 	})
 
-	return NewToolResponse().
+	built := NewToolResponse().
 		Data(data).
 		WithProvenance(resp.Provenance).
-		Build(), nil
+		Build()
+
+	// resp.Confidence is a richer, changeset-specific confidence (SCIP
+	// availability/freshness + symbol-mapping confidence) than the generic
+	// completeness-based one WithProvenance sets. It's a query-package-local
+	// type rather than envelope.Confidence to avoid an import cycle (see
+	// query.ChangeConfidence's doc comment) -- convert it here.
+	if resp.Confidence != nil && built.Meta != nil {
+		built.Meta.Confidence = &envelope.Confidence{
+			Score:   resp.Confidence.Score,
+			Tier:    envelope.ConfidenceTier(resp.Confidence.Tier),
+			Reasons: resp.Confidence.Reasons,
+		}
+		for _, f := range resp.Confidence.Factors {
+			built.Meta.Confidence.Factors = append(built.Meta.Confidence.Factors, envelope.ConfidenceFactor{
+				Factor: f.Factor,
+				Status: f.Status,
+				Impact: f.Impact,
+			})
+		}
+	}
+
+	return built, nil
 }
 
 // toolExplainSymbol implements the explainSymbol tool
