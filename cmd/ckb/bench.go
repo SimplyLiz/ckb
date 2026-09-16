@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"sort"
@@ -11,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/SimplyLiz/CodeMCP/internal/bench"
+	"github.com/SimplyLiz/CodeMCP/internal/storage"
 )
 
 var (
@@ -70,13 +72,21 @@ func init() {
 	rootCmd.AddCommand(benchCmd)
 }
 
-// benchLedgerSource returns the LedgerSource the CLI wires bench commands to.
-//
-// TODO(plan 3a): wire storage tool_calls ledger. The activity ledger (plan
-// section 1, table `tool_calls` in .ckb/ckb.db) is a separate work package;
-// until it lands, bench always reports "ledger not wired" via NoLedger.
-func benchLedgerSource() bench.LedgerSource {
-	return bench.NoLedger{}
+// benchLedgerSource returns the LedgerSource the CLI wires bench commands to:
+// the tool_calls ledger of the current repo's .ckb/ckb.db. Outside a CKB
+// repo (or when the DB cannot be opened) it falls back to NoLedger, and the
+// record carries a "ledger not wired" note instead of failing.
+func benchLedgerSource() (bench.LedgerSource, func()) {
+	repoRoot, err := getRepoRoot()
+	if err != nil {
+		return bench.NoLedger{}, func() {}
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	db, err := storage.Open(repoRoot, logger)
+	if err != nil {
+		return bench.NoLedger{}, func() {}
+	}
+	return bench.StorageLedger{DB: db}, func() { _ = db.Close() }
 }
 
 func runBenchSession(cmd *cobra.Command, args []string) {
@@ -90,7 +100,9 @@ func runBenchSession(cmd *cobra.Command, args []string) {
 	}
 
 	ctx := newContext()
-	rec, err := bench.BuildSessionRecord(ctx, sessionID, cwd, benchLedgerSource())
+	ledger, closeLedger := benchLedgerSource()
+	defer closeLedger()
+	rec, err := bench.BuildSessionRecord(ctx, sessionID, cwd, ledger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error building session record: %v\n", err)
 		os.Exit(1)
@@ -107,7 +119,8 @@ func runBenchSession(cmd *cobra.Command, args []string) {
 func runBenchCompare(cmd *cobra.Command, args []string) {
 	sessionA, sessionB := args[0], args[1]
 	ctx := newContext()
-	ledger := benchLedgerSource()
+	ledger, closeLedger := benchLedgerSource()
+	defer closeLedger()
 
 	recA, err := bench.BuildSessionRecord(ctx, sessionA, "", ledger)
 	if err != nil {

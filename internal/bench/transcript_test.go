@@ -187,20 +187,20 @@ func TestLocateTranscript_NotFound(t *testing.T) {
 
 func TestCompare_Math(t *testing.T) {
 	a := SessionRecord{
-		SessionID: "A",
-		Tokens:    Tokens{Input: 1000, CacheRead: 2000, CacheCreation: 500, Output: 300, Total: 3800},
-		Turns:     10,
-		ToolCalls: map[string]int{"Read": 5, "Bash": 3},
+		SessionID:      "A",
+		Tokens:         Tokens{Input: 1000, CacheRead: 2000, CacheCreation: 500, Output: 300, Total: 3800},
+		Turns:          10,
+		ToolCalls:      map[string]int{"Read": 5, "Bash": 3},
 		AgentFileReads: 5,
 		AgentSearches:  2,
 		CKBCalls:       0,
 		Duration:       10 * time.Second,
 	}
 	b := SessionRecord{
-		SessionID: "B",
-		Tokens:    Tokens{Input: 500, CacheRead: 1000, CacheCreation: 100, Output: 200, Total: 1800},
-		Turns:     6,
-		ToolCalls: map[string]int{"Read": 2, "Bash": 1, "mcp__ckb__searchSymbols": 4},
+		SessionID:      "B",
+		Tokens:         Tokens{Input: 500, CacheRead: 1000, CacheCreation: 100, Output: 200, Total: 1800},
+		Turns:          6,
+		ToolCalls:      map[string]int{"Read": 2, "Bash": 1, "mcp__ckb__searchSymbols": 4},
 		AgentFileReads: 2,
 		AgentSearches:  1,
 		CKBCalls:       4,
