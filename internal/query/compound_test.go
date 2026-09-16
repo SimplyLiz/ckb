@@ -412,12 +412,17 @@ func TestPrepareChange_DeleteType(t *testing.T) {
 // dependents 0.15 + module spread 0.2 + public visibility 0.15 + no tests
 // 0.2) are the exact combination that reproduces the reported value when
 // summed naively.
+//
+// Path is set to a .go file so the "no tests" factor actually fires: test
+// discovery (and therefore its risk factor) is language-gated — see
+// TestCalculatePrepareRisk_TestFactorOmittedForUnsupportedLanguage — and Go
+// is one of the two languages it's implemented for.
 func TestCalculatePrepareRisk_ScoreRounding(t *testing.T) {
 	engine := &Engine{}
 
 	dependents := make([]PrepareDependent, 8) // >5 -> +0.15 "moderate dependent count"
 	transitive := &PrepareTransitive{ModuleSpread: 6}
-	target := &PrepareChangeTarget{Visibility: "public"} // +0.15
+	target := &PrepareChangeTarget{Visibility: "public", Path: "internal/example/widget.go"} // +0.15
 	// transitive module spread >5 -> +0.2, no tests -> +0.2
 
 	risk := engine.calculatePrepareRisk(target, dependents, transitive, nil, nil, nil, ChangeModify)
@@ -433,9 +438,13 @@ func TestCalculatePrepareRisk_ScoreRounding(t *testing.T) {
 // target's own module directory — it never checks whether the target
 // symbol itself is referenced by any test — so the wording should describe
 // that narrower check, not imply broader test-coverage knowledge.
+//
+// Path is set to a .go file: the factor is language-gated (see
+// TestCalculatePrepareRisk_TestFactorOmittedForUnsupportedLanguage), and
+// this test is specifically about wording, not about the gate itself.
 func TestCalculatePrepareRisk_TestFactorWording(t *testing.T) {
 	engine := &Engine{}
-	target := &PrepareChangeTarget{Visibility: "internal"}
+	target := &PrepareChangeTarget{Visibility: "internal", Path: "internal/example/widget.go"}
 
 	risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify)
 
@@ -454,6 +463,31 @@ func TestCalculatePrepareRisk_TestFactorWording(t *testing.T) {
 	}
 	if !foundNewWording {
 		t.Errorf("expected factor %q, got %v", "No test files found in target module", risk.Factors)
+	}
+}
+
+// TestCalculatePrepareRisk_TestFactorOmittedForUnsupportedLanguage is a
+// regression test for the "No test files found in target module" factor
+// firing for every language, even though getPrepareTests only implements
+// discovery for Go (*_test.go) and TypeScript/JavaScript (*.test.ts/js,
+// *.spec.ts/js). For a Python target (or any other language without
+// discovery support) an empty `tests` slice means discovery never looked,
+// not that there are genuinely no tests — asserting "no tests found" there
+// is a false claim, not a finding, so neither the factor nor its 0.2 score
+// contribution should appear.
+func TestCalculatePrepareRisk_TestFactorOmittedForUnsupportedLanguage(t *testing.T) {
+	engine := &Engine{}
+	target := &PrepareChangeTarget{Visibility: "internal", Path: "app/models/widget.py", ModuleId: "app/models"}
+
+	risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify)
+
+	for _, f := range risk.Factors {
+		if f == "No test files found in target module" {
+			t.Errorf("factor %q should not fire for a language (.py) test discovery doesn't support; got factors %v", f, risk.Factors)
+		}
+	}
+	if risk.Score != 0 {
+		t.Errorf("Score = %v, want 0 (no factors should have fired for a bare internal-visibility Python target)", risk.Score)
 	}
 }
 

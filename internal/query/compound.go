@@ -1845,6 +1845,40 @@ func (e *Engine) getPrepareTests(ctx context.Context, target *PrepareChangeTarge
 	return tests
 }
 
+// languageSupportsTestDiscovery reports whether getPrepareTests' glob-based
+// test discovery actually covers the target's language. Discovery only
+// recognizes Go (*_test.go) and TypeScript/JavaScript (*.test.ts/js,
+// *.spec.ts/js) test file conventions. For every other language (Python,
+// Rust, Java/Kotlin, C#, ...) an empty `tests` slice means "we never
+// looked", not "there are no tests" — so calculatePrepareRisk must not turn
+// it into a "No test files found" finding or score contribution for those
+// languages; that would be a false claim, not an honest gap.
+func (e *Engine) languageSupportsTestDiscovery(target *PrepareChangeTarget) bool {
+	if ext := filepath.Ext(target.Path); ext != "" {
+		switch ext {
+		case ".go", ".ts", ".js":
+			return true
+		default:
+			return false
+		}
+	}
+
+	// No extension on the target itself (e.g. a directory/module target) —
+	// infer from the module directory's contents rather than silently
+	// assuming Go/TS/JS.
+	if target.ModuleId == "" {
+		return false
+	}
+	dir := filepath.Join(e.repoRoot, target.ModuleId)
+	for _, ext := range []string{".go", ".ts", ".js"} {
+		matches, _ := filepath.Glob(filepath.Join(dir, "*"+ext))
+		if len(matches) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // getPrepareCoChanges finds files that historically change together.
 // When Cartographer is available, uses a single git-log pass (bot-filtered) and
 // marks pairs that have no import edge as IsHidden. Falls back to the per-file
@@ -1956,8 +1990,11 @@ func (e *Engine) calculatePrepareRisk(
 	// module directory — it doesn't check whether the target symbol is
 	// itself referenced by any test, so word this as what it actually
 	// measures rather than implying broader test-coverage knowledge we
-	// don't have.
-	if len(tests) == 0 {
+	// don't have. Discovery itself is only implemented for Go and TS/JS
+	// (see languageSupportsTestDiscovery): for any other language an empty
+	// `tests` slice means discovery never ran, not that there are no
+	// tests, so the factor is omitted rather than asserted.
+	if len(tests) == 0 && e.languageSupportsTestDiscovery(target) {
 		score += 0.2
 		factors = append(factors, "No test files found in target module")
 		suggestions = append(suggestions, "Add tests before modifying")
