@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 func TestAiToolsContainsCodex(t *testing.T) {
@@ -124,6 +126,110 @@ args = ["server.js"]
 	// Exactly one [mcp_servers.ckb] header must remain.
 	if count := strings.Count(got, "[mcp_servers.ckb]"); count != 1 {
 		t.Errorf("expected exactly one [mcp_servers.ckb] header, found %d", count)
+	}
+}
+
+// TestUpsertCodexMCPServer_PreservesInlineCommentOnCommandLine covers the P2
+// finding: a trailing comment on the replaced "command" line
+// (command = "npx" # pinned for CI) used to be dropped entirely along with
+// the whole line — upsertTOMLTable filtered by key name and threw the whole
+// line away. The comment must survive, reattached to the new command line.
+func TestUpsertCodexMCPServer_PreservesInlineCommentOnCommandLine(t *testing.T) {
+	existing := `[mcp_servers.ckb]
+command = "npx" # pinned for CI
+args = ["mcp"]
+`
+	got := upsertCodexMCPServer(existing, "new-ckb", []string{"mcp", "--watch"})
+
+	if !strings.Contains(got, "# pinned for CI") {
+		t.Errorf("inline comment on replaced command line was dropped:\n%s", got)
+	}
+	if !strings.Contains(got, `command = "new-ckb"`) {
+		t.Errorf("command was not updated:\n%s", got)
+	}
+	if strings.Contains(got, "npx") {
+		t.Errorf("old command value was not replaced:\n%s", got)
+	}
+}
+
+// TestUpsertCodexMCPServer_PreservesInlineCommentOnArgsLine covers the same
+// fix for the "args" key.
+func TestUpsertCodexMCPServer_PreservesInlineCommentOnArgsLine(t *testing.T) {
+	existing := `[mcp_servers.ckb]
+command = "ckb"
+args = ["mcp"] # do not remove --watch below without checking with ops
+`
+	got := upsertCodexMCPServer(existing, "ckb", []string{"mcp", "--watch"})
+
+	if !strings.Contains(got, "# do not remove --watch below without checking with ops") {
+		t.Errorf("inline comment on replaced args line was dropped:\n%s", got)
+	}
+	if !strings.Contains(got, `args = ["mcp", "--watch"]`) {
+		t.Errorf("args was not updated:\n%s", got)
+	}
+}
+
+// TestUpsertCodexMCPServer_MultilineArgs_ReplacesWholeSpan covers the P2
+// finding for a multiline args array:
+//
+//	args = [
+//	  "mcp",
+//	  "--watch",
+//	]
+//
+// Filtering line-by-line by key name only matched the opening "args = ["
+// line — the continuation lines ("mcp",, "--watch",, ]) don't look like a
+// "key = value" line, so they were left behind as stray "kept" lines next
+// to the new single-line args, corrupting the table. The whole array span
+// must be dropped and replaced as one unit.
+func TestUpsertCodexMCPServer_MultilineArgs_ReplacesWholeSpan(t *testing.T) {
+	existing := `[mcp_servers.ckb]
+command = "old-ckb"
+args = [
+  "mcp",
+  "--preset=full",
+]
+`
+	got := upsertCodexMCPServer(existing, "new-ckb", []string{"mcp", "--watch"})
+
+	if strings.Contains(got, "--preset=full") {
+		t.Errorf("old multiline args entries were not removed:\n%s", got)
+	}
+	if strings.Contains(got, "\"mcp\",\n") {
+		t.Errorf("stray multiline array continuation line survived:\n%s", got)
+	}
+	if !strings.Contains(got, `args = ["mcp", "--watch"]`) {
+		t.Errorf("new args line missing/incorrect:\n%s", got)
+	}
+	// The result must still be valid TOML: exactly one args key, no
+	// dangling "]" left over from the old array.
+	if count := strings.Count(got, "args ="); count != 1 {
+		t.Errorf("expected exactly one 'args =' line, found %d:\n%s", count, got)
+	}
+
+	var probe any
+	if _, err := toml.Decode(got, &probe); err != nil {
+		t.Errorf("result is not valid TOML: %v\n%s", err, got)
+	}
+}
+
+// TestUpsertCodexMCPServer_MultilineArgs_TrailingCommentOnClosingBracket
+// covers a trailing comment on the closing bracket of a multiline array —
+// it should be preserved the same way a single-line trailing comment is.
+func TestUpsertCodexMCPServer_MultilineArgs_TrailingCommentOnClosingBracket(t *testing.T) {
+	existing := `[mcp_servers.ckb]
+command = "old-ckb"
+args = [
+  "mcp",
+] # keep in sync with prod
+`
+	got := upsertCodexMCPServer(existing, "new-ckb", []string{"mcp", "--watch"})
+
+	if !strings.Contains(got, "# keep in sync with prod") {
+		t.Errorf("trailing comment on multiline array's closing bracket was dropped:\n%s", got)
+	}
+	if !strings.Contains(got, `args = ["mcp", "--watch"]`) {
+		t.Errorf("new args line missing/incorrect:\n%s", got)
 	}
 }
 

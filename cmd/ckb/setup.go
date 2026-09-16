@@ -1094,6 +1094,93 @@ func tomlHasHeaderFor(content string, targetPath []string) bool {
 	return false
 }
 
+// tomlStripQuotedAndComment returns line with quoted-string contents and any
+// trailing "# ..." comment removed, so bracket-counting and other structural
+// scans below aren't confused by "[" / "]" appearing inside a string value
+// or a comment. Quote handling is a simple single-char-escape scanner, not a
+// full TOML string grammar — sufficient for the plain ASCII values CKB's own
+// command/args lines ever contain and the general case of a user's existing
+// lines in the same table.
+func tomlStripQuotedAndComment(line string) string {
+	var out strings.Builder
+	var inQuote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case inQuote != 0:
+			if c == inQuote && (inQuote == '\'' || i == 0 || line[i-1] != '\\') {
+				inQuote = 0
+			}
+		case c == '"' || c == '\'':
+			inQuote = c
+		case c == '#':
+			return out.String()
+		default:
+			out.WriteByte(c)
+		}
+	}
+	return out.String()
+}
+
+// tomlTrailingComment extracts a trailing "# ..." comment from line (outside
+// any quoted string), or "" if there isn't one.
+func tomlTrailingComment(line string) string {
+	var inQuote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case inQuote != 0:
+			if c == inQuote && (inQuote == '\'' || i == 0 || line[i-1] != '\\') {
+				inQuote = 0
+			}
+		case c == '"' || c == '\'':
+			inQuote = c
+		case c == '#':
+			return strings.TrimRight(line[i:], "\r")
+		}
+	}
+	return ""
+}
+
+// tomlValueSpanEnd returns the index (inclusive, within [start, limit)) of
+// the last line belonging to the value that starts at lines[start]. For a
+// plain single-line "key = value" line, that's start itself. For a
+// multiline array ("key = [\n  ...\n]"), it's the line containing the
+// matching closing bracket, found by counting "[" / "]" across lines
+// (ignoring characters inside quoted strings or comments, via
+// tomlStripQuotedAndComment) until the depth returns to zero.
+func tomlValueSpanEnd(lines []string, start, limit int) int {
+	depth := 0
+	for _, r := range tomlStripQuotedAndComment(lines[start]) {
+		switch r {
+		case '[':
+			depth++
+		case ']':
+			depth--
+		}
+	}
+	// No unclosed "[" on the key's own line — a plain scalar (string,
+	// number, bool) or an array that opened and closed on one line. Either
+	// way the value doesn't continue onto later lines.
+	if depth <= 0 {
+		return start
+	}
+	for i := start + 1; i < limit; i++ {
+		for _, r := range tomlStripQuotedAndComment(lines[i]) {
+			switch r {
+			case '[':
+				depth++
+			case ']':
+				depth--
+			}
+		}
+		if depth <= 0 {
+			return i
+		}
+	}
+	return limit - 1
+}
+
 func tomlPathEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -1147,19 +1234,43 @@ func upsertTOMLTable(content string, targetPath []string, headerLine string, bod
 
 	// Keep every line in the existing bare-key block except command/args —
 	// re-running setup updates those in place without disturbing other keys
-	// or comments a user may have added inside the table.
+	// or comments a user may have added inside the table. A replaced key's
+	// value may span multiple lines (a multiline args array); the whole
+	// span is dropped, not just its opening line — filtering line-by-line
+	// by key name alone would leave a multiline array's continuation lines
+	// (which don't look like "key = ...") stranded next to the new value.
+	// A single-line key's trailing inline comment (# ...) is preserved by
+	// reattaching it to the replacement line for that same key, rather than
+	// silently discarded along with the line it was on.
 	var kept []string
-	for _, line := range lines[headerIdx+1 : blockEnd] {
-		switch tomlBareKeyName(line) {
-		case "command", "args":
+	commentByKey := make(map[string]string)
+	for i := headerIdx + 1; i < blockEnd; {
+		key := tomlBareKeyName(lines[i])
+		if key == "command" || key == "args" {
+			end := tomlValueSpanEnd(lines, i, blockEnd)
+			if c := tomlTrailingComment(lines[end]); c != "" {
+				commentByKey[key] = c
+			}
+			i = end + 1
 			continue
 		}
-		kept = append(kept, line)
+		kept = append(kept, lines[i])
+		i++
 	}
 
-	newBlock := make([]string, 0, 1+len(bodyKeys)+len(kept))
+	renderedBodyKeys := make([]string, len(bodyKeys))
+	for i, bk := range bodyKeys {
+		key := tomlBareKeyName(bk)
+		if c, ok := commentByKey[key]; ok {
+			renderedBodyKeys[i] = bk + "  " + c
+		} else {
+			renderedBodyKeys[i] = bk
+		}
+	}
+
+	newBlock := make([]string, 0, 1+len(renderedBodyKeys)+len(kept))
 	newBlock = append(newBlock, lines[headerIdx]) // keep the original header line verbatim
-	newBlock = append(newBlock, bodyKeys...)
+	newBlock = append(newBlock, renderedBodyKeys...)
 	newBlock = append(newBlock, kept...)
 
 	result := make([]string, 0, headerIdx+len(newBlock)+(len(lines)-blockEnd))
