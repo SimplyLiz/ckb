@@ -1440,15 +1440,19 @@ type PrepareChangeTarget struct {
 // PrepareDependent describes a direct dependent.
 type PrepareDependent struct {
 	// SymbolId and Name identify the enclosing symbol (e.g. the caller
-	// function) that contains the reference. Omitted rather than "" /
-	// "unknown" when the backend couldn't resolve an enclosing symbol
-	// (e.g. a package-level reference outside any function).
-	SymbolId string `json:"symbolId,omitempty"`
-	Name     string `json:"name,omitempty"`
+	// function) that contains the reference. "" (not "unknown") when the
+	// backend couldn't resolve an enclosing symbol (e.g. a package-level
+	// reference outside any function). These fields are NOT omitempty:
+	// schemaVersion 1 documents them as always-present strings, so an
+	// empty value is serialized as "" rather than dropping the key —
+	// dropping it would be a breaking contract change for strict
+	// consumers without a schema version bump.
+	SymbolId string `json:"symbolId"`
+	Name     string `json:"name"`
 	Kind     string `json:"kind"`
 	File     string `json:"file"`
 	Line     int    `json:"line"`
-	ModuleId string `json:"moduleId,omitempty"`
+	ModuleId string `json:"moduleId"`
 }
 
 // PrepareTransitive summarizes transitive impact.
@@ -1783,7 +1787,9 @@ func (e *Engine) getPrepareImpact(ctx context.Context, symbolId string) ([]Prepa
 	moduleSet := make(map[string]bool)
 	maxDepth := 0
 	for _, imp := range impactResp.TransitiveImpact {
-		moduleSet[imp.ModuleId] = true
+		if imp.ModuleId != "" {
+			moduleSet[imp.ModuleId] = true
+		}
 		if imp.Distance > maxDepth {
 			maxDepth = imp.Distance
 		}
@@ -1975,24 +1981,28 @@ func (e *Engine) calculatePrepareRisk(
 	// Add existing factors
 	factors = append(factors, existingFactors...)
 
-	// Determine level
+	// Round at the output boundary: score is accumulated from binary
+	// floats (0.25, 0.15, 0.2, ...) whose sum isn't exactly representable,
+	// e.g. 0.15+0.2+0.15+0.2 prints as 0.7000000000000001 without this.
+	// Two decimals is all the factor weights above carry meaning to
+	// anyway. Level is derived from this same rounded value — deriving it
+	// from the raw, unrounded score let the level disagree with the
+	// displayed score at a threshold boundary (raw 0.6999999999999998
+	// prints as "0.70" but would classify as "high", not "critical").
+	roundedScore := math.Round(score*100) / 100
+
 	level := "low"
-	if score >= 0.7 {
+	if roundedScore >= 0.7 {
 		level = "critical"
-	} else if score >= 0.5 {
+	} else if roundedScore >= 0.5 {
 		level = "high"
-	} else if score >= 0.3 {
+	} else if roundedScore >= 0.3 {
 		level = "medium"
 	}
 
 	return &PrepareRisk{
-		Level: level,
-		// Round at the output boundary: score is accumulated from binary
-		// floats (0.25, 0.15, 0.2, ...) whose sum isn't exactly
-		// representable, e.g. 0.15+0.2+0.15+0.2 prints as
-		// 0.7000000000000001 without this. Two decimals is all the
-		// factor weights above carry meaning to anyway.
-		Score:       math.Round(score*100) / 100,
+		Level:       level,
+		Score:       roundedScore,
 		Factors:     factors,
 		Suggestions: suggestions,
 	}

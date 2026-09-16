@@ -95,11 +95,15 @@ type RiskFactor struct {
 
 // ImpactItem describes an impact from changing a symbol.
 type ImpactItem struct {
-	StableId   string          `json:"stableId,omitempty"`
+	// StableId and ModuleId are NOT omitempty: schemaVersion 1 documents
+	// them as always-present strings, so an unresolved value serializes
+	// as "" rather than dropping the key (see PrepareDependent for the
+	// same contract).
+	StableId   string          `json:"stableId"`
 	Name       string          `json:"name,omitempty"`
 	Kind       string          `json:"kind"` // direct-caller, transitive-caller, type-dependency, test-dependency
 	Distance   int             `json:"distance"`
-	ModuleId   string          `json:"moduleId,omitempty"`
+	ModuleId   string          `json:"moduleId"`
 	Location   *LocationInfo   `json:"location,omitempty"`
 	Confidence float64         `json:"confidence"`
 	Visibility *VisibilityInfo `json:"visibility,omitempty"`
@@ -295,6 +299,10 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 		refsResult, refsErr := e.scipAdapter.FindReferences(ctx, symbolIdForLookup, refOpts)
 		if refsErr == nil && refsResult != nil {
 			for _, ref := range refsResult.References {
+				fromModule := ""
+				if ref.Location.Path != "" {
+					fromModule = filepath.Dir(ref.Location.Path)
+				}
 				impactRef := impact.Reference{
 					Kind: impact.ReferenceKind(ref.Kind),
 					Location: &impact.Location{
@@ -309,6 +317,13 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 					// function.
 					FromSymbol: ref.FromSymbol,
 					FromName:   ref.FromSymbolName,
+					// FromModule is derived from the reference's own file path,
+					// the same way resolvePrepareTarget derives ModuleId for a
+					// symbol-based prepareChange target: the backend doesn't
+					// resolve a module id on references, so without this every
+					// direct dependent reported an empty moduleId and the
+					// module-spread count in prepareChange silently undercounted.
+					FromModule: fromModule,
 				}
 				refs = append(refs, impactRef)
 			}
