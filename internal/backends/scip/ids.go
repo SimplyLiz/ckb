@@ -86,6 +86,7 @@ func (s *SCIPIdentifier) GetQualifiedName() string {
 //   - "process.env.NODE_ENV." -> "NODE_ENV"
 //   - "`ckb/internal/api`/NewServer()." -> "NewServer"
 //   - "`ckb/internal/api`/Server#" -> "Server"
+//   - "`ckb/internal/api`/Server#Method()." -> "Method"
 func (s *SCIPIdentifier) GetSimpleName() string {
 	descriptor := s.Descriptor
 
@@ -94,7 +95,8 @@ func (s *SCIPIdentifier) GetSimpleName() string {
 	descriptor = strings.TrimSuffix(descriptor, "#")
 
 	// Handle scip-go format with backtick-quoted package paths
-	// Format: `package/path`/Symbol() or `package/path`/Type
+	// Format: `package/path`/Symbol() or `package/path`/Type or
+	// `package/path`/Type#Method() (a method on a type)
 	if strings.Contains(descriptor, "`") {
 		// Find the last `/` after any backtick-quoted section
 		lastBacktick := strings.LastIndex(descriptor, "`")
@@ -104,6 +106,13 @@ func (s *SCIPIdentifier) GetSimpleName() string {
 				name := remainder[idx+1:]
 				// Remove function parentheses
 				name = strings.TrimSuffix(name, "()")
+				// A method descriptor still carries its receiver type as
+				// "Type#Method" here (the '#' separates them, not '/') —
+				// strip it so callers see the method name alone, not the
+				// (possibly exported) type name that precedes it.
+				if hashIdx := strings.LastIndex(name, "#"); hashIdx != -1 {
+					name = name[hashIdx+1:]
+				}
 				return name
 			}
 		}
