@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
 )
 
@@ -42,10 +43,11 @@ var aiTools = []aiTool{
 	{ID: "opencode", Name: "OpenCode", SupportsGlobal: true, SupportsProject: true, GlobalUsesCmd: false, Format: "mcp"},
 	{ID: "grok", Name: "Grok", SupportsGlobal: true, SupportsProject: true, GlobalUsesCmd: true, Format: "grokServers"},
 	{ID: "claude-desktop", Name: "Claude Desktop", SupportsGlobal: true, SupportsProject: false, GlobalUsesCmd: false, Format: "mcpServers"},
-	// Codex CLI reads MCP servers from ~/.codex/config.toml only — this repo has
-	// no evidence (no .codex/ references, no project-level config docs) of a
-	// project-scoped config location, so it's global-only like Windsurf/Claude Desktop.
-	{ID: "codex", Name: "Codex", SupportsGlobal: true, SupportsProject: false, GlobalUsesCmd: false, Format: "codexToml"},
+	// Codex CLI supports project-local MCP config for trusted projects
+	// (<repo>/.codex/config.toml) in addition to the user-global
+	// ~/.codex/config.toml. Default (non --global) setup writes the
+	// project-local file; --global writes the user-global one.
+	{ID: "codex", Name: "Codex", SupportsGlobal: true, SupportsProject: true, GlobalUsesCmd: false, Format: "codexToml"},
 }
 
 var setupCmd = &cobra.Command{
@@ -644,9 +646,12 @@ func getConfigPath(toolID string, global bool) string {
 		return filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
 
 	case "codex":
-		// Codex CLI only reads ~/.codex/config.toml — no project-level config
-		// location is documented, so this is the same path regardless of scope.
-		return filepath.Join(home, ".codex", "config.toml")
+		if global {
+			return filepath.Join(home, ".codex", "config.toml")
+		}
+		// Trusted-project scope: Codex reads <repo>/.codex/config.toml when the
+		// project directory has been trusted in the user's global config.
+		return filepath.Join(cwd, ".codex", "config.toml")
 	}
 
 	return ""
@@ -798,17 +803,20 @@ func writeGrokConfig(path, command string, args []string) error {
 }
 
 // codexTableHeader is the TOML table Codex CLI reads CKB's MCP server config
-// from: ~/.codex/config.toml, [mcp_servers.ckb].
+// from: [mcp_servers.ckb] in either ~/.codex/config.toml (--global) or
+// <repo>/.codex/config.toml (project scope, trusted projects).
 const codexTableHeader = "[mcp_servers.ckb]"
 
 // writeCodexConfig upserts CKB's [mcp_servers.ckb] table into Codex's
-// ~/.codex/config.toml. Codex's config.toml is a file another tool owns and
-// may hand-edit (comments, other [mcp_servers.*] tables, unrelated top-level
-// settings) — CKB has no business reformatting any of that. So rather than
-// decode-then-fully-reencode the whole file through a TOML library (which
-// would normalize formatting and drop comments), this does a surgical
-// textual replace of just the CKB table, leaving everything else untouched
-// byte-for-byte.
+// config.toml (global or project-scoped). Codex's config.toml is a file
+// another tool owns and may hand-edit (comments, other [mcp_servers.*]
+// tables, unrelated top-level settings) — CKB has no business reformatting
+// any of that. So rather than decode-then-fully-reencode the whole file
+// through a TOML library (which would normalize formatting and drop
+// comments), this does a surgical textual replace of just the CKB table's
+// own keys, leaving everything else — including [mcp_servers.ckb.env]
+// subtables — untouched byte-for-byte. The result is validated as TOML
+// before being written; if that fails, nothing is written.
 func writeCodexConfig(path, command string, args []string) error {
 	var existing string
 	if data, err := os.ReadFile(path); err == nil { // #nosec G703 -- path is internally constructed
@@ -817,73 +825,256 @@ func writeCodexConfig(path, command string, args []string) error {
 		return fmt.Errorf("failed to read %s: %w", path, err)
 	}
 
-	updated := upsertCodexMCPServer(existing, command, args)
+	// Refuse to touch a file we can't parse. Editing it blind risks turning
+	// a pre-existing syntax error into data loss.
+	if strings.TrimSpace(existing) != "" {
+		var probe any
+		if _, err := toml.Decode(existing, &probe); err != nil {
+			return fmt.Errorf(
+				"%s is not valid TOML, leaving it untouched (%w)\nAdd this table manually:\n\n%s",
+				path, err, codexManualTOMLSnippet(command, args),
+			)
+		}
+	}
 
-	return os.WriteFile(path, []byte(updated), 0644) // #nosec G703 -- non-sensitive config file
+	// Codex's config.toml is written by whatever OS the user is on; preserve
+	// CRLF line endings if that's what's already there.
+	crlf := strings.Contains(existing, "\r\n")
+	normalized := existing
+	if crlf {
+		normalized = strings.ReplaceAll(existing, "\r\n", "\n")
+	}
+
+	updated := upsertCodexMCPServer(normalized, command, args)
+
+	// Belt-and-suspenders: validate what we're about to write is still valid
+	// TOML before it touches disk. upsertTOMLTable only ever does line-level
+	// surgery, but if that surgery ever produces something unparsable, abort
+	// rather than hand Codex a broken config.
+	var probe any
+	if _, err := toml.Decode(updated, &probe); err != nil {
+		return fmt.Errorf(
+			"generated config for %s would not be valid TOML, aborting without writing (%w)\nAdd this table manually:\n\n%s",
+			path, err, codexManualTOMLSnippet(command, args),
+		)
+	}
+
+	if crlf {
+		updated = strings.ReplaceAll(updated, "\n", "\r\n")
+	}
+
+	return writeFileAtomic(path, []byte(updated), 0644)
 }
 
-// upsertCodexMCPServer replaces the [mcp_servers.ckb] table in content with
-// a freshly generated one, or appends it if not present. All other content
-// (other tables, comments, key order) is left untouched.
-func upsertCodexMCPServer(content, command string, args []string) string {
+// codexManualTOMLSnippet renders the [mcp_servers.ckb] table CKB would have
+// written, for error messages that ask the user to add it by hand.
+func codexManualTOMLSnippet(command string, args []string) string {
+	return codexTableHeader + "\n" + strings.Join(codexBodyKeys(command, args), "\n") + "\n"
+}
+
+// codexBodyKeys renders the bare key = value lines (no header) for CKB's
+// Codex MCP server entry.
+func codexBodyKeys(command string, args []string) []string {
 	quotedArgs := make([]string, len(args))
 	for i, a := range args {
 		quotedArgs[i] = tomlQuoteString(a)
 	}
-
-	body := fmt.Sprintf("%s\ncommand = %s\nargs = [%s]\n",
-		codexTableHeader, tomlQuoteString(command), strings.Join(quotedArgs, ", "))
-
-	return upsertTOMLTable(content, codexTableHeader, body)
+	return []string{
+		fmt.Sprintf("command = %s", tomlQuoteString(command)),
+		fmt.Sprintf("args = [%s]", strings.Join(quotedArgs, ", ")),
+	}
 }
 
-// tomlTableHeaderRe matches a TOML table header line, e.g. "[foo]" or
-// "[[foo.bar]]", possibly indented.
-var tomlTableHeaderRe = regexp.MustCompile(`^\s*\[`)
+// tomlTargetPath is the dotted key path CKB's MCP server table lives at.
+var tomlTargetPath = []string{"mcp_servers", "ckb"}
 
-// upsertTOMLTable replaces the table starting at the line matching `header`
-// (trimmed) with `body`, up to (but not including) the next table header
-// line or EOF. If `header` isn't found, `body` is appended to the end of the
-// file. It never touches lines outside that one table's block.
-func upsertTOMLTable(content, header, body string) string {
-	body = strings.TrimRight(body, "\n")
+// upsertCodexMCPServer replaces the bare command/args keys of the
+// [mcp_servers.ckb] table in content, or appends the whole table if not
+// present. All other content (other tables, comments, key order, and any
+// [mcp_servers.ckb.*] subtables such as a user-configured .env block) is
+// left untouched.
+func upsertCodexMCPServer(content, command string, args []string) string {
+	return upsertTOMLTable(content, tomlTargetPath, codexTableHeader, codexBodyKeys(command, args))
+}
 
+// tomlArrayHeaderRe matches an array-of-tables header, e.g. "[[foo]]".
+var tomlArrayHeaderRe = regexp.MustCompile(`^\s*\[\[`)
+
+// tomlHeaderRe matches a single-bracket TOML table header line, capturing
+// the bracket contents. Tolerates leading/trailing whitespace and a
+// trailing inline comment (# ...). Never matches array-of-tables headers
+// (tomlArrayHeaderRe is checked first).
+var tomlHeaderRe = regexp.MustCompile(`^\s*\[([^\[\]]*)\]\s*(#.*)?$`)
+
+// tomlBareKeyRe matches the key portion of a bare "key = value" TOML line,
+// including quoted keys ("command" = ... or 'command' = ...).
+var tomlBareKeyRe = regexp.MustCompile(`^\s*("([^"]*)"|'([^']*)'|[A-Za-z0-9_-]+)\s*=`)
+
+// parseTOMLHeaderPath parses a TOML table header line into its dotted key
+// path, honoring quoted keys — [mcp_servers."ckb"], ["mcp_servers".ckb], and
+// [mcp_servers.ckb] all parse to the same path. Returns ok=false if the line
+// isn't a single-bracket table header line.
+func parseTOMLHeaderPath(line string) (path []string, ok bool) {
+	if tomlArrayHeaderRe.MatchString(line) {
+		return nil, false
+	}
+	m := tomlHeaderRe.FindStringSubmatch(line)
+	if m == nil {
+		return nil, false
+	}
+	inner := strings.TrimSpace(m[1])
+	if inner == "" {
+		return nil, false
+	}
+	return splitTOMLKeyPath(inner)
+}
+
+// splitTOMLKeyPath splits a dotted TOML key path into its component keys,
+// respecting basic ("...") and literal ('...') quoted segments that may
+// themselves contain dots.
+func splitTOMLKeyPath(s string) ([]string, bool) {
+	var parts []string
+	var cur strings.Builder
+	var inQuote byte
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case inQuote != 0:
+			cur.WriteByte(c)
+			if c == inQuote {
+				inQuote = 0
+			}
+		case c == '"' || c == '\'':
+			inQuote = c
+			cur.WriteByte(c)
+		case c == '.':
+			parts = append(parts, unquoteTOMLKey(strings.TrimSpace(cur.String())))
+			cur.Reset()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	if inQuote != 0 {
+		return nil, false // unterminated quote — malformed, don't treat as a match
+	}
+
+	last := strings.TrimSpace(cur.String())
+	parts = append(parts, unquoteTOMLKey(last))
+
+	for _, p := range parts {
+		if p == "" {
+			return nil, false
+		}
+	}
+	return parts, true
+}
+
+// unquoteTOMLKey strips quotes from a single TOML key segment, if present.
+func unquoteTOMLKey(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		if unq, err := strconv.Unquote(s); err == nil {
+			return unq
+		}
+	}
+	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+// tomlBareKeyName returns the key name of a bare "key = value" line, or ""
+// if the line isn't such an assignment (blank, comment, or a table header).
+func tomlBareKeyName(line string) string {
+	t := strings.TrimSpace(line)
+	if t == "" || strings.HasPrefix(t, "#") {
+		return ""
+	}
+	m := tomlBareKeyRe.FindStringSubmatch(line)
+	if m == nil {
+		return ""
+	}
+	if m[2] != "" {
+		return m[2]
+	}
+	if m[3] != "" {
+		return m[3]
+	}
+	return strings.TrimSpace(m[1])
+}
+
+func tomlPathEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// upsertTOMLTable finds the table at targetPath (matched via parsed header
+// key paths, so quoting/comments/whitespace variations all resolve to the
+// same table) and rewrites only its own bare "command"/"args" keys —
+// anything else in that table's bare-key block (comments, other keys) is
+// preserved, and any subtable of targetPath (e.g. [mcp_servers.ckb.env],
+// which may hold user-configured env vars) is left completely untouched,
+// since it lives past the bare-key block boundary. If targetPath isn't
+// found, headerLine + bodyKeys are appended at EOF.
+func upsertTOMLTable(content string, targetPath []string, headerLine string, bodyKeys []string) string {
 	if strings.TrimSpace(content) == "" {
-		return body + "\n"
+		return headerLine + "\n" + strings.Join(bodyKeys, "\n") + "\n"
 	}
 
 	lines := strings.Split(content, "\n")
-	headerLine := -1
-	endLine := len(lines) // exclusive; defaults to EOF
+	headerIdx := -1
+	blockEnd := len(lines) // exclusive: end of the bare-key block under our header
 
 	for i, line := range lines {
-		if headerLine == -1 {
-			if strings.TrimSpace(line) == header {
-				headerLine = i
+		path, ok := parseTOMLHeaderPath(line)
+		if headerIdx == -1 {
+			if ok && tomlPathEqual(path, targetPath) {
+				headerIdx = i
 			}
 			continue
 		}
-		// Looking for the next table header after ours to know where our
-		// block ends.
-		if tomlTableHeaderRe.MatchString(line) {
-			endLine = i
+		// Any table header after ours — including a subtable of ours like
+		// [mcp_servers.ckb.env] — ends the block of bare keys we're allowed
+		// to rewrite.
+		if ok {
+			blockEnd = i
 			break
 		}
 	}
 
-	if headerLine == -1 {
-		// Not present — append after a blank-line separator.
+	if headerIdx == -1 {
 		trimmed := strings.TrimRight(content, "\n")
-		return trimmed + "\n\n" + body + "\n"
+		return trimmed + "\n\n" + headerLine + "\n" + strings.Join(bodyKeys, "\n") + "\n"
 	}
 
-	before := lines[:headerLine]
-	after := lines[endLine:]
+	// Keep every line in the existing bare-key block except command/args —
+	// re-running setup updates those in place without disturbing other keys
+	// or comments a user may have added inside the table.
+	var kept []string
+	for _, line := range lines[headerIdx+1 : blockEnd] {
+		switch tomlBareKeyName(line) {
+		case "command", "args":
+			continue
+		}
+		kept = append(kept, line)
+	}
 
-	result := make([]string, 0, len(before)+len(after)+3)
-	result = append(result, before...)
-	result = append(result, strings.Split(body, "\n")...)
-	result = append(result, after...)
+	newBlock := make([]string, 0, 1+len(bodyKeys)+len(kept))
+	newBlock = append(newBlock, lines[headerIdx]) // keep the original header line verbatim
+	newBlock = append(newBlock, bodyKeys...)
+	newBlock = append(newBlock, kept...)
+
+	result := make([]string, 0, headerIdx+len(newBlock)+(len(lines)-blockEnd))
+	result = append(result, lines[:headerIdx]...)
+	result = append(result, newBlock...)
+	result = append(result, lines[blockEnd:]...)
 
 	return strings.Join(result, "\n")
 }
@@ -893,6 +1084,40 @@ func upsertTOMLTable(content, header, body string) string {
 // ASCII command/arg values CKB ever writes here (binary paths, flags).
 func tomlQuoteString(s string) string {
 	return strconv.Quote(s)
+}
+
+// writeFileAtomic writes data to path by writing a temp file in the same
+// directory and renaming it into place, so a process interrupted mid-write
+// (or a concurrent writer) can never leave path partially written.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".ckb-setup-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file in %s: %w", dir, err)
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = os.Remove(tmpPath) // no-op once the rename below has succeeded
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to sync temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil { // #nosec G703 -- perm is caller-controlled, not user input
+		return fmt.Errorf("failed to set permissions on temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("failed to move temp file into place: %w", err)
+	}
+	return nil
 }
 
 func configureGrokGlobal(ckbCommand string, ckbArgs []string) (bool, error) {

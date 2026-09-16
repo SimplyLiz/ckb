@@ -456,20 +456,37 @@ The `CKB_REPO` environment variable tells CKB which repository to analyze. Claud
 <details>
 <summary><strong>Codex</strong></summary>
 
-Codex CLI reads MCP servers from `~/.codex/config.toml` only — there's no per-project config, so setup is always global.
+Codex CLI supports both project-local config (`<repo>/.codex/config.toml`, for
+trusted projects) and user-global config (`~/.codex/config.toml`). By default
+`ckb setup --tool=codex` writes the project-local file, same as Cursor or
+VS Code; pass `--global` to write the global one instead.
 
 ```bash
+# Project-local (default) — writes <repo>/.codex/config.toml
 npx @tastehub/ckb setup --tool=codex
+
+# Global — writes ~/.codex/config.toml, used across all projects
+npx @tastehub/ckb setup --tool=codex --global
 ```
 
-Or manually add to `~/.codex/config.toml`:
+Or manually add to either file:
 ```toml
 [mcp_servers.ckb]
 command = "npx"
 args = ["-y", "@tastehub/ckb", "mcp", "--watch"]
 ```
 
-`ckb setup` merges this table into your existing `config.toml` without touching anything else in the file.
+`ckb setup` merges this table into your existing `config.toml` without
+touching anything else in the file — including any `[mcp_servers.ckb.env]`
+subtable you've hand-added for your own environment variables.
+
+With the global config, `ckb mcp` has no per-project file to anchor it to,
+so it resolves the target repository the same way any other CKB command
+does when no `--repo`/`CKB_REPO` is set: from the working directory Codex
+launches the server in (matched against the registry, or auto-detected via
+the enclosing git repo), falling back to your default registered repo. Run
+`ckb setup` from inside each project once with `--tool=codex` (project
+scope) if you want an explicit, unambiguous per-project config instead.
 
 </details>
 
