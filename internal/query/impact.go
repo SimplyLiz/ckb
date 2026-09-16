@@ -95,11 +95,11 @@ type RiskFactor struct {
 
 // ImpactItem describes an impact from changing a symbol.
 type ImpactItem struct {
-	StableId   string          `json:"stableId"`
+	StableId   string          `json:"stableId,omitempty"`
 	Name       string          `json:"name,omitempty"`
 	Kind       string          `json:"kind"` // direct-caller, transitive-caller, type-dependency, test-dependency
 	Distance   int             `json:"distance"`
-	ModuleId   string          `json:"moduleId"`
+	ModuleId   string          `json:"moduleId,omitempty"`
 	Location   *LocationInfo   `json:"location,omitempty"`
 	Confidence float64         `json:"confidence"`
 	Visibility *VisibilityInfo `json:"visibility,omitempty"`
@@ -302,6 +302,13 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 						StartLine: ref.Location.Line,
 					},
 					IsTest: isTestFilePath(ref.Location.Path), // Set IsTest based on file path
+					// FromSymbol/FromName resolve the enclosing symbol (e.g. the
+					// caller function containing this reference) when the backend
+					// found one. Left empty (not "unknown") when genuinely
+					// unresolvable, e.g. a package-level reference outside any
+					// function.
+					FromSymbol: ref.FromSymbol,
+					FromName:   ref.FromSymbolName,
 				}
 				refs = append(refs, impactRef)
 			}

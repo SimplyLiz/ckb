@@ -1438,12 +1438,16 @@ type PrepareChangeTarget struct {
 
 // PrepareDependent describes a direct dependent.
 type PrepareDependent struct {
-	SymbolId string `json:"symbolId"`
-	Name     string `json:"name"`
+	// SymbolId and Name identify the enclosing symbol (e.g. the caller
+	// function) that contains the reference. Omitted rather than "" /
+	// "unknown" when the backend couldn't resolve an enclosing symbol
+	// (e.g. a package-level reference outside any function).
+	SymbolId string `json:"symbolId,omitempty"`
+	Name     string `json:"name,omitempty"`
 	Kind     string `json:"kind"`
 	File     string `json:"file"`
 	Line     int    `json:"line"`
-	ModuleId string `json:"moduleId"`
+	ModuleId string `json:"moduleId,omitempty"`
 }
 
 // PrepareTransitive summarizes transitive impact.

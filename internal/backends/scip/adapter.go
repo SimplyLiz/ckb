@@ -368,11 +368,20 @@ func (s *SCIPAdapter) convertToReference(scipRef *SCIPReference) backends.Refere
 		}
 	}
 
+	fromSymbolName := ""
+	if scipRef.FromSymbol != "" {
+		if fromId, err := ParseSCIPIdentifier(scipRef.FromSymbol); err == nil {
+			fromSymbolName = fromId.GetSimpleName()
+		}
+	}
+
 	return backends.Reference{
-		Location: location,
-		Kind:     string(scipRef.Kind),
-		SymbolID: scipRef.SymbolId,
-		Context:  scipRef.Context,
+		Location:       location,
+		Kind:           string(scipRef.Kind),
+		SymbolID:       scipRef.SymbolId,
+		Context:        scipRef.Context,
+		FromSymbol:     scipRef.FromSymbol,
+		FromSymbolName: fromSymbolName,
 	}
 }
 
