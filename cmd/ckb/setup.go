@@ -206,15 +206,6 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		global = true
 	}
 
-	// Project-scope configs point an AI tool at *this* repo, so make sure the
-	// repo itself is usable first: init .ckb/ if missing, index if there's no
-	// usable index yet. Global configs aren't tied to a project, so skip.
-	if !global {
-		if err := ensureProjectReady(); err != nil {
-			return err
-		}
-	}
-
 	// Determine preset
 	preset := setupPreset
 	if preset == "" && setupTool == "" {
@@ -241,9 +232,22 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Configure
+	// Configure the AI tool FIRST, before any indexing. A slow or interrupted
+	// index build must never leave the developer without a working MCP
+	// config — the agent should be usable (Git-based features at minimum)
+	// the moment this step finishes, regardless of what happens next.
 	if err := configureTool(selectedTool, global, ckbCommand, ckbArgs); err != nil {
 		return err
+	}
+
+	// Project-scope configs point an AI tool at *this* repo, so make sure the
+	// repo itself is usable too: init .ckb/ if missing, index if there's no
+	// usable index yet. This runs AFTER the config is written (see above).
+	// Global configs aren't tied to a project, so skip.
+	if !global {
+		if err := ensureProjectReady(); err != nil {
+			return err
+		}
 	}
 
 	// Offer to install skills in interactive mode
@@ -266,9 +270,13 @@ func runSetup(cmd *cobra.Command, args []string) error {
 // the same init logic as 'ckb init' if .ckb/ is missing, then the same index
 // logic as 'ckb index' if there's no usable index yet, so a developer never
 // has to know those commands exist. Neither step is allowed to fail setup:
-// - init failure is surfaced (a broken .ckb/ means the MCP server can't work)
-// - index failure/skip is only ever reported as a one-line note, because
-//   Git-based features (hotspots, ownership, diffs) work without SCIP.
+//   - init failure is surfaced (a broken .ckb/ means the MCP server can't work)
+//   - index failure/skip is only ever reported as a one-line note, because
+//     Git-based features (hotspots, ownership, diffs) work without SCIP.
+//
+// Called from runSetup AFTER configureTool has already written the MCP
+// config, specifically so that a slow indexer (or a developer hitting
+// Ctrl-C on it) never leaves setup without a usable config file on disk.
 func ensureProjectReady() error {
 	if setupNoIndex {
 		// Still make sure .ckb/ exists even if indexing itself is skipped —
@@ -286,6 +294,9 @@ func ensureProjectReady() error {
 	}
 
 	fmt.Println("Checking code index...")
+	fmt.Println("  (safe to Ctrl-C — your MCP config is already saved and usable; Git-based")
+	fmt.Println("  features work immediately, and 'ckb mcp --watch' builds the SCIP index on")
+	fmt.Println("  its own once an indexer is available, or run 'ckb index' any time)")
 	result := performIndex(cwd)
 
 	switch result.Outcome {

@@ -511,3 +511,62 @@ func TestEnsureProjectReady_NoLanguage_DoesNotFailSetup(t *testing.T) {
 		t.Errorf(".ckb/ was not created: %v", statErr)
 	}
 }
+
+// TestRunSetup_ConfigWrittenBeforeIndexing_EvenIfInitFails proves the
+// ordering fix: the MCP config must already be on disk before
+// ensureProjectReady's init/index step runs, so a slow indexer (or, as
+// here, an init failure) never leaves the developer without a working
+// config. It forces ensureCkbInitialized to fail by making the project
+// directory read-only (so creating the new .ckb/ dir fails), while
+// pre-creating .codex/ with normal permissions so the config write itself
+// can still succeed — isolating which of the two steps actually failed.
+func TestRunSetup_ConfigWrittenBeforeIndexing_EvenIfInitFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root — permission checks don't apply")
+	}
+
+	restore := resetSetupFlags(t)
+	defer restore()
+
+	t.Setenv("HOME", t.TempDir())
+
+	dir := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	// Pre-create .codex/ (so configureTool's MkdirAll is a no-op — it won't
+	// need write access to the now-read-only parent) before locking dir down.
+	if err := os.MkdirAll(filepath.Join(dir, ".codex"), 0755); err != nil {
+		t.Fatalf("failed to pre-create .codex: %v", err)
+	}
+	if err := os.Chmod(dir, 0555); err != nil {
+		t.Fatalf("failed to chmod dir read-only: %v", err)
+	}
+	defer func() { _ = os.Chmod(dir, 0755) }() // restore before t.TempDir() cleanup runs
+
+	setupTool = "codex"
+	setupGlobal = false
+	setupPreset = "core"
+	setupNoIndex = false
+	setupNoWatch = false
+	setupNpx = true
+
+	err = runSetup(nil, nil)
+	if err == nil {
+		t.Fatal("expected runSetup to fail — .ckb/ cannot be created in a read-only directory")
+	}
+
+	data, readErr := os.ReadFile(filepath.Join(dir, ".codex", "config.toml"))
+	if readErr != nil {
+		t.Fatalf("MCP config should have been written before the failing init step, but: %v", readErr)
+	}
+	if !strings.Contains(string(data), "[mcp_servers.ckb]") {
+		t.Errorf("written config missing ckb table:\n%s", data)
+	}
+}
