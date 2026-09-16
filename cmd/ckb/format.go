@@ -1113,6 +1113,14 @@ var changesRiskFactorLabels = map[string]string{
 // denser, evidence-first view than formatChangeSetHuman, matching the
 // assessChange mock. Every inferred/heuristic item carries its label inline.
 // caps lists at 10 unless verbose is set.
+// countNoun renders "1 changed symbol" / "3 changed symbols".
+func countNoun(n int, singular, plural string) string {
+	if n == 1 {
+		return "1 " + singular
+	}
+	return fmt.Sprintf("%d %s", n, plural)
+}
+
 func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 	var b strings.Builder
 
@@ -1165,8 +1173,10 @@ func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 		downstream = resp.Summary.DirectlyAffected
 	}
 	modules = len(resp.ModulesAffected)
-	b.WriteString(fmt.Sprintf("%d changed symbols · %d downstream consumers · %d affected modules\n\n",
-		symbolsChanged, downstream, modules))
+	b.WriteString(fmt.Sprintf("%s · %s · %s\n\n",
+		countNoun(symbolsChanged, "changed symbol", "changed symbols"),
+		countNoun(downstream, "downstream consumer", "downstream consumers"),
+		countNoun(modules, "affected module", "affected modules")))
 
 	// Affected tests
 	if len(resp.AffectedTests) > 0 {

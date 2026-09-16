@@ -1622,7 +1622,7 @@ func (e *Engine) calculateAggregatedRisk(
 	symbolCountFactor := RiskFactor{
 		Name:     "symbols_changed",
 		Weight:   0.2,
-		Evidence: fmt.Sprintf("%d symbols changed", len(changedSymbols)),
+		Evidence: fmt.Sprintf("%d changed symbol(s)", len(changedSymbols)),
 	}
 	switch {
 	case len(changedSymbols) > 20:
