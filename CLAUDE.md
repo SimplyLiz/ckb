@@ -152,7 +152,7 @@ npx @tastehub/ckb setup
 
 ## MCP Integration
 
-CKB provides 111 code intelligence tools via MCP. Supports Claude Code, Cursor, Windsurf, VS Code, OpenCode, Grok, and Claude Desktop.
+CKB provides 111 code intelligence tools via MCP. Supports Claude Code, Cursor, Windsurf, VS Code, OpenCode, Grok, Claude Desktop, and Codex.
 
 ```bash
 # Auto-configure (interactive)

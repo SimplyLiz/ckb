@@ -74,7 +74,7 @@ ckb status
 
 | AI Assistants | CI/CD | Your Tools |
 |---------------|-------|------------|
-| Claude Code, Cursor, Windsurf, VS Code, Grok | GitHub Actions, GitLab CI | CLI, HTTP API, Scripts |
+| Claude Code, Cursor, Windsurf, VS Code, Grok, Codex | GitHub Actions, GitLab CI | CLI, HTTP API, Scripts |
 
 **83% token reduction** with smart presets—load only the tools you need.
 
@@ -174,7 +174,7 @@ Now Claude can answer questions like:
 
 | Interface | Best For |
 |-----------|----------|
-| **[MCP](https://github.com/SimplyLiz/CodeMCP/wiki/MCP-Integration)** | AI-assisted development — Claude, Cursor, Windsurf, VS Code, OpenCode, Grok |
+| **[MCP](https://github.com/SimplyLiz/CodeMCP/wiki/MCP-Integration)** | AI-assisted development — Claude, Cursor, Windsurf, VS Code, OpenCode, Grok, Codex |
 | **[CLI](https://github.com/SimplyLiz/CodeMCP/wiki/User-Guide)** | Quick lookups from terminal, scripting |
 | **[HTTP API](https://github.com/SimplyLiz/CodeMCP/wiki/API-Reference)** | IDE plugins, CI integration, custom tooling |
 
@@ -511,6 +511,26 @@ ckb setup --tool=claude-desktop
 ```
 
 The `CKB_REPO` environment variable tells CKB which repository to analyze. Claude Desktop can only work with one repository at a time.
+
+</details>
+
+<details>
+<summary><strong>Codex</strong></summary>
+
+Codex CLI reads MCP servers from `~/.codex/config.toml` only — there's no per-project config, so setup is always global.
+
+```bash
+npx @tastehub/ckb setup --tool=codex
+```
+
+Or manually add to `~/.codex/config.toml`:
+```toml
+[mcp_servers.ckb]
+command = "npx"
+args = ["-y", "@tastehub/ckb", "mcp", "--watch"]
+```
+
+`ckb setup` merges this table into your existing `config.toml` without touching anything else in the file.
 
 </details>
 

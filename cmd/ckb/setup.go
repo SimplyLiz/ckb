@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -15,10 +16,12 @@ import (
 )
 
 var (
-	setupGlobal bool
-	setupNpx    bool
-	setupTool   string
-	setupPreset string
+	setupGlobal  bool
+	setupNpx     bool
+	setupTool    string
+	setupPreset  string
+	setupNoIndex bool
+	setupNoWatch bool
 )
 
 // aiTool represents an AI coding tool that supports MCP
@@ -39,6 +42,10 @@ var aiTools = []aiTool{
 	{ID: "opencode", Name: "OpenCode", SupportsGlobal: true, SupportsProject: true, GlobalUsesCmd: false, Format: "mcp"},
 	{ID: "grok", Name: "Grok", SupportsGlobal: true, SupportsProject: true, GlobalUsesCmd: true, Format: "grokServers"},
 	{ID: "claude-desktop", Name: "Claude Desktop", SupportsGlobal: true, SupportsProject: false, GlobalUsesCmd: false, Format: "mcpServers"},
+	// Codex CLI reads MCP servers from ~/.codex/config.toml only — this repo has
+	// no evidence (no .codex/ references, no project-level config docs) of a
+	// project-scoped config location, so it's global-only like Windsurf/Claude Desktop.
+	{ID: "codex", Name: "Codex", SupportsGlobal: true, SupportsProject: false, GlobalUsesCmd: false, Format: "codexToml"},
 }
 
 var setupCmd = &cobra.Command{
@@ -46,22 +53,34 @@ var setupCmd = &cobra.Command{
 	Short: "Configure CKB for AI coding tools",
 	Long: `Sets up CKB as an MCP server for AI coding tools.
 
-Supports: Claude Code, Cursor, Windsurf, VS Code, OpenCode, Grok, Claude Desktop
+Supports: Claude Code, Cursor, Windsurf, VS Code, OpenCode, Grok, Claude Desktop, Codex
+
+For project-scope setups, this also makes sure the project itself is ready:
+it runs 'ckb init' if .ckb/ is missing and 'ckb index' if there's no usable
+index yet, so 'ckb setup' alone is enough to get full code intelligence —
+no separate init/index dance required. Use --no-index to skip that step.
+
+Generated MCP server configs include --watch by default, so the server
+keeps the index fresh during the session. Use --no-watch to opt out.
 
 Examples:
   ckb setup                    # Interactive setup
   ckb setup --tool=cursor      # Configure for Cursor
   ckb setup --tool=grok        # Configure for Grok
+  ckb setup --tool=codex       # Configure for Codex CLI
   ckb setup --tool=vscode --global  # Configure VS Code globally
-  ckb setup --npx              # Use npx for portable setup`,
+  ckb setup --npx              # Use npx for portable setup
+  ckb setup --no-index         # Skip auto-init/index for this project`,
 	RunE: runSetup,
 }
 
 func init() {
 	setupCmd.Flags().BoolVar(&setupGlobal, "global", false, "Configure globally for all projects")
 	setupCmd.Flags().BoolVar(&setupNpx, "npx", false, "Use npx @tastehub/ckb for portable setup")
-	setupCmd.Flags().StringVar(&setupTool, "tool", "", "AI tool to configure (claude-code, cursor, windsurf, vscode, opencode, grok, claude-desktop)")
+	setupCmd.Flags().StringVar(&setupTool, "tool", "", "AI tool to configure (claude-code, cursor, windsurf, vscode, opencode, grok, claude-desktop, codex)")
 	setupCmd.Flags().StringVar(&setupPreset, "preset", "", "Tool preset: core (default), review, refactor, federation, docs, ops, full")
+	setupCmd.Flags().BoolVar(&setupNoIndex, "no-index", false, "Skip auto-init/index for project-scope setups")
+	setupCmd.Flags().BoolVar(&setupNoWatch, "no-watch", false, "Don't add --watch to the generated MCP server command")
 	rootCmd.AddCommand(setupCmd)
 }
 
@@ -131,6 +150,12 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		ckbArgs = []string{"mcp"}
 	}
 
+	// Keep the index fresh for the life of the MCP session by default — a
+	// developer shouldn't have to know 'ckb index --watch' exists.
+	if !setupNoWatch {
+		ckbArgs = append(ckbArgs, "--watch")
+	}
+
 	// Select tool
 	var selectedTool *aiTool
 	if setupTool != "" {
@@ -142,7 +167,7 @@ func runSetup(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if selectedTool == nil {
-			return fmt.Errorf("unknown tool: %s. Valid options: claude-code, cursor, windsurf, vscode, opencode, grok, claude-desktop", setupTool)
+			return fmt.Errorf("unknown tool: %s. Valid options: claude-code, cursor, windsurf, vscode, opencode, grok, claude-desktop, codex", setupTool)
 		}
 	} else {
 		// Interactive tool selection
@@ -177,6 +202,15 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	if !global && !selectedTool.SupportsProject {
 		fmt.Printf("%s only supports global configuration. Configuring globally.\n\n", selectedTool.Name)
 		global = true
+	}
+
+	// Project-scope configs point an AI tool at *this* repo, so make sure the
+	// repo itself is usable first: init .ckb/ if missing, index if there's no
+	// usable index yet. Global configs aren't tied to a project, so skip.
+	if !global {
+		if err := ensureProjectReady(); err != nil {
+			return err
+		}
 	}
 
 	// Determine preset
@@ -223,6 +257,75 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	fmt.Println("  cargo install lip-cli && lip daemon --socket ~/.local/share/lip/lip.sock && lip index .")
 	fmt.Println("  https://lip-sigma.vercel.app  —  once running, CKB picks it up automatically.")
 
+	return nil
+}
+
+// ensureProjectReady makes project-scope 'ckb setup' self-sufficient: it runs
+// the same init logic as 'ckb init' if .ckb/ is missing, then the same index
+// logic as 'ckb index' if there's no usable index yet, so a developer never
+// has to know those commands exist. Neither step is allowed to fail setup:
+// - init failure is surfaced (a broken .ckb/ means the MCP server can't work)
+// - index failure/skip is only ever reported as a one-line note, because
+//   Git-based features (hotspots, ownership, diffs) work without SCIP.
+func ensureProjectReady() error {
+	if setupNoIndex {
+		// Still make sure .ckb/ exists even if indexing itself is skipped —
+		// the MCP server needs it to start at all.
+		return ensureCkbInitialized()
+	}
+
+	if err := ensureCkbInitialized(); err != nil {
+		return err
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	fmt.Println("Checking code index...")
+	result := performIndex(cwd)
+
+	switch result.Outcome {
+	case indexOutcomeIndexerMissing, indexOutcomeIndexerRequirementMissing:
+		fmt.Printf("Note: %s\n", result.Message)
+		fmt.Println("  Git-based features (hotspots, ownership, diffs) still work without it.")
+		fmt.Println("  Install the indexer above, then run 'ckb index' any time to enable full code intelligence.")
+	case indexOutcomeNoLanguageDetected:
+		fmt.Println("Note: could not detect a supported language — skipping code index.")
+		fmt.Println("  Git-based features (hotspots, ownership, diffs) still work.")
+	case indexOutcomeMultipleLanguages:
+		fmt.Println("Note: multiple languages detected — run 'ckb index --lang <lang>' to index manually.")
+	case indexOutcomeIndexingFailed, indexOutcomeError:
+		fmt.Printf("Note: indexing did not complete (%s) — continuing setup.\n", result.Message)
+		fmt.Println("  Git-based features (hotspots, ownership, diffs) still work. Run 'ckb index' to retry.")
+	case indexOutcomeIndexed, indexOutcomeUpToDate, indexOutcomeSkippedLargeRepo:
+		// Already printed its own detail above.
+	}
+	fmt.Println()
+
+	return nil
+}
+
+// ensureCkbInitialized runs the same logic as 'ckb init' if .ckb/ doesn't
+// exist yet in the current directory. It's idempotent — safe to call every
+// time 'ckb setup' runs.
+func ensureCkbInitialized() error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	ckbDir := filepath.Join(cwd, ".ckb")
+	if _, statErr := os.Stat(ckbDir); statErr == nil {
+		return nil // already initialized
+	}
+
+	fmt.Println("No .ckb/ directory found — initializing CKB for this project...")
+	if err := runInit(nil, nil); err != nil {
+		return fmt.Errorf("failed to initialize CKB: %w", err)
+	}
+	fmt.Println()
 	return nil
 }
 
@@ -456,6 +559,8 @@ func configureTool(tool *aiTool, global bool, ckbCommand string, ckbArgs []strin
 		err = writeOpenCodeConfig(configPath, ckbCommand, ckbArgs, setupNpx)
 	case "grokServers":
 		err = writeGrokConfig(configPath, ckbCommand, ckbArgs)
+	case "codexToml":
+		err = writeCodexConfig(configPath, ckbCommand, ckbArgs)
 	default:
 		err = fmt.Errorf("unknown format: %s", tool.Format)
 	}
@@ -537,6 +642,11 @@ func getConfigPath(toolID string, global bool) string {
 			return filepath.Join(os.Getenv("APPDATA"), "Claude", "claude_desktop_config.json")
 		}
 		return filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
+
+	case "codex":
+		// Codex CLI only reads ~/.codex/config.toml — no project-level config
+		// location is documented, so this is the same path regardless of scope.
+		return filepath.Join(home, ".codex", "config.toml")
 	}
 
 	return ""
@@ -620,12 +730,13 @@ func writeOpenCodeConfig(path, command string, args []string, useNpx bool) error
 		}
 	}
 
-	// Build command array for OpenCode format
-	var cmdArray []string
-	if useNpx {
-		cmdArray = []string{"npx", "-y", "@tastehub/ckb", "mcp"}
-	} else {
-		cmdArray = append([]string{command}, args...)
+	// Build command array for OpenCode format. command/args already fully
+	// describe the invocation (npx vs binary, plus --watch/--preset flags) —
+	// useNpx is kept only so callers can assert their intent; re-deriving the
+	// npx array here used to silently drop --watch/--preset for npx setups.
+	cmdArray := append([]string{command}, args...)
+	if useNpx && command != "npx" {
+		cmdArray = append([]string{"npx", "-y", "@tastehub/ckb"}, args...)
 	}
 
 	// Add or update CKB entry
@@ -684,6 +795,104 @@ func writeGrokConfig(path, command string, args []string) error {
 	}
 
 	return os.WriteFile(path, data, 0644) // #nosec G703 -- non-sensitive config file
+}
+
+// codexTableHeader is the TOML table Codex CLI reads CKB's MCP server config
+// from: ~/.codex/config.toml, [mcp_servers.ckb].
+const codexTableHeader = "[mcp_servers.ckb]"
+
+// writeCodexConfig upserts CKB's [mcp_servers.ckb] table into Codex's
+// ~/.codex/config.toml. Codex's config.toml is a file another tool owns and
+// may hand-edit (comments, other [mcp_servers.*] tables, unrelated top-level
+// settings) — CKB has no business reformatting any of that. So rather than
+// decode-then-fully-reencode the whole file through a TOML library (which
+// would normalize formatting and drop comments), this does a surgical
+// textual replace of just the CKB table, leaving everything else untouched
+// byte-for-byte.
+func writeCodexConfig(path, command string, args []string) error {
+	var existing string
+	if data, err := os.ReadFile(path); err == nil { // #nosec G703 -- path is internally constructed
+		existing = string(data)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read %s: %w", path, err)
+	}
+
+	updated := upsertCodexMCPServer(existing, command, args)
+
+	return os.WriteFile(path, []byte(updated), 0644) // #nosec G703 -- non-sensitive config file
+}
+
+// upsertCodexMCPServer replaces the [mcp_servers.ckb] table in content with
+// a freshly generated one, or appends it if not present. All other content
+// (other tables, comments, key order) is left untouched.
+func upsertCodexMCPServer(content, command string, args []string) string {
+	quotedArgs := make([]string, len(args))
+	for i, a := range args {
+		quotedArgs[i] = tomlQuoteString(a)
+	}
+
+	body := fmt.Sprintf("%s\ncommand = %s\nargs = [%s]\n",
+		codexTableHeader, tomlQuoteString(command), strings.Join(quotedArgs, ", "))
+
+	return upsertTOMLTable(content, codexTableHeader, body)
+}
+
+// tomlTableHeaderRe matches a TOML table header line, e.g. "[foo]" or
+// "[[foo.bar]]", possibly indented.
+var tomlTableHeaderRe = regexp.MustCompile(`^\s*\[`)
+
+// upsertTOMLTable replaces the table starting at the line matching `header`
+// (trimmed) with `body`, up to (but not including) the next table header
+// line or EOF. If `header` isn't found, `body` is appended to the end of the
+// file. It never touches lines outside that one table's block.
+func upsertTOMLTable(content, header, body string) string {
+	body = strings.TrimRight(body, "\n")
+
+	if strings.TrimSpace(content) == "" {
+		return body + "\n"
+	}
+
+	lines := strings.Split(content, "\n")
+	headerLine := -1
+	endLine := len(lines) // exclusive; defaults to EOF
+
+	for i, line := range lines {
+		if headerLine == -1 {
+			if strings.TrimSpace(line) == header {
+				headerLine = i
+			}
+			continue
+		}
+		// Looking for the next table header after ours to know where our
+		// block ends.
+		if tomlTableHeaderRe.MatchString(line) {
+			endLine = i
+			break
+		}
+	}
+
+	if headerLine == -1 {
+		// Not present — append after a blank-line separator.
+		trimmed := strings.TrimRight(content, "\n")
+		return trimmed + "\n\n" + body + "\n"
+	}
+
+	before := lines[:headerLine]
+	after := lines[endLine:]
+
+	result := make([]string, 0, len(before)+len(after)+3)
+	result = append(result, before...)
+	result = append(result, strings.Split(body, "\n")...)
+	result = append(result, after...)
+
+	return strings.Join(result, "\n")
+}
+
+// tomlQuoteString renders s as a TOML basic string. Go's quoting rules
+// (backslash/quote escaping) are a compatible subset of TOML's for the plain
+// ASCII command/arg values CKB ever writes here (binary paths, flags).
+func tomlQuoteString(s string) string {
+	return strconv.Quote(s)
 }
 
 func configureGrokGlobal(ckbCommand string, ckbArgs []string) (bool, error) {
