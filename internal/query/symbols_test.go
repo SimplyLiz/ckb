@@ -120,7 +120,7 @@ func TestRankSearchResults_CaseExactOutranksFold(t *testing.T) {
 }
 
 func TestIsTypeLikeKind(t *testing.T) {
-	typeLike := []string{"class", "interface", "struct", "type"}
+	typeLike := []string{"class", "interface", "struct", "type", "enum"}
 	for _, k := range typeLike {
 		if !isTypeLikeKind(k) {
 			t.Errorf("isTypeLikeKind(%q) = false, want true", k)
@@ -131,6 +131,33 @@ func TestIsTypeLikeKind(t *testing.T) {
 		if isTypeLikeKind(k) {
 			t.Errorf("isTypeLikeKind(%q) = true, want false", k)
 		}
+	}
+}
+
+// TestRankSearchResults_EnumOutranksPropertyOnCaseFold is a regression test
+// for a bug where isTypeLikeKind omitted "enum" — a real SCIP-emitted kind
+// (SCIP kind 3 / inferKindString case 3 in internal/query/fts.go) — so a
+// case-fold-only query like "STATUS" ranked an enum `Status` no higher than
+// a property `status`, contrary to the type-like tie-break policy exercised
+// by TestRankSearchResults_CaseExactOutranksFold.
+func TestRankSearchResults_EnumOutranksPropertyOnCaseFold(t *testing.T) {
+	results := []SearchResultItem{
+		{Name: "status", Kind: "property", Visibility: &VisibilityInfo{Visibility: "public"}},
+		{Name: "Status", Kind: "enum", Visibility: &VisibilityInfo{Visibility: "public"}},
+	}
+	rankSearchResults(results, "STATUS")
+
+	var enumScore, propertyScore float64
+	for _, r := range results {
+		switch r.Kind {
+		case "enum":
+			enumScore = r.Score
+		case "property":
+			propertyScore = r.Score
+		}
+	}
+	if enumScore <= propertyScore {
+		t.Errorf("enum (score=%v) did not outrank property (score=%v) for case-fold-only query %q", enumScore, propertyScore, "STATUS")
 	}
 }
 

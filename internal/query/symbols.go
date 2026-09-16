@@ -735,9 +735,18 @@ func parseScope(scope string) []string {
 // opposed to a member like a property/field/parameter). Used to break ties
 // between symbols whose names only match case-insensitively — e.g. a class
 // `Model` vs. a field `model` — in favor of the type.
+//
+// This covers every type-defining SymbolKind this codebase emits
+// (internal/backends/scip/types.go): class, interface, struct, type, and
+// enum (SCIP kind 3 / inferKindString case 3 — e.g. Go/TS/Java/Rust enums,
+// case-fold-matched by a query like "STATUS" against `enum Status`).
+// There is no separate trait/protocol/typealias SymbolKind in this
+// codebase — Rust traits and meta descriptors both resolve to KindType,
+// and Swift-style protocols aren't a distinct kind here — so nothing
+// further needs listing.
 func isTypeLikeKind(kind string) bool {
 	switch kind {
-	case "class", "interface", "struct", "type":
+	case "class", "interface", "struct", "type", "enum":
 		return true
 	default:
 		return false
