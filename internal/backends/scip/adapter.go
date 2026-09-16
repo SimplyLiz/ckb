@@ -370,17 +370,21 @@ func (s *SCIPAdapter) convertToReference(scipRef *SCIPReference) backends.Refere
 
 	// fromSymbol/fromSymbolName resolve the enclosing symbol (e.g. the
 	// caller function containing this reference). Some scip-go/scip-ts
-	// "enclosing symbols" are module/namespace-level (descriptor ends in
-	// just "/" with nothing after it, e.g. a bare file-scope symbol) and
-	// GetSimpleName legitimately has no short name to give back. Treat
-	// that the same as "no enclosing symbol resolved" rather than
-	// surfacing the raw, space-and-backtick-laden SCIP ID as a "name" —
-	// callers should omit the field, not display a wall of text.
+	// "enclosing symbols" are module/namespace-level (e.g. scip-typescript
+	// emits a whole-file SymbolInformation whose EnclosingRange covers the
+	// entire document, so a top-level reference with no enclosing
+	// function/type resolves its "container" to that file-scope symbol).
+	// GetSimpleName now always returns the last descriptor's name — even
+	// for a namespace descriptor, e.g. "handler.ts" — but that's a file
+	// path segment, not a meaningful enclosing symbol. Treat a
+	// namespace-kind resolution the same as "no enclosing symbol
+	// resolved" rather than surfacing a bare file name as if it were a
+	// caller.
 	fromSymbol := ""
 	fromSymbolName := ""
 	if scipRef.FromSymbol != "" {
 		if fromId, err := ParseSCIPIdentifier(scipRef.FromSymbol); err == nil {
-			if name := fromId.GetSimpleName(); name != "" {
+			if name := fromId.GetSimpleName(); name != "" && fromId.ExtractSymbolKind() != KindNamespace {
 				fromSymbol = scipRef.FromSymbol
 				fromSymbolName = name
 			}
