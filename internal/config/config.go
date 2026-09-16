@@ -68,6 +68,16 @@ type Config struct {
 
 	// v8.3 Compliance auditing
 	Compliance ComplianceConfig `json:"compliance" mapstructure:"compliance"`
+
+	// Activity ledger (MCP tool-call audit trail)
+	Activity ActivityConfig `json:"activity" mapstructure:"activity"`
+}
+
+// ActivityConfig controls the MCP activity ledger (tool_calls table).
+type ActivityConfig struct {
+	Enabled       bool `json:"enabled" mapstructure:"enabled"`
+	RetentionDays int  `json:"retentionDays" mapstructure:"retentionDays"`
+	StoreParams   bool `json:"storeParams" mapstructure:"storeParams"`
 }
 
 // ComplianceConfig configures compliance audit behavior (v8.3)
@@ -508,6 +518,11 @@ func DefaultConfig() *Config {
 				FileKeys:      []string{"code.filepath", "code.filename", "source.file"},
 				LineKeys:      []string{"code.lineno", "code.line_number"},
 			},
+		},
+		Activity: ActivityConfig{
+			Enabled:       true,
+			RetentionDays: 30,
+			StoreParams:   true,
 		},
 	}
 }

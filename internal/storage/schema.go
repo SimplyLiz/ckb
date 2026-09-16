@@ -17,7 +17,8 @@ import (
 // v9: FTS5 Symbol Search (symbols_fts_content, symbols_fts)
 // v10: Wide-Result Metrics (wide_result_metrics for MCP tool telemetry)
 // v11: Response Bytes (adds response_bytes column to wide_result_metrics)
-const currentSchemaVersion = 11
+// v12: Activity Ledger (tool_calls for per-invocation MCP tool audit trail)
+const currentSchemaVersion = 12
 
 // initializeSchema creates all tables for a new database
 func (db *DB) initializeSchema() error {
@@ -101,6 +102,11 @@ func (db *DB) initializeSchema() error {
 
 		// Create v10 Wide-Result Metrics table
 		if err := createWideResultMetricsTable(tx); err != nil {
+			return err
+		}
+
+		// Create v12 Activity Ledger table (v11 only adds a column, no table)
+		if err := createToolCallsTable(tx); err != nil {
 			return err
 		}
 
@@ -195,6 +201,12 @@ func (db *DB) runMigrations() error {
 	if version < 11 {
 		if err := db.migrateToV11(); err != nil {
 			return fmt.Errorf("failed to migrate to v11: %w", err)
+		}
+	}
+
+	if version < 12 {
+		if err := db.migrateToV12(); err != nil {
+			return fmt.Errorf("failed to migrate to v12: %w", err)
 		}
 	}
 
@@ -1498,4 +1510,68 @@ func (db *DB) migrateToV11() error {
 		db.logger.Info("Database migrated to v11")
 		return nil
 	})
+}
+
+// ============================================================================
+// v12 Schema: Activity Ledger
+// ============================================================================
+
+// migrateToV12 migrates the database from v11 to v12 (Activity Ledger)
+func (db *DB) migrateToV12() error {
+	return db.WithTx(func(tx *sql.Tx) error {
+		db.logger.Info("Migrating database to v12 (Activity Ledger)")
+
+		// Create tool_calls table
+		if err := createToolCallsTable(tx); err != nil {
+			return err
+		}
+
+		// Update schema version
+		if err := setSchemaVersion(tx, 12); err != nil {
+			return err
+		}
+
+		db.logger.Info("Database migrated to v12")
+		return nil
+	})
+}
+
+// createToolCallsTable creates the tool_calls table for the MCP activity ledger.
+// Records one row per MCP tool invocation: identity, timing, size, and
+// (optional) per-tool structured facts. See internal/activity for the writer.
+func createToolCallsTable(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS tool_calls (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts             INTEGER NOT NULL,           -- unix ms, call start
+			session_id     TEXT,
+			consumer       TEXT,
+			tool           TEXT NOT NULL,
+			params_hash    TEXT,
+			params         TEXT,                       -- canonical JSON, truncated (nullable)
+			target         TEXT,                       -- best-effort primary argument (nullable)
+			duration_ms    INTEGER,
+			response_bytes INTEGER,
+			truncated      INTEGER NOT NULL DEFAULT 0,  -- 0/1
+			error          TEXT,
+			facts          TEXT                        -- JSON object of string->int (nullable)
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create tool_calls table: %w", err)
+	}
+
+	indexes := []string{
+		"CREATE INDEX IF NOT EXISTS idx_tool_calls_ts ON tool_calls(ts)",
+		"CREATE INDEX IF NOT EXISTS idx_tool_calls_session_ts ON tool_calls(session_id, ts)",
+		"CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_ts ON tool_calls(tool, ts)",
+	}
+
+	for _, idx := range indexes {
+		if _, err := tx.Exec(idx); err != nil {
+			return fmt.Errorf("failed to create tool_calls index: %w", err)
+		}
+	}
+
+	return nil
 }

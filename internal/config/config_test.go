@@ -331,6 +331,20 @@ func TestTelemetryConfig(t *testing.T) {
 	}
 }
 
+func TestActivityConfig(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if !cfg.Activity.Enabled {
+		t.Error("Activity.Enabled should default to true")
+	}
+	if cfg.Activity.RetentionDays != 30 {
+		t.Errorf("Activity.RetentionDays = %d, want 30", cfg.Activity.RetentionDays)
+	}
+	if !cfg.Activity.StoreParams {
+		t.Error("Activity.StoreParams should default to true")
+	}
+}
+
 func TestModulesConfig(t *testing.T) {
 	cfg := DefaultConfig()
 
