@@ -323,6 +323,12 @@ func ensureProjectReady() error {
 // ensureCkbInitialized runs the same logic as 'ckb init' if .ckb/ doesn't
 // exist yet in the current directory. It's idempotent — safe to call every
 // time 'ckb setup' runs.
+//
+// Registers the repo in the global registry (same as 'ckb init'), but with
+// NoActivate: true — setting up one project's AI tool config must never
+// change *another* session's default/active repo out from under it. A
+// developer who wants this repo to become their default can still run
+// 'ckb init' or 'ckb repo use' explicitly.
 func ensureCkbInitialized() error {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -335,7 +341,7 @@ func ensureCkbInitialized() error {
 	}
 
 	fmt.Println("No .ckb/ directory found — initializing CKB for this project...")
-	if err := runInit(nil, nil); err != nil {
+	if err := runInitCore(initOptions{NoActivate: true}); err != nil {
 		return fmt.Errorf("failed to initialize CKB: %w", err)
 	}
 	fmt.Println()

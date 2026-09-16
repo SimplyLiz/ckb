@@ -33,7 +33,27 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 }
 
+// initOptions controls runInitCore's behavior, independent of the cobra
+// flags that drive the 'ckb init' CLI command. Callers other than the CLI
+// (like 'ckb setup', which runs the same init logic internally) build one
+// explicitly instead of mutating the package-level init* flag vars, so
+// there's no risk of one caller's intent leaking into another's.
+type initOptions struct {
+	// Force removes and recreates .ckb/ if it already exists.
+	Force bool
+	// Name is the repository name for the global registry; defaults to the
+	// current directory's base name when empty.
+	Name string
+	// NoActivate registers the repo (if not already registered) without
+	// changing the user's global default/active repository.
+	NoActivate bool
+}
+
 func runInit(cmd *cobra.Command, args []string) error {
+	return runInitCore(initOptions{Force: initForce, Name: initName, NoActivate: initNoActivate})
+}
+
+func runInitCore(opts initOptions) error {
 	logger := newLogger("human")
 
 	// Get current directory
@@ -45,7 +65,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// Check if .ckb already exists
 	ckbDir := filepath.Join(cwd, ".ckb")
 	if _, statErr := os.Stat(ckbDir); statErr == nil {
-		if !initForce {
+		if !opts.Force {
 			// Idempotent behavior: already initialized is success (CI-friendly)
 			fmt.Println("CKB already initialized.")
 			fmt.Printf("Configuration at: %s\n", filepath.Join(ckbDir, "config.json"))
@@ -82,7 +102,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	logger.Info("CKB initialized successfully", "config_path", configPath)
 
 	// Register in global registry
-	repoName := initName
+	repoName := opts.Name
 	if repoName == "" {
 		repoName = filepath.Base(cwd)
 	}
@@ -119,8 +139,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		// Set as active unless --no-activate
-		if !initNoActivate {
+		// Set as active unless the caller asked not to
+		if !opts.NoActivate {
 			if err := registry.SetDefault(repoName); err != nil {
 				logger.Warn("Failed to set as active repository", "error", err.Error())
 			}
@@ -130,7 +150,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("CKB initialized successfully!")
 	fmt.Printf("Configuration written to: %s\n", configPath)
 	fmt.Printf("Registered as: %s\n", repoName)
-	if !initNoActivate {
+	if !opts.NoActivate {
 		fmt.Printf("Active repository: %s\n", repoName)
 	}
 	fmt.Println("\nNext steps:")
