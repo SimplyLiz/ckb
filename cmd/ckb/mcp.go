@@ -310,11 +310,17 @@ func watchBackoff(base time.Duration, consecutiveFailures int) time.Duration {
 
 // runWatchLoop periodically checks index freshness and reindexes if stale —
 // including building an index for the first time when none exists yet
-// (e.g. 'ckb setup' wrote the MCP config but indexing was skipped,
-// interrupted, or the indexer wasn't installed at the time). It backs off
-// exponentially on repeated failures and disables itself entirely once the
-// indexer is confirmed missing or failures cross maxWatchFailures, logging
-// each transition exactly once rather than spamming every tick.
+// (e.g. 'ckb setup' wrote the MCP config but left indexing for watch mode,
+// which is now the non-blocking default). It backs off exponentially on
+// repeated failures and disables itself entirely once the indexer is
+// confirmed missing or failures cross maxWatchFailures, logging each
+// transition exactly once rather than spamming every tick.
+//
+// The first check runs immediately, before the ticker's first tick — with
+// setup no longer indexing in the foreground by default, a fresh project
+// has no SCIP index at all until watch mode notices, and waiting a full
+// poll interval (up to 5 minutes) to notice would be a regression from the
+// old blocking behavior, not an improvement on it.
 func runWatchLoop(repoRoot string, interval time.Duration, logger *slog.Logger) {
 	ckbDir := filepath.Join(repoRoot, ".ckb")
 	ticker := time.NewTicker(interval)
@@ -323,48 +329,57 @@ func runWatchLoop(repoRoot string, interval time.Duration, logger *slog.Logger) 
 	state := &watchState{}
 	permanentLogged := false
 
+	watchTick(repoRoot, ckbDir, interval, state, &permanentLogged, logger)
+
 	for range ticker.C {
-		if state.disabled {
-			continue
+		watchTick(repoRoot, ckbDir, interval, state, &permanentLogged, logger)
+	}
+}
+
+// watchTick runs one staleness-check-and-maybe-reindex cycle. Extracted out
+// of runWatchLoop so the same logic can run once immediately on start and
+// again on every ticker.C fire, without duplicating it.
+func watchTick(repoRoot, ckbDir string, interval time.Duration, state *watchState, permanentLogged *bool, logger *slog.Logger) {
+	if state.disabled {
+		return
+	}
+
+	stale, trigger, triggerInfo, reason := watchCheckStale(repoRoot, ckbDir)
+	if !stale {
+		return
+	}
+
+	if state.consecutiveFailures > 0 {
+		if wait := watchBackoff(interval, state.consecutiveFailures); time.Since(state.lastAttempt) < wait {
+			return
 		}
+	}
 
-		stale, trigger, triggerInfo, reason := watchCheckStale(repoRoot, ckbDir)
-		if !stale {
-			continue
+	state.lastAttempt = time.Now()
+	logger.Info("Index stale, triggering reindex", "trigger", string(trigger), "reason", reason)
+
+	err := triggerReindex(repoRoot, ckbDir, trigger, triggerInfo, logger)
+	switch {
+	case err == nil:
+		state.consecutiveFailures = 0
+
+	case errors.Is(err, errIndexerUnavailable), errors.Is(err, errRepoTooLarge):
+		if !*permanentLogged {
+			logger.Warn("Watch mode: disabling auto-reindex for this project",
+				"reason", err.Error(),
+				"hint", "install the indexer (or run 'ckb index --scip' for large repos), then run 'ckb index' or restart the MCP server",
+			)
+			*permanentLogged = true
 		}
+		state.disabled = true
 
-		if state.consecutiveFailures > 0 {
-			if wait := watchBackoff(interval, state.consecutiveFailures); time.Since(state.lastAttempt) < wait {
-				continue
-			}
-		}
-
-		state.lastAttempt = time.Now()
-		logger.Info("Index stale, triggering reindex", "trigger", string(trigger), "reason", reason)
-
-		err := triggerReindex(repoRoot, ckbDir, trigger, triggerInfo, logger)
-		switch {
-		case err == nil:
-			state.consecutiveFailures = 0
-
-		case errors.Is(err, errIndexerUnavailable), errors.Is(err, errRepoTooLarge):
-			if !permanentLogged {
-				logger.Warn("Watch mode: disabling auto-reindex for this project",
-					"reason", err.Error(),
-					"hint", "install the indexer (or run 'ckb index --scip' for large repos), then run 'ckb index' or restart the MCP server",
-				)
-				permanentLogged = true
-			}
+	default:
+		state.consecutiveFailures++
+		logger.Error("Reindex failed", "error", err.Error(), "consecutiveFailures", state.consecutiveFailures)
+		if state.consecutiveFailures >= maxWatchFailures {
+			logger.Warn("Watch mode: reindex failed repeatedly — disabling auto-reindex until the MCP server restarts",
+				"failures", state.consecutiveFailures)
 			state.disabled = true
-
-		default:
-			state.consecutiveFailures++
-			logger.Error("Reindex failed", "error", err.Error(), "consecutiveFailures", state.consecutiveFailures)
-			if state.consecutiveFailures >= maxWatchFailures {
-				logger.Warn("Watch mode: reindex failed repeatedly — disabling auto-reindex until the MCP server restarts",
-					"failures", state.consecutiveFailures)
-				state.disabled = true
-			}
 		}
 	}
 }

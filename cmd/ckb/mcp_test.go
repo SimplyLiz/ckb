@@ -261,3 +261,67 @@ func TestTriggerReindex_MissingOutputFile_ReturnsError(t *testing.T) {
 		t.Error("index.scip unexpectedly exists — fake indexer should not have created it")
 	}
 }
+
+// --- runWatchLoop: first check must not wait for the first tick ---
+
+// TestRunWatchLoop_FirstCheckRunsImmediately covers the P2 finding: with
+// setup no longer indexing in the foreground by default, a fresh project
+// has no SCIP index until watch mode notices — waiting a full poll interval
+// (up to 5 minutes) before the first check would leave the project without
+// code intelligence for that whole window even when its indexer is ready
+// and installed. The interval passed here (1 hour) proves any reindex we
+// observe can't be coming from ticker.C — only the pre-loop immediate check
+// could have produced it this fast.
+func TestRunWatchLoop_FirstCheckRunsImmediately(t *testing.T) {
+	// Manual temp dir (not t.TempDir()) — runWatchLoop's immediate check
+	// spawns a real indexer subprocess and opens a sqlite db for incremental
+	// tracking, and the goroutine outlives this test function's return
+	// (there's no cancellation for a watch loop, same as in production).
+	// t.TempDir()'s cleanup runs synchronously at test-end and can race that
+	// still-finishing background work; os.RemoveAll ignoring its error
+	// avoids failing the test over a cleanup timing race unrelated to what
+	// it's actually verifying.
+	dir, err := os.MkdirTemp("", "ckb-watchloop-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/x\n\ngo 1.21\n"), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+	ckbDir := filepath.Join(dir, ".ckb")
+	if err := os.MkdirAll(ckbDir, 0755); err != nil {
+		t.Fatalf("failed to create .ckb: %v", err)
+	}
+
+	writeFakeIndexer(t, "scip-go", `
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--output" ]; then
+    out="$arg"
+  fi
+  prev="$arg"
+done
+if [ -z "$out" ]; then
+  out="index.scip"
+fi
+mkdir -p "$(dirname "$out")"
+: > "$out"
+`)
+
+	logger := newLogger("human")
+	go runWatchLoop(dir, 1*time.Hour, logger)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if meta, _ := index.LoadMeta(ckbDir); meta != nil {
+			return // success — the immediate pre-loop check ran and indexed
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("runWatchLoop did not perform its first check immediately on start (no metadata after 3s, with a 1h poll interval)")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

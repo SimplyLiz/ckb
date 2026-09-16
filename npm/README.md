@@ -121,18 +121,24 @@ go build -o ckb ./cmd/ckb
 ### Setup
 
 ```bash
-# 1. Initialize in your project
 cd /path/to/your/project
-ckb init   # or: npx @tastehub/ckb init
 
-# 2. Generate SCIP index (optional but recommended)
-ckb index  # auto-detects language and runs appropriate indexer
+# One command: initializes CKB and connects it to Claude Code
+ckb setup   # or: npx @tastehub/ckb setup
 
-# 3. Connect to Claude Code (or Cursor, Windsurf, VS Code, ...)
-ckb setup  # creates .mcp.json automatically
+# Or manually:
+claude mcp add --transport stdio ckb -- npx @tastehub/ckb mcp
 ```
 
-**Claude Code without installing ckb:** the plugin replaces step 3, once, for every repo,
+`ckb setup` runs `ckb init` for you if needed, then writes the MCP config.
+Building the SCIP index is non-blocking by default: the generated config
+runs with `--watch`, so the index builds itself in the background the
+moment your AI tool starts the server — setup doesn't sit there running an
+indexer that can take anywhere from seconds to tens of minutes on a big
+repo. Want it ready before setup exits? `ckb setup --index-now`. Prefer to
+build it yourself whenever you like? `ckb index`.
+
+**Claude Code without installing ckb:** the plugin replaces `ckb setup`, once, for every repo,
 and brings `/ckb:review` and `/ckb:audit` with it:
 
 ```bash
@@ -140,7 +146,7 @@ claude plugin marketplace add SimplyLiz/ckb
 claude plugin install ckb@lisa
 ```
 
-Steps 1–2 still run per repo (`npx @tastehub/ckb init && npx @tastehub/ckb index`); without
+Each repo still needs `npx @tastehub/ckb init && npx @tastehub/ckb index`; without
 an index CKB falls back to git history and LSP. Pick one of `ckb setup` and the plugin, not
 both — otherwise the server starts twice.
 
