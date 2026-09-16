@@ -64,13 +64,6 @@
       "name": "service"
     },
     {
-      "file": "pkg/handler.go",
-      "kind": "function",
-      "line": 18,
-      "moduleId": "pkg",
-      "name": "Handle"
-    },
-    {
       "file": "pkg/service.go",
       "kind": "function",
       "line": 46,
@@ -92,39 +85,46 @@
       "name": "NewHandler"
     },
     {
-      "file": "pkg/service.go",
-      "kind": "function",
-      "line": 26,
-      "moduleId": "pkg",
-      "name": "Process"
-    },
-    {
-      "file": "pkg/service.go",
-      "kind": "function",
-      "line": 26,
-      "moduleId": "pkg",
-      "name": "Process"
-    },
-    {
-      "file": "pkg/service.go",
-      "kind": "function",
-      "line": 32,
-      "moduleId": "pkg",
-      "name": "Validate"
-    },
-    {
-      "file": "pkg/service.go",
-      "kind": "function",
-      "line": 32,
-      "moduleId": "pkg",
-      "name": "Validate"
-    },
-    {
       "file": "main.go",
       "kind": "function",
       "line": 12,
       "moduleId": ".",
       "name": "main"
+    },
+    {
+      "file": "pkg/handler.go",
+      "kind": "method",
+      "line": 18,
+      "moduleId": "pkg",
+      "name": "Handle"
+    },
+    {
+      "file": "pkg/service.go",
+      "kind": "method",
+      "line": 26,
+      "moduleId": "pkg",
+      "name": "Process"
+    },
+    {
+      "file": "pkg/service.go",
+      "kind": "method",
+      "line": 26,
+      "moduleId": "pkg",
+      "name": "Process"
+    },
+    {
+      "file": "pkg/service.go",
+      "kind": "method",
+      "line": 32,
+      "moduleId": "pkg",
+      "name": "Validate"
+    },
+    {
+      "file": "pkg/service.go",
+      "kind": "method",
+      "line": 32,
+      "moduleId": "pkg",
+      "name": "Validate"
     }
   ],
   "total": 18

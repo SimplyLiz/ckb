@@ -64,3 +64,50 @@ func TestInferVisibility_GoUnexportedMethod(t *testing.T) {
 		t.Errorf("inferVisibility(%q) = %q, want %q", name, got, "private")
 	}
 }
+
+// TestExtractSymbolKind_MethodVsFunction is a regression test for a bug
+// where ckb impact prepare reported "kind": "function" for a Go method
+// (Engine#buildProvenance) instead of "method". This fallback path is
+// exercised whenever the SCIP index doesn't reliably set the numeric Kind
+// field on SymbolInformation — scip-go frequently doesn't (see the
+// "doesn't populate Kind" comments elsewhere in this package, e.g.
+// callgraph.go's isFunctionSymbol) — so ExtractSymbolKind's descriptor
+// heuristic is the actual live path for a lot of real Go symbols, not
+// just an edge-case fallback.
+//
+// ExtractSymbolKind checked for '(' before '#', and returned as soon as
+// it saw '(' — so a method descriptor like `pkg`/Engine#buildProvenance().
+// (which contains both) was classified as a bare function; the '#' check
+// a few lines down was unreachable for any symbol with parens at all.
+func TestExtractSymbolKind_MethodVsFunction(t *testing.T) {
+	tests := []struct {
+		name       string
+		descriptor string
+		want       SymbolKind
+	}{
+		{
+			name:       "method on receiver type",
+			descriptor: "`github.com/SimplyLiz/CodeMCP/internal/query`/Engine#buildProvenance().",
+			want:       KindMethod,
+		},
+		{
+			name:       "package-level function (no receiver)",
+			descriptor: "`github.com/SimplyLiz/CodeMCP/internal/api`/NewServer().",
+			want:       KindFunction,
+		},
+		{
+			name:       "bare type (no parens)",
+			descriptor: "`github.com/SimplyLiz/CodeMCP/internal/api`/Server#",
+			want:       KindClass,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := &SCIPIdentifier{Scheme: "scip-go", Descriptor: tt.descriptor}
+			if got := id.ExtractSymbolKind(); got != tt.want {
+				t.Errorf("ExtractSymbolKind() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

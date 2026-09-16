@@ -179,13 +179,25 @@ func (s *SCIPIdentifier) ExtractSymbolKind() SymbolKind {
 		return KindUnknown
 	}
 
+	hasParens := strings.Contains(descriptor, "(")
+	hasReceiver := strings.Contains(descriptor, "#")
+
+	// A descriptor with both '#' and '(' is a method on a receiver type,
+	// e.g. `pkg`/Engine#buildProvenance(). — check this combination
+	// before the parens-only branch below, otherwise every method gets
+	// classified as a bare function (the '#' check never runs, since
+	// the '(' check unconditionally returns first).
+	if hasParens && hasReceiver {
+		return KindMethod
+	}
+
 	// Check for function/method (contains '(')
-	if strings.Contains(descriptor, "(") {
+	if hasParens {
 		return KindFunction
 	}
 
 	// Check for type/class (contains '#')
-	if strings.Contains(descriptor, "#") {
+	if hasReceiver {
 		return KindClass
 	}
 

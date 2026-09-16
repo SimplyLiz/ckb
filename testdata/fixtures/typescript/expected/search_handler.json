@@ -24,41 +24,6 @@
     {
       "file": "src/pkg/handler.ts",
       "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Handler#`\u003cconstructor\u003e`"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Handler#`\u003cconstructor\u003e`().(service)"
-    },
-    {
-      "file": "src/pkg/server.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Server#`\u003cconstructor\u003e`"
-    },
-    {
-      "file": "src/pkg/server.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Server#`\u003cconstructor\u003e`().(handler)"
-    },
-    {
-      "file": "src/pkg/server.ts",
-      "kind": "function",
-      "line": 21,
-      "moduleId": "src/pkg",
-      "name": "getHandler"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "function",
       "line": 53,
       "moduleId": "src/pkg",
       "name": "handler"
@@ -104,6 +69,41 @@
       "line": 0,
       "moduleId": "src/pkg",
       "name": "newServer().(handler)"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "method",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "Handler#`\u003cconstructor\u003e`"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "method",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "Handler#`\u003cconstructor\u003e`().(service)"
+    },
+    {
+      "file": "src/pkg/server.ts",
+      "kind": "method",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "Server#`\u003cconstructor\u003e`"
+    },
+    {
+      "file": "src/pkg/server.ts",
+      "kind": "method",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "Server#`\u003cconstructor\u003e`().(handler)"
+    },
+    {
+      "file": "src/pkg/server.ts",
+      "kind": "method",
+      "line": 21,
+      "moduleId": "src/pkg",
+      "name": "getHandler"
     }
   ],
   "total": 15

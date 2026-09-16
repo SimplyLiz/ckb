@@ -31,34 +31,34 @@
     {
       "file": "pkg/model.go",
       "kind": "function",
-      "line": 49,
-      "moduleId": "pkg",
-      "name": "Clone"
-    },
-    {
-      "file": "pkg/model.go",
-      "kind": "function",
       "line": 27,
       "moduleId": "pkg",
       "name": "NewModel"
     },
     {
+      "file": "pkg/model.go",
+      "kind": "method",
+      "line": 49,
+      "moduleId": "pkg",
+      "name": "Clone"
+    },
+    {
       "file": "pkg/service.go",
-      "kind": "function",
+      "kind": "method",
       "line": 26,
       "moduleId": "pkg",
       "name": "Process"
     },
     {
       "file": "pkg/model.go",
-      "kind": "function",
+      "kind": "method",
       "line": 44,
       "moduleId": "pkg",
       "name": "SetConfig"
     },
     {
       "file": "pkg/model.go",
-      "kind": "function",
+      "kind": "method",
       "line": 35,
       "moduleId": "pkg",
       "name": "Transform"

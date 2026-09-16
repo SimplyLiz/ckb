@@ -38,41 +38,6 @@
     {
       "file": "src/pkg/service.ts",
       "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "DefaultService#`\u003cconstructor\u003e`"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "DefaultService#`\u003cconstructor\u003e`().(model)"
-    },
-    {
-      "file": "src/pkg/model.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Model#`\u003cconstructor\u003e`"
-    },
-    {
-      "file": "src/pkg/model.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Model#`\u003cconstructor\u003e`().(name)"
-    },
-    {
-      "file": "src/pkg/model.ts",
-      "kind": "function",
-      "line": 44,
-      "moduleId": "src/pkg",
-      "name": "clone"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
       "line": 53,
       "moduleId": "src/pkg",
       "name": "newDefaultService"
@@ -99,15 +64,50 @@
       "name": "newModel().(name)"
     },
     {
+      "file": "src/pkg/service.ts",
+      "kind": "method",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "DefaultService#`\u003cconstructor\u003e`"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "method",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "DefaultService#`\u003cconstructor\u003e`().(model)"
+    },
+    {
       "file": "src/pkg/model.ts",
-      "kind": "function",
+      "kind": "method",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "Model#`\u003cconstructor\u003e`"
+    },
+    {
+      "file": "src/pkg/model.ts",
+      "kind": "method",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "Model#`\u003cconstructor\u003e`().(name)"
+    },
+    {
+      "file": "src/pkg/model.ts",
+      "kind": "method",
+      "line": 44,
+      "moduleId": "src/pkg",
+      "name": "clone"
+    },
+    {
+      "file": "src/pkg/model.ts",
+      "kind": "method",
       "line": 54,
       "moduleId": "src/pkg",
       "name": "setConfig"
     },
     {
       "file": "src/pkg/model.ts",
-      "kind": "function",
+      "kind": "method",
       "line": 62,
       "moduleId": "src/pkg",
       "name": "transform"
