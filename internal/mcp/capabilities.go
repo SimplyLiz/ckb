@@ -49,31 +49,50 @@ var instructionToolNames = []string{
 	"searchSymbols",
 	"findReferences",
 	"expandToolset",
+	"getStatus",
 	"reviewPR",
 }
 
+// instructionsCore is the "consumer contract v0" critical path: when to
+// reach for CKB and the expandToolset rule. MCP clients such as Codex
+// truncate the initialize "instructions" field at 512 characters
+// (https://learn.chatgpt.com/ko-KR/docs/extend/mcp), so this block is sized
+// to land inside that budget on its own — see
+// TestInstructionsCoreFitsIn512Bytes. Everything after it in
+// instructionsText is optional detail that may be cut.
+//
+// Every tool named here (prepareChange, explore, understand, searchSymbols,
+// findReferences, expandToolset) is present in *every* preset, including
+// the default "core" one — see coreToolOrder in presets.go — so this text
+// needs no preset branching to stay accurate.
+const instructionsCore = `CKB is code intelligence for this repo: symbol index, parsers, git history ` +
+	`(not just grep). Before editing code, call prepareChange for callers, tests, ` +
+	`and risk. New to the code, call explore or understand to get oriented. To find ` +
+	`a symbol, call searchSymbols, then findReferences with its symbolId for usages. ` +
+	`Need a tool outside your current preset: call expandToolset once per session ` +
+	`with a preset and reason -- it replaces your active preset, so pick "full" if ` +
+	`a task spans areas (e.g. review + refactor).`
+
 // instructionsText builds the InitializeResult.Instructions string.
 //
-// It only names tools guaranteed to exist in the "core" preset (the default
-// for new sessions — see DefaultPreset in presets.go), plus expandToolset
-// (always present in every preset) and reviewPR (review preset only, so it
-// is framed as something you reach via expandToolset unless the active
-// preset already has it). This keeps the text correct regardless of which
-// preset a session actually starts in, without needing to special-case every
-// preset's tool list.
+// instructionsCore always comes first (see its doc comment for why). The
+// rest names only tools that, like the core block, are present in every
+// preset (analyzeImpact, getStatus) — except the reviewPR line, which is the
+// one part of this text that is genuinely preset-dependent: reviewPR only
+// ships in the "review" and "full" presets, so sessions on any other preset
+// are told to expandToolset for it instead of being told to just call it.
 func instructionsText(preset string) string {
-	reviewLine := "Reviewing a diff or PR: call expandToolset(\"review\") to get reviewPR, CKB's unified quality gate (breaking changes, secrets, dead code, test gaps, risk)."
+	reviewLine := `Reviewing a PR: call expandToolset with preset "review" and a reason to get reviewPR, the unified quality gate.`
 	if presetHasTool(preset, "reviewPR") {
-		reviewLine = "Reviewing a diff or PR: call reviewPR for CKB's unified quality gate (breaking changes, secrets, dead code, test gaps, risk)."
+		reviewLine = `Reviewing a PR: call reviewPR, the unified quality gate (breaking changes, secrets, dead code, test gaps, risk).`
 	}
 
 	return fmt.Sprintf(
-		"CKB is a read-only code-intelligence layer over this repo. Answers come from the symbol index, language servers and git history, not from text matching — prefer them over assuming.\n\n"+
-			"Before editing, refactoring, or deleting code: call prepareChange or analyzeImpact first to see what breaks, who calls it, and which tests cover it.\n\n"+
-			"Before working in unfamiliar code or modules: call explore or understand to get oriented instead of reading files cold.\n\n"+
-			"To locate a symbol or its usages: call searchSymbols or findReferences — prefer these over grep for semantic questions (they return resolved call sites, not text matches).\n\n"+
-			"%s\n\n"+
-			"If a task needs a capability outside your current toolset (PR review, refactoring analysis, docs, ops, federation): call expandToolset once per session with the smallest preset that covers it.",
+		instructionsCore+
+			"\n\nFor just callers and impact (no test/risk detail), call analyzeImpact instead."+
+			"\n\n%s"+
+			"\n\nResults come from the index, parsers, and git history; searchSymbols searches text first. "+
+			"Check getStatus if the index looks stale or missing. CKB never edits your source files.",
 		reviewLine,
 	)
 }
