@@ -1,0 +1,8 @@
+{"type":"assistant","sessionId":"sess-malformed-0001","cwd":"/tmp/fixture-repo","timestamp":"2026-09-16T11:00:00.000Z","uuid":"a-1","message":{"id":"msg_a","role":"assistant","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":5},"content":[{"type":"text","text":"ok"}]}}
+this is not json at all
+{"type":"assistant","sessionId":"sess-malformed-0001","cwd":"/tmp/fixture-repo","timestamp":"2026-09-16T11:00:05.000Z","uuid":"a-2","message":{"id":"msg_b","role":"assistant","usage":{"input_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":8},"content":[{"type":"tool_use","id":"tool_a","name":"Read","input":{"file_path":"/tmp/fixture-repo/a.go"}}]}}
+{"type":"assistant","truncated-mid-object
+{"type":"assistant","sessionId":"sess-malformed-0001","cwd":"/tmp/fixture-repo","timestamp":"2026-09-16T11:00:10.000Z","uuid":"a-3","message":null}
+
+{"type":"unknown-future-type","sessionId":"sess-malformed-0001","someField":123}
+{"type":"assistant","sessionId":"sess-malformed-0001","cwd":"/tmp/fixture-repo","timestamp":"2026-09-16T11:00:15.000Z","uuid":"a-4","message":{"id":"msg_c","role":"assistant","usage":{"input_tokens":30,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":12},"content":[{"type":"tool_use","id":"tool_b","name":"Glob","input":{"pattern":"**/*.go"}}]}}
