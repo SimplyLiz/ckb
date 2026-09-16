@@ -97,8 +97,10 @@ func (e *Engine) SummarizePR(ctx context.Context, opts SummarizePROptions) (*Sum
 		return nil, fmt.Errorf("git adapter not available")
 	}
 
-	// Get diff stats between branches
-	// If no head branch specified, compare against working tree
+	// Get diff stats between branches.
+	// If no head branch specified, defaults to HEAD -- this compares
+	// baseRef..HEAD (via GetCommitRangeDiff below), not the working tree.
+	// For working-tree/staged diffs, use AnalyzeChangeSet instead.
 	headRef := opts.HeadBranch
 	if headRef == "" {
 		headRef = "HEAD"
@@ -288,6 +290,14 @@ func (e *Engine) getHotspotScoreMap(ctx context.Context) map[string]float64 {
 }
 
 // getSuggestedReviewers identifies potential reviewers based on ownership.
+// isUncommittedPseudoAuthor reports whether an ownership ID is git's
+// placeholder for lines that are not committed yet ("Not Committed Yet" /
+// not.committed.yet), which blame emits for working-tree edits.
+func isUncommittedPseudoAuthor(id string) bool {
+	s := strings.ToLower(strings.TrimSpace(id))
+	return s == "not.committed.yet" || strings.Contains(s, "not committed yet")
+}
+
 func (e *Engine) getSuggestedReviewers(ctx context.Context, files []PRFileChange) []SuggestedReview {
 	type ownerStats struct {
 		fileCount int
@@ -312,6 +322,11 @@ func (e *Engine) getSuggestedReviewers(ctx context.Context, files []PRFileChange
 
 		dir := filepath.Dir(f.Path)
 		for _, owner := range resp.Owners {
+			// git blame reports uncommitted lines under a pseudo-author;
+			// it is not a person and must never be suggested as a reviewer.
+			if isUncommittedPseudoAuthor(owner.ID) {
+				continue
+			}
 			stats, ok := ownerMap[owner.ID]
 			if !ok {
 				stats = &ownerStats{dirs: make(map[string]int)}

@@ -99,13 +99,14 @@ Examples:
 
 var impactDiffCmd = &cobra.Command{
 	Use:   "diff",
-	Short: "Analyze impact of code changes",
+	Short: "Analyze impact of code changes (alias of 'ckb changes')",
 	Long: `Analyze the impact of a set of code changes from git diff.
+This is an alias of 'ckb changes' -- prefer that name going forward.
 
 Answers three key questions:
   1. What downstream code might break?
   2. Which tests should I run?
-  3. Who needs to review this?
+  3. Who needs to review this? (see "Likely reviewers" in the human output)
 
 Examples:
   ckb impact diff                    # Analyze current working tree changes
@@ -345,9 +346,10 @@ type RiskScoreCLI struct {
 
 // RiskFactorCLI describes a risk factor
 type RiskFactorCLI struct {
-	Name   string  `json:"name"`
-	Value  float64 `json:"value"`
-	Weight float64 `json:"weight"`
+	Name     string  `json:"name"`
+	Value    float64 `json:"value"`
+	Weight   float64 `json:"weight"`
+	Evidence string  `json:"evidence,omitempty"`
 }
 
 // ImpactItemCLI represents an affected symbol
@@ -540,6 +542,52 @@ type ChangeSetResponseCLI struct {
 	Recommendations []RecommendationCLI `json:"recommendations,omitempty"`
 	IndexStaleness  *IndexStalenessCLI  `json:"indexStaleness,omitempty"`
 	Provenance      *ProvenanceCLI      `json:"provenance,omitempty"`
+
+	Change        *ChangeInfoCLI       `json:"change,omitempty"`
+	AffectedTests []AffectedTestCLI    `json:"affectedTests,omitempty"`
+	TestGaps      *TestGapsCLI         `json:"testGaps,omitempty"`
+	Contracts     []ContractSignalCLI  `json:"contracts,omitempty"`
+	Decisions     []RelatedDecisionCLI `json:"decisions,omitempty"`
+	Reviewers     []SuggestedReviewCLI `json:"reviewers,omitempty"`
+	Confidence    *ChangeConfidenceCLI `json:"confidence,omitempty"`
+}
+
+// ChangeInfoCLI describes the diff that was analyzed.
+type ChangeInfoCLI struct {
+	Branch       string `json:"branch,omitempty"`
+	Base         string `json:"base,omitempty"`
+	Mode         string `json:"mode"`
+	FilesChanged int    `json:"filesChanged"`
+}
+
+// TestGapsCLI summarizes untested downstream consumers.
+type TestGapsCLI struct {
+	UntestedConsumers int      `json:"untestedConsumers"`
+	Examples          []string `json:"examples,omitempty"`
+}
+
+// ContractSignalCLI flags a possible contract change (heuristic).
+type ContractSignalCLI struct {
+	Symbol string `json:"symbol"`
+	File   string `json:"file"`
+	Kind   string `json:"kind"`
+	Basis  string `json:"basis"`
+}
+
+// RelatedDecisionCLI is a lightweight ADR reference.
+type RelatedDecisionCLI struct {
+	ID              string   `json:"id"`
+	Title           string   `json:"title"`
+	Status          string   `json:"status"`
+	AffectedModules []string `json:"affectedModules,omitempty"`
+	FilePath        string   `json:"filePath,omitempty"`
+}
+
+// ChangeConfidenceCLI summarizes result quality for a change set.
+type ChangeConfidenceCLI struct {
+	Score   float64  `json:"score"`
+	Tier    string   `json:"tier"`
+	Reasons []string `json:"reasons,omitempty"`
 }
 
 // ChangeSummaryCLI provides a high-level overview of changes
@@ -575,6 +623,7 @@ type RecommendationCLI struct {
 	Severity string `json:"severity"`
 	Message  string `json:"message"`
 	Action   string `json:"action,omitempty"`
+	Source   string `json:"source,omitempty"`
 }
 
 // IndexStalenessCLI provides index freshness information
@@ -641,6 +690,7 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 			Severity: rec.Severity,
 			Message:  rec.Message,
 			Action:   rec.Action,
+			Source:   rec.Source,
 		})
 	}
 
@@ -677,9 +727,10 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 		factors := make([]RiskFactorCLI, 0, len(resp.RiskScore.Factors))
 		for _, f := range resp.RiskScore.Factors {
 			factors = append(factors, RiskFactorCLI{
-				Name:   f.Name,
-				Value:  f.Value,
-				Weight: f.Weight,
+				Name:     f.Name,
+				Value:    f.Value,
+				Weight:   f.Weight,
+				Evidence: f.Evidence,
 			})
 		}
 		result.RiskScore = &RiskScoreCLI{
@@ -707,6 +758,86 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 			RepoStateId:     resp.Provenance.RepoStateId,
 			RepoStateDirty:  resp.Provenance.RepoStateDirty,
 			QueryDurationMs: resp.Provenance.QueryDurationMs,
+		}
+	}
+
+	// Convert change info
+	if resp.Change != nil {
+		result.Change = &ChangeInfoCLI{
+			Branch:       resp.Change.Branch,
+			Base:         resp.Change.Base,
+			Mode:         resp.Change.Mode,
+			FilesChanged: resp.Change.FilesChanged,
+		}
+	}
+
+	// Convert affected tests
+	if len(resp.AffectedTests) > 0 {
+		result.AffectedTests = make([]AffectedTestCLI, 0, len(resp.AffectedTests))
+		for _, t := range resp.AffectedTests {
+			result.AffectedTests = append(result.AffectedTests, AffectedTestCLI{
+				FilePath:   t.FilePath,
+				Reason:     t.Reason,
+				AffectedBy: t.AffectedBy,
+				Confidence: t.Confidence,
+			})
+		}
+	}
+
+	// Convert test gaps
+	if resp.TestGaps != nil {
+		result.TestGaps = &TestGapsCLI{
+			UntestedConsumers: resp.TestGaps.UntestedConsumers,
+			Examples:          resp.TestGaps.Examples,
+		}
+	}
+
+	// Convert contracts
+	if len(resp.Contracts) > 0 {
+		result.Contracts = make([]ContractSignalCLI, 0, len(resp.Contracts))
+		for _, c := range resp.Contracts {
+			result.Contracts = append(result.Contracts, ContractSignalCLI{
+				Symbol: c.Symbol,
+				File:   c.File,
+				Kind:   c.Kind,
+				Basis:  c.Basis,
+			})
+		}
+	}
+
+	// Convert decisions
+	if len(resp.Decisions) > 0 {
+		result.Decisions = make([]RelatedDecisionCLI, 0, len(resp.Decisions))
+		for _, d := range resp.Decisions {
+			result.Decisions = append(result.Decisions, RelatedDecisionCLI{
+				ID:              d.ID,
+				Title:           d.Title,
+				Status:          d.Status,
+				AffectedModules: d.AffectedModules,
+				FilePath:        d.FilePath,
+			})
+		}
+	}
+
+	// Convert reviewers
+	if len(resp.Reviewers) > 0 {
+		result.Reviewers = make([]SuggestedReviewCLI, 0, len(resp.Reviewers))
+		for _, r := range resp.Reviewers {
+			result.Reviewers = append(result.Reviewers, SuggestedReviewCLI{
+				Owner:      r.Owner,
+				Reason:     r.Reason,
+				Coverage:   r.Coverage,
+				Confidence: r.Confidence,
+			})
+		}
+	}
+
+	// Convert confidence
+	if resp.Confidence != nil {
+		result.Confidence = &ChangeConfidenceCLI{
+			Score:   resp.Confidence.Score,
+			Tier:    resp.Confidence.Tier,
+			Reasons: resp.Confidence.Reasons,
 		}
 	}
 

@@ -26,38 +26,32 @@ on:
           - medium
           - low
 
-# ============================================================================
-# Security Scan Configuration
-# Set to false to disable specific scanners
-# ============================================================================
-env:
-  # Secret Detection
-  SCAN_CKB_SECRETS: 'true'
-  SCAN_GITLEAKS: 'false'
-  SCAN_TRUFFLEHOG: 'true'
-
-  # SAST (language-specific run automatically based on detection)
-  SCAN_GOSEC: 'true'
-  SCAN_BANDIT: 'true'
-  SCAN_SEMGREP: 'true'
-
-  # Dependency Scanning
-  SCAN_TRIVY: 'true'
-  SCAN_GOVULNCHECK: 'true'
-  SCAN_OSV: 'true'
-
-  # Minimum severity
-  MIN_SEVERITY: 'high'
+# Which scanners run, and at what severity, is configured per job in the `with:`
+# blocks below — a caller's workflow-level `env` does not reach a reusable
+# workflow, so there is no env-var switchboard for it here.
 
 concurrency:
   group: security-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
-# Permissions inherited by reusable workflows
+# Permissions inherited by reusable workflows.
+#
+# This block must be a superset of every job-level `permissions:` in the
+# security-*.yml workflows called below. A nested job cannot request more than
+# the caller grants, and anything omitted here is `none`, not "unset" — so a
+# single missing scope rejects the *whole run* at startup: no jobs, no log,
+# `gh run list` shows only `startup_failure`, and the reason exists solely as an
+# annotation on the run page. Every run in the 90-day retention window failed
+# that way, in 0s, without anyone noticing.
+#
+# id-token + attestations: security-dependencies.yml `deps` runs
+# actions/attest-sbom. The nested jobs each narrow this down again themselves.
 permissions:
   contents: read
   security-events: write
   pull-requests: write
+  id-token: write
+  attestations: write
 
 jobs:
   # ============================================================================

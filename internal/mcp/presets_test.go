@@ -43,8 +43,9 @@ func TestPresetFiltering(t *testing.T) {
 	}
 	fullTools := server.GetFilteredTools()
 	// v8.5: +3 Cartographer (shotgunSurgery, evolution, blastRadius) +3 LIP annotation tools = 107; +1 symbolExists = 108; +1 (full includes the expanded presets) = 109; +1 analyzeOutgoingImpact = 110
-	if len(fullTools) != 110 {
-		t.Errorf("expected 110 full tools, got %d", len(fullTools))
+	// v9.4: +1 assessChange (analyzeChange kept as a deprecated alias) = 111
+	if len(fullTools) != 111 {
+		t.Errorf("expected 111 full tools, got %d", len(fullTools))
 	}
 
 	// Full preset should still have core tools first

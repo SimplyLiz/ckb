@@ -5,6 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/@tastehub/ckb.svg)](https://www.npmjs.com/package/@tastehub/ckb)
 [![Website](https://img.shields.io/badge/website-codeknowledge.dev-teal.svg)](https://codeknowledge.dev)
 [![Documentation](https://img.shields.io/badge/docs-codeknowledge.dev-blue.svg)](https://codeknowledge.dev/docs)
+[![MCP Badge](https://lobehub.com/badge/mcp/simplyliz-codemcp)](https://lobehub.com/mcp/simplyliz-codemcp)
 [![LIP](https://img.shields.io/crates/v/lip-cli.svg?label=LIP&color=orange)](https://crates.io/crates/lip-cli)
 [![LIP docs](https://img.shields.io/badge/LIP-docs-blue.svg)](https://lip-sigma.vercel.app/docs)
 
@@ -146,7 +147,7 @@ claude mcp add --transport stdio ckb -- npx @tastehub/ckb mcp
 **Token efficiency shown at startup:**
 ```
 CKB MCP Server v9.3.1
-  Active tools: 25 / 110 (22%)
+  Active tools: 25 / 111 (23%)
   Estimated context: ~4k tokens
   Preset: core
 ```
@@ -533,7 +534,7 @@ Use `cmd /c` wrapper in any config above:
 <details>
 <summary><strong>Presets (Token Optimization)</strong></summary>
 
-CKB exposes 110+ tools, but most sessions only need a subset. Use presets to reduce token overhead by up to 77%:
+CKB exposes 111+ tools, but most sessions only need a subset. Use presets to reduce token overhead by up to 77%:
 
 ```bash
 # List all available presets with tool counts and token estimates
@@ -544,12 +545,12 @@ ckb mcp
 
 # Workflow-specific presets
 ckb mcp --preset=core        # 25 tools - search, explain, impact (default)
-ckb mcp --preset=review      # 42 tools - core + diff, ownership, PR review
+ckb mcp --preset=review      # 43 tools - core + diff, ownership, PR review
 ckb mcp --preset=refactor    # 42 tools - core + coupling, dead code
 ckb mcp --preset=federation  # 46 tools - core + cross-repo
 ckb mcp --preset=docs        # 34 tools - core + doc-symbol linking
 ckb mcp --preset=ops         # 43 tools - core + jobs, webhooks, metrics
-ckb mcp --preset=full        # 110 tools - complete feature set
+ckb mcp --preset=full        # 111 tools - complete feature set
 ```
 
 In MCP config:
@@ -627,7 +628,7 @@ See the **[Full Documentation Wiki](https://github.com/SimplyLiz/CodeMCP/wiki)**
 - [Incremental Indexing](https://github.com/SimplyLiz/CodeMCP/wiki/Incremental-Indexing) — Fast index updates for Go projects
 - [Doc-Symbol Linking](https://github.com/SimplyLiz/CodeMCP/wiki/Doc-Symbol-Linking) — Symbol detection in docs, staleness checking
 - [Authentication](https://github.com/SimplyLiz/CodeMCP/wiki/Authentication) — API tokens, scopes, rate limiting
-- [MCP Integration](https://github.com/SimplyLiz/CodeMCP/wiki/MCP-Integration) — Claude Code setup, 110+ tools
+- [MCP Integration](https://github.com/SimplyLiz/CodeMCP/wiki/MCP-Integration) — Claude Code setup, 111+ tools
 - [API Reference](https://github.com/SimplyLiz/CodeMCP/wiki/API-Reference) — HTTP API documentation
 - [Daemon Mode](https://github.com/SimplyLiz/CodeMCP/wiki/Daemon-Mode) — Always-on service with scheduler, webhooks
 - [Configuration](https://github.com/SimplyLiz/CodeMCP/wiki/Configuration) — All options including MODULES.toml

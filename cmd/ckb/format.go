@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -1069,6 +1070,15 @@ func formatChangeSetHuman(resp *ChangeSetResponseCLI) string {
 		b.WriteString("\n")
 	}
 
+	// Likely reviewers (ownership-based)
+	if len(resp.Reviewers) > 0 {
+		b.WriteString("Likely reviewers:\n")
+		for _, r := range resp.Reviewers {
+			b.WriteString(fmt.Sprintf("  %s (%.0f%% of changed files)\n", r.Owner, r.Coverage*100))
+		}
+		b.WriteString("\n")
+	}
+
 	// Recommendations
 	if len(resp.Recommendations) > 0 {
 		b.WriteString("Recommendations:\n")
@@ -1084,6 +1094,174 @@ func formatChangeSetHuman(resp *ChangeSetResponseCLI) string {
 				b.WriteString(fmt.Sprintf("    Action: %s\n", r.Action))
 			}
 		}
+	}
+
+	return b.String()
+}
+
+// changesRiskFactorLabels maps the internal risk-factor names computed by
+// calculateAggregatedRisk to short, human-readable labels for `ckb changes`.
+var changesRiskFactorLabels = map[string]string{
+	"symbols_changed":   "symbols changed",
+	"direct_impact":     "downstream paths",
+	"transitive_impact": "transitive reach",
+	"module_spread":     "module spread",
+	"bridge_centrality": "architectural bridge",
+}
+
+// formatChangesHuman renders the `ckb changes` human-readable report: a
+// denser, evidence-first view than formatChangeSetHuman, matching the
+// assessChange mock. Every inferred/heuristic item carries its label inline.
+// caps lists at 10 unless verbose is set.
+// countNoun renders "1 changed symbol" / "3 changed symbols".
+func countNoun(n int, singular, plural string) string {
+	if n == 1 {
+		return "1 " + singular
+	}
+	return fmt.Sprintf("%d %s", n, plural)
+}
+
+func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
+	var b strings.Builder
+
+	cap10 := func(n int) int {
+		if verbose {
+			return n
+		}
+		return min(10, n)
+	}
+
+	// Header
+	branch := "current branch"
+	mode := "working tree"
+	if resp.Change != nil {
+		if resp.Change.Branch != "" {
+			branch = resp.Change.Branch
+		}
+		switch resp.Change.Mode {
+		case "staged":
+			mode = "staged"
+		case "range":
+			mode = "vs " + resp.Change.Base
+		default:
+			mode = "working tree"
+		}
+	}
+	b.WriteString(fmt.Sprintf("Current change · %s (%s)\n\n", branch, mode))
+
+	// Risk
+	if resp.RiskScore != nil {
+		b.WriteString(fmt.Sprintf("Risk: %s (%.2f)\n", strings.ToUpper(resp.RiskScore.Level), resp.RiskScore.Score))
+		for _, f := range resp.RiskScore.Factors {
+			label := changesRiskFactorLabels[f.Name]
+			if label == "" {
+				label = f.Name
+			}
+			evidence := f.Evidence
+			if evidence == "" {
+				evidence = fmt.Sprintf("value %.2f", f.Value)
+			}
+			b.WriteString(fmt.Sprintf("  %-26s weight %.2f   %s\n", label, f.Weight, evidence))
+		}
+		b.WriteString("\n")
+	}
+
+	// Counts line
+	symbolsChanged, downstream, modules := 0, 0, 0
+	if resp.Summary != nil {
+		symbolsChanged = resp.Summary.SymbolsChanged
+		downstream = resp.Summary.DirectlyAffected
+	}
+	modules = len(resp.ModulesAffected)
+	b.WriteString(fmt.Sprintf("%s · %s · %s\n\n",
+		countNoun(symbolsChanged, "changed symbol", "changed symbols"),
+		countNoun(downstream, "downstream consumer", "downstream consumers"),
+		countNoun(modules, "affected module", "affected modules")))
+
+	// Affected tests
+	if len(resp.AffectedTests) > 0 {
+		b.WriteString(fmt.Sprintf("Affected tests (%d)\n", len(resp.AffectedTests)))
+		shown := cap10(len(resp.AffectedTests))
+		for _, t := range resp.AffectedTests[:shown] {
+			name := strings.TrimSuffix(filepath.Base(t.FilePath), filepath.Ext(t.FilePath))
+			b.WriteString(fmt.Sprintf("  %-30s%s\n", name, t.Reason))
+		}
+		if len(resp.AffectedTests) > shown {
+			b.WriteString(fmt.Sprintf("  … and %d more\n", len(resp.AffectedTests)-shown))
+		}
+		b.WriteString("\n")
+	}
+
+	// Possible contract changes
+	if len(resp.Contracts) > 0 {
+		basis := resp.Contracts[0].Basis
+		b.WriteString(fmt.Sprintf("Possible contract changes (%d)  [%s]\n", len(resp.Contracts), basis))
+		shown := cap10(len(resp.Contracts))
+		for _, c := range resp.Contracts[:shown] {
+			b.WriteString(fmt.Sprintf("  %-20s%s\n", c.Symbol, c.File))
+		}
+		if len(resp.Contracts) > shown {
+			b.WriteString(fmt.Sprintf("  … and %d more\n", len(resp.Contracts)-shown))
+		}
+		b.WriteString("\n")
+	}
+
+	// Relevant decisions
+	if len(resp.Decisions) > 0 {
+		b.WriteString("Relevant decisions\n")
+		shown := cap10(len(resp.Decisions))
+		for _, d := range resp.Decisions[:shown] {
+			b.WriteString(fmt.Sprintf("  %-8s %s\n", d.ID, d.Title))
+		}
+		if len(resp.Decisions) > shown {
+			b.WriteString(fmt.Sprintf("  … and %d more\n", len(resp.Decisions)-shown))
+		}
+		b.WriteString("\n")
+	}
+
+	// Likely reviewers
+	if len(resp.Reviewers) > 0 {
+		b.WriteString("Likely reviewers\n")
+		shown := cap10(len(resp.Reviewers))
+		for _, r := range resp.Reviewers[:shown] {
+			b.WriteString(fmt.Sprintf("  %s (%.0f%% of changed files)\n", r.Owner, r.Coverage*100))
+		}
+		if len(resp.Reviewers) > shown {
+			b.WriteString(fmt.Sprintf("  … and %d more\n", len(resp.Reviewers)-shown))
+		}
+		b.WriteString("\n")
+	}
+
+	// Potential issues: test gaps + stale index, each labeled with its basis
+	var issues []string
+	if resp.TestGaps != nil && resp.TestGaps.UntestedConsumers > 0 {
+		issues = append(issues, fmt.Sprintf("%d downstream consumer(s) have no reaching test  (Consumer -> Changed)",
+			resp.TestGaps.UntestedConsumers))
+	}
+	if resp.IndexStaleness != nil && resp.IndexStaleness.IsStale {
+		issues = append(issues, fmt.Sprintf("index is %d commit(s) behind — results may be stale", resp.IndexStaleness.CommitsBehind))
+	}
+	if len(issues) > 0 {
+		b.WriteString("Potential issues\n")
+		for _, issue := range issues {
+			b.WriteString(fmt.Sprintf("  %s\n", issue))
+		}
+		if verbose && resp.TestGaps != nil && len(resp.TestGaps.Examples) > 0 {
+			for _, ex := range resp.TestGaps.Examples {
+				b.WriteString(fmt.Sprintf("    %s\n", ex))
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// Confidence
+	if resp.Confidence != nil {
+		reasons := strings.Join(resp.Confidence.Reasons, ", ")
+		b.WriteString(fmt.Sprintf("Confidence: %s", resp.Confidence.Tier))
+		if reasons != "" {
+			b.WriteString(fmt.Sprintf(" — %s", reasons))
+		}
+		b.WriteString("\n")
 	}
 
 	return b.String()

@@ -2,6 +2,57 @@
 
 All notable changes to CKB will be documented in this file.
 
+## [Unreleased]
+
+### Added — change intelligence and an activity ledger, no UI
+
+Decided 2026-09-16 (see `docs/plans/change-intelligence-and-activity-ledger.md`):
+CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
+
+- **`assessChange`** (MCP) and **`ckb changes`** (CLI): the post-change
+  counterpart to `prepareChange`. Works on the uncommitted working tree by
+  default (`--staged`, `--base <ref>` for the index or a range) and answers
+  "what did I actually change and what should I verify before finishing":
+  changed symbols, structured risk factors with evidence, blast radius,
+  affected tests, downstream consumers with no reaching test, *possible*
+  contract changes (a labeled heuristic: exported symbol lines changed, never
+  called a breaking change), related ADRs, likely reviewers, and a confidence
+  tier that names its reasons (no SCIP index, commits behind). This is
+  `analyzeChange` grown up, not a third diff analysis: `analyzeChange` stays
+  registered as a deprecated alias for two minor versions, and `ckb impact
+  diff` stays as an alias of `ckb changes`. Tool count is now 111.
+- **Activity ledger**: every MCP tool call is recorded in a `tool_calls`
+  table in `.ckb/ckb.db` (schema v12) — session (from `CLAUDE_CODE_SESSION_ID`
+  when run under Claude Code), consumer (from the MCP `clientInfo` handshake),
+  tool, hashed and truncated params, primary target, duration, response
+  bytes, truncation, error, and per-tool structured facts for `prepareChange`,
+  `assessChange`, `analyzeImpact`, `findReferences`, `searchSymbols`. Written
+  off the request path by a buffered single-writer goroutine; never adds
+  latency, never surfaces an error to the client. Configurable via
+  `activity.{enabled,retentionDays,storeParams}` (defaults true / 30 / true),
+  pruned on server start. Read it with **`ckb activity`** (`--last`,
+  `--session`, `--consumer`, `--tool`, `--since`, `--summary`, `--all`,
+  `--json`). The feed reports calls and what they returned; it never narrates
+  why the agent called something.
+- **`ckb bench session <id>` / `ckb bench compare <a> <b>`**: joins a Claude
+  Code transcript (tokens by class, turns, tool calls, files read) with the
+  ledger rows of the same session into one record, and compares two. Produces
+  neutral deltas; nothing is labeled "tokens saved".
+
+### Fixed
+
+- Config keys absent from an older `.ckb/config.json` now keep their default
+  instead of the Go zero value. Every default-true flag (`backends.scip.enabled`,
+  `review.blockBreakingChanges`, the new `activity.enabled`, …) silently flipped
+  to false for configs written before the key existed.
+- `SummarizePR`'s comment claimed it compared against the working tree; it runs
+  `git diff base HEAD`. Comment fixed. `ckb review` still does not see unstaged
+  changes; `ckb changes` does.
+- `ckb impact diff` promised "who needs to review this" and never delivered.
+  It does now.
+- Working-tree reviewer suggestions no longer list git's "not committed yet"
+  pseudo-author.
+
 ## [9.3.1] - 2026-09-13
 
 ### Fixed — linux binaries would not start on glibc < 2.39 ([#243](https://github.com/SimplyLiz/ckb/issues/243))

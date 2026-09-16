@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.SimplyLiz/ckb",
-  "description": "Code intelligence MCP server — 110 tools for navigation, impact analysis, and architecture",
+  "description": "Code intelligence MCP server — 111 tools for navigation, impact analysis, and architecture",
   "repository": {
     "url": "https://github.com/SimplyLiz/CodeMCP",
     "source": "github"

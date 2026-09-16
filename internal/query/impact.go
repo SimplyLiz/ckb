@@ -87,6 +87,10 @@ type RiskFactor struct {
 	Name   string  `json:"name"`
 	Value  float64 `json:"value"`
 	Weight float64 `json:"weight"`
+	// Evidence is a concrete, human-readable basis for this factor's value
+	// (e.g. "14 direct consumers", "3 modules affected"). Optional: only
+	// AnalyzeChangeSet's aggregated factors populate it today.
+	Evidence string `json:"evidence,omitempty"`
 }
 
 // ImpactItem describes an impact from changing a symbol.
@@ -919,6 +923,92 @@ type AnalyzeChangeSetResponse struct {
 	TruncationInfo  *TruncationInfo     `json:"truncationInfo,omitempty"`
 	Provenance      *Provenance         `json:"provenance"`
 	Drilldowns      []output.Drilldown  `json:"drilldowns,omitempty"`
+
+	// Change describes what was diffed: branch, base ref, and mode. Added for
+	// assessChange/`ckb changes` (analyzeChange's grown-up form).
+	Change *ChangeInfo `json:"change,omitempty"`
+	// AffectedTests are tests that reach the changed symbols (direct or
+	// transitive), derived via deriveAffectedTests (shared with GetAffectedTests).
+	AffectedTests []AffectedTest `json:"affectedTests,omitempty"`
+	// TestGaps summarizes direct consumers of changed symbols that no test
+	// appears to reach within a depth-2 call graph traversal.
+	TestGaps *TestGapsInfo `json:"testGaps,omitempty"`
+	// Contracts flags changed symbols that are public/exported, as a
+	// "possible contract change" heuristic. This is deliberately not called
+	// a "breaking change" -- it is a line-level, visibility-only signal.
+	Contracts []ContractSignal `json:"contracts,omitempty"`
+	// Decisions are ADRs related to any changed symbol's module, collected
+	// from each per-symbol AnalyzeImpact call and deduped by ADR ID.
+	Decisions []RelatedDecision `json:"decisions,omitempty"`
+	// Reviewers are suggested reviewers for the changed files (ownership-based).
+	Reviewers []SuggestedReview `json:"reviewers,omitempty"`
+	// Confidence summarizes result quality (SCIP availability/freshness,
+	// symbol-mapping confidence). Mirrors the shape of envelope.Confidence;
+	// see ChangeConfidence's doc comment for why it isn't that type directly.
+	Confidence *ChangeConfidence `json:"confidence,omitempty"`
+}
+
+// ChangeInfo describes the diff that was analyzed.
+type ChangeInfo struct {
+	Branch       string `json:"branch,omitempty"`
+	Base         string `json:"base,omitempty"`
+	Mode         string `json:"mode"` // "working-tree" | "staged" | "range"
+	FilesChanged int    `json:"filesChanged"`
+}
+
+// ContractSignal flags a changed symbol whose visibility suggests its public
+// contract may have shifted. v1 is a heuristic (exported symbol touched); a
+// real signature-diff basis is planned (see plan step 2c / Cartographer
+// diff_skeleton). Never call this a "breaking change" -- it is not verified.
+type ContractSignal struct {
+	Symbol string `json:"symbol"`
+	File   string `json:"file"`
+	Kind   string `json:"kind"`  // "possible-contract-change"
+	Basis  string `json:"basis"` // "heuristic: exported/public symbol lines changed" | "signature"
+}
+
+// TestGapsInfo summarizes direct consumers of changed symbols with no
+// detected reaching test (call graph, depth 2).
+type TestGapsInfo struct {
+	UntestedConsumers int      `json:"untestedConsumers"`
+	Examples          []string `json:"examples,omitempty"` // "Consumer -> changed symbol", up to 5
+}
+
+// ChangeConfidenceFactor explains one component of a ChangeConfidence score.
+// Field shape mirrors envelope.ConfidenceFactor.
+type ChangeConfidenceFactor struct {
+	Factor string  `json:"factor"`
+	Status string  `json:"status"`
+	Impact float64 `json:"impact"`
+}
+
+// ChangeConfidence describes AnalyzeChangeSet's result quality. It
+// deliberately mirrors envelope.Confidence's shape (Score/Tier/Reasons)
+// rather than embedding that type: internal/envelope imports internal/query
+// (builder.go's FromProvenance takes a *query.Provenance), so internal/query
+// importing internal/envelope back would be an import cycle. internal/mcp,
+// which imports both packages, converts this to envelope.Confidence when
+// wrapping the assessChange/analyzeChange tool response.
+type ChangeConfidence struct {
+	Score   float64                  `json:"score"`
+	Tier    string                   `json:"tier"` // "high" | "medium" | "low" | "speculative"
+	Reasons []string                 `json:"reasons,omitempty"`
+	Factors []ChangeConfidenceFactor `json:"factors,omitempty"`
+}
+
+// changeScoreToTier mirrors envelope.ScoreToTier's thresholds without
+// importing internal/envelope (see ChangeConfidence doc comment).
+func changeScoreToTier(score float64) string {
+	switch {
+	case score >= 0.95:
+		return "high"
+	case score >= 0.70:
+		return "medium"
+	case score >= 0.30:
+		return "low"
+	default:
+		return "speculative"
+	}
 }
 
 // ChangeSummary provides a high-level overview of a change set.
@@ -946,6 +1036,10 @@ type Recommendation struct {
 	Severity string `json:"severity"` // "info", "warning", "error"
 	Message  string `json:"message"`
 	Action   string `json:"action,omitempty"`
+	// Source names the finding this recommendation derives from (e.g.
+	// "risk", "module-spread", "test-gaps", "contracts"), so callers can
+	// trace generic text back to concrete evidence.
+	Source string `json:"source,omitempty"`
 }
 
 // IndexStalenessInfo provides information about SCIP index freshness.
@@ -1086,7 +1180,33 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	moduleImpactMap := make(map[string]*ModuleImpact)
 	seenAffected := make(map[string]bool)
 
+	// v1: decisions surfaced per changed symbol's module, deduped by ADR ID, capped at 10.
+	var changeDecisions []RelatedDecision
+	seenDecisionIDs := make(map[string]bool)
+
+	// v1: contracts heuristic -- exported/public changed symbols.
+	var contracts []ContractSignal
+	seenContractSymbols := make(map[string]bool)
+
+	// v1: test-gap synthesis -- for each direct consumer of a changed symbol,
+	// check whether any test reaches it within a depth-2 call graph. Bounded
+	// to avoid O(symbols * consumers) AnalyzeImpact calls on large diffs.
+	const maxTestGapConsumers = 20
+	testGapConsumersChecked := 0
+	seenGapConsumers := make(map[string]bool)
+	untestedConsumers := 0
+	var untestedExamples []string
+
+	// Confidence input: average symbol-mapping confidence across changed symbols.
+	var totalMappingConfidence float64
+	var mappingConfidenceCount int
+
 	for _, sym := range changedSymbols {
+		if sym.Confidence > 0 {
+			totalMappingConfidence += sym.Confidence
+			mappingConfidenceCount++
+		}
+
 		// Skip file-level entries for transitive analysis
 		if strings.HasPrefix(sym.SymbolID, "file:") {
 			continue
@@ -1130,6 +1250,40 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 					DirectCount: mod.DirectCount,
 				}
 			}
+		}
+
+		// Decisions: surface RelatedDecisions already computed by AnalyzeImpact
+		// for this symbol's module, deduped by ADR ID, capped at 10.
+		for _, d := range impactResult.RelatedDecisions {
+			changeDecisions = appendDedupedDecision(changeDecisions, seenDecisionIDs, d, 10)
+		}
+
+		// Contracts heuristic: flag changed symbols whose visibility looks
+		// public/exported. Deliberately not "breaking change" -- this is a
+		// visibility-only, line-level signal (see plan step 2c for a
+		// signature-diff basis).
+		if impactResult.Symbol != nil && impactResult.Visibility != nil && !seenContractSymbols[sym.SymbolID] {
+			lang := detectLanguage(sym.File)
+			if signal := buildContractSignal(impactResult.Symbol.Name, impactResult.Visibility.Visibility, lang, sym.File); signal != nil {
+				seenContractSymbols[sym.SymbolID] = true
+				contracts = append(contracts, *signal)
+			}
+		}
+
+		// Test-gap synthesis: for each direct consumer of this changed
+		// symbol, check whether any test reaches it (depth 2). Bounded.
+		for _, consumer := range impactResult.DirectImpact {
+			if testGapConsumersChecked >= maxTestGapConsumers {
+				break
+			}
+			if seenGapConsumers[consumer.StableId] {
+				continue
+			}
+			seenGapConsumers[consumer.StableId] = true
+			testGapConsumersChecked++
+
+			hasTest := e.hasReachingTest(ctx, consumer)
+			untestedConsumers, untestedExamples = recordTestGap(untestedConsumers, untestedExamples, consumer.Name, sym.Name, hasTest)
 		}
 	}
 
@@ -1187,8 +1341,13 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		RiskLevel:         riskScore.Level,
 	}
 
+	testGapsInfo := &TestGapsInfo{
+		UntestedConsumers: untestedConsumers,
+		Examples:          untestedExamples,
+	}
+
 	// Generate recommendations
-	recommendations := e.generateRecommendations(summary, riskScore, changedSymbols, modulesAffected)
+	recommendations := e.generateRecommendations(summary, riskScore, changedSymbols, modulesAffected, testGapsInfo, contracts)
 
 	// Apply budget
 	budget := e.compressor.GetBudget()
@@ -1244,6 +1403,53 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		provenance.Warnings = append(provenance.Warnings, indexStaleness.StalenessMessage)
 	}
 
+	// Change: what was diffed (branch, base, mode).
+	mode := "working-tree"
+	base := ""
+	if opts.Staged {
+		mode = "staged"
+	} else if opts.BaseBranch != "" && opts.BaseBranch != "HEAD" {
+		mode = "range"
+		base = opts.BaseBranch
+	}
+	branch := ""
+	if e.gitAdapter != nil {
+		if b, berr := e.gitAdapter.GetCurrentBranch(); berr == nil {
+			branch = b
+		}
+	}
+	changeInfo := &ChangeInfo{
+		Branch:       branch,
+		Base:         base,
+		Mode:         mode,
+		FilesChanged: len(parsedDiff.Files),
+	}
+
+	// Reviewers: ownership-based suggestions over the unique changed files.
+	var reviewers []SuggestedReview
+	seenReviewerFiles := make(map[string]bool)
+	var reviewerFiles []PRFileChange
+	for _, sym := range changedSymbolInfos {
+		if sym.File == "" || seenReviewerFiles[sym.File] {
+			continue
+		}
+		seenReviewerFiles[sym.File] = true
+		reviewerFiles = append(reviewerFiles, PRFileChange{Path: sym.File})
+	}
+	if e.gitAdapter != nil && len(reviewerFiles) > 0 {
+		reviewers = e.getSuggestedReviewers(ctx, reviewerFiles)
+	} else if len(reviewerFiles) > 0 {
+		provenance.Warnings = append(provenance.Warnings, "reviewers unavailable: git ownership data not available")
+	}
+
+	// Affected tests: reuse the same traversal GetAffectedTests uses (see
+	// deriveAffectedTests), fed with this call's own changed/affected symbols
+	// so we don't recursively call AnalyzeChangeSet.
+	affectedTests := e.deriveAffectedTests(changedSymbolInfos, allAffected)
+
+	// Confidence: SCIP availability + freshness + average symbol-mapping confidence.
+	confidence := e.buildChangeConfidence(completeness, indexStaleness, totalMappingConfidence, mappingConfidenceCount)
+
 	return &AnalyzeChangeSetResponse{
 		Summary:         summary,
 		ChangedSymbols:  changedSymbolInfos,
@@ -1256,7 +1462,68 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		Truncated:       truncationInfo != nil,
 		TruncationInfo:  truncationInfo,
 		Provenance:      provenance,
+		Change:          changeInfo,
+		AffectedTests:   affectedTests,
+		TestGaps:        testGapsInfo,
+		Contracts:       contracts,
+		Decisions:       changeDecisions,
+		Reviewers:       reviewers,
+		Confidence:      confidence,
 	}, nil
+}
+
+// buildChangeConfidence computes a ChangeConfidence for AnalyzeChangeSet from
+// SCIP availability/freshness and the average symbol-mapping confidence.
+// Score/tier thresholds mirror envelope.ScoreToTier (see changeScoreToTier).
+func (e *Engine) buildChangeConfidence(
+	completeness CompletenessInfo,
+	staleness *IndexStalenessInfo,
+	totalMappingConfidence float64,
+	mappingConfidenceCount int,
+) *ChangeConfidence {
+	score := completeness.Score
+	var reasons []string
+	var factors []ChangeConfidenceFactor
+
+	hasSCIP := e.scipAdapter != nil && e.scipAdapter.IsAvailable()
+	if hasSCIP {
+		factors = append(factors, ChangeConfidenceFactor{Factor: "scip_backend", Status: "available", Impact: 0.3})
+	} else {
+		reasons = append(reasons, "no SCIP index: file-level mapping")
+		factors = append(factors, ChangeConfidenceFactor{Factor: "scip_backend", Status: "unavailable", Impact: -0.2})
+	}
+
+	if staleness != nil && staleness.IsStale {
+		score -= 0.1
+		reasons = append(reasons, fmt.Sprintf("index is %d commit(s) behind", staleness.CommitsBehind))
+		factors = append(factors, ChangeConfidenceFactor{Factor: "index_freshness", Status: "stale", Impact: -0.1})
+	} else if hasSCIP {
+		factors = append(factors, ChangeConfidenceFactor{Factor: "index_freshness", Status: "fresh", Impact: 0.0})
+	}
+
+	if mappingConfidenceCount > 0 {
+		avgMapping := totalMappingConfidence / float64(mappingConfidenceCount)
+		reasons = append(reasons, fmt.Sprintf("average symbol-mapping confidence %.0f%%", avgMapping*100))
+		factors = append(factors, ChangeConfidenceFactor{Factor: "symbol_mapping", Status: fmt.Sprintf("%.0f%%", avgMapping*100), Impact: (avgMapping - 0.5) * 0.2})
+		score = (score + avgMapping) / 2
+	}
+
+	if score < 0 {
+		score = 0
+	} else if score > 1 {
+		score = 1
+	}
+
+	if len(reasons) == 0 {
+		reasons = append(reasons, completeness.Reason)
+	}
+
+	return &ChangeConfidence{
+		Score:   score,
+		Tier:    changeScoreToTier(score),
+		Reasons: reasons,
+		Factors: factors,
+	}
 }
 
 // getGitDiff gets the current git diff.
@@ -1335,9 +1602,10 @@ func bridgeMultiplierFromGraph(nodes []cartographer.GraphNode, files []string) (
 
 	multiplier := math.Min(1.0+maxScore/1000.0, 2.0)
 	return multiplier, &RiskFactor{
-		Name:   "bridge_centrality",
-		Value:  maxScore / 1000.0, // 0.0-1.0 informational
-		Weight: 0,                 // applied as multiplier, not weighted mean
+		Name:     "bridge_centrality",
+		Value:    maxScore / 1000.0, // 0.0-1.0 informational
+		Weight:   0,                 // applied as multiplier, not weighted mean
+		Evidence: fmt.Sprintf("on a critical architectural path (bridge score %.2f)", maxScore/1000.0),
 	}
 }
 
@@ -1352,8 +1620,9 @@ func (e *Engine) calculateAggregatedRisk(
 
 	// Factor: Number of symbols changed
 	symbolCountFactor := RiskFactor{
-		Name:   "symbols_changed",
-		Weight: 0.2,
+		Name:     "symbols_changed",
+		Weight:   0.2,
+		Evidence: fmt.Sprintf("%d changed symbol(s)", len(changedSymbols)),
 	}
 	switch {
 	case len(changedSymbols) > 20:
@@ -1369,8 +1638,9 @@ func (e *Engine) calculateAggregatedRisk(
 
 	// Factor: Direct impact count
 	directImpactFactor := RiskFactor{
-		Name:   "direct_impact",
-		Weight: 0.3,
+		Name:     "direct_impact",
+		Weight:   0.3,
+		Evidence: fmt.Sprintf("%d direct consumers", len(directImpact)),
 	}
 	switch {
 	case len(directImpact) > 50:
@@ -1386,8 +1656,9 @@ func (e *Engine) calculateAggregatedRisk(
 
 	// Factor: Transitive impact
 	transitiveFactor := RiskFactor{
-		Name:   "transitive_impact",
-		Weight: 0.2,
+		Name:     "transitive_impact",
+		Weight:   0.2,
+		Evidence: fmt.Sprintf("%d transitive consumers", len(transitiveImpact)),
 	}
 	switch {
 	case len(transitiveImpact) > 100:
@@ -1403,8 +1674,9 @@ func (e *Engine) calculateAggregatedRisk(
 
 	// Factor: Module spread
 	moduleFactor := RiskFactor{
-		Name:   "module_spread",
-		Weight: 0.3,
+		Name:     "module_spread",
+		Weight:   0.3,
+		Evidence: fmt.Sprintf("%d modules affected", len(modules)),
 	}
 	switch {
 	case len(modules) > 5:
@@ -1549,38 +1821,87 @@ func (e *Engine) GetAffectedTests(ctx context.Context, opts GetAffectedTestsOpti
 		return nil, err
 	}
 
-	// Collect test files
-	testFileMap := make(map[string]*AffectedTest)
 	var coverageUsed bool
 
-	// 1. Direct test files (tests that reference changed symbols)
-	for _, sym := range changeSet.AffectedSymbols {
-		if isTestFile(sym.Location) {
-			path := ""
-			if sym.Location != nil {
-				path = sym.Location.FileId
-			} else {
-				continue
-			}
+	// Shared with AnalyzeChangeSet's AffectedTests field -- see deriveAffectedTests.
+	tests := e.deriveAffectedTests(changeSet.ChangedSymbols, changeSet.AffectedSymbols)
 
-			if existing, ok := testFileMap[path]; ok {
-				existing.AffectedBy = append(existing.AffectedBy, sym.StableId)
-				if sym.Confidence > existing.Confidence {
-					existing.Confidence = sym.Confidence
-				}
-			} else {
-				testFileMap[path] = &AffectedTest{
-					FilePath:   path,
-					Reason:     categorizeTestReason(sym.Distance),
-					AffectedBy: []string{sym.StableId},
-					Confidence: sym.Confidence,
-				}
+	// Build summary
+	summary := &TestSummary{TotalFiles: len(tests)}
+	for _, t := range tests {
+		switch t.Reason {
+		case "direct":
+			summary.DirectFiles++
+		case "transitive":
+			summary.TransitiveFiles++
+		case "coverage":
+			summary.CoverageFiles++
+		}
+	}
+
+	// Calculate overall confidence
+	var totalConf float64
+	for _, t := range tests {
+		totalConf += t.Confidence
+	}
+	avgConfidence := 0.0
+	if len(tests) > 0 {
+		avgConfidence = totalConf / float64(len(tests))
+	}
+
+	// Generate run command
+	runCommand := generateTestRunCommand(e.repoRoot, tests)
+
+	// Build provenance
+	repoState, _ := e.GetRepoState(ctx, "fast")
+	provenance := e.buildProvenance(repoState, "fast", startTime, nil, CompletenessInfo{Score: avgConfidence})
+
+	return &AffectedTestsResponse{
+		Tests:        tests,
+		Summary:      summary,
+		CoverageUsed: coverageUsed,
+		Confidence:   avgConfidence,
+		RunCommand:   runCommand,
+		Provenance:   provenance,
+	}, nil
+}
+
+// deriveAffectedTests computes the tests that reach a set of changed/affected
+// symbols. Shared by GetAffectedTests and AnalyzeChangeSet so the traversal
+// lives in one place -- AnalyzeChangeSet cannot call GetAffectedTests
+// directly since GetAffectedTests itself calls AnalyzeChangeSet.
+func (e *Engine) deriveAffectedTests(changedSymbols []ChangedSymbolInfo, affectedSymbols []ImpactItem) []AffectedTest {
+	testFileMap := make(map[string]*AffectedTest)
+
+	// 1. Direct test files (tests that reference changed symbols)
+	for _, sym := range affectedSymbols {
+		if !isTestFile(sym.Location) {
+			continue
+		}
+		path := ""
+		if sym.Location != nil {
+			path = sym.Location.FileId
+		} else {
+			continue
+		}
+
+		if existing, ok := testFileMap[path]; ok {
+			existing.AffectedBy = append(existing.AffectedBy, sym.StableId)
+			if sym.Confidence > existing.Confidence {
+				existing.Confidence = sym.Confidence
+			}
+		} else {
+			testFileMap[path] = &AffectedTest{
+				FilePath:   path,
+				Reason:     categorizeTestReason(sym.Distance),
+				AffectedBy: []string{sym.StableId},
+				Confidence: sym.Confidence,
 			}
 		}
 	}
 
 	// 2. Test files for changed production code (heuristic: find corresponding test files)
-	for _, sym := range changeSet.ChangedSymbols {
+	for _, sym := range changedSymbols {
 		if isTestFilePathEnhanced(sym.File) {
 			continue // Already a test file
 		}
@@ -1604,7 +1925,7 @@ func (e *Engine) GetAffectedTests(ctx context.Context, opts GetAffectedTestsOpti
 	// 3. LIP semantic pass: for each changed production file, find semantically
 	// similar test files. This catches tests that cover the changed code but don't
 	// follow naming conventions (e.g. integration tests, table-driven suites).
-	for _, sym := range changeSet.ChangedSymbols {
+	for _, sym := range changedSymbols {
 		if isTestFilePathEnhanced(sym.File) {
 			continue
 		}
@@ -1646,44 +1967,86 @@ func (e *Engine) GetAffectedTests(ctx context.Context, opts GetAffectedTestsOpti
 		return tests[i].FilePath < tests[j].FilePath
 	})
 
-	// Build summary
-	summary := &TestSummary{TotalFiles: len(tests)}
-	for _, t := range tests {
-		switch t.Reason {
-		case "direct":
-			summary.DirectFiles++
-		case "transitive":
-			summary.TransitiveFiles++
-		case "coverage":
-			summary.CoverageFiles++
+	return tests
+}
+
+// appendDedupedDecision appends d to decisions if its ID hasn't been seen
+// (per the seen map) and the list hasn't reached capN. Pure helper factored
+// out of AnalyzeChangeSet's per-symbol loop so the dedup/cap logic is
+// unit-testable without a full Engine.
+func appendDedupedDecision(decisions []RelatedDecision, seen map[string]bool, d RelatedDecision, capN int) []RelatedDecision {
+	if len(decisions) >= capN {
+		return decisions
+	}
+	if seen[d.ID] {
+		return decisions
+	}
+	seen[d.ID] = true
+	return append(decisions, d)
+}
+
+// buildContractSignal returns a ContractSignal for symbolName if visibility
+// (refined by language-specific inference via isExportedSymbol) indicates
+// it's public/exported, or nil otherwise. Pure heuristic: a visibility-only,
+// line-level signal, deliberately not called a "breaking change" anywhere.
+func buildContractSignal(symbolName, visibility, language, file string) *ContractSignal {
+	if !isExportedSymbol(symbolName, visibility, language) {
+		return nil
+	}
+	return &ContractSignal{
+		Symbol: symbolName,
+		File:   file,
+		Kind:   "possible-contract-change",
+		Basis:  "heuristic: exported/public symbol lines changed",
+	}
+}
+
+// recordTestGap updates the untested-consumer count and capped example list
+// (max 5, "Consumer -> Symbol") for one direct consumer. Pure helper so the
+// counting/capping logic is unit-testable without AnalyzeImpact.
+func recordTestGap(untestedCount int, examples []string, consumerName, symbolName string, hasTest bool) (int, []string) {
+	if hasTest {
+		return untestedCount, examples
+	}
+	untestedCount++
+	if len(examples) < 5 {
+		examples = append(examples, fmt.Sprintf("%s -> %s", consumerName, symbolName))
+	}
+	return untestedCount, examples
+}
+
+// hasReachingTest reports whether any test symbol reaches consumer within a
+// depth-2 call graph traversal (caller direction). Used for test-gap
+// synthesis: a direct consumer of a changed symbol counts as "untested" when
+// no test transitively calls it. Conservative on error: if the consumer
+// can't be analyzed, it is reported as unverified (counts as a gap).
+func (e *Engine) hasReachingTest(ctx context.Context, consumer ImpactItem) bool {
+	if consumer.Kind == "test-dependency" || isTestFile(consumer.Location) {
+		return true
+	}
+	if consumer.StableId == "" {
+		return false
+	}
+
+	result, err := e.AnalyzeImpact(ctx, AnalyzeImpactOptions{
+		SymbolId:     consumer.StableId,
+		Depth:        2,
+		IncludeTests: true,
+	})
+	if err != nil {
+		return false
+	}
+	for _, item := range result.DirectImpact {
+		if item.Kind == "test-dependency" || isTestFile(item.Location) {
+			return true
 		}
 	}
-
-	// Calculate overall confidence
-	var totalConf float64
-	for _, t := range tests {
-		totalConf += t.Confidence
+	for _, item := range result.TransitiveImpact {
+		if item.Kind == "test-dependency" || isTestFile(item.Location) {
+			return true
+		}
 	}
-	avgConfidence := 0.0
-	if len(tests) > 0 {
-		avgConfidence = totalConf / float64(len(tests))
-	}
-
-	// Generate run command
-	runCommand := generateTestRunCommand(e.repoRoot, tests)
-
-	// Build provenance
-	repoState, _ := e.GetRepoState(ctx, "fast")
-	provenance := e.buildProvenance(repoState, "fast", startTime, nil, CompletenessInfo{Score: avgConfidence})
-
-	return &AffectedTestsResponse{
-		Tests:        tests,
-		Summary:      summary,
-		CoverageUsed: coverageUsed,
-		Confidence:   avgConfidence,
-		RunCommand:   runCommand,
-		Provenance:   provenance,
-	}, nil
+	return false
 }
 
 // isTestFile checks if a location is in a test file.
@@ -1901,6 +2264,8 @@ func (e *Engine) generateRecommendations(
 	risk *RiskScore,
 	changedSymbols []impact.ChangedSymbol,
 	modules []ModuleImpact,
+	testGaps *TestGapsInfo,
+	contracts []ContractSignal,
 ) []Recommendation {
 	var recs []Recommendation
 
@@ -1911,6 +2276,7 @@ func (e *Engine) generateRecommendations(
 			Severity: "warning",
 			Message:  fmt.Sprintf("High-risk change affecting %d modules. Consider additional code review.", len(modules)),
 			Action:   "Request review from module owners",
+			Source:   "risk",
 		})
 	}
 
@@ -1921,6 +2287,7 @@ func (e *Engine) generateRecommendations(
 			Severity: "info",
 			Message:  fmt.Sprintf("Changes affect %d distinct modules. Consider splitting into focused PRs.", len(modules)),
 			Action:   "Group related changes into separate PRs",
+			Source:   "module-spread",
 		})
 	}
 
@@ -1937,6 +2304,7 @@ func (e *Engine) generateRecommendations(
 			Severity: "info",
 			Message:  fmt.Sprintf("%d symbols have low mapping confidence. Index may be stale.", lowConfidenceCount),
 			Action:   "Run 'ckb index' to refresh the SCIP index",
+			Source:   "symbol-mapping-confidence",
 		})
 	}
 
@@ -1947,6 +2315,29 @@ func (e *Engine) generateRecommendations(
 			Severity: "warning",
 			Message:  fmt.Sprintf("Significant transitive impact (%d symbols). Run comprehensive test suite.", summary.TransitivelyAffected),
 			Action:   "Run full test suite before merging",
+			Source:   "transitive-impact",
+		})
+	}
+
+	// Recommend adding tests for untested downstream consumers
+	if testGaps != nil && testGaps.UntestedConsumers > 0 {
+		recs = append(recs, Recommendation{
+			Type:     "test",
+			Severity: "warning",
+			Message:  fmt.Sprintf("%d downstream consumer(s) have no reaching test.", testGaps.UntestedConsumers),
+			Action:   "Add or extend tests covering the affected consumers",
+			Source:   "test-gaps",
+		})
+	}
+
+	// Flag possible contract changes for extra review (heuristic, not verified)
+	if len(contracts) > 0 {
+		recs = append(recs, Recommendation{
+			Type:     "review",
+			Severity: "info",
+			Message:  fmt.Sprintf("%d possible contract change(s) (heuristic: exported symbol lines changed).", len(contracts)),
+			Action:   "Double-check API/consumer compatibility for the flagged symbols",
+			Source:   "contracts",
 		})
 	}
 
