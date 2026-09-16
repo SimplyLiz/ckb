@@ -351,6 +351,36 @@ func TestExtractSymbolName(t *testing.T) {
 			symbolId: "test",
 			expected: "test",
 		},
+		// Regression cases below: real scip-go symbol IDs quote the full
+		// module-relative package path in backticks inside the descriptor
+		// itself (`github.com/org/repo/pkg`/Type#Method()., not split out
+		// as a separate space-delimited field the way these simplified
+		// fixtures above are). The old implementation looked for the last
+		// "." anywhere in the descriptor to find a name separator, which
+		// found the dot in "github.com" instead — e.g. ckb callgraph's
+		// human/JSON output showed the node name as
+		// "com/SimplyLiz/CodeMCP/internal/query`/Engine#buildModuleLevelResponse"
+		// (the "github." prefix silently sliced off).
+		{
+			name:     "real scip-go method with dotted module path",
+			symbolId: "scip-go gomod github.com/SimplyLiz/CodeMCP v0.0.0 `github.com/SimplyLiz/CodeMCP/internal/query`/Engine#buildModuleLevelResponse().",
+			expected: "Engine#buildModuleLevelResponse",
+		},
+		{
+			name:     "real scip-go bare type with dotted module path",
+			symbolId: "scip-go gomod github.com/SimplyLiz/CodeMCP v0.0.0 `github.com/SimplyLiz/CodeMCP/internal/query`/Engine#",
+			expected: "Engine#",
+		},
+		{
+			name:     "real scip-go field with dotted module path",
+			symbolId: "scip-go gomod github.com/SimplyLiz/CodeMCP v0.0.0 `github.com/SimplyLiz/CodeMCP/internal/query`/Engine#logger.",
+			expected: "Engine#logger",
+		},
+		{
+			name:     "real scip-go package-level function with dotted module path",
+			symbolId: "scip-go gomod github.com/SimplyLiz/CodeMCP v0.0.0 `github.com/SimplyLiz/CodeMCP/internal/api`/NewServer().",
+			expected: "NewServer",
+		},
 	}
 
 	for _, tt := range tests {

@@ -582,26 +582,51 @@ func extractSymbolName(symbolId string) string {
 		if strings.HasSuffix(part, "().") {
 			// Method: "receiver.Method()."
 			name := strings.TrimSuffix(part, "().")
-			if lastDot := strings.LastIndex(name, "."); lastDot >= 0 {
-				name = name[lastDot+1:]
-			}
-			return name
+			return stripQuotedPackagePrefix(name)
 		}
 		if strings.HasSuffix(part, ".") && !strings.HasSuffix(part, "().") {
 			// Type or package
 			name := strings.TrimSuffix(part, ".")
-			return name
+			return stripQuotedPackagePrefix(name)
 		}
 	}
 
 	// Fallback: return the last non-empty part
 	for i := len(parts) - 1; i >= 0; i-- {
 		if parts[i] != "" {
-			return strings.TrimSuffix(strings.TrimSuffix(parts[i], "."), "()")
+			name := strings.TrimSuffix(strings.TrimSuffix(parts[i], "."), "()")
+			return stripQuotedPackagePrefix(name)
 		}
 	}
 
 	return symbolId
+}
+
+// stripQuotedPackagePrefix removes a scip-go backtick-quoted package-path
+// prefix from a descriptor fragment, e.g.
+// "`github.com/org/repo/pkg`/Type#Method" -> "Type#Method". Unlike
+// SCIPIdentifier.GetSimpleName, this intentionally keeps a "Type#Method" or
+// "Type#field" receiver prefix — extractSymbolName's callers (call graph
+// node names) want that context, not the bare method name.
+//
+// When there's no quoted package path, falls back to taking the text after
+// the last '.' — but only then: scip-go module paths themselves contain
+// dots (e.g. "github.com"), so blindly splitting on the last '.' of a
+// backtick-quoted descriptor mistakes part of the module path for a name
+// separator (e.g. "github.com/org/repo/pkg`/Type#Method" was truncated to
+// "com/org/repo/pkg`/Type#Method" — the "github." prefix silently dropped).
+func stripQuotedPackagePrefix(name string) string {
+	if lastBacktick := strings.LastIndex(name, "`"); lastBacktick != -1 {
+		remainder := name[lastBacktick+1:]
+		if slashIdx := strings.Index(remainder, "/"); slashIdx != -1 {
+			return remainder[slashIdx+1:]
+		}
+		return remainder
+	}
+	if lastDot := strings.LastIndex(name, "."); lastDot >= 0 {
+		return name[lastDot+1:]
+	}
+	return name
 }
 
 // Note: findSymbolLocation and parseOccurrenceRange are defined in symbols.go
