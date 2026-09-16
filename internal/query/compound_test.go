@@ -457,6 +457,61 @@ func TestCalculatePrepareRisk_TestFactorWording(t *testing.T) {
 	}
 }
 
+// TestCalculatePrepareRisk_SuggestionOnlyForPublicVisibility is a
+// regression test for "Ensure backward compatibility or bump major
+// version" being suggested for internal/unexported symbols. This follows
+// directly from the Go-method-visibility fix (SCIPIdentifier.GetSimpleName):
+// calculatePrepareRisk was already correctly gated on
+// `target.Visibility == "public"` (compound.go) — the observed bug was
+// entirely a symptom of visibility itself coming back "public" for
+// unexported Go methods (fixed separately). Once visibility is derived
+// correctly, this suggestion (and the "Public API change" factor) stops
+// firing for them without any change here; this test locks that in so a
+// future visibility regression would be caught here too.
+func TestCalculatePrepareRisk_SuggestionOnlyForPublicVisibility(t *testing.T) {
+	engine := &Engine{}
+
+	t.Run("internal visibility", func(t *testing.T) {
+		target := &PrepareChangeTarget{Visibility: "internal"}
+		risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify)
+
+		for _, f := range risk.Factors {
+			if f == "Public API change" {
+				t.Error(`"Public API change" factor should not fire for internal visibility`)
+			}
+		}
+		for _, s := range risk.Suggestions {
+			if s == "Ensure backward compatibility or bump major version" {
+				t.Error(`backward-compatibility suggestion should not fire for internal visibility`)
+			}
+		}
+	})
+
+	t.Run("public visibility", func(t *testing.T) {
+		target := &PrepareChangeTarget{Visibility: "public"}
+		risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify)
+
+		factorFound := false
+		for _, f := range risk.Factors {
+			if f == "Public API change" {
+				factorFound = true
+			}
+		}
+		suggestionFound := false
+		for _, s := range risk.Suggestions {
+			if s == "Ensure backward compatibility or bump major version" {
+				suggestionFound = true
+			}
+		}
+		if !factorFound {
+			t.Error(`expected "Public API change" factor for public visibility`)
+		}
+		if !suggestionFound {
+			t.Error(`expected backward-compatibility suggestion for public visibility`)
+		}
+	})
+}
+
 // =============================================================================
 // BatchGet Tests
 // =============================================================================
