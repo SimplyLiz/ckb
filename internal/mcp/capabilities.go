@@ -33,7 +33,7 @@ type InitializeResult struct {
 	// Instructions is the MCP "consumer contract v0": guidance the client
 	// injects into the model's context at session start, telling the agent
 	// WHEN to reach for CKB instead of ad hoc grepping/guessing. Optional
-	// per the MCP spec (2025-03-26+); supported by Claude Code and Cursor.
+	// per the MCP spec; clients such as Claude Code pass it to the model.
 	Instructions string `json:"instructions,omitempty"`
 }
 
@@ -68,10 +68,10 @@ func instructionsText(preset string) string {
 	}
 
 	return fmt.Sprintf(
-		"CKB is a read-only code-intelligence layer over this repo. Every result carries evidence (call sites, git history) and a confidence score — it's not a guess, so prefer it over assuming.\n\n"+
+		"CKB is a read-only code-intelligence layer over this repo. Answers come from the symbol index, language servers and git history, not from text matching — prefer them over assuming.\n\n"+
 			"Before editing, refactoring, or deleting code: call prepareChange or analyzeImpact first to see what breaks, who calls it, and which tests cover it.\n\n"+
 			"Before working in unfamiliar code or modules: call explore or understand to get oriented instead of reading files cold.\n\n"+
-			"To locate a symbol or its usages: call searchSymbols or findReferences — prefer these over grep for semantic questions (they resolve identity across renames and return real call sites, not text matches).\n\n"+
+			"To locate a symbol or its usages: call searchSymbols or findReferences — prefer these over grep for semantic questions (they return resolved call sites, not text matches).\n\n"+
 			"%s\n\n"+
 			"If a task needs a capability outside your current toolset (PR review, refactoring analysis, docs, ops, federation): call expandToolset once per session with the smallest preset that covers it.",
 		reviewLine,
