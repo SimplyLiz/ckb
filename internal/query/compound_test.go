@@ -427,6 +427,36 @@ func TestCalculatePrepareRisk_ScoreRounding(t *testing.T) {
 	}
 }
 
+// TestCalculatePrepareRisk_TestFactorWording is a regression test for the
+// "No tests found" risk factor overstating what's actually checked.
+// getPrepareTests only globs for *_test.go/*.test.ts/*.spec.ts files in the
+// target's own module directory — it never checks whether the target
+// symbol itself is referenced by any test — so the wording should describe
+// that narrower check, not imply broader test-coverage knowledge.
+func TestCalculatePrepareRisk_TestFactorWording(t *testing.T) {
+	engine := &Engine{}
+	target := &PrepareChangeTarget{Visibility: "internal"}
+
+	risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify)
+
+	foundOldWording := false
+	foundNewWording := false
+	for _, f := range risk.Factors {
+		if f == "No tests found" {
+			foundOldWording = true
+		}
+		if f == "No test files found in target module" {
+			foundNewWording = true
+		}
+	}
+	if foundOldWording {
+		t.Error(`factor "No tests found" overstates what the check actually verifies (same-module file existence, not symbol-level coverage)`)
+	}
+	if !foundNewWording {
+		t.Errorf("expected factor %q, got %v", "No test files found in target module", risk.Factors)
+	}
+}
+
 // =============================================================================
 // BatchGet Tests
 // =============================================================================

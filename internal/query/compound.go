@@ -1726,12 +1726,26 @@ func (e *Engine) resolvePrepareTarget(ctx context.Context, target string) (*Prep
 		path = symbolResp.Symbol.Location.FileId
 	}
 
+	// The SCIP backend doesn't resolve ModuleId on symbol lookups (see
+	// backends/scip/adapter.go convertToSymbolResult: "Module ID is
+	// resolved later by the query engine" — nothing downstream of
+	// GetSymbol ever did that resolution). Left empty, getPrepareTests'
+	// same-module test-file glob never runs (it's gated on
+	// target.ModuleId != ""), so every symbol-based prepareChange call
+	// reported "no tests found" regardless of actual test files sitting
+	// right next to the target. Derive it from the file path the same
+	// way the file/directory branches above already do.
+	moduleId := symbolResp.Symbol.ModuleId
+	if moduleId == "" && path != "" {
+		moduleId = filepath.Dir(path)
+	}
+
 	return &PrepareChangeTarget{
 		SymbolId:   symbolResp.Symbol.StableId,
 		Name:       symbolResp.Symbol.Name,
 		Kind:       symbolResp.Symbol.Kind,
 		Path:       path,
-		ModuleId:   symbolResp.Symbol.ModuleId,
+		ModuleId:   moduleId,
 		Visibility: visibility,
 	}, nil
 }
@@ -1931,10 +1945,15 @@ func (e *Engine) calculatePrepareRisk(
 		suggestions = append(suggestions, "Ensure backward compatibility or bump major version")
 	}
 
-	// Factor: Test coverage
+	// Factor: Test coverage. tests comes from getPrepareTests, which only
+	// globs for *_test.go/*.test.ts/*.spec.ts files in the target's own
+	// module directory — it doesn't check whether the target symbol is
+	// itself referenced by any test, so word this as what it actually
+	// measures rather than implying broader test-coverage knowledge we
+	// don't have.
 	if len(tests) == 0 {
 		score += 0.2
-		factors = append(factors, "No tests found")
+		factors = append(factors, "No test files found in target module")
 		suggestions = append(suggestions, "Add tests before modifying")
 	}
 

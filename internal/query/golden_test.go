@@ -795,3 +795,46 @@ func TestGolden_SCIPBackendDirect(t *testing.T) {
 		})
 	})
 }
+
+// TestPrepareChange_ResolvesModuleIdForSymbolTarget is a regression test
+// for ckb impact prepare's "No tests found" risk factor firing regardless
+// of whether test files actually exist next to the target. Root cause:
+// the SCIP backend never resolves ModuleId on symbol lookups (see
+// backends/scip/adapter.go's convertToSymbolResult), so
+// resolvePrepareTarget's PrepareChangeTarget.ModuleId came back "" for
+// every symbol target — which meant getPrepareTests' same-module
+// *_test.go glob (gated on `target.ModuleId != ""`) never even ran. This
+// verifies resolvePrepareTarget now derives ModuleId from the symbol's
+// file path when the backend doesn't supply one, the same way the
+// file/directory target branches already did.
+func TestPrepareChange_ResolvesModuleIdForSymbolTarget(t *testing.T) {
+	testutil.ForEachLanguage(t, func(t *testing.T, fixture *testutil.FixtureContext) {
+		engine, cleanup := setupGoldenEngine(t, fixture)
+		defer cleanup()
+
+		ctx := context.Background()
+
+		searchResp, err := engine.SearchSymbols(ctx, SearchSymbolsOptions{Query: "NewHandler", Limit: 1})
+		if err != nil {
+			t.Fatalf("SearchSymbols failed: %v", err)
+		}
+		if len(searchResp.Symbols) == 0 {
+			t.Skip("No NewHandler symbol found")
+		}
+
+		resp, err := engine.PrepareChange(ctx, PrepareChangeOptions{
+			Target:     searchResp.Symbols[0].StableId,
+			ChangeType: ChangeModify,
+		})
+		if err != nil {
+			t.Fatalf("PrepareChange failed: %v", err)
+		}
+		if resp.Target == nil {
+			t.Fatal("expected target info")
+		}
+
+		if resp.Target.ModuleId == "" {
+			t.Error("Target.ModuleId is empty — resolvePrepareTarget should derive it from the symbol's file path (pkg/handler.go -> \"pkg\") when the SCIP backend doesn't supply one")
+		}
+	})
+}
