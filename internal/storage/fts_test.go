@@ -184,6 +184,62 @@ func TestFTSManagerSearch(t *testing.T) {
 	}
 }
 
+// TestFTSManagerSearchExactCasePriority locks down the fix for the
+// evidence-output-bugs ranking regression: unicode61 (FTS5's default
+// tokenizer) folds case, so bm25() alone can't tell "Model" from "model"
+// apart and LIMIT can truncate the pool before Go-side ranking ever sees
+// the case-exact match. searchExact must put a case-sensitive exact name
+// match first — ahead of bm25 — so a small LIMIT (as SearchSymbols uses for
+// GetSymbol's single-result resolution) can't drop it.
+func TestFTSManagerSearchExactCasePriority(t *testing.T) {
+	db, cleanup := setupTestFTSDB(t)
+	defer cleanup()
+
+	manager := NewFTSManager(db, DefaultFTSConfig())
+	if err := manager.InitSchema(); err != nil {
+		t.Fatalf("failed to init schema: %v", err)
+	}
+
+	// Order matters here: the field/property rows are inserted (and thus
+	// get lower rowids) before the class, so a naive bm25/rowid tie-break
+	// would put them first — exactly what regressed in the TS fixture.
+	symbols := []SymbolFTSRecord{
+		{ID: "field1", Name: "model", Kind: "parameter", Signature: "DefaultService.model", FilePath: "service.go", Language: "go"},
+		{ID: "field2", Name: "model", Kind: "property", Signature: "DefaultService.model", FilePath: "service.go", Language: "go"},
+		{ID: "class1", Name: "Model", Kind: "class", Signature: "Model", FilePath: "model.go", Language: "go"},
+	}
+	ctx := context.Background()
+	if err := manager.BulkInsert(ctx, symbols); err != nil {
+		t.Fatalf("bulk insert failed: %v", err)
+	}
+
+	// Even with a tiny limit (mirrors SearchSymbols' opts.Limit*ftsMultiplier
+	// for a Limit:1 caller), the case-sensitive exact match must come back.
+	results, err := manager.Search(ctx, "Model", 2)
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one result")
+	}
+	if got := results[0]; got.Name != "Model" || got.Kind != "class" {
+		t.Errorf("top result = %+v, want case-sensitive exact match Name=Model Kind=class", got)
+	}
+
+	// A case-fold-only query should still prefer the type-like kind over
+	// the property/parameter when there's no case-sensitive winner at all.
+	results, err = manager.Search(ctx, "MODEL", 2)
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one result")
+	}
+	if got := results[0]; got.Kind != "class" {
+		t.Errorf("top case-fold-only result kind = %q, want %q (type-like kind should tie-break over property/parameter)", got.Kind, "class")
+	}
+}
+
 func TestFTSManagerGetStats(t *testing.T) {
 	db, cleanup := setupTestFTSDB(t)
 	defer cleanup()

@@ -1,11 +1,16 @@
 {
   "blastRadius": {
-    "fileCount": 1,
+    "fileCount": 2,
     "moduleCount": 1,
     "riskLevel": "low",
-    "uniqueCallerCount": 1
+    "uniqueCallerCount": 0
   },
   "directImpact": [
+    {
+      "file": "src/pkg/server.ts",
+      "kind": "unknown",
+      "name": ""
+    },
     {
       "file": "src/pkg/server.ts",
       "kind": "unknown",
@@ -14,17 +19,27 @@
     {
       "file": "src/pkg/server.ts",
       "kind": "unknown",
-      "name": "getHandler"
+      "name": "Server"
     },
     {
       "file": "src/pkg/server.ts",
       "kind": "unknown",
-      "name": "runServer"
+      "name": "getHandler"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "unknown",
+      "name": "newHandler"
+    },
+    {
+      "file": "src/pkg/server.ts",
+      "kind": "unknown",
+      "name": "newServer"
     }
   ],
   "modulesAffected": [
     {
-      "impactCount": 3,
+      "impactCount": 6,
       "moduleId": "src/pkg",
       "name": "src/pkg"
     }
@@ -35,9 +50,9 @@
     "score": 0.36
   },
   "symbol": {
-    "file": "src/pkg/server.ts",
-    "kind": "property",
-    "name": "handler"
+    "file": "src/pkg/handler.ts",
+    "kind": "class",
+    "name": "Handler"
   },
   "visibility": {
     "confidence": 0.9,

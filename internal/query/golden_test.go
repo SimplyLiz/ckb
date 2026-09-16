@@ -242,13 +242,14 @@ func TestGolden_GetSymbol(t *testing.T) {
 			{"NewHandler", "symbol_NewHandler", nil},         // Factory function
 			{"DefaultService", "symbol_DefaultService", nil}, // Implementation class
 			{"FormatOutput", "symbol_FormatOutput", nil},     // Internal function
-			// Kind-filtered to "class": now that field/property members are
-			// correctly indexed (see fix/evidence-output-bugs), the fixtures
-			// also contain a lowercase "model" field which is an equally
-			// valid, unfiltered name match for the query "Model" — ranking
-			// alone is no longer enough to deterministically land on the
-			// "Data structure" class this case is meant to exercise.
-			{"Model", "symbol_Model", []string{"class"}}, // Data structure
+			// No Kind filter: the fixtures also contain a lowercase "model"
+			// field/property (an equally valid, case-insensitive name match
+			// for the query "Model"). Ranking alone must land on the "Model"
+			// class — see rankSearchResults' case-sensitive exact-match tier
+			// and searchExact's case-sensitive ORDER BY in
+			// internal/storage/fts.go, both added in fix/evidence-output-bugs
+			// to prefer the exact-case type over a same-named member.
+			{"Model", "symbol_Model", nil}, // Data structure
 		}
 
 		for _, tc := range testCases {
