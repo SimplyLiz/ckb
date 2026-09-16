@@ -9,17 +9,17 @@
     {
       "file": "src/pkg/server.ts",
       "kind": "unknown",
-      "name": "unknown"
+      "name": "Server#`\u003cconstructor\u003e`"
     },
     {
       "file": "src/pkg/server.ts",
       "kind": "unknown",
-      "name": "unknown"
+      "name": "getHandler"
     },
     {
       "file": "src/pkg/server.ts",
       "kind": "unknown",
-      "name": "unknown"
+      "name": "runServer"
     }
   ],
   "modulesAffected": [],
@@ -31,7 +31,7 @@
   "symbol": {
     "file": "src/pkg/server.ts",
     "kind": "class",
-    "name": "Server#handler"
+    "name": "handler"
   },
   "visibility": {
     "confidence": 0.9,

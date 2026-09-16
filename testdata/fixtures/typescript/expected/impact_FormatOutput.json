@@ -9,22 +9,22 @@
     {
       "file": "src/main.ts",
       "kind": "unknown",
-      "name": "unknown"
+      "name": ""
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "unknown",
+      "name": ""
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "unknown",
+      "name": "handle"
     },
     {
       "file": "src/main.ts",
       "kind": "unknown",
-      "name": "unknown"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "unknown",
-      "name": "unknown"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "unknown",
-      "name": "unknown"
+      "name": "main"
     }
   ],
   "modulesAffected": [],

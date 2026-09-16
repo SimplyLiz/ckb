@@ -37,6 +37,38 @@ func TestConvertToReference_ResolvesFromSymbol(t *testing.T) {
 	}
 }
 
+// TestConvertToReference_ModuleLevelEnclosingSymbol is a regression test
+// for a bug found while validating the FromSymbol fix above: some scip-ts
+// "enclosing symbols" are module/namespace-level (descriptor ends in a
+// bare "/" with nothing after it, e.g. a whole-file scope), and
+// GetSimpleName legitimately can't derive a short name for those. Without
+// this guard, convertToReference still set FromSymbol to the raw SCIP ID,
+// and downstream (internal/impact's extractNameFromStableId fallback)
+// echoed that whole raw ID — spaces, backticks and all — as the "name" in
+// ckb impact prepare's directDependents, which is worse than the
+// "unknown" placeholder it replaced. FromSymbol/FromSymbolName should
+// both stay empty in this case, same as when there's no enclosing symbol
+// at all.
+func TestConvertToReference_ModuleLevelEnclosingSymbol(t *testing.T) {
+	adapter := &SCIPAdapter{}
+
+	scipRef := &SCIPReference{
+		SymbolId:   "scip-typescript npm fixture 1.0.0 src/internal/`util.ts`/FormatOutput().",
+		Location:   &Location{FileId: "src/main.ts", StartLine: 1},
+		Kind:       RefReference,
+		FromSymbol: "scip-typescript npm fixture 1.0.0 src/`main.ts`/",
+	}
+
+	ref := adapter.convertToReference(scipRef)
+
+	if ref.FromSymbol != "" {
+		t.Errorf("FromSymbol = %q, want empty (module-level symbol has no short name)", ref.FromSymbol)
+	}
+	if ref.FromSymbolName != "" {
+		t.Errorf("FromSymbolName = %q, want empty", ref.FromSymbolName)
+	}
+}
+
 // TestConvertToReference_NoEnclosingSymbol verifies that when the backend
 // genuinely can't resolve an enclosing symbol (e.g. a package-level
 // reference outside any function), FromSymbol/FromSymbolName stay empty

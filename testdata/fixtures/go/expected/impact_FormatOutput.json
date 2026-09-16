@@ -9,17 +9,17 @@
     {
       "file": "main.go",
       "kind": "type-dependency",
-      "name": "unknown"
+      "name": ""
     },
     {
       "file": "pkg/handler.go",
       "kind": "type-dependency",
-      "name": "unknown"
+      "name": ""
     },
     {
       "file": "pkg/service.go",
       "kind": "type-dependency",
-      "name": "unknown"
+      "name": ""
     }
   ],
   "modulesAffected": [],

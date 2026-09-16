@@ -368,10 +368,22 @@ func (s *SCIPAdapter) convertToReference(scipRef *SCIPReference) backends.Refere
 		}
 	}
 
+	// fromSymbol/fromSymbolName resolve the enclosing symbol (e.g. the
+	// caller function containing this reference). Some scip-go/scip-ts
+	// "enclosing symbols" are module/namespace-level (descriptor ends in
+	// just "/" with nothing after it, e.g. a bare file-scope symbol) and
+	// GetSimpleName legitimately has no short name to give back. Treat
+	// that the same as "no enclosing symbol resolved" rather than
+	// surfacing the raw, space-and-backtick-laden SCIP ID as a "name" —
+	// callers should omit the field, not display a wall of text.
+	fromSymbol := ""
 	fromSymbolName := ""
 	if scipRef.FromSymbol != "" {
 		if fromId, err := ParseSCIPIdentifier(scipRef.FromSymbol); err == nil {
-			fromSymbolName = fromId.GetSimpleName()
+			if name := fromId.GetSimpleName(); name != "" {
+				fromSymbol = scipRef.FromSymbol
+				fromSymbolName = name
+			}
 		}
 	}
 
@@ -380,7 +392,7 @@ func (s *SCIPAdapter) convertToReference(scipRef *SCIPReference) backends.Refere
 		Kind:           string(scipRef.Kind),
 		SymbolID:       scipRef.SymbolId,
 		Context:        scipRef.Context,
-		FromSymbol:     scipRef.FromSymbol,
+		FromSymbol:     fromSymbol,
 		FromSymbolName: fromSymbolName,
 	}
 }
