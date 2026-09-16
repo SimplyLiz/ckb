@@ -1,7 +1,5 @@
 package mcp
 
-import "fmt"
-
 // ServerCapabilities represents the capabilities exposed by the MCP server
 type ServerCapabilities struct {
 	Tools     *ToolsCapability     `json:"tools,omitempty"`
@@ -54,61 +52,52 @@ var instructionToolNames = []string{
 }
 
 // instructionsCore is the "consumer contract v0" critical path: when to
-// reach for CKB and the expandToolset rule. MCP clients such as Codex
-// truncate the initialize "instructions" field at 512 characters
-// (https://learn.chatgpt.com/ko-KR/docs/extend/mcp), so this block is sized
-// to land inside that budget on its own — see
+// reach for CKB, the expandToolset rule, and how to get to reviewPR. MCP
+// clients such as Codex truncate the initialize "instructions" field at 512
+// characters (https://learn.chatgpt.com/ko-KR/docs/extend/mcp), so this
+// block is sized to land inside that budget on its own — see
 // TestInstructionsCoreFitsIn512Bytes. Everything after it in
 // instructionsText is optional detail that may be cut.
 //
-// Every tool named here (prepareChange, explore, understand, searchSymbols,
-// findReferences, expandToolset) is present in *every* preset, including
-// the default "core" one — see coreToolOrder in presets.go — so this text
-// needs no preset branching to stay accurate.
-const instructionsCore = `CKB is code intelligence for this repo: symbol index, parsers, git history ` +
-	`(not just grep). Before editing code, call prepareChange for callers, tests, ` +
-	`and risk. New to the code, call explore or understand to get oriented. To find ` +
-	`a symbol, call searchSymbols, then findReferences with its symbolId for usages. ` +
-	`Need a tool outside your current preset: call expandToolset once per session ` +
-	`with a preset and reason -- it replaces your active preset, so pick "full" if ` +
-	`a task spans areas (e.g. review + refactor).`
+// The PR-review sentence is deliberately state-independent: instructions are
+// generated once, at initialize (see handleInitialize below), and never
+// resent after expandToolset changes the active preset — a session that
+// expands mid-conversation is still holding the text handed out at startup.
+// So instead of branching on "does the starting preset have reviewPR"
+// (which goes stale the moment expandToolset runs, and reads wrong for a
+// session that expanded to something other than review/full), the sentence
+// covers every reachable state in one line: call reviewPR if it's already
+// there; otherwise, if this session hasn't spent its one allowed expansion
+// yet, call expandToolset for it; otherwise (already expanded, still no
+// reviewPR) expanding again would just be rejected, so the only real move
+// left is restarting the server with the right preset.
+//
+// Every tool named here (prepareChange, searchSymbols, findReferences,
+// expandToolset, reviewPR) needs no preset branching to stay accurate:
+// prepareChange/searchSymbols/findReferences/expandToolset are present in
+// every preset (see coreToolOrder in presets.go), and the reviewPR sentence
+// itself is written to hold regardless of preset or expansion state.
+const instructionsCore = `CKB is code intelligence for this repo: symbols, parsers, git history ` +
+	`(not grep). Before editing, call prepareChange for callers, tests, and risk. ` +
+	`Find symbols via searchSymbols, then findReferences with the symbolId. ` +
+	`Reviewing a PR: call reviewPR if you have it; otherwise, if not yet expanded, ` +
+	`call expandToolset once with preset "review" or "full" and a reason (it replaces ` +
+	`your preset); already expanded without reviewPR? Restart CKB with --preset=review.`
 
 // instructionsText builds the InitializeResult.Instructions string.
 //
-// instructionsCore always comes first (see its doc comment for why). The
-// rest names only tools that, like the core block, are present in every
-// preset (analyzeImpact, getStatus) — except the reviewPR line, which is the
-// one part of this text that is genuinely preset-dependent: reviewPR only
-// ships in the "review" and "full" presets, so sessions on any other preset
-// are told to expandToolset for it instead of being told to just call it.
-func instructionsText(preset string) string {
-	reviewLine := `Reviewing a PR: call expandToolset with preset "review" and a reason to get reviewPR, the unified quality gate.`
-	if presetHasTool(preset, "reviewPR") {
-		reviewLine = `Reviewing a PR: call reviewPR, the unified quality gate (breaking changes, secrets, dead code, test gaps, risk).`
-	}
-
-	return fmt.Sprintf(
-		instructionsCore+
-			"\n\nFor just callers and impact (no test/risk detail), call analyzeImpact instead."+
-			"\n\n%s"+
-			"\n\nResults come from the index, parsers, and git history; searchSymbols searches text first. "+
-			"Check getStatus if the index looks stale or missing. CKB never edits your source files.",
-		reviewLine,
-	)
-}
-
-// presetHasTool reports whether the given preset exposes toolName.
-func presetHasTool(preset, toolName string) bool {
-	tools := GetPresetTools(preset)
-	if len(tools) == 1 && tools[0] == "*" {
-		return true
-	}
-	for _, t := range tools {
-		if t == toolName {
-			return true
-		}
-	}
-	return false
+// instructionsCore always comes first (see its doc comment for why) and is
+// self-contained: it is not parameterized by preset or expansion state, so
+// this function needs no branching to stay accurate as a session's toolset
+// changes after initialize. The rest is optional detail, safe to truncate,
+// covering tools not named in the core sentence.
+func instructionsText() string {
+	return instructionsCore +
+		"\n\nNew to the code, call explore or understand to get oriented. For just " +
+		"callers and impact (no test/risk detail), call analyzeImpact instead. " +
+		"Results come from the index, parsers, and git history; searchSymbols " +
+		"searches text first. Check getStatus if the index looks stale or missing. " +
+		"CKB never edits your source files."
 }
 
 // handleInitialize handles the initialize request
@@ -152,7 +141,7 @@ func (s *MCPServer) handleInitialize(params map[string]interface{}) (*Initialize
 			Name:    "ckb",
 			Version: s.version,
 		},
-		Instructions: instructionsText(s.GetActivePreset()),
+		Instructions: instructionsText(),
 	}
 
 	return result, nil

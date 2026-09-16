@@ -48,11 +48,12 @@ func TestHandleInitializeIncludesInstructions(t *testing.T) {
 // contract survives Codex's 512-character truncation of MCP `instructions`
 // (https://learn.chatgpt.com/ko-KR/docs/extend/mcp). Everything that must
 // reach a truncating client has to be inside this window: prepareChange for
-// pre-edit checks, explore/understand for orientation, searchSymbols +
-// findReferences for symbol lookup, and the expandToolset expansion rule
-// (including that it's a one-time, session-scoped operation).
+// pre-edit checks, searchSymbols + findReferences for symbol lookup, the
+// expandToolset expansion rule (including that it's a one-time,
+// session-scoped operation that can expand to "full"), and how to get to
+// reviewPR for PR review.
 func TestInstructionsCoreFitsIn512Bytes(t *testing.T) {
-	text := instructionsText(DefaultPreset)
+	text := instructionsText()
 	full := []byte(text)
 	cut := 512
 	if len(full) < cut {
@@ -60,58 +61,95 @@ func TestInstructionsCoreFitsIn512Bytes(t *testing.T) {
 	}
 	first512 := string(full[:cut])
 
-	for _, want := range []string{"prepareChange", "explore", "understand", "searchSymbols", "findReferences", "expandToolset", "once"} {
+	for _, want := range []string{"prepareChange", "searchSymbols", "findReferences", "expandToolset", "reviewPR", "once", "full"} {
 		if !strings.Contains(first512, want) {
 			t.Errorf("first 512 chars of instructions must contain %q (Codex truncates here), got: %s", want, first512)
 		}
 	}
 }
 
-// TestInstructionsTextPresetAware asserts the reviewPR framing changes
-// depending on whether the active preset already exposes reviewPR (review,
-// full) versus requiring expandToolset first (core, refactor, federation,
-// docs, ops), and that the expansion instruction uses the real tool call
-// shape (preset + reason params) rather than pseudo-call syntax.
-func TestInstructionsTextPresetAware(t *testing.T) {
-	core := instructionsText(PresetCore)
-	if strings.Contains(core, `expandToolset("review")`) {
-		t.Errorf("core preset instructions must not use pseudo-call syntax like expandToolset(\"review\"); expandToolset takes {preset, reason}, got: %s", core)
-	}
-	if !strings.Contains(core, `expandToolset with preset "review" and a reason`) {
-		t.Errorf("core preset instructions should tell the agent to call expandToolset with preset \"review\" and a reason before reviewPR is usable, got: %s", core)
-	}
-
-	review := instructionsText(PresetReview)
-	if strings.Contains(review, `expandToolset with preset "review"`) {
-		t.Errorf("review preset instructions should not tell the agent to expand into review (it's already active), got: %s", review)
-	}
-	if !strings.Contains(review, "reviewPR") {
-		t.Errorf("review preset instructions should still mention reviewPR directly, got: %s", review)
+// TestInstructionsTextStateIndependent asserts instructionsText carries no
+// per-preset branching: it takes no arguments and its output does not
+// depend on which preset a session starts on or later expands into. This is
+// the fix for the bug where a core session's instructions went stale the
+// moment expandToolset ran (instructions are generated once, at
+// initialize, and never resent — see handleInitialize).
+func TestInstructionsTextStateIndependent(t *testing.T) {
+	if instructionsText() != instructionsText() {
+		t.Fatal("instructionsText must be a pure, state-independent function")
 	}
 }
 
-// TestInstructionsTextEveryPresetToolsResolvable asserts that, for every
-// preset, every tool name from instructionToolNames that appears in that
-// preset's generated instructions text is either (a) actually available in
-// that preset, or (b) reached via expandToolset — never named as directly
-// callable when it isn't actually in the active toolset.
-func TestInstructionsTextEveryPresetToolsResolvable(t *testing.T) {
-	for _, preset := range ValidPresets() {
-		text := instructionsText(preset)
+// TestInstructionsSurviveExpansion is the core -> expand("review") state
+// transition test: it captures the instructions text the way a client
+// actually receives it (once, at initialize, before any expansion), then
+// drives the session through toolExpandToolset, then re-checks that exact
+// same text against the post-expansion state. Because instructions are never
+// resent, that pre-expansion text is the only guidance the agent has for the
+// rest of the session — so it must not tell the agent to do anything that
+// would now be rejected (a second expandToolset call), regardless of
+// whether the session expanded into a preset with reviewPR or not.
+func TestInstructionsSurviveExpansion(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := NewMCPServer("test", nil, logger)
 
-		for _, name := range instructionToolNames {
-			if !strings.Contains(text, name) {
-				continue // not mentioned for this preset's text, nothing to check
-			}
-			if presetHasTool(preset, name) {
-				continue // mentioned and genuinely available - fine
-			}
-			// Mentioned but not in this preset's toolset: the text must route
-			// the agent through expandToolset rather than implying it's
-			// directly callable.
-			if !strings.Contains(text, "expandToolset") {
-				t.Errorf("preset %q: instructions mention %q but it is not in this preset and the text does not route through expandToolset: %s", preset, name, text)
-			}
+	// What the client received at initialize, before any expansion.
+	initial, err := server.handleInitialize(map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("handleInitialize returned error: %v", err)
+	}
+	text := initial.Instructions
+
+	// Session expands mid-conversation, into a preset that does NOT carry
+	// reviewPR (refactor), which is the case the old preset-branching text
+	// got wrong: it would still be telling the agent to "expandToolset with
+	// preset review", a call that's now rejected.
+	if _, err := server.toolExpandToolset(map[string]interface{}{
+		"preset": PresetRefactor,
+		"reason": "refactoring analysis for this change",
+	}); err != nil {
+		t.Fatalf("toolExpandToolset returned error: %v", err)
+	}
+	if !server.IsExpanded() {
+		t.Fatal("expected session to be marked expanded")
+	}
+	if server.GetActivePreset() != PresetRefactor {
+		t.Fatalf("expected active preset %q, got %q", PresetRefactor, server.GetActivePreset())
+	}
+
+	// The text the agent is still holding must not instruct an unconditional
+	// second expansion -- it must instead be readable, in this now-expanded-
+	// without-reviewPR state, as "restart with --preset=review".
+	if !strings.Contains(text, `already expanded without reviewPR? Restart`) {
+		t.Errorf("instructions must gate the expandToolset advice so it does not require a second expansion once already expanded, got: %s", text)
+	}
+}
+
+// TestInstructionsTextEveryToolResolvable asserts every tool name from
+// instructionToolNames that appears in the generated instructions text is
+// either (a) available in the default "core" preset every session starts
+// on, or (b) reached via expandToolset -- never named as directly callable
+// when it isn't actually in the starting toolset.
+func TestInstructionsTextEveryToolResolvable(t *testing.T) {
+	text := instructionsText()
+	coreTools := GetPresetTools(PresetCore)
+	inCore := make(map[string]bool, len(coreTools))
+	for _, name := range coreTools {
+		inCore[name] = true
+	}
+
+	for _, name := range instructionToolNames {
+		if !strings.Contains(text, name) {
+			continue // not mentioned, nothing to check
+		}
+		if inCore[name] {
+			continue // mentioned and genuinely available in the starting preset - fine
+		}
+		// Mentioned but not in the starting preset: the text must route the
+		// agent through expandToolset rather than implying it's directly
+		// callable.
+		if !strings.Contains(text, "expandToolset") {
+			t.Errorf("instructions mention %q but it is not in the core preset and the text does not route through expandToolset: %s", name, text)
 		}
 	}
 }
