@@ -17,12 +17,13 @@ import (
 )
 
 var (
-	setupGlobal  bool
-	setupNpx     bool
-	setupTool    string
-	setupPreset  string
-	setupNoIndex bool
-	setupNoWatch bool
+	setupGlobal   bool
+	setupNpx      bool
+	setupTool     string
+	setupPreset   string
+	setupNoIndex  bool
+	setupNoWatch  bool
+	setupIndexNow bool
 )
 
 // aiTool represents an AI coding tool that supports MCP
@@ -58,20 +59,27 @@ var setupCmd = &cobra.Command{
 Supports: Claude Code, Cursor, Windsurf, VS Code, OpenCode, Grok, Claude Desktop, Codex
 
 For project-scope setups, this also makes sure the project itself is ready:
-it runs 'ckb init' if .ckb/ is missing and 'ckb index' if there's no usable
-index yet, so 'ckb setup' alone is enough to get full code intelligence —
-no separate init/index dance required. Use --no-index to skip that step.
+it runs 'ckb init' if .ckb/ is missing, so 'ckb setup' alone is enough to
+get code intelligence going — no separate init dance required.
 
-Generated MCP server configs include --watch by default, so the server
-keeps the index fresh during the session. Use --no-watch to opt out.
+Building the SCIP index is non-blocking by default: the generated MCP
+server config includes --watch, so the index builds itself in the
+background the moment your AI tool starts the server — setup doesn't sit in
+the foreground running an indexer that can take anywhere from seconds to
+tens of minutes on a large repo. Run 'ckb index' yourself any time, or pass
+--index-now to have setup build it in the foreground before exiting.
+--no-watch has no watch loop to build it later, so it always indexes in the
+foreground regardless of --index-now. Use --no-index to skip indexing
+entirely (still runs 'ckb init').
 
 Examples:
-  ckb setup                    # Interactive setup
+  ckb setup                    # Interactive setup (index builds in the background)
   ckb setup --tool=cursor      # Configure for Cursor
   ckb setup --tool=grok        # Configure for Grok
   ckb setup --tool=codex       # Configure for Codex CLI
   ckb setup --tool=vscode --global  # Configure VS Code globally
   ckb setup --npx              # Use npx for portable setup
+  ckb setup --index-now        # Build the SCIP index in the foreground before exiting
   ckb setup --no-index         # Skip auto-init/index for this project`,
 	RunE: runSetup,
 }
@@ -82,7 +90,8 @@ func init() {
 	setupCmd.Flags().StringVar(&setupTool, "tool", "", "AI tool to configure (claude-code, cursor, windsurf, vscode, opencode, grok, claude-desktop, codex)")
 	setupCmd.Flags().StringVar(&setupPreset, "preset", "", "Tool preset: core (default), review, refactor, federation, docs, ops, full")
 	setupCmd.Flags().BoolVar(&setupNoIndex, "no-index", false, "Skip auto-init/index for project-scope setups")
-	setupCmd.Flags().BoolVar(&setupNoWatch, "no-watch", false, "Don't add --watch to the generated MCP server command")
+	setupCmd.Flags().BoolVar(&setupNoWatch, "no-watch", false, "Don't add --watch to the generated MCP server command (indexes in the foreground instead, since nothing else would build it)")
+	setupCmd.Flags().BoolVar(&setupIndexNow, "index-now", false, "Build the SCIP index in the foreground now instead of letting watch mode build it in the background")
 	rootCmd.AddCommand(setupCmd)
 }
 
@@ -267,12 +276,21 @@ func runSetup(cmd *cobra.Command, args []string) error {
 }
 
 // ensureProjectReady makes project-scope 'ckb setup' self-sufficient: it runs
-// the same init logic as 'ckb init' if .ckb/ is missing, then the same index
-// logic as 'ckb index' if there's no usable index yet, so a developer never
-// has to know those commands exist. Neither step is allowed to fail setup:
-//   - init failure is surfaced (a broken .ckb/ means the MCP server can't work)
-//   - index failure/skip is only ever reported as a one-line note, because
-//     Git-based features (hotspots, ownership, diffs) work without SCIP.
+// the same init logic as 'ckb init' if .ckb/ is missing, so a developer
+// never has to know that command exists. Init failure is surfaced (a broken
+// .ckb/ means the MCP server can't work at all).
+//
+// Building the SCIP index itself is non-blocking by default: when the
+// generated MCP config runs with --watch (the default), the watch loop
+// builds the index on its own the moment the AI tool starts the server —
+// see runWatchLoop's immediate first check — so setup doesn't need to sit
+// in the foreground running an indexer that can take anywhere from seconds
+// to tens of minutes. --no-watch has no watch loop to fall back on, so it
+// always indexes here in the foreground; --index-now does the same
+// regardless of --watch, for anyone who wants the index ready before setup
+// exits. Either way, index failure/skip is only ever reported as a one-line
+// note, because Git-based features (hotspots, ownership, diffs) work
+// without SCIP.
 //
 // Called from runSetup AFTER configureTool has already written the MCP
 // config, specifically so that a slow indexer (or a developer hitting
@@ -286,6 +304,13 @@ func ensureProjectReady() error {
 
 	if err := ensureCkbInitialized(); err != nil {
 		return err
+	}
+
+	if !setupIndexNow && !setupNoWatch {
+		fmt.Println("CKB is indexing in the background when your agent starts it (watch mode).")
+		fmt.Println("Run `ckb index` now to do it in the foreground.")
+		fmt.Println()
+		return nil
 	}
 
 	cwd, err := os.Getwd()

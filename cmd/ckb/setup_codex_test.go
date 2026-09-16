@@ -656,11 +656,11 @@ func TestWriteCodexConfig_PreservesExistingMode_UnusualPermissions(t *testing.T)
 // state into other tests (these are cobra-bound package vars, not locals).
 func resetSetupFlags(t *testing.T) func() {
 	t.Helper()
-	oldGlobal, oldNpx, oldTool, oldPreset, oldNoIndex, oldNoWatch :=
-		setupGlobal, setupNpx, setupTool, setupPreset, setupNoIndex, setupNoWatch
+	oldGlobal, oldNpx, oldTool, oldPreset, oldNoIndex, oldNoWatch, oldIndexNow :=
+		setupGlobal, setupNpx, setupTool, setupPreset, setupNoIndex, setupNoWatch, setupIndexNow
 	return func() {
-		setupGlobal, setupNpx, setupTool, setupPreset, setupNoIndex, setupNoWatch =
-			oldGlobal, oldNpx, oldTool, oldPreset, oldNoIndex, oldNoWatch
+		setupGlobal, setupNpx, setupTool, setupPreset, setupNoIndex, setupNoWatch, setupIndexNow =
+			oldGlobal, oldNpx, oldTool, oldPreset, oldNoIndex, oldNoWatch, oldIndexNow
 	}
 }
 
@@ -815,7 +815,10 @@ func TestEnsureProjectReady_NoIndex_StillInits(t *testing.T) {
 // TestEnsureProjectReady_NoLanguage_DoesNotFailSetup verifies that when a
 // project has no detectable language (so no indexer to speak of), setup
 // still succeeds — the whole point of moving index.go's os.Exit calls to
-// returned outcomes.
+// returned outcomes. Uses --index-now to force the foreground path this
+// actually exercises: with --watch's non-blocking default, ensureProjectReady
+// wouldn't call performIndex at all here, so the "no language" outcome would
+// never be reached.
 func TestEnsureProjectReady_NoLanguage_DoesNotFailSetup(t *testing.T) {
 	restore := resetSetupFlags(t)
 	defer restore()
@@ -833,6 +836,7 @@ func TestEnsureProjectReady_NoLanguage_DoesNotFailSetup(t *testing.T) {
 	defer func() { _ = os.Chdir(oldWd) }()
 
 	setupNoIndex = false
+	setupIndexNow = true
 
 	if err := ensureProjectReady(); err != nil {
 		t.Fatalf("ensureProjectReady should not fail setup when no language is detected: %v", err)
@@ -840,6 +844,222 @@ func TestEnsureProjectReady_NoLanguage_DoesNotFailSetup(t *testing.T) {
 
 	if _, statErr := os.Stat(filepath.Join(dir, ".ckb")); statErr != nil {
 		t.Errorf(".ckb/ was not created: %v", statErr)
+	}
+}
+
+// TestEnsureProjectReady_WatchDefault_SkipsForegroundIndex covers the P2
+// fix: with --watch enabled (the default) and neither --index-now nor
+// --no-watch set, ensureProjectReady must not block on a foreground index —
+// it initializes .ckb/ and leaves indexing for the watch loop to pick up
+// once the MCP server actually starts (runWatchLoop's immediate first
+// check, tested in mcp_test.go).
+func TestEnsureProjectReady_WatchDefault_SkipsForegroundIndex(t *testing.T) {
+	restore := resetSetupFlags(t)
+	defer restore()
+
+	t.Setenv("HOME", t.TempDir())
+
+	dir := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/x\n\ngo 1.21\n"), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+	// If ensureProjectReady regressed to indexing in the foreground here,
+	// this fake indexer would produce index.scip and the assertion below
+	// would catch it.
+	writeFakeIndexer(t, "scip-go", `: > index.scip`)
+
+	setupNoIndex = false
+	setupNoWatch = false
+	setupIndexNow = false
+
+	if err := ensureProjectReady(); err != nil {
+		t.Fatalf("ensureProjectReady failed: %v", err)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(dir, ".ckb")); statErr != nil {
+		t.Errorf(".ckb/ was not created: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "index.scip")); statErr == nil {
+		t.Error("index.scip should not exist yet — indexing should be deferred to watch mode, not run in the foreground")
+	}
+}
+
+// TestEnsureProjectReady_IndexNow_ForcesForegroundIndex covers --index-now:
+// even with --watch enabled (the default), it must still build the index in
+// the foreground before setup returns.
+func TestEnsureProjectReady_IndexNow_ForcesForegroundIndex(t *testing.T) {
+	restore := resetSetupFlags(t)
+	defer restore()
+
+	// Manual temp dirs, not t.TempDir(): this exercises a real foreground
+	// index run (real "go" toolchain probes for tier detection, plus
+	// populateIncrementalTracking opening a sqlite db), which can leave
+	// GOCACHE/Library/Caches content under $HOME after the test returns.
+	// t.TempDir()'s synchronous cleanup can race that tail end of work;
+	// os.RemoveAll ignoring its error avoids failing the test on a cleanup
+	// timing race unrelated to what it verifies. Disabling the tier summary
+	// below avoids most of that work outright.
+	home, err := os.MkdirTemp("", "ckb-setup-home-*")
+	if err != nil {
+		t.Fatalf("failed to create temp home dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(home) }()
+	t.Setenv("HOME", home)
+
+	oldShowTier := indexShowTier
+	indexShowTier = false
+	defer func() { indexShowTier = oldShowTier }()
+
+	dir, err := os.MkdirTemp("", "ckb-setup-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/x\n\ngo 1.21\n"), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+	writeFakeIndexer(t, "scip-go", `: > index.scip`)
+
+	setupNoIndex = false
+	setupNoWatch = false
+	setupIndexNow = true
+
+	if err := ensureProjectReady(); err != nil {
+		t.Fatalf("ensureProjectReady failed: %v", err)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(dir, "index.scip")); statErr != nil {
+		t.Errorf("--index-now should have built the index in the foreground: %v", statErr)
+	}
+}
+
+// TestEnsureProjectReady_NoWatch_ForcesForegroundIndex covers --no-watch:
+// since the generated MCP config won't have a watch loop to build the index
+// later, ensureProjectReady must still build it in the foreground —
+// otherwise nothing ever would.
+func TestEnsureProjectReady_NoWatch_ForcesForegroundIndex(t *testing.T) {
+	restore := resetSetupFlags(t)
+	defer restore()
+
+	// Manual temp dirs — see the comment in
+	// TestEnsureProjectReady_IndexNow_ForcesForegroundIndex.
+	home, err := os.MkdirTemp("", "ckb-setup-home-*")
+	if err != nil {
+		t.Fatalf("failed to create temp home dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(home) }()
+	t.Setenv("HOME", home)
+
+	oldShowTier := indexShowTier
+	indexShowTier = false
+	defer func() { indexShowTier = oldShowTier }()
+
+	dir, err := os.MkdirTemp("", "ckb-setup-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/x\n\ngo 1.21\n"), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+	writeFakeIndexer(t, "scip-go", `: > index.scip`)
+
+	setupNoIndex = false
+	setupNoWatch = true
+	setupIndexNow = false
+
+	if err := ensureProjectReady(); err != nil {
+		t.Fatalf("ensureProjectReady failed: %v", err)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(dir, "index.scip")); statErr != nil {
+		t.Errorf("--no-watch should have built the index in the foreground (nothing else would): %v", statErr)
+	}
+}
+
+// TestRunSetup_IndexNow_BuildsForegroundIndex is the end-to-end wiring check
+// for --index-now through the real runSetup flag/CLI path, not just
+// ensureProjectReady directly.
+func TestRunSetup_IndexNow_BuildsForegroundIndex(t *testing.T) {
+	restore := resetSetupFlags(t)
+	defer restore()
+
+	// Manual temp dirs — see the comment in
+	// TestEnsureProjectReady_IndexNow_ForcesForegroundIndex.
+	home, err := os.MkdirTemp("", "ckb-setup-home-*")
+	if err != nil {
+		t.Fatalf("failed to create temp home dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(home) }()
+	t.Setenv("HOME", home)
+
+	oldShowTier := indexShowTier
+	indexShowTier = false
+	defer func() { indexShowTier = oldShowTier }()
+
+	dir, err := os.MkdirTemp("", "ckb-setup-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/x\n\ngo 1.21\n"), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+	writeFakeIndexer(t, "scip-go", `: > index.scip`)
+
+	setupTool = "codex"
+	setupGlobal = false
+	setupPreset = "core"
+	setupNoIndex = false
+	setupNoWatch = false
+	setupIndexNow = true
+	setupNpx = true
+
+	if err := runSetup(nil, nil); err != nil {
+		t.Fatalf("runSetup failed: %v", err)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(dir, "index.scip")); statErr != nil {
+		t.Errorf("--index-now should have built the index in the foreground: %v", statErr)
 	}
 }
 

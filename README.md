@@ -130,19 +130,22 @@ go build -o ckb ./cmd/ckb
 ### Setup
 
 ```bash
-# 1. Initialize in your project
 cd /path/to/your/project
-ckb init   # or: npx @tastehub/ckb init
 
-# 2. Generate SCIP index (optional but recommended)
-ckb index  # auto-detects language and runs appropriate indexer
-
-# 3. Connect to Claude Code
-ckb setup  # creates .mcp.json automatically
+# One command: initializes CKB and connects it to Claude Code
+ckb setup   # or: npx @tastehub/ckb setup
 
 # Or manually:
 claude mcp add --transport stdio ckb -- npx @tastehub/ckb mcp
 ```
+
+`ckb setup` runs `ckb init` for you if needed, then writes the MCP config.
+Building the SCIP index is non-blocking by default: the generated config
+runs with `--watch`, so the index builds itself in the background the
+moment your AI tool starts the server — setup doesn't sit there running an
+indexer that can take anywhere from seconds to tens of minutes on a big
+repo. Want it ready before setup exits? `ckb setup --index-now`. Prefer to
+build it yourself whenever you like? `ckb index`.
 
 **Token efficiency shown at startup:**
 ```
