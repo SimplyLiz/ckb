@@ -953,3 +953,39 @@ func TestLoadConfigWithDetails_FromStandardLocation(t *testing.T) {
 		t.Errorf("Tier = %q, want %q", result.Config.Tier, "fast")
 	}
 }
+
+// A config.json written before the "activity" key existed must keep the
+// activity defaults (enabled, 30 days, params stored), not the zero values.
+func TestLoadConfig_MissingKeysKeepDefaults(t *testing.T) {
+	tmpDir := t.TempDir()
+	ckbDir := filepath.Join(tmpDir, ".ckb")
+	if err := os.MkdirAll(ckbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ckbDir, "config.json"), []byte(`{"version": 5, "repoRoot": "."}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if !cfg.Activity.Enabled || cfg.Activity.RetentionDays != 30 || !cfg.Activity.StoreParams {
+		t.Errorf("Activity = %+v, want defaults {true 30 true}", cfg.Activity)
+	}
+	if !cfg.Backends.Scip.Enabled {
+		t.Error("Backends.Scip.Enabled should keep its default (true) when the key is absent")
+	}
+
+	// Explicit values still win.
+	if err := os.WriteFile(filepath.Join(ckbDir, "config.json"), []byte(`{"version": 5, "activity": {"enabled": false, "retentionDays": 7}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = LoadConfig(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Activity.Enabled || cfg.Activity.RetentionDays != 7 {
+		t.Errorf("Activity = %+v, want {false 7 ...}", cfg.Activity)
+	}
+}

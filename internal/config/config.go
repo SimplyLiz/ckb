@@ -597,12 +597,17 @@ func LoadConfigWithDetails(repoRoot string) (*LoadResult, error) {
 				return nil, err
 			}
 		} else {
-			// Unmarshal into config struct
-			var cfg Config
-			if err := v.Unmarshal(&cfg); err != nil {
+			// Unmarshal into a struct pre-filled with defaults so that keys
+			// absent from an older config.json keep their default value
+			// (mapstructure only touches fields present in the input).
+			// Without this, every default-true bool (activity.enabled,
+			// backends.scip.enabled, ...) silently flipped to false for
+			// configs written before the key existed.
+			cfg := DefaultConfig()
+			if err := v.Unmarshal(cfg); err != nil {
 				return nil, err
 			}
-			result.Config = &cfg
+			result.Config = cfg
 			result.ConfigPath = v.ConfigFileUsed()
 		}
 	}
@@ -620,12 +625,14 @@ func loadConfigFromPath(path string) (*Config, error) {
 		return nil, err
 	}
 
-	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	// Pre-fill with defaults: json.Unmarshal leaves fields untouched when
+	// the key is absent, so older config files keep default values.
+	cfg := DefaultConfig()
+	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("invalid JSON in config file: %w", err)
 	}
 
-	return &cfg, nil
+	return cfg, nil
 }
 
 // envVarMapping defines the supported environment variable overrides
