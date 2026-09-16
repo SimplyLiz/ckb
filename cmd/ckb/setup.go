@@ -580,7 +580,7 @@ func configureTool(tool *aiTool, global bool, ckbCommand string, ckbArgs []strin
 		err = writeGrokConfig(configPath, ckbCommand, ckbArgs)
 	case "codexToml":
 		codexCommand, codexArgs := codexWindowsWrap(runtime.GOOS, ckbCommand, ckbArgs)
-		err = writeCodexConfig(configPath, codexCommand, codexArgs)
+		err = writeCodexConfig(configPath, codexCommand, codexArgs, global)
 	default:
 		err = fmt.Errorf("unknown format: %s", tool.Format)
 	}
@@ -835,8 +835,21 @@ const codexTableHeader = "[mcp_servers.ckb]"
 // own keys, leaving everything else — including [mcp_servers.ckb.env]
 // subtables — untouched byte-for-byte. The result is validated as TOML
 // before being written; if that fails, nothing is written.
-func writeCodexConfig(path, command string, args []string) error {
+//
+// File permissions: a file that already exists keeps its own mode — CKB
+// must never widen (or narrow) permissions a user or another tool already
+// set, especially since [mcp_servers.*.env] subtables can hold secrets. A
+// freshly created file gets 0600 for --global (~/.codex/config.toml, which
+// may end up holding secrets across tools) or 0644 for project scope
+// (<repo>/.codex/config.toml, matching every other config file CKB writes).
+func writeCodexConfig(path, command string, args []string, global bool) error {
 	var existing string
+	var existingMode os.FileMode
+	hadExisting := false
+	if info, statErr := os.Stat(path); statErr == nil { // #nosec G703 -- path is internally constructed
+		hadExisting = true
+		existingMode = info.Mode().Perm()
+	}
 	if data, err := os.ReadFile(path); err == nil { // #nosec G703 -- path is internally constructed
 		existing = string(data)
 	} else if !os.IsNotExist(err) {
@@ -881,7 +894,15 @@ func writeCodexConfig(path, command string, args []string) error {
 		updated = strings.ReplaceAll(updated, "\n", "\r\n")
 	}
 
-	return writeFileAtomic(path, []byte(updated), 0644)
+	perm := os.FileMode(0644)
+	if global {
+		perm = 0600
+	}
+	if hadExisting {
+		perm = existingMode
+	}
+
+	return writeFileAtomic(path, []byte(updated), perm)
 }
 
 // codexManualTOMLSnippet renders the [mcp_servers.ckb] table CKB would have
