@@ -8,13 +8,6 @@
       "name": "Config"
     },
     {
-      "file": "src/pkg/service.ts",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "DefaultService#model"
-    },
-    {
       "file": "src/pkg/model.ts",
       "kind": "class",
       "line": 29,
@@ -26,14 +19,21 @@
       "kind": "class",
       "line": 0,
       "moduleId": "src/pkg",
-      "name": "Model#config"
+      "name": "config"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "class",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "model"
     },
     {
       "file": "src/pkg/model.ts",
       "kind": "class",
       "line": 0,
       "moduleId": "src/pkg",
-      "name": "Model#name"
+      "name": "name"
     },
     {
       "file": "src/pkg/service.ts",
@@ -68,28 +68,7 @@
       "kind": "function",
       "line": 44,
       "moduleId": "src/pkg",
-      "name": "Model#clone"
-    },
-    {
-      "file": "src/pkg/model.ts",
-      "kind": "function",
-      "line": 54,
-      "moduleId": "src/pkg",
-      "name": "Model#setConfig"
-    },
-    {
-      "file": "src/pkg/model.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Model#setConfig().(cfg)"
-    },
-    {
-      "file": "src/pkg/model.ts",
-      "kind": "function",
-      "line": 62,
-      "moduleId": "src/pkg",
-      "name": "Model#transform"
+      "name": "clone"
     },
     {
       "file": "src/pkg/service.ts",
@@ -118,7 +97,21 @@
       "line": 0,
       "moduleId": "src/pkg",
       "name": "newModel().(name)"
+    },
+    {
+      "file": "src/pkg/model.ts",
+      "kind": "function",
+      "line": 54,
+      "moduleId": "src/pkg",
+      "name": "setConfig"
+    },
+    {
+      "file": "src/pkg/model.ts",
+      "kind": "function",
+      "line": 62,
+      "moduleId": "src/pkg",
+      "name": "transform"
     }
   ],
-  "total": 17
+  "total": 16
 }

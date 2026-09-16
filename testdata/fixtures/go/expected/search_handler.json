@@ -8,13 +8,6 @@
       "name": "Handler"
     },
     {
-      "file": "pkg/handler.go",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "pkg",
-      "name": "Handler#service"
-    },
-    {
       "file": "pkg/server.go",
       "kind": "class",
       "line": 5,
@@ -26,7 +19,28 @@
       "kind": "class",
       "line": 0,
       "moduleId": "pkg",
-      "name": "Server#handler"
+      "name": "handler"
+    },
+    {
+      "file": "pkg/server.go",
+      "kind": "function",
+      "line": 28,
+      "moduleId": "pkg",
+      "name": "GetHandler"
+    },
+    {
+      "file": "pkg/handler.go",
+      "kind": "function",
+      "line": 18,
+      "moduleId": "pkg",
+      "name": "Handle"
+    },
+    {
+      "file": "pkg/handler.go",
+      "kind": "function",
+      "line": 24,
+      "moduleId": "pkg",
+      "name": "HandleBatch"
     },
     {
       "file": "main.go",
@@ -38,30 +52,9 @@
     {
       "file": "pkg/handler.go",
       "kind": "function",
-      "line": 18,
-      "moduleId": "pkg",
-      "name": "Handler#Handle"
-    },
-    {
-      "file": "pkg/handler.go",
-      "kind": "function",
-      "line": 24,
-      "moduleId": "pkg",
-      "name": "Handler#HandleBatch"
-    },
-    {
-      "file": "pkg/handler.go",
-      "kind": "function",
       "line": 12,
       "moduleId": "pkg",
       "name": "NewHandler"
-    },
-    {
-      "file": "pkg/server.go",
-      "kind": "function",
-      "line": 28,
-      "moduleId": "pkg",
-      "name": "Server#GetHandler"
     },
     {
       "file": "main.go",
@@ -71,5 +64,5 @@
       "name": "main"
     }
   ],
-  "total": 10
+  "total": 9
 }

@@ -15,13 +15,6 @@
       "name": "DefaultService"
     },
     {
-      "file": "pkg/service.go",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "pkg",
-      "name": "DefaultService#model"
-    },
-    {
       "file": "pkg/model.go",
       "kind": "class",
       "line": 7,
@@ -29,46 +22,18 @@
       "name": "Model"
     },
     {
-      "file": "pkg/model.go",
-      "kind": "class",
-      "line": 13,
-      "moduleId": "pkg",
-      "name": "Model#Config"
-    },
-    {
-      "file": "pkg/model.go",
+      "file": "pkg/service.go",
       "kind": "class",
       "line": 0,
       "moduleId": "pkg",
-      "name": "Model#Name"
-    },
-    {
-      "file": "pkg/service.go",
-      "kind": "function",
-      "line": 26,
-      "moduleId": "pkg",
-      "name": "DefaultService#Process"
+      "name": "model"
     },
     {
       "file": "pkg/model.go",
       "kind": "function",
       "line": 49,
       "moduleId": "pkg",
-      "name": "Model#Clone"
-    },
-    {
-      "file": "pkg/model.go",
-      "kind": "function",
-      "line": 44,
-      "moduleId": "pkg",
-      "name": "Model#SetConfig"
-    },
-    {
-      "file": "pkg/model.go",
-      "kind": "function",
-      "line": 35,
-      "moduleId": "pkg",
-      "name": "Model#Transform"
+      "name": "Clone"
     },
     {
       "file": "pkg/model.go",
@@ -76,7 +41,28 @@
       "line": 27,
       "moduleId": "pkg",
       "name": "NewModel"
+    },
+    {
+      "file": "pkg/service.go",
+      "kind": "function",
+      "line": 26,
+      "moduleId": "pkg",
+      "name": "Process"
+    },
+    {
+      "file": "pkg/model.go",
+      "kind": "function",
+      "line": 44,
+      "moduleId": "pkg",
+      "name": "SetConfig"
+    },
+    {
+      "file": "pkg/model.go",
+      "kind": "function",
+      "line": 35,
+      "moduleId": "pkg",
+      "name": "Transform"
     }
   ],
-  "total": 11
+  "total": 9
 }

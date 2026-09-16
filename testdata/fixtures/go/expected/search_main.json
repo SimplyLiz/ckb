@@ -12,7 +12,7 @@
       "kind": "function",
       "line": 22,
       "moduleId": "pkg",
-      "name": "Server#RunServer"
+      "name": "RunServer"
     },
     {
       "file": "main.go",
