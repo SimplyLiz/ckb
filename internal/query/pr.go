@@ -97,8 +97,10 @@ func (e *Engine) SummarizePR(ctx context.Context, opts SummarizePROptions) (*Sum
 		return nil, fmt.Errorf("git adapter not available")
 	}
 
-	// Get diff stats between branches
-	// If no head branch specified, compare against working tree
+	// Get diff stats between branches.
+	// If no head branch specified, defaults to HEAD -- this compares
+	// baseRef..HEAD (via GetCommitRangeDiff below), not the working tree.
+	// For working-tree/staged diffs, use AnalyzeChangeSet instead.
 	headRef := opts.HeadBranch
 	if headRef == "" {
 		headRef = "HEAD"
