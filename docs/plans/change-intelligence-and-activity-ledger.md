@@ -1,6 +1,10 @@
 # Plan: Change Intelligence + Activity Ledger (CKB 1.x)
 
-Status: draft, 2026-09-16. Supersedes the "Codebase Intelligence Console" UI idea for 1.x.
+Status: implemented 2026-09-16 (steps 1a, 1b, 2a, 2b, 3a; see CHANGELOG
+"Unreleased"). Open: 2c Cartographer signature diff for contracts (Semidiff
+takes two commit refs, not working-tree content), 3b the benchmark run itself,
+and the `ckb metrics` → ledger cleanup. Supersedes the "Codebase Intelligence
+Console" UI idea for 1.x.
 
 ## Decision
 
