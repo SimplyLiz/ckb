@@ -859,11 +859,30 @@ func writeCodexConfig(path, command string, args []string, global bool) error {
 	// Refuse to touch a file we can't parse. Editing it blind risks turning
 	// a pre-existing syntax error into data loss.
 	if strings.TrimSpace(existing) != "" {
-		var probe any
-		if _, err := toml.Decode(existing, &probe); err != nil {
+		var decoded map[string]any
+		if _, err := toml.Decode(existing, &decoded); err != nil {
 			return fmt.Errorf(
 				"%s is not valid TOML, leaving it untouched (%w)\nAdd this table manually:\n\n%s",
 				path, err, codexManualTOMLSnippet(command, args),
+			)
+		}
+
+		// A valid mcp_servers.ckb entry that isn't expressed as a
+		// [mcp_servers.ckb] (or quoted-key-equivalent) table header — e.g.
+		// an inline table (ckb = { command = ... }) or dotted keys
+		// (mcp_servers.ckb.command = ... or [mcp_servers]\nckb.command = ...)
+		// — is syntactically legal TOML that upsertTOMLTable can't safely
+		// edit: TOML forbids extending an inline table with a later header,
+		// so appending [mcp_servers.ckb] on top of one produces invalid
+		// TOML. Detect it via the parsed structure (decoded has a value at
+		// mcp_servers.ckb) combined with the textual header scan (no
+		// [mcp_servers.ckb]-shaped header line exists) and refuse up front
+		// with an actionable manual snippet, rather than generating broken
+		// output and failing later at the validate-before-write step.
+		if tomlPathExists(decoded, tomlTargetPath) && !tomlHasHeaderFor(existing, tomlTargetPath) {
+			return fmt.Errorf(
+				"%s already configures mcp_servers.ckb using inline-table or dotted-key TOML syntax, which ckb setup won't rewrite automatically\nUpdate it by hand instead — replace the existing ckb entry under [mcp_servers] with:\n\n%s",
+				path, codexManualTOMLSnippet(command, args),
 			)
 		}
 	}
@@ -1040,6 +1059,39 @@ func tomlBareKeyName(line string) string {
 		return m[3]
 	}
 	return strings.TrimSpace(m[1])
+}
+
+// tomlPathExists reports whether the decoded TOML document m has a value at
+// the given dotted key path — used to detect an mcp_servers.ckb entry
+// however it was spelled (header, inline table, or dotted keys), since
+// BurntSushi's decoder folds all three into the same nested-map shape.
+func tomlPathExists(m map[string]any, path []string) bool {
+	var cur any = m
+	for _, key := range path {
+		asMap, ok := cur.(map[string]any)
+		if !ok {
+			return false
+		}
+		v, ok := asMap[key]
+		if !ok {
+			return false
+		}
+		cur = v
+	}
+	return true
+}
+
+// tomlHasHeaderFor reports whether content has a table header line matching
+// targetPath (via parsed header key paths, so quoting/comments/whitespace
+// variations all resolve to the same table) — i.e. the entry, if any, is
+// expressed in the one syntax upsertTOMLTable knows how to edit in place.
+func tomlHasHeaderFor(content string, targetPath []string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		if path, ok := parseTOMLHeaderPath(line); ok && tomlPathEqual(path, targetPath) {
+			return true
+		}
+	}
+	return false
 }
 
 func tomlPathEqual(a, b []string) bool {

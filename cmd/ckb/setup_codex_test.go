@@ -318,6 +318,135 @@ func TestWriteCodexConfig_AtomicWrite_NoTempFileLeftBehind(t *testing.T) {
 	}
 }
 
+// --- inline-table / dotted-key ckb entries: refuse to rewrite, not corrupt ---
+
+// TestWriteCodexConfig_InlineTableCkbEntry_RefusesWithoutWriting covers the
+// P1 finding: given a valid TOML inline table
+//
+//	[mcp_servers]
+//	ckb = { command = "old", args = ["mcp"] }
+//
+// upsertTOMLTable used to only look for a `[mcp_servers.ckb]` header line,
+// find none, and append one — but TOML forbids extending an inline table
+// with a later header, so the generated file failed the
+// validate-before-write check and setup aborted with a raw TOML parse
+// error. writeCodexConfig must instead detect the inline table up front,
+// leave the file untouched, and return an actionable error with the exact
+// snippet to paste by hand.
+func TestWriteCodexConfig_InlineTableCkbEntry_RefusesWithoutWriting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	original := "[mcp_servers]\nckb = { command = \"old\", args = [\"mcp\"] }\n"
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatalf("failed to seed existing config: %v", err)
+	}
+
+	err := writeCodexConfig(path, "new-ckb", []string{"mcp", "--watch"}, false)
+	if err == nil {
+		t.Fatal("expected an error for an inline-table ckb entry, got nil")
+	}
+	if !strings.Contains(err.Error(), "inline-table") && !strings.Contains(err.Error(), "dotted-key") {
+		t.Errorf("error should explain the inline-table/dotted-key situation, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[mcp_servers.ckb]") {
+		t.Errorf("error should include the manual snippet to paste, got: %v", err)
+	}
+
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("failed to read file: %v", readErr)
+	}
+	if string(data) != original {
+		t.Errorf("file content should be untouched, got:\n%s", data)
+	}
+}
+
+// TestWriteCodexConfig_DottedKeyCkbEntry_TopLevel_RefusesWithoutWriting
+// covers the fully-dotted spelling with no table headers at all:
+//
+//	mcp_servers.ckb.command = "old"
+//	mcp_servers.ckb.args = ["mcp"]
+func TestWriteCodexConfig_DottedKeyCkbEntry_TopLevel_RefusesWithoutWriting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	original := "mcp_servers.ckb.command = \"old\"\nmcp_servers.ckb.args = [\"mcp\"]\n"
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatalf("failed to seed existing config: %v", err)
+	}
+
+	err := writeCodexConfig(path, "new-ckb", []string{"mcp"}, false)
+	if err == nil {
+		t.Fatal("expected an error for a dotted-key ckb entry, got nil")
+	}
+
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("failed to read file: %v", readErr)
+	}
+	if string(data) != original {
+		t.Errorf("file content should be untouched, got:\n%s", data)
+	}
+}
+
+// TestWriteCodexConfig_DottedKeyCkbEntry_UnderHeader_RefusesWithoutWriting
+// covers dotted keys nested under a [mcp_servers] header (not
+// [mcp_servers.ckb]) — the same unsupported shape, just a different
+// starting point:
+//
+//	[mcp_servers]
+//	ckb.command = "old"
+//	ckb.args = ["mcp"]
+func TestWriteCodexConfig_DottedKeyCkbEntry_UnderHeader_RefusesWithoutWriting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	original := "[mcp_servers]\nckb.command = \"old\"\nckb.args = [\"mcp\"]\n"
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatalf("failed to seed existing config: %v", err)
+	}
+
+	err := writeCodexConfig(path, "new-ckb", []string{"mcp"}, false)
+	if err == nil {
+		t.Fatal("expected an error for a dotted-key ckb entry under [mcp_servers], got nil")
+	}
+
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("failed to read file: %v", readErr)
+	}
+	if string(data) != original {
+		t.Errorf("file content should be untouched, got:\n%s", data)
+	}
+}
+
+// TestWriteCodexConfig_MCPServersHeaderWithoutCkb_StillAppendsNormally is the
+// regression guard: an [mcp_servers] header with unrelated entries (no ckb
+// key at all) must NOT be mistaken for an inline/dotted ckb entry — setup
+// should append a normal [mcp_servers.ckb] table exactly as before.
+func TestWriteCodexConfig_MCPServersHeaderWithoutCkb_StillAppendsNormally(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	original := "[mcp_servers]\nother = { command = \"node\" }\n"
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatalf("failed to seed existing config: %v", err)
+	}
+
+	if err := writeCodexConfig(path, "ckb", []string{"mcp"}, false); err != nil {
+		t.Fatalf("writeCodexConfig should succeed when mcp_servers has no ckb entry: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read written file: %v", err)
+	}
+	if !strings.Contains(string(data), "[mcp_servers.ckb]") {
+		t.Errorf("expected [mcp_servers.ckb] to be appended, got:\n%s", data)
+	}
+}
+
 // --- file mode: new global 0600, new project 0644, existing mode preserved ---
 
 // TestWriteCodexConfig_NewGlobalFileIs0600 covers the P1 finding: a freshly
