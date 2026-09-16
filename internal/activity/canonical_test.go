@@ -30,7 +30,10 @@ func TestSanitizeForHashingTruncatesLongStrings(t *testing.T) {
 	big := strings.Repeat("x", maxParamStringBytes+1)
 	params := map[string]interface{}{"body": big, "short": "ok"}
 
-	sanitized := sanitizeForHashing(params).(map[string]interface{})
+	sanitized, ok := sanitizeForHashing(params).(map[string]interface{})
+	if !ok {
+		t.Fatal("expected a map back")
+	}
 	if sanitized["short"] != "ok" {
 		t.Errorf("expected short string untouched, got %v", sanitized["short"])
 	}
@@ -51,9 +54,18 @@ func TestSanitizeForHashingRecursesIntoNestedStructures(t *testing.T) {
 		},
 	}
 
-	sanitized := sanitizeForHashing(params).(map[string]interface{})
-	list := sanitized["list"].([]interface{})
-	nestedMap := list[0].(map[string]interface{})
+	sanitized, ok := sanitizeForHashing(params).(map[string]interface{})
+	if !ok {
+		t.Fatal("expected a map back")
+	}
+	list, ok := sanitized["list"].([]interface{})
+	if !ok || len(list) == 0 {
+		t.Fatalf("expected a non-empty list, got %v", sanitized["list"])
+	}
+	nestedMap, ok := list[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected a nested map, got %v", list[0])
+	}
 	nested, ok := nestedMap["nested"].(string)
 	if !ok || nested == big {
 		t.Fatalf("expected nested long string to be replaced, got %v", nestedMap["nested"])
