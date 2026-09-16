@@ -374,11 +374,13 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 		}, nil
 	}
 
+	toolStart := time.Now()
 	result, err := handler(toolParams)
 	if err != nil {
 		// Wrap error in envelope format
 		errResp := envelope.New().Data(nil).Error(err).Build()
 		jsonBytes, _ := json.Marshal(errResp)
+		s.recordActivity(toolName, toolParams, toolStart, jsonBytes, nil, err)
 		return map[string]interface{}{
 			"content": []map[string]interface{}{
 				{
@@ -394,6 +396,8 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 	if err != nil {
 		return nil, errors.NewOperationError("marshal response", err)
 	}
+
+	s.recordActivity(toolName, toolParams, toolStart, jsonBytes, result, nil)
 
 	return map[string]interface{}{
 		"content": []map[string]interface{}{

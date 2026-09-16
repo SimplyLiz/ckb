@@ -455,6 +455,11 @@ func (e *Engine) DB() *storage.DB {
 	return e.db
 }
 
+// Config returns the engine's loaded configuration.
+func (e *Engine) Config() *config.Config {
+	return e.config
+}
+
 // Close shuts down the query engine.
 func (e *Engine) Close() error {
 	var lastErr error
