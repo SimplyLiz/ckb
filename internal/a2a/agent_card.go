@@ -51,7 +51,7 @@ func (s *Server) buildAgentCard() AgentCard {
 
 	card := AgentCard{
 		Name:        "CKB - Code Knowledge Backend",
-		Description: "Language-agnostic codebase comprehension agent providing 110 code intelligence tools including symbol navigation, impact analysis, architecture exploration, PR review, and compliance auditing.",
+		Description: "Language-agnostic codebase comprehension agent providing 111 code intelligence tools including symbol navigation, impact analysis, architecture exploration, PR review, and compliance auditing.",
 		Version:     version.Version,
 		Provider: &Provider{
 			Organization: "TasteHub",

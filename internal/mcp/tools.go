@@ -364,8 +364,46 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 			},
 		},
 		{
+			Name:        "assessChange",
+			Description: "The post-change counterpart to prepareChange: use this AFTER changes are made to assess what you actually changed and what to verify before finishing. Defaults to the uncommitted working tree; also supports staged changes or a base-branch range. Answers: what might break? which tests should run? who needs to review? are there possible contract changes? For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"diffContent": map[string]interface{}{
+						"type":        "string",
+						"description": "Raw git diff content. If empty, uses current working tree diff",
+					},
+					"staged": map[string]interface{}{
+						"type":        "boolean",
+						"default":     false,
+						"description": "If true and no diffContent provided, analyze only staged changes (--cached)",
+					},
+					"baseBranch": map[string]interface{}{
+						"type":        "string",
+						"default":     "HEAD",
+						"description": "Base branch for comparison when using git diff",
+					},
+					"depth": map[string]interface{}{
+						"type":        "number",
+						"default":     2,
+						"description": "Maximum depth for transitive impact analysis (1-4)",
+					},
+					"includeTests": map[string]interface{}{
+						"type":        "boolean",
+						"default":     false,
+						"description": "Include test files in the analysis",
+					},
+					"strict": map[string]interface{}{
+						"type":        "boolean",
+						"default":     false,
+						"description": "Fail if SCIP index is stale",
+					},
+				},
+			},
+		},
+		{
 			Name:        "analyzeChange",
-			Description: "Use this AFTER changes are made to analyze a git diff — answers: what might break? which tests should run? who needs to review? For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
+			Description: "Deprecated alias of assessChange (removed in two minor versions). Use this AFTER changes are made to analyze a git diff — answers: what might break? which tests should run? who needs to review? For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -2785,7 +2823,8 @@ func (s *MCPServer) RegisterTools() {
 	s.tools["getArchitecture"] = s.toolGetArchitecture
 	s.tools["analyzeImpact"] = s.toolAnalyzeImpact
 	s.tools["analyzeOutgoingImpact"] = s.toolAnalyzeOutgoingImpact
-	s.tools["analyzeChange"] = s.toolAnalyzeChange
+	s.tools["assessChange"] = s.toolAssessChange
+	s.tools["analyzeChange"] = s.toolAnalyzeChange // deprecated alias, same underlying handler
 	s.tools["explainSymbol"] = s.toolExplainSymbol
 	s.tools["justifySymbol"] = s.toolJustifySymbol
 	s.tools["getCallGraph"] = s.toolGetCallGraph
