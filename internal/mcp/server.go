@@ -60,6 +60,10 @@ type MCPServer struct {
 	// MCP roots support (v8.0)
 	roots *rootsManager
 
+	// Client identity captured from the initialize handshake (activity ledger consumer field)
+	clientName    string
+	clientVersion string
+
 	// Binary staleness detection (v8.0)
 	binaryPath    string    // Path to the running binary
 	binaryModTime time.Time // Modification time at startup
@@ -97,6 +101,7 @@ func NewMCPServer(version string, engine *query.Engine, logger *slog.Logger) *MC
 	// Wire up metrics persistence if database is available
 	if engine != nil && engine.DB() != nil {
 		SetMetricsDB(engine.DB())
+		wireActivityRecorder(engine, server.logger)
 	}
 
 	// Warm up the FTS index in the background. This populates FTS from SCIP
@@ -219,6 +224,7 @@ func (s *MCPServer) engine() *query.Engine {
 			// Wire up metrics persistence
 			if engine != nil && engine.DB() != nil {
 				SetMetricsDB(engine.DB())
+				wireActivityRecorder(engine, s.logger)
 			}
 			// Store in engine cache for auto-resolution
 			if engine != nil {
@@ -301,6 +307,7 @@ func (s *MCPServer) SetActiveRepo(name, path string, engine *query.Engine) {
 		// Wire up metrics persistence for multi-repo mode
 		if engine.DB() != nil {
 			SetMetricsDB(engine.DB())
+			wireActivityRecorder(engine, s.logger)
 		}
 	}
 }
@@ -321,6 +328,8 @@ func (s *MCPServer) Start() error {
 				if s.roots != nil {
 					s.roots.CancelAllPending()
 				}
+				// Flush and stop the activity ledger writer(s) before exiting.
+				closeAllActivityRecorders()
 				return nil
 			}
 			s.logger.Error("Error reading message",
@@ -636,6 +645,7 @@ func (s *MCPServer) switchProject(path string) (string, error) {
 	// Wire up metrics persistence
 	if newEngine.DB() != nil {
 		SetMetricsDB(newEngine.DB())
+		wireActivityRecorder(newEngine, s.logger)
 	}
 
 	s.logger.Info("Switched project", "root", gitRoot)

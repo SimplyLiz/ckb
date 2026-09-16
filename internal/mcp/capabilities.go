@@ -36,6 +36,16 @@ func (s *MCPServer) handleInitialize(params map[string]interface{}) (*Initialize
 		"clientInfo", params["clientInfo"],
 	)
 
+	// Capture client identity for the activity ledger's "consumer" field.
+	if clientInfo, ok := params["clientInfo"].(map[string]interface{}); ok {
+		name, _ := clientInfo["name"].(string)
+		version, _ := clientInfo["version"].(string)
+		s.mu.Lock()
+		s.clientName = name
+		s.clientVersion = version
+		s.mu.Unlock()
+	}
+
 	// Parse client capabilities (v8.0: roots support)
 	clientCaps := parseClientCapabilities(params)
 	if clientCaps.Roots != nil {
