@@ -22,13 +22,6 @@
       "name": "Handler"
     },
     {
-      "file": "pkg/service.go",
-      "kind": "class",
-      "line": 26,
-      "moduleId": "pkg",
-      "name": "Process"
-    },
-    {
       "file": "pkg/server.go",
       "kind": "class",
       "line": 5,
@@ -41,27 +34,6 @@
       "line": 7,
       "moduleId": "pkg",
       "name": "Service"
-    },
-    {
-      "file": "pkg/service.go",
-      "kind": "class",
-      "line": 32,
-      "moduleId": "pkg",
-      "name": "Validate"
-    },
-    {
-      "file": "pkg/service.go",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "pkg",
-      "name": "inner"
-    },
-    {
-      "file": "pkg/handler.go",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "pkg",
-      "name": "service"
     },
     {
       "file": "pkg/service.go",
@@ -125,7 +97,49 @@
       "line": 32,
       "moduleId": "pkg",
       "name": "Validate"
+    },
+    {
+      "file": "pkg/service.go",
+      "kind": "property",
+      "line": 26,
+      "moduleId": "pkg",
+      "name": "Process"
+    },
+    {
+      "file": "pkg/service.go",
+      "kind": "property",
+      "line": 32,
+      "moduleId": "pkg",
+      "name": "Validate"
+    },
+    {
+      "file": "pkg/service.go",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "pkg",
+      "name": "cache"
+    },
+    {
+      "file": "pkg/service.go",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "pkg",
+      "name": "inner"
+    },
+    {
+      "file": "pkg/service.go",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "pkg",
+      "name": "model"
+    },
+    {
+      "file": "pkg/handler.go",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "pkg",
+      "name": "service"
     }
   ],
-  "total": 18
+  "total": 20
 }

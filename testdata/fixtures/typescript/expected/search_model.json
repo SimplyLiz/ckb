@@ -15,39 +15,11 @@
       "name": "Model"
     },
     {
-      "file": "src/pkg/model.ts",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "config"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "model"
-    },
-    {
-      "file": "src/pkg/model.ts",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "name"
-    },
-    {
       "file": "src/pkg/service.ts",
       "kind": "function",
       "line": 53,
       "moduleId": "src/pkg",
       "name": "newDefaultService"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "newDefaultService().(model)"
     },
     {
       "file": "src/pkg/model.ts",
@@ -58,38 +30,17 @@
     },
     {
       "file": "src/pkg/model.ts",
-      "kind": "function",
+      "kind": "method",
       "line": 0,
       "moduleId": "src/pkg",
-      "name": "newModel().(name)"
+      "name": "\u003cconstructor\u003e"
     },
     {
       "file": "src/pkg/service.ts",
       "kind": "method",
       "line": 0,
       "moduleId": "src/pkg",
-      "name": "DefaultService#`\u003cconstructor\u003e`"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "method",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "DefaultService#`\u003cconstructor\u003e`().(model)"
-    },
-    {
-      "file": "src/pkg/model.ts",
-      "kind": "method",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Model#`\u003cconstructor\u003e`"
-    },
-    {
-      "file": "src/pkg/model.ts",
-      "kind": "method",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Model#`\u003cconstructor\u003e`().(name)"
+      "name": "\u003cconstructor\u003e"
     },
     {
       "file": "src/pkg/model.ts",
@@ -111,7 +62,70 @@
       "line": 62,
       "moduleId": "src/pkg",
       "name": "transform"
+    },
+    {
+      "file": "src/pkg/model.ts",
+      "kind": "namespace",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "model.ts"
+    },
+    {
+      "file": "src/pkg/model.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "cfg"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "model"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "model"
+    },
+    {
+      "file": "src/pkg/model.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "name"
+    },
+    {
+      "file": "src/pkg/model.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "name"
+    },
+    {
+      "file": "src/pkg/model.ts",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "config"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "model"
+    },
+    {
+      "file": "src/pkg/model.ts",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "name"
     }
   ],
-  "total": 16
+  "total": 18
 }

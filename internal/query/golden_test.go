@@ -237,11 +237,18 @@ func TestGolden_GetSymbol(t *testing.T) {
 		testCases := []struct {
 			searchQuery string
 			goldenName  string
+			kinds       []string
 		}{
-			{"NewHandler", "symbol_NewHandler"},         // Factory function
-			{"DefaultService", "symbol_DefaultService"}, // Implementation class
-			{"FormatOutput", "symbol_FormatOutput"},     // Internal function
-			{"Model", "symbol_Model"},                   // Data structure
+			{"NewHandler", "symbol_NewHandler", nil},         // Factory function
+			{"DefaultService", "symbol_DefaultService", nil}, // Implementation class
+			{"FormatOutput", "symbol_FormatOutput", nil},     // Internal function
+			// Kind-filtered to "class": now that field/property members are
+			// correctly indexed (see fix/evidence-output-bugs), the fixtures
+			// also contain a lowercase "model" field which is an equally
+			// valid, unfiltered name match for the query "Model" — ranking
+			// alone is no longer enough to deterministically land on the
+			// "Data structure" class this case is meant to exercise.
+			{"Model", "symbol_Model", []string{"class"}}, // Data structure
 		}
 
 		for _, tc := range testCases {
@@ -250,6 +257,7 @@ func TestGolden_GetSymbol(t *testing.T) {
 				searchResp, err := engine.SearchSymbols(ctx, SearchSymbolsOptions{
 					Query: tc.searchQuery,
 					Limit: 1,
+					Kinds: tc.kinds,
 				})
 				if err != nil {
 					t.Fatalf("SearchSymbols failed: %v", err)

@@ -15,13 +15,6 @@
       "name": "Server"
     },
     {
-      "file": "pkg/server.go",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "pkg",
-      "name": "handler"
-    },
-    {
       "file": "main.go",
       "kind": "function",
       "line": 18,
@@ -62,7 +55,21 @@
       "line": 24,
       "moduleId": "pkg",
       "name": "HandleBatch"
+    },
+    {
+      "file": "pkg/server.go",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "pkg",
+      "name": "handler"
+    },
+    {
+      "file": "pkg/handler.go",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "pkg",
+      "name": "service"
     }
   ],
-  "total": 9
+  "total": 10
 }

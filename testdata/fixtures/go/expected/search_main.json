@@ -20,7 +20,14 @@
       "line": 22,
       "moduleId": "pkg",
       "name": "RunServer"
+    },
+    {
+      "file": "main.go",
+      "kind": "namespace",
+      "line": 0,
+      "moduleId": ".",
+      "name": "fixture"
     }
   ],
-  "total": 3
+  "total": 4
 }

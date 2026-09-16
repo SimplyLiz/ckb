@@ -1,7 +1,7 @@
 {
   "blastRadius": {
     "fileCount": 1,
-    "moduleCount": 0,
+    "moduleCount": 1,
     "riskLevel": "low",
     "uniqueCallerCount": 1
   },
@@ -9,7 +9,7 @@
     {
       "file": "src/pkg/server.ts",
       "kind": "unknown",
-      "name": "Server#`\u003cconstructor\u003e`"
+      "name": "\u003cconstructor\u003e"
     },
     {
       "file": "src/pkg/server.ts",
@@ -22,15 +22,21 @@
       "name": "runServer"
     }
   ],
-  "modulesAffected": [],
+  "modulesAffected": [
+    {
+      "impactCount": 3,
+      "moduleId": "src/pkg",
+      "name": "src/pkg"
+    }
+  ],
   "riskScore": {
-    "explanation": "Low risk: 0 direct caller(s) across 0 module(s). Changes have limited impact.",
+    "explanation": "Low risk: 0 direct caller(s) across 1 module(s). Changes have limited impact.",
     "level": "low",
-    "score": 0.31
+    "score": 0.36
   },
   "symbol": {
     "file": "src/pkg/server.ts",
-    "kind": "class",
+    "kind": "property",
     "name": "handler"
   },
   "visibility": {

@@ -22,13 +22,6 @@
       "name": "Model"
     },
     {
-      "file": "pkg/service.go",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "pkg",
-      "name": "model"
-    },
-    {
       "file": "pkg/model.go",
       "kind": "function",
       "line": 27,
@@ -62,7 +55,28 @@
       "line": 35,
       "moduleId": "pkg",
       "name": "Transform"
+    },
+    {
+      "file": "pkg/model.go",
+      "kind": "property",
+      "line": 13,
+      "moduleId": "pkg",
+      "name": "Config"
+    },
+    {
+      "file": "pkg/model.go",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "pkg",
+      "name": "Name"
+    },
+    {
+      "file": "pkg/service.go",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "pkg",
+      "name": "model"
     }
   ],
-  "total": 9
+  "total": 11
 }
