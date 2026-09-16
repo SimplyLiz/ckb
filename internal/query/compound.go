@@ -5,6 +5,7 @@ package query
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1966,8 +1967,13 @@ func (e *Engine) calculatePrepareRisk(
 	}
 
 	return &PrepareRisk{
-		Level:       level,
-		Score:       score,
+		Level: level,
+		// Round at the output boundary: score is accumulated from binary
+		// floats (0.25, 0.15, 0.2, ...) whose sum isn't exactly
+		// representable, e.g. 0.15+0.2+0.15+0.2 prints as
+		// 0.7000000000000001 without this. Two decimals is all the
+		// factor weights above carry meaning to anyway.
+		Score:       math.Round(score*100) / 100,
 		Factors:     factors,
 		Suggestions: suggestions,
 	}

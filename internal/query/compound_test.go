@@ -402,6 +402,32 @@ func TestPrepareChange_DeleteType(t *testing.T) {
 }
 
 // =============================================================================
+// calculatePrepareRisk Tests
+// =============================================================================
+
+// TestCalculatePrepareRisk_ScoreRounding is a regression test for ckb impact
+// prepare reporting "score": 0.7000000000000001 instead of 0.7. score is
+// accumulated from binary floats (0.15, 0.2, ...) whose sum isn't exactly
+// representable in float64; these specific factor weights (moderate
+// dependents 0.15 + module spread 0.2 + public visibility 0.15 + no tests
+// 0.2) are the exact combination that reproduces the reported value when
+// summed naively.
+func TestCalculatePrepareRisk_ScoreRounding(t *testing.T) {
+	engine := &Engine{}
+
+	dependents := make([]PrepareDependent, 8) // >5 -> +0.15 "moderate dependent count"
+	transitive := &PrepareTransitive{ModuleSpread: 6}
+	target := &PrepareChangeTarget{Visibility: "public"} // +0.15
+	// transitive module spread >5 -> +0.2, no tests -> +0.2
+
+	risk := engine.calculatePrepareRisk(target, dependents, transitive, nil, nil, nil, ChangeModify)
+
+	if risk.Score != 0.7 {
+		t.Errorf("Score = %v, want exactly 0.7 (rounded)", risk.Score)
+	}
+}
+
+// =============================================================================
 // BatchGet Tests
 // =============================================================================
 
