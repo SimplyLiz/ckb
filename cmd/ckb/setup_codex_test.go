@@ -25,8 +25,8 @@ func TestAiToolsContainsCodex(t *testing.T) {
 	if !found.SupportsGlobal {
 		t.Error("SupportsGlobal should be true")
 	}
-	if found.SupportsProject {
-		t.Error("SupportsProject should be false — Codex CLI only reads ~/.codex/config.toml")
+	if !found.SupportsProject {
+		t.Error("SupportsProject should be true — Codex CLI supports trusted project-local .codex/config.toml")
 	}
 	if found.Format != "codexToml" {
 		t.Errorf("Format = %q, want %q", found.Format, "codexToml")
@@ -35,15 +35,16 @@ func TestAiToolsContainsCodex(t *testing.T) {
 
 func TestGetConfigPath_Codex(t *testing.T) {
 	home, _ := os.UserHomeDir()
-	want := filepath.Join(home, ".codex", "config.toml")
+	cwd, _ := os.Getwd()
 
-	if got := getConfigPath("codex", true); got != want {
-		t.Errorf("global path = %q, want %q", got, want)
+	wantGlobal := filepath.Join(home, ".codex", "config.toml")
+	if got := getConfigPath("codex", true); got != wantGlobal {
+		t.Errorf("global path = %q, want %q", got, wantGlobal)
 	}
-	// Codex is global-only, but getConfigPath should still return something
-	// sane rather than empty if ever called with global=false.
-	if got := getConfigPath("codex", false); got != want {
-		t.Errorf("project path = %q, want %q (codex is global-only)", got, want)
+
+	wantProject := filepath.Join(cwd, ".codex", "config.toml")
+	if got := getConfigPath("codex", false); got != wantProject {
+		t.Errorf("project path = %q, want %q", got, wantProject)
 	}
 }
 
@@ -159,6 +160,164 @@ func TestWriteCodexConfig_RoundTrip(t *testing.T) {
 	}
 }
 
+// --- robustness: inline comments, quoted keys, subtables, CRLF, validation ---
+
+// TestUpsertCodexMCPServer_HeaderWithInlineComment covers the P1 finding:
+// a header line like "[mcp_servers.ckb] # comment" must still be recognized
+// as the existing table, not treated as absent (which would append a second,
+// TOML-illegal duplicate [mcp_servers.ckb] table).
+func TestUpsertCodexMCPServer_HeaderWithInlineComment(t *testing.T) {
+	existing := `[mcp_servers.ckb] # managed by ckb setup
+command = "old-ckb"
+args = ["mcp"]
+`
+	got := upsertCodexMCPServer(existing, "new-ckb", []string{"mcp"})
+
+	if count := strings.Count(got, "[mcp_servers.ckb]"); count != 1 {
+		t.Fatalf("expected exactly one ckb header, found %d:\n%s", count, got)
+	}
+	if strings.Contains(got, "old-ckb") {
+		t.Errorf("old command was not replaced:\n%s", got)
+	}
+	if !strings.Contains(got, `command = "new-ckb"`) {
+		t.Errorf("new command missing:\n%s", got)
+	}
+	if !strings.Contains(got, "# managed by ckb setup") {
+		t.Errorf("inline comment on header line was dropped:\n%s", got)
+	}
+}
+
+// TestUpsertCodexMCPServer_QuotedTableKey covers quoted-key header spellings
+// ([mcp_servers."ckb"]), which are valid TOML equivalent to [mcp_servers.ckb].
+func TestUpsertCodexMCPServer_QuotedTableKey(t *testing.T) {
+	existing := `[mcp_servers."ckb"]
+command = "old-ckb"
+args = ["mcp"]
+`
+	got := upsertCodexMCPServer(existing, "new-ckb", []string{"mcp"})
+
+	if count := strings.Count(got, "old-ckb"); count != 0 {
+		t.Errorf("old command not replaced, quoted header wasn't recognized:\n%s", got)
+	}
+	if !strings.Contains(got, `command = "new-ckb"`) {
+		t.Errorf("new command missing:\n%s", got)
+	}
+}
+
+// TestUpsertCodexMCPServer_PreservesEnvSubtable covers the requirement that
+// a [mcp_servers.ckb.env] subtable (holding user-configured env vars) is
+// never touched or deleted by the replace, since it lives outside the
+// bare-key block that gets rewritten.
+func TestUpsertCodexMCPServer_PreservesEnvSubtable(t *testing.T) {
+	existing := `[mcp_servers.ckb]
+command = "old-ckb"
+args = ["mcp"]
+
+[mcp_servers.ckb.env]
+CKB_REPO = "/some/repo"
+CUSTOM_VAR = "1"
+`
+	got := upsertCodexMCPServer(existing, "new-ckb", []string{"mcp", "--watch"})
+
+	if !strings.Contains(got, "[mcp_servers.ckb.env]") {
+		t.Fatalf("env subtable header was dropped:\n%s", got)
+	}
+	if !strings.Contains(got, `CKB_REPO = "/some/repo"`) || !strings.Contains(got, `CUSTOM_VAR = "1"`) {
+		t.Errorf("env subtable contents were dropped:\n%s", got)
+	}
+	if !strings.Contains(got, `command = "new-ckb"`) {
+		t.Errorf("command was not updated:\n%s", got)
+	}
+	if strings.Contains(got, "old-ckb") {
+		t.Errorf("old command was not replaced:\n%s", got)
+	}
+}
+
+// TestUpsertCodexMCPServer_PreservesCommentsInBlock covers a stray comment
+// line living inside the ckb table alongside command/args — it must survive
+// a replace, not just the lines outside the table.
+func TestUpsertCodexMCPServer_PreservesCommentsInBlock(t *testing.T) {
+	existing := `[mcp_servers.ckb]
+# do not remove this
+command = "old-ckb"
+args = ["mcp"]
+`
+	got := upsertCodexMCPServer(existing, "new-ckb", []string{"mcp"})
+
+	if !strings.Contains(got, "# do not remove this") {
+		t.Errorf("comment inside table block was dropped:\n%s", got)
+	}
+}
+
+func TestWriteCodexConfig_PreservesCRLF(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	existing := "model = \"gpt-5\"\r\n\r\n[mcp_servers.other]\r\ncommand = \"node\"\r\n"
+	if err := os.WriteFile(path, []byte(existing), 0644); err != nil {
+		t.Fatalf("failed to seed existing config: %v", err)
+	}
+
+	if err := writeCodexConfig(path, "ckb", []string{"mcp"}); err != nil {
+		t.Fatalf("writeCodexConfig failed: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read written file: %v", err)
+	}
+	if strings.Contains(string(data), "\n") && !strings.Contains(string(data), "\r\n") {
+		t.Errorf("expected CRLF line endings to be preserved, got:\n%q", data)
+	}
+	if !strings.Contains(string(data), "\r\n") {
+		t.Errorf("CRLF line endings were not preserved:\n%q", data)
+	}
+}
+
+func TestWriteCodexConfig_InvalidExistingTOML_AbortsWithoutWriting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	invalid := "this is not [valid toml\ncommand = \n"
+	if err := os.WriteFile(path, []byte(invalid), 0644); err != nil {
+		t.Fatalf("failed to seed existing config: %v", err)
+	}
+
+	err := writeCodexConfig(path, "ckb", []string{"mcp"})
+	if err == nil {
+		t.Fatal("expected an error for invalid existing TOML, got nil")
+	}
+
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("failed to read file: %v", readErr)
+	}
+	if string(data) != invalid {
+		t.Errorf("file content should be untouched on invalid-TOML abort, got:\n%s", data)
+	}
+}
+
+func TestWriteCodexConfig_AtomicWrite_NoTempFileLeftBehind(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := writeCodexConfig(path, "ckb", []string{"mcp"}); err != nil {
+		t.Fatalf("writeCodexConfig failed: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("failed to read dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.toml" {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Errorf("expected only config.toml in dir, found: %v", names)
+	}
+}
+
 // --- --watch / --no-watch / --no-index wiring through runSetup ---
 
 // resetSetupFlags saves the current package-level setup flag values and
@@ -183,9 +342,9 @@ func TestRunSetup_CodexGlobal_IncludesWatchByDefault(t *testing.T) {
 	t.Setenv("USERPROFILE", tmpHome) // in case of cross-platform home lookup
 
 	setupTool = "codex"
-	setupGlobal = false // codex forces global since SupportsProject is false
+	setupGlobal = true // explicitly test the --global path (writes ~/.codex/config.toml)
 	setupPreset = "core"
-	setupNoIndex = true // irrelevant here since codex is global-only, but be explicit
+	setupNoIndex = true
 	setupNoWatch = false
 	setupNpx = true // avoids depending on os.Executable() resolving a real ckb binary
 
@@ -215,7 +374,7 @@ func TestRunSetup_NoWatch_OmitsWatchFlag(t *testing.T) {
 	t.Setenv("USERPROFILE", tmpHome)
 
 	setupTool = "codex"
-	setupGlobal = false
+	setupGlobal = true
 	setupPreset = "core"
 	setupNoIndex = true
 	setupNoWatch = true
@@ -232,6 +391,56 @@ func TestRunSetup_NoWatch_OmitsWatchFlag(t *testing.T) {
 	content := string(data)
 	if strings.Contains(content, "--watch") {
 		t.Errorf("--no-watch was set; --watch should not appear, got:\n%s", content)
+	}
+}
+
+// TestRunSetup_CodexProject_WritesRepoLocalConfig verifies the P0 fix: Codex
+// project-scope setup writes <repo>/.codex/config.toml (and runs the
+// init/index auto-readiness path, same as any other project-scope tool) —
+// it no longer silently forces --global and skips readiness entirely.
+func TestRunSetup_CodexProject_WritesRepoLocalConfig(t *testing.T) {
+	restore := resetSetupFlags(t)
+	defer restore()
+
+	t.Setenv("HOME", t.TempDir())
+
+	dir := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	setupTool = "codex"
+	setupGlobal = false
+	setupPreset = "core"
+	setupNoIndex = true // keep the test fast/hermetic; init-only is exercised elsewhere
+	setupNoWatch = false
+	setupNpx = true
+
+	if err := runSetup(nil, nil); err != nil {
+		t.Fatalf("runSetup failed: %v", err)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(dir, ".ckb")); statErr != nil {
+		t.Errorf("project scope should have run ensureProjectReady (.ckb/ missing): %v", statErr)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatalf("expected <repo>/.codex/config.toml, got: %v", err)
+	}
+	if !strings.Contains(string(data), "[mcp_servers.ckb]") {
+		t.Errorf("missing ckb table in project-local codex config:\n%s", data)
+	}
+
+	// The global config must not have been touched.
+	home, _ := os.UserHomeDir()
+	if _, statErr := os.Stat(filepath.Join(home, ".codex", "config.toml")); statErr == nil {
+		t.Error("project-scope setup should not have written the global ~/.codex/config.toml")
 	}
 }
 
