@@ -480,6 +480,11 @@ args = ["-y", "@tastehub/ckb", "mcp", "--watch"]
 touching anything else in the file — including any `[mcp_servers.ckb.env]`
 subtable you've hand-added for your own environment variables.
 
+On Windows, `ckb setup --tool=codex --npx` automatically wraps the command
+in `cmd /c` (Codex spawns commands directly, and `npx` on Windows is
+`npx.cmd`, which only resolves through a shell) — see the "Windows" section
+below if you're editing `config.toml` by hand instead.
+
 With the global config, `ckb mcp` has no per-project file to anchor it to,
 so it resolves the target repository the same way any other CKB command
 does when no `--repo`/`CKB_REPO` is set: from the working directory Codex
@@ -503,6 +508,13 @@ Use `cmd /c` wrapper in any config above:
     }
   }
 }
+```
+
+For Codex's TOML config, the same wrapper looks like:
+```toml
+[mcp_servers.ckb]
+command = "cmd"
+args = ["/c", "npx", "-y", "@tastehub/ckb", "mcp", "--watch"]
 ```
 
 </details>

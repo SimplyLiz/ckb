@@ -570,3 +570,62 @@ func TestRunSetup_ConfigWrittenBeforeIndexing_EvenIfInitFails(t *testing.T) {
 		t.Errorf("written config missing ckb table:\n%s", data)
 	}
 }
+
+// --- Windows npx wrapping ---
+
+func TestCodexWindowsWrap_WrapsNpxOnWindows(t *testing.T) {
+	cmd, args := codexWindowsWrap("windows", "npx", []string{"-y", "@tastehub/ckb", "mcp", "--watch"})
+
+	if cmd != "cmd" {
+		t.Errorf("command = %q, want %q", cmd, "cmd")
+	}
+	want := []string{"/c", "npx", "-y", "@tastehub/ckb", "mcp", "--watch"}
+	if len(args) != len(want) {
+		t.Fatalf("args = %v, want %v", args, want)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
+		}
+	}
+}
+
+func TestCodexWindowsWrap_NoOpOnNonWindows(t *testing.T) {
+	cmd, args := codexWindowsWrap("darwin", "npx", []string{"-y", "@tastehub/ckb", "mcp"})
+	if cmd != "npx" {
+		t.Errorf("command = %q, want unchanged %q", cmd, "npx")
+	}
+	if len(args) != 3 || args[0] != "-y" {
+		t.Errorf("args = %v, want unchanged", args)
+	}
+}
+
+func TestCodexWindowsWrap_NoOpForLocalBinaryOnWindows(t *testing.T) {
+	// A resolved local binary path (not npx) needs no shell wrapper even on
+	// Windows — it's invoked directly.
+	cmd, args := codexWindowsWrap("windows", `C:\Users\dev\ckb.exe`, []string{"mcp", "--watch"})
+	if cmd != `C:\Users\dev\ckb.exe` {
+		t.Errorf("command = %q, want unchanged", cmd)
+	}
+	if len(args) != 2 {
+		t.Errorf("args = %v, want unchanged", args)
+	}
+}
+
+func TestCodexWindowsWrap_HandlesNpxViaPathSuffix(t *testing.T) {
+	// isNpxCommand also matches a full path ending in /npx (e.g. resolved
+	// from a node_modules/.bin shim) — codexWindowsWrap must honor that too.
+	cmd, args := codexWindowsWrap("windows", "/usr/local/bin/npx", []string{"mcp"})
+	if cmd != "cmd" {
+		t.Errorf("command = %q, want %q", cmd, "cmd")
+	}
+	want := []string{"/c", "/usr/local/bin/npx", "mcp"}
+	if len(args) != len(want) {
+		t.Fatalf("args = %v, want %v", args, want)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
+		}
+	}
+}

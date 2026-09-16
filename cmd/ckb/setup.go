@@ -579,7 +579,8 @@ func configureTool(tool *aiTool, global bool, ckbCommand string, ckbArgs []strin
 	case "grokServers":
 		err = writeGrokConfig(configPath, ckbCommand, ckbArgs)
 	case "codexToml":
-		err = writeCodexConfig(configPath, ckbCommand, ckbArgs)
+		codexCommand, codexArgs := codexWindowsWrap(runtime.GOOS, ckbCommand, ckbArgs)
+		err = writeCodexConfig(configPath, codexCommand, codexArgs)
 	default:
 		err = fmt.Errorf("unknown format: %s", tool.Format)
 	}
@@ -1755,6 +1756,21 @@ func formatCommand(command string, args []string) string {
 // isNpxCommand checks if a command is using npx
 func isNpxCommand(command string) bool {
 	return command == "npx" || strings.HasSuffix(command, "/npx")
+}
+
+// codexWindowsWrap wraps an npx command/args pair in "cmd /c" on Windows.
+// Codex spawns [mcp_servers.*] commands directly rather than through a
+// shell, and npx on Windows is npx.cmd, which only resolves via cmd.exe —
+// this repo's Windows guidance (README "Windows" section) says the same for
+// any tool. goos is a parameter (rather than reading runtime.GOOS directly)
+// so the decision is unit-testable on any host OS. No-op for non-Windows or
+// non-npx commands.
+func codexWindowsWrap(goos, command string, args []string) (string, []string) {
+	if goos != "windows" || !isNpxCommand(command) {
+		return command, args
+	}
+	wrapped := append([]string{"/c", command}, args...)
+	return "cmd", wrapped
 }
 
 // claudeMcpAdd adds ckb to Claude Code, handling the case where it already exists.
