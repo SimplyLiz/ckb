@@ -131,7 +131,7 @@ func TestWriteCodexConfig_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 
-	if err := writeCodexConfig(path, "ckb", []string{"mcp", "--watch"}); err != nil {
+	if err := writeCodexConfig(path, "ckb", []string{"mcp", "--watch"}, false); err != nil {
 		t.Fatalf("writeCodexConfig (create) failed: %v", err)
 	}
 
@@ -144,7 +144,7 @@ func TestWriteCodexConfig_RoundTrip(t *testing.T) {
 	}
 
 	// Second call must update in place, not duplicate the table.
-	if err := writeCodexConfig(path, "ckb", []string{"mcp", "--watch", "--preset=review"}); err != nil {
+	if err := writeCodexConfig(path, "ckb", []string{"mcp", "--watch", "--preset=review"}, false); err != nil {
 		t.Fatalf("writeCodexConfig (update) failed: %v", err)
 	}
 	data, err = os.ReadFile(path)
@@ -258,7 +258,7 @@ func TestWriteCodexConfig_PreservesCRLF(t *testing.T) {
 		t.Fatalf("failed to seed existing config: %v", err)
 	}
 
-	if err := writeCodexConfig(path, "ckb", []string{"mcp"}); err != nil {
+	if err := writeCodexConfig(path, "ckb", []string{"mcp"}, false); err != nil {
 		t.Fatalf("writeCodexConfig failed: %v", err)
 	}
 
@@ -283,7 +283,7 @@ func TestWriteCodexConfig_InvalidExistingTOML_AbortsWithoutWriting(t *testing.T)
 		t.Fatalf("failed to seed existing config: %v", err)
 	}
 
-	err := writeCodexConfig(path, "ckb", []string{"mcp"})
+	err := writeCodexConfig(path, "ckb", []string{"mcp"}, false)
 	if err == nil {
 		t.Fatal("expected an error for invalid existing TOML, got nil")
 	}
@@ -301,7 +301,7 @@ func TestWriteCodexConfig_AtomicWrite_NoTempFileLeftBehind(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 
-	if err := writeCodexConfig(path, "ckb", []string{"mcp"}); err != nil {
+	if err := writeCodexConfig(path, "ckb", []string{"mcp"}, false); err != nil {
 		t.Fatalf("writeCodexConfig failed: %v", err)
 	}
 
@@ -315,6 +315,102 @@ func TestWriteCodexConfig_AtomicWrite_NoTempFileLeftBehind(t *testing.T) {
 			names[i] = e.Name()
 		}
 		t.Errorf("expected only config.toml in dir, found: %v", names)
+	}
+}
+
+// --- file mode: new global 0600, new project 0644, existing mode preserved ---
+
+// TestWriteCodexConfig_NewGlobalFileIs0600 covers the P1 finding: a freshly
+// created ~/.codex/config.toml may end up holding secrets in a
+// [mcp_servers.*.env] subtable another tool (or the user) adds later, so CKB
+// must create it private-to-owner from the start rather than the general
+// 0644 default.
+func TestWriteCodexConfig_NewGlobalFileIs0600(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := writeCodexConfig(path, "ckb", []string{"mcp"}, true); err != nil {
+		t.Fatalf("writeCodexConfig failed: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("failed to stat written file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("new global config mode = %o, want 0600", perm)
+	}
+}
+
+// TestWriteCodexConfig_NewProjectFileIs0644 covers the project-scope half of
+// the same fix: <repo>/.codex/config.toml has no more reason to be private
+// than any other project config file CKB writes (.mcp.json, .vscode/mcp.json,
+// etc.), all of which are 0644.
+func TestWriteCodexConfig_NewProjectFileIs0644(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := writeCodexConfig(path, "ckb", []string{"mcp"}, false); err != nil {
+		t.Fatalf("writeCodexConfig failed: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("failed to stat written file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0644 {
+		t.Errorf("new project config mode = %o, want 0644", perm)
+	}
+}
+
+// TestWriteCodexConfig_PreservesExistingMode_Global covers the P1 regression:
+// re-running 'ckb setup --tool=codex --global' against a config.toml the
+// user (or Codex itself) had already locked down to 0600 must not widen it
+// back to 0644/0600-by-default logic — the atomic replace has to carry the
+// existing file's mode forward untouched.
+func TestWriteCodexConfig_PreservesExistingMode_Global(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := os.WriteFile(path, []byte("[mcp_servers.ckb]\ncommand = \"old\"\nargs = [\"mcp\"]\n"), 0600); err != nil {
+		t.Fatalf("failed to seed existing config: %v", err)
+	}
+
+	if err := writeCodexConfig(path, "ckb", []string{"mcp", "--watch"}, true); err != nil {
+		t.Fatalf("writeCodexConfig failed: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("failed to stat written file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("existing 0600 config was not preserved, mode = %o", perm)
+	}
+}
+
+// TestWriteCodexConfig_PreservesExistingMode_UnusualPermissions covers the
+// general case (not just the 0600 round-trip): whatever mode the file
+// already had — even one CKB would never choose itself — must survive a
+// rewrite unchanged.
+func TestWriteCodexConfig_PreservesExistingMode_UnusualPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := os.WriteFile(path, []byte("[mcp_servers.ckb]\ncommand = \"old\"\nargs = [\"mcp\"]\n"), 0640); err != nil {
+		t.Fatalf("failed to seed existing config: %v", err)
+	}
+
+	if err := writeCodexConfig(path, "ckb", []string{"mcp"}, false); err != nil {
+		t.Fatalf("writeCodexConfig failed: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("failed to stat written file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0640 {
+		t.Errorf("existing 0640 config was not preserved, mode = %o", perm)
 	}
 }
 
