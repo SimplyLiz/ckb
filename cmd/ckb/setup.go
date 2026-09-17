@@ -7,18 +7,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 
+	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
 )
 
 var (
-	setupGlobal bool
-	setupNpx    bool
-	setupTool   string
-	setupPreset string
+	setupGlobal   bool
+	setupNpx      bool
+	setupTool     string
+	setupPreset   string
+	setupNoIndex  bool
+	setupNoWatch  bool
+	setupIndexNow bool
 )
 
 // aiTool represents an AI coding tool that supports MCP
@@ -39,6 +44,11 @@ var aiTools = []aiTool{
 	{ID: "opencode", Name: "OpenCode", SupportsGlobal: true, SupportsProject: true, GlobalUsesCmd: false, Format: "mcp"},
 	{ID: "grok", Name: "Grok", SupportsGlobal: true, SupportsProject: true, GlobalUsesCmd: true, Format: "grokServers"},
 	{ID: "claude-desktop", Name: "Claude Desktop", SupportsGlobal: true, SupportsProject: false, GlobalUsesCmd: false, Format: "mcpServers"},
+	// Codex CLI supports project-local MCP config for trusted projects
+	// (<repo>/.codex/config.toml) in addition to the user-global
+	// ~/.codex/config.toml. Default (non --global) setup writes the
+	// project-local file; --global writes the user-global one.
+	{ID: "codex", Name: "Codex", SupportsGlobal: true, SupportsProject: true, GlobalUsesCmd: false, Format: "codexToml"},
 }
 
 var setupCmd = &cobra.Command{
@@ -46,22 +56,42 @@ var setupCmd = &cobra.Command{
 	Short: "Configure CKB for AI coding tools",
 	Long: `Sets up CKB as an MCP server for AI coding tools.
 
-Supports: Claude Code, Cursor, Windsurf, VS Code, OpenCode, Grok, Claude Desktop
+Supports: Claude Code, Cursor, Windsurf, VS Code, OpenCode, Grok, Claude Desktop, Codex
+
+For project-scope setups, this also makes sure the project itself is ready:
+it runs 'ckb init' if .ckb/ is missing, so 'ckb setup' alone is enough to
+get code intelligence going — no separate init dance required.
+
+Building the SCIP index is non-blocking by default: the generated MCP
+server config includes --watch, so the index builds itself in the
+background the moment your AI tool starts the server — setup doesn't sit in
+the foreground running an indexer that can take anywhere from seconds to
+tens of minutes on a large repo. Run 'ckb index' yourself any time, or pass
+--index-now to have setup build it in the foreground before exiting.
+--no-watch has no watch loop to build it later, so it always indexes in the
+foreground regardless of --index-now. Use --no-index to skip indexing
+entirely (still runs 'ckb init').
 
 Examples:
-  ckb setup                    # Interactive setup
+  ckb setup                    # Interactive setup (index builds in the background)
   ckb setup --tool=cursor      # Configure for Cursor
   ckb setup --tool=grok        # Configure for Grok
+  ckb setup --tool=codex       # Configure for Codex CLI
   ckb setup --tool=vscode --global  # Configure VS Code globally
-  ckb setup --npx              # Use npx for portable setup`,
+  ckb setup --npx              # Use npx for portable setup
+  ckb setup --index-now        # Build the SCIP index in the foreground before exiting
+  ckb setup --no-index         # Skip auto-init/index for this project`,
 	RunE: runSetup,
 }
 
 func init() {
 	setupCmd.Flags().BoolVar(&setupGlobal, "global", false, "Configure globally for all projects")
 	setupCmd.Flags().BoolVar(&setupNpx, "npx", false, "Use npx @tastehub/ckb for portable setup")
-	setupCmd.Flags().StringVar(&setupTool, "tool", "", "AI tool to configure (claude-code, cursor, windsurf, vscode, opencode, grok, claude-desktop)")
+	setupCmd.Flags().StringVar(&setupTool, "tool", "", "AI tool to configure (claude-code, cursor, windsurf, vscode, opencode, grok, claude-desktop, codex)")
 	setupCmd.Flags().StringVar(&setupPreset, "preset", "", "Tool preset: core (default), review, refactor, federation, docs, ops, full")
+	setupCmd.Flags().BoolVar(&setupNoIndex, "no-index", false, "Skip auto-init/index for project-scope setups")
+	setupCmd.Flags().BoolVar(&setupNoWatch, "no-watch", false, "Don't add --watch to the generated MCP server command (indexes in the foreground instead, since nothing else would build it)")
+	setupCmd.Flags().BoolVar(&setupIndexNow, "index-now", false, "Build the SCIP index in the foreground now instead of letting watch mode build it in the background")
 	rootCmd.AddCommand(setupCmd)
 }
 
@@ -131,6 +161,12 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		ckbArgs = []string{"mcp"}
 	}
 
+	// Keep the index fresh for the life of the MCP session by default — a
+	// developer shouldn't have to know 'ckb index --watch' exists.
+	if !setupNoWatch {
+		ckbArgs = append(ckbArgs, "--watch")
+	}
+
 	// Select tool
 	var selectedTool *aiTool
 	if setupTool != "" {
@@ -142,7 +178,7 @@ func runSetup(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if selectedTool == nil {
-			return fmt.Errorf("unknown tool: %s. Valid options: claude-code, cursor, windsurf, vscode, opencode, grok, claude-desktop", setupTool)
+			return fmt.Errorf("unknown tool: %s. Valid options: claude-code, cursor, windsurf, vscode, opencode, grok, claude-desktop, codex", setupTool)
 		}
 	} else {
 		// Interactive tool selection
@@ -205,9 +241,22 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Configure
+	// Configure the AI tool FIRST, before any indexing. A slow or interrupted
+	// index build must never leave the developer without a working MCP
+	// config — the agent should be usable (Git-based features at minimum)
+	// the moment this step finishes, regardless of what happens next.
 	if err := configureTool(selectedTool, global, ckbCommand, ckbArgs); err != nil {
 		return err
+	}
+
+	// Project-scope configs point an AI tool at *this* repo, so make sure the
+	// repo itself is usable too: init .ckb/ if missing, index if there's no
+	// usable index yet. This runs AFTER the config is written (see above).
+	// Global configs aren't tied to a project, so skip.
+	if !global {
+		if err := ensureProjectReady(); err != nil {
+			return err
+		}
 	}
 
 	// Offer to install skills in interactive mode
@@ -223,6 +272,104 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	fmt.Println("  cargo install lip-cli && lip daemon --socket ~/.local/share/lip/lip.sock && lip index .")
 	fmt.Println("  https://lip-sigma.vercel.app  —  once running, CKB picks it up automatically.")
 
+	return nil
+}
+
+// ensureProjectReady makes project-scope 'ckb setup' self-sufficient: it runs
+// the same init logic as 'ckb init' if .ckb/ is missing, so a developer
+// never has to know that command exists. Init failure is surfaced (a broken
+// .ckb/ means the MCP server can't work at all).
+//
+// Building the SCIP index itself is non-blocking by default: when the
+// generated MCP config runs with --watch (the default), the watch loop
+// builds the index on its own the moment the AI tool starts the server —
+// see runWatchLoop's immediate first check — so setup doesn't need to sit
+// in the foreground running an indexer that can take anywhere from seconds
+// to tens of minutes. --no-watch has no watch loop to fall back on, so it
+// always indexes here in the foreground; --index-now does the same
+// regardless of --watch, for anyone who wants the index ready before setup
+// exits. Either way, index failure/skip is only ever reported as a one-line
+// note, because Git-based features (hotspots, ownership, diffs) work
+// without SCIP.
+//
+// Called from runSetup AFTER configureTool has already written the MCP
+// config, specifically so that a slow indexer (or a developer hitting
+// Ctrl-C on it) never leaves setup without a usable config file on disk.
+func ensureProjectReady() error {
+	if setupNoIndex {
+		// Still make sure .ckb/ exists even if indexing itself is skipped —
+		// the MCP server needs it to start at all.
+		return ensureCkbInitialized()
+	}
+
+	if err := ensureCkbInitialized(); err != nil {
+		return err
+	}
+
+	if !setupIndexNow && !setupNoWatch {
+		fmt.Println("CKB is indexing in the background when your agent starts it (watch mode).")
+		fmt.Println("Run `ckb index` now to do it in the foreground.")
+		fmt.Println()
+		return nil
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	fmt.Println("Checking code index...")
+	fmt.Println("  (safe to Ctrl-C — your MCP config is already saved and usable; Git-based")
+	fmt.Println("  features work immediately, and 'ckb mcp --watch' builds the SCIP index on")
+	fmt.Println("  its own once an indexer is available, or run 'ckb index' any time)")
+	result := performIndex(cwd)
+
+	switch result.Outcome {
+	case indexOutcomeIndexerMissing, indexOutcomeIndexerRequirementMissing:
+		fmt.Printf("Note: %s\n", result.Message)
+		fmt.Println("  Git-based features (hotspots, ownership, diffs) still work without it.")
+		fmt.Println("  Install the indexer above, then run 'ckb index' any time to enable full code intelligence.")
+	case indexOutcomeNoLanguageDetected:
+		fmt.Println("Note: could not detect a supported language — skipping code index.")
+		fmt.Println("  Git-based features (hotspots, ownership, diffs) still work.")
+	case indexOutcomeMultipleLanguages:
+		fmt.Println("Note: multiple languages detected — run 'ckb index --lang <lang>' to index manually.")
+	case indexOutcomeIndexingFailed, indexOutcomeError:
+		fmt.Printf("Note: indexing did not complete (%s) — continuing setup.\n", result.Message)
+		fmt.Println("  Git-based features (hotspots, ownership, diffs) still work. Run 'ckb index' to retry.")
+	case indexOutcomeIndexed, indexOutcomeUpToDate, indexOutcomeSkippedLargeRepo:
+		// Already printed its own detail above.
+	}
+	fmt.Println()
+
+	return nil
+}
+
+// ensureCkbInitialized runs the same logic as 'ckb init' if .ckb/ doesn't
+// exist yet in the current directory. It's idempotent — safe to call every
+// time 'ckb setup' runs.
+//
+// Registers the repo in the global registry (same as 'ckb init'), but with
+// NoActivate: true — setting up one project's AI tool config must never
+// change *another* session's default/active repo out from under it. A
+// developer who wants this repo to become their default can still run
+// 'ckb init' or 'ckb repo use' explicitly.
+func ensureCkbInitialized() error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	ckbDir := filepath.Join(cwd, ".ckb")
+	if _, statErr := os.Stat(ckbDir); statErr == nil {
+		return nil // already initialized
+	}
+
+	fmt.Println("No .ckb/ directory found — initializing CKB for this project...")
+	if err := runInitCore(initOptions{NoActivate: true}); err != nil {
+		return fmt.Errorf("failed to initialize CKB: %w", err)
+	}
+	fmt.Println()
 	return nil
 }
 
@@ -456,6 +603,9 @@ func configureTool(tool *aiTool, global bool, ckbCommand string, ckbArgs []strin
 		err = writeOpenCodeConfig(configPath, ckbCommand, ckbArgs, setupNpx)
 	case "grokServers":
 		err = writeGrokConfig(configPath, ckbCommand, ckbArgs)
+	case "codexToml":
+		codexCommand, codexArgs := codexWindowsWrap(runtime.GOOS, ckbCommand, ckbArgs)
+		err = writeCodexConfig(configPath, codexCommand, codexArgs, global)
 	default:
 		err = fmt.Errorf("unknown format: %s", tool.Format)
 	}
@@ -537,6 +687,14 @@ func getConfigPath(toolID string, global bool) string {
 			return filepath.Join(os.Getenv("APPDATA"), "Claude", "claude_desktop_config.json")
 		}
 		return filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
+
+	case "codex":
+		if global {
+			return filepath.Join(home, ".codex", "config.toml")
+		}
+		// Trusted-project scope: Codex reads <repo>/.codex/config.toml when the
+		// project directory has been trusted in the user's global config.
+		return filepath.Join(cwd, ".codex", "config.toml")
 	}
 
 	return ""
@@ -620,12 +778,13 @@ func writeOpenCodeConfig(path, command string, args []string, useNpx bool) error
 		}
 	}
 
-	// Build command array for OpenCode format
-	var cmdArray []string
-	if useNpx {
-		cmdArray = []string{"npx", "-y", "@tastehub/ckb", "mcp"}
-	} else {
-		cmdArray = append([]string{command}, args...)
+	// Build command array for OpenCode format. command/args already fully
+	// describe the invocation (npx vs binary, plus --watch/--preset flags) —
+	// useNpx is kept only so callers can assert their intent; re-deriving the
+	// npx array here used to silently drop --watch/--preset for npx setups.
+	cmdArray := append([]string{command}, args...)
+	if useNpx && command != "npx" {
+		cmdArray = append([]string{"npx", "-y", "@tastehub/ckb"}, args...)
 	}
 
 	// Add or update CKB entry
@@ -684,6 +843,508 @@ func writeGrokConfig(path, command string, args []string) error {
 	}
 
 	return os.WriteFile(path, data, 0644) // #nosec G703 -- non-sensitive config file
+}
+
+// codexTableHeader is the TOML table Codex CLI reads CKB's MCP server config
+// from: [mcp_servers.ckb] in either ~/.codex/config.toml (--global) or
+// <repo>/.codex/config.toml (project scope, trusted projects).
+const codexTableHeader = "[mcp_servers.ckb]"
+
+// writeCodexConfig upserts CKB's [mcp_servers.ckb] table into Codex's
+// config.toml (global or project-scoped). Codex's config.toml is a file
+// another tool owns and may hand-edit (comments, other [mcp_servers.*]
+// tables, unrelated top-level settings) — CKB has no business reformatting
+// any of that. So rather than decode-then-fully-reencode the whole file
+// through a TOML library (which would normalize formatting and drop
+// comments), this does a surgical textual replace of just the CKB table's
+// own keys, leaving everything else — including [mcp_servers.ckb.env]
+// subtables — untouched byte-for-byte. The result is validated as TOML
+// before being written; if that fails, nothing is written.
+//
+// File permissions: a file that already exists keeps its own mode — CKB
+// must never widen (or narrow) permissions a user or another tool already
+// set, especially since [mcp_servers.*.env] subtables can hold secrets. A
+// freshly created file gets 0600 for --global (~/.codex/config.toml, which
+// may end up holding secrets across tools) or 0644 for project scope
+// (<repo>/.codex/config.toml, matching every other config file CKB writes).
+func writeCodexConfig(path, command string, args []string, global bool) error {
+	var existing string
+	var existingMode os.FileMode
+	hadExisting := false
+	if info, statErr := os.Stat(path); statErr == nil { // #nosec G703 -- path is internally constructed
+		hadExisting = true
+		existingMode = info.Mode().Perm()
+	}
+	if data, err := os.ReadFile(path); err == nil { // #nosec G703 -- path is internally constructed
+		existing = string(data)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read %s: %w", path, err)
+	}
+
+	// Refuse to touch a file we can't parse. Editing it blind risks turning
+	// a pre-existing syntax error into data loss.
+	if strings.TrimSpace(existing) != "" {
+		var decoded map[string]any
+		if _, err := toml.Decode(existing, &decoded); err != nil {
+			return fmt.Errorf(
+				"%s is not valid TOML, leaving it untouched (%w)\nAdd this table manually:\n\n%s",
+				path, err, codexManualTOMLSnippet(command, args),
+			)
+		}
+
+		// A valid mcp_servers.ckb entry that isn't expressed as a
+		// [mcp_servers.ckb] (or quoted-key-equivalent) table header — e.g.
+		// an inline table (ckb = { command = ... }) or dotted keys
+		// (mcp_servers.ckb.command = ... or [mcp_servers]\nckb.command = ...)
+		// — is syntactically legal TOML that upsertTOMLTable can't safely
+		// edit: TOML forbids extending an inline table with a later header,
+		// so appending [mcp_servers.ckb] on top of one produces invalid
+		// TOML. Detect it via the parsed structure (decoded has a value at
+		// mcp_servers.ckb) combined with the textual header scan (no
+		// [mcp_servers.ckb]-shaped header line exists) and refuse up front
+		// with an actionable manual snippet, rather than generating broken
+		// output and failing later at the validate-before-write step.
+		if tomlPathExists(decoded, tomlTargetPath) && !tomlHasHeaderFor(existing, tomlTargetPath) {
+			return fmt.Errorf(
+				"%s already configures mcp_servers.ckb using inline-table or dotted-key TOML syntax, which ckb setup won't rewrite automatically\nUpdate it by hand instead — replace the existing ckb entry under [mcp_servers] with:\n\n%s",
+				path, codexManualTOMLSnippet(command, args),
+			)
+		}
+	}
+
+	// Codex's config.toml is written by whatever OS the user is on; preserve
+	// CRLF line endings if that's what's already there.
+	crlf := strings.Contains(existing, "\r\n")
+	normalized := existing
+	if crlf {
+		normalized = strings.ReplaceAll(existing, "\r\n", "\n")
+	}
+
+	updated := upsertCodexMCPServer(normalized, command, args)
+
+	// Belt-and-suspenders: validate what we're about to write is still valid
+	// TOML before it touches disk. upsertTOMLTable only ever does line-level
+	// surgery, but if that surgery ever produces something unparsable, abort
+	// rather than hand Codex a broken config.
+	var probe any
+	if _, err := toml.Decode(updated, &probe); err != nil {
+		return fmt.Errorf(
+			"generated config for %s would not be valid TOML, aborting without writing (%w)\nAdd this table manually:\n\n%s",
+			path, err, codexManualTOMLSnippet(command, args),
+		)
+	}
+
+	if crlf {
+		updated = strings.ReplaceAll(updated, "\n", "\r\n")
+	}
+
+	perm := os.FileMode(0644)
+	if global {
+		perm = 0600
+	}
+	if hadExisting {
+		perm = existingMode
+	}
+
+	return writeFileAtomic(path, []byte(updated), perm)
+}
+
+// codexManualTOMLSnippet renders the [mcp_servers.ckb] table CKB would have
+// written, for error messages that ask the user to add it by hand.
+func codexManualTOMLSnippet(command string, args []string) string {
+	return codexTableHeader + "\n" + strings.Join(codexBodyKeys(command, args), "\n") + "\n"
+}
+
+// codexBodyKeys renders the bare key = value lines (no header) for CKB's
+// Codex MCP server entry.
+func codexBodyKeys(command string, args []string) []string {
+	quotedArgs := make([]string, len(args))
+	for i, a := range args {
+		quotedArgs[i] = tomlQuoteString(a)
+	}
+	return []string{
+		fmt.Sprintf("command = %s", tomlQuoteString(command)),
+		fmt.Sprintf("args = [%s]", strings.Join(quotedArgs, ", ")),
+	}
+}
+
+// tomlTargetPath is the dotted key path CKB's MCP server table lives at.
+var tomlTargetPath = []string{"mcp_servers", "ckb"}
+
+// upsertCodexMCPServer replaces the bare command/args keys of the
+// [mcp_servers.ckb] table in content, or appends the whole table if not
+// present. All other content (other tables, comments, key order, and any
+// [mcp_servers.ckb.*] subtables such as a user-configured .env block) is
+// left untouched.
+func upsertCodexMCPServer(content, command string, args []string) string {
+	return upsertTOMLTable(content, tomlTargetPath, codexTableHeader, codexBodyKeys(command, args))
+}
+
+// tomlArrayHeaderRe matches an array-of-tables header, e.g. "[[foo]]".
+var tomlArrayHeaderRe = regexp.MustCompile(`^\s*\[\[`)
+
+// tomlHeaderRe matches a single-bracket TOML table header line, capturing
+// the bracket contents. Tolerates leading/trailing whitespace and a
+// trailing inline comment (# ...). Never matches array-of-tables headers
+// (tomlArrayHeaderRe is checked first).
+var tomlHeaderRe = regexp.MustCompile(`^\s*\[([^\[\]]*)\]\s*(#.*)?$`)
+
+// tomlBareKeyRe matches the key portion of a bare "key = value" TOML line,
+// including quoted keys ("command" = ... or 'command' = ...).
+var tomlBareKeyRe = regexp.MustCompile(`^\s*("([^"]*)"|'([^']*)'|[A-Za-z0-9_-]+)\s*=`)
+
+// parseTOMLHeaderPath parses a TOML table header line into its dotted key
+// path, honoring quoted keys — [mcp_servers."ckb"], ["mcp_servers".ckb], and
+// [mcp_servers.ckb] all parse to the same path. Returns ok=false if the line
+// isn't a single-bracket table header line.
+func parseTOMLHeaderPath(line string) (path []string, ok bool) {
+	if tomlArrayHeaderRe.MatchString(line) {
+		return nil, false
+	}
+	m := tomlHeaderRe.FindStringSubmatch(line)
+	if m == nil {
+		return nil, false
+	}
+	inner := strings.TrimSpace(m[1])
+	if inner == "" {
+		return nil, false
+	}
+	return splitTOMLKeyPath(inner)
+}
+
+// splitTOMLKeyPath splits a dotted TOML key path into its component keys,
+// respecting basic ("...") and literal ('...') quoted segments that may
+// themselves contain dots.
+func splitTOMLKeyPath(s string) ([]string, bool) {
+	var parts []string
+	var cur strings.Builder
+	var inQuote byte
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case inQuote != 0:
+			cur.WriteByte(c)
+			if c == inQuote {
+				inQuote = 0
+			}
+		case c == '"' || c == '\'':
+			inQuote = c
+			cur.WriteByte(c)
+		case c == '.':
+			parts = append(parts, unquoteTOMLKey(strings.TrimSpace(cur.String())))
+			cur.Reset()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	if inQuote != 0 {
+		return nil, false // unterminated quote — malformed, don't treat as a match
+	}
+
+	last := strings.TrimSpace(cur.String())
+	parts = append(parts, unquoteTOMLKey(last))
+
+	for _, p := range parts {
+		if p == "" {
+			return nil, false
+		}
+	}
+	return parts, true
+}
+
+// unquoteTOMLKey strips quotes from a single TOML key segment, if present.
+func unquoteTOMLKey(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		if unq, err := strconv.Unquote(s); err == nil {
+			return unq
+		}
+	}
+	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+// tomlBareKeyName returns the key name of a bare "key = value" line, or ""
+// if the line isn't such an assignment (blank, comment, or a table header).
+func tomlBareKeyName(line string) string {
+	t := strings.TrimSpace(line)
+	if t == "" || strings.HasPrefix(t, "#") {
+		return ""
+	}
+	m := tomlBareKeyRe.FindStringSubmatch(line)
+	if m == nil {
+		return ""
+	}
+	if m[2] != "" {
+		return m[2]
+	}
+	if m[3] != "" {
+		return m[3]
+	}
+	return strings.TrimSpace(m[1])
+}
+
+// tomlPathExists reports whether the decoded TOML document m has a value at
+// the given dotted key path — used to detect an mcp_servers.ckb entry
+// however it was spelled (header, inline table, or dotted keys), since
+// BurntSushi's decoder folds all three into the same nested-map shape.
+func tomlPathExists(m map[string]any, path []string) bool {
+	var cur any = m
+	for _, key := range path {
+		asMap, ok := cur.(map[string]any)
+		if !ok {
+			return false
+		}
+		v, ok := asMap[key]
+		if !ok {
+			return false
+		}
+		cur = v
+	}
+	return true
+}
+
+// tomlHasHeaderFor reports whether content has a table header line matching
+// targetPath (via parsed header key paths, so quoting/comments/whitespace
+// variations all resolve to the same table) — i.e. the entry, if any, is
+// expressed in the one syntax upsertTOMLTable knows how to edit in place.
+func tomlHasHeaderFor(content string, targetPath []string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		if path, ok := parseTOMLHeaderPath(line); ok && tomlPathEqual(path, targetPath) {
+			return true
+		}
+	}
+	return false
+}
+
+// tomlStripQuotedAndComment returns line with quoted-string contents and any
+// trailing "# ..." comment removed, so bracket-counting and other structural
+// scans below aren't confused by "[" / "]" appearing inside a string value
+// or a comment. Quote handling is a simple single-char-escape scanner, not a
+// full TOML string grammar — sufficient for the plain ASCII values CKB's own
+// command/args lines ever contain and the general case of a user's existing
+// lines in the same table.
+func tomlStripQuotedAndComment(line string) string {
+	var out strings.Builder
+	var inQuote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case inQuote != 0:
+			if c == inQuote && (inQuote == '\'' || i == 0 || line[i-1] != '\\') {
+				inQuote = 0
+			}
+		case c == '"' || c == '\'':
+			inQuote = c
+		case c == '#':
+			return out.String()
+		default:
+			out.WriteByte(c)
+		}
+	}
+	return out.String()
+}
+
+// tomlTrailingComment extracts a trailing "# ..." comment from line (outside
+// any quoted string), or "" if there isn't one.
+func tomlTrailingComment(line string) string {
+	var inQuote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case inQuote != 0:
+			if c == inQuote && (inQuote == '\'' || i == 0 || line[i-1] != '\\') {
+				inQuote = 0
+			}
+		case c == '"' || c == '\'':
+			inQuote = c
+		case c == '#':
+			return strings.TrimRight(line[i:], "\r")
+		}
+	}
+	return ""
+}
+
+// tomlValueSpanEnd returns the index (inclusive, within [start, limit)) of
+// the last line belonging to the value that starts at lines[start]. For a
+// plain single-line "key = value" line, that's start itself. For a
+// multiline array ("key = [\n  ...\n]"), it's the line containing the
+// matching closing bracket, found by counting "[" / "]" across lines
+// (ignoring characters inside quoted strings or comments, via
+// tomlStripQuotedAndComment) until the depth returns to zero.
+func tomlValueSpanEnd(lines []string, start, limit int) int {
+	depth := 0
+	for _, r := range tomlStripQuotedAndComment(lines[start]) {
+		switch r {
+		case '[':
+			depth++
+		case ']':
+			depth--
+		}
+	}
+	// No unclosed "[" on the key's own line — a plain scalar (string,
+	// number, bool) or an array that opened and closed on one line. Either
+	// way the value doesn't continue onto later lines.
+	if depth <= 0 {
+		return start
+	}
+	for i := start + 1; i < limit; i++ {
+		for _, r := range tomlStripQuotedAndComment(lines[i]) {
+			switch r {
+			case '[':
+				depth++
+			case ']':
+				depth--
+			}
+		}
+		if depth <= 0 {
+			return i
+		}
+	}
+	return limit - 1
+}
+
+func tomlPathEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// upsertTOMLTable finds the table at targetPath (matched via parsed header
+// key paths, so quoting/comments/whitespace variations all resolve to the
+// same table) and rewrites only its own bare "command"/"args" keys —
+// anything else in that table's bare-key block (comments, other keys) is
+// preserved, and any subtable of targetPath (e.g. [mcp_servers.ckb.env],
+// which may hold user-configured env vars) is left completely untouched,
+// since it lives past the bare-key block boundary. If targetPath isn't
+// found, headerLine + bodyKeys are appended at EOF.
+func upsertTOMLTable(content string, targetPath []string, headerLine string, bodyKeys []string) string {
+	if strings.TrimSpace(content) == "" {
+		return headerLine + "\n" + strings.Join(bodyKeys, "\n") + "\n"
+	}
+
+	lines := strings.Split(content, "\n")
+	headerIdx := -1
+	blockEnd := len(lines) // exclusive: end of the bare-key block under our header
+
+	for i, line := range lines {
+		path, ok := parseTOMLHeaderPath(line)
+		if headerIdx == -1 {
+			if ok && tomlPathEqual(path, targetPath) {
+				headerIdx = i
+			}
+			continue
+		}
+		// Any table header after ours — including a subtable of ours like
+		// [mcp_servers.ckb.env] — ends the block of bare keys we're allowed
+		// to rewrite.
+		if ok {
+			blockEnd = i
+			break
+		}
+	}
+
+	if headerIdx == -1 {
+		trimmed := strings.TrimRight(content, "\n")
+		return trimmed + "\n\n" + headerLine + "\n" + strings.Join(bodyKeys, "\n") + "\n"
+	}
+
+	// Keep every line in the existing bare-key block except command/args —
+	// re-running setup updates those in place without disturbing other keys
+	// or comments a user may have added inside the table. A replaced key's
+	// value may span multiple lines (a multiline args array); the whole
+	// span is dropped, not just its opening line — filtering line-by-line
+	// by key name alone would leave a multiline array's continuation lines
+	// (which don't look like "key = ...") stranded next to the new value.
+	// A single-line key's trailing inline comment (# ...) is preserved by
+	// reattaching it to the replacement line for that same key, rather than
+	// silently discarded along with the line it was on.
+	var kept []string
+	commentByKey := make(map[string]string)
+	for i := headerIdx + 1; i < blockEnd; {
+		key := tomlBareKeyName(lines[i])
+		if key == "command" || key == "args" {
+			end := tomlValueSpanEnd(lines, i, blockEnd)
+			if c := tomlTrailingComment(lines[end]); c != "" {
+				commentByKey[key] = c
+			}
+			i = end + 1
+			continue
+		}
+		kept = append(kept, lines[i])
+		i++
+	}
+
+	renderedBodyKeys := make([]string, len(bodyKeys))
+	for i, bk := range bodyKeys {
+		key := tomlBareKeyName(bk)
+		if c, ok := commentByKey[key]; ok {
+			renderedBodyKeys[i] = bk + "  " + c
+		} else {
+			renderedBodyKeys[i] = bk
+		}
+	}
+
+	newBlock := make([]string, 0, 1+len(renderedBodyKeys)+len(kept))
+	newBlock = append(newBlock, lines[headerIdx]) // keep the original header line verbatim
+	newBlock = append(newBlock, renderedBodyKeys...)
+	newBlock = append(newBlock, kept...)
+
+	result := make([]string, 0, headerIdx+len(newBlock)+(len(lines)-blockEnd))
+	result = append(result, lines[:headerIdx]...)
+	result = append(result, newBlock...)
+	result = append(result, lines[blockEnd:]...)
+
+	return strings.Join(result, "\n")
+}
+
+// tomlQuoteString renders s as a TOML basic string. Go's quoting rules
+// (backslash/quote escaping) are a compatible subset of TOML's for the plain
+// ASCII command/arg values CKB ever writes here (binary paths, flags).
+func tomlQuoteString(s string) string {
+	return strconv.Quote(s)
+}
+
+// writeFileAtomic writes data to path by writing a temp file in the same
+// directory and renaming it into place, so a process interrupted mid-write
+// (or a concurrent writer) can never leave path partially written.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".ckb-setup-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file in %s: %w", dir, err)
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = os.Remove(tmpPath) // no-op once the rename below has succeeded
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to sync temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil { // #nosec G703 -- perm is caller-controlled, not user input
+		return fmt.Errorf("failed to set permissions on temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("failed to move temp file into place: %w", err)
+	}
+	return nil
 }
 
 func configureGrokGlobal(ckbCommand string, ckbArgs []string) (bool, error) {
@@ -1304,6 +1965,21 @@ func formatCommand(command string, args []string) string {
 // isNpxCommand checks if a command is using npx
 func isNpxCommand(command string) bool {
 	return command == "npx" || strings.HasSuffix(command, "/npx")
+}
+
+// codexWindowsWrap wraps an npx command/args pair in "cmd /c" on Windows.
+// Codex spawns [mcp_servers.*] commands directly rather than through a
+// shell, and npx on Windows is npx.cmd, which only resolves via cmd.exe —
+// this repo's Windows guidance (README "Windows" section) says the same for
+// any tool. goos is a parameter (rather than reading runtime.GOOS directly)
+// so the decision is unit-testable on any host OS. No-op for non-Windows or
+// non-npx commands.
+func codexWindowsWrap(goos, command string, args []string) (string, []string) {
+	if goos != "windows" || !isNpxCommand(command) {
+		return command, args
+	}
+	wrapped := append([]string{"/c", command}, args...)
+	return "cmd", wrapped
 }
 
 // claudeMcpAdd adds ckb to Claude Code, handling the case where it already exists.

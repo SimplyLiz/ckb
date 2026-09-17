@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -253,58 +254,214 @@ func isRepoPath(s string) bool {
 	return false
 }
 
-// runWatchLoop periodically checks index freshness and reindexes if stale
+// maxWatchBackoff caps the exponential backoff between reindex attempts
+// after consecutive failures, so a flaky indexer doesn't get retried more
+// slowly than useful but also never waits forever.
+const maxWatchBackoff = 10 * time.Minute
+
+// maxWatchFailures is how many consecutive reindex failures runWatchLoop
+// tolerates before disabling itself for the rest of the process lifetime —
+// retrying an identical failure forever wastes CPU and spams logs for no
+// benefit; the fix (once made) needs an MCP server restart to pick up
+// anyway, same as the missing-indexer case.
+const maxWatchFailures = 5
+
+// errIndexerUnavailable means runWatchLoop can't build an index for this
+// project right now — no supported/single language detected, the language
+// has no known SCIP indexer, or the indexer binary isn't installed. It's
+// treated as permanent for the life of the process: watch mode disables
+// itself rather than retrying every tick.
+var errIndexerUnavailable = errors.New("no usable SCIP indexer for this project")
+
+// errRepoTooLarge means the project exceeds scipLargeRepoThreshold. A watch
+// tick must never kick off a 30–90 min SCIP build inside the MCP server's
+// background goroutine — that path requires an explicit 'ckb index --scip'.
+var errRepoTooLarge = errors.New("repo exceeds automatic SCIP indexing threshold")
+
+// watchState tracks consecutive-failure backoff for runWatchLoop so a
+// persistently broken indexer doesn't retry an identical failure every
+// tick forever.
+type watchState struct {
+	consecutiveFailures int
+	lastAttempt         time.Time
+	disabled            bool
+}
+
+// watchBackoff returns how long to wait before the next reindex attempt
+// after consecutiveFailures in a row, doubling from base each time and
+// capping at maxWatchBackoff. Pure and clock-free so it's unit-testable
+// without a real ticker.
+func watchBackoff(base time.Duration, consecutiveFailures int) time.Duration {
+	if consecutiveFailures <= 0 {
+		return 0
+	}
+	d := base
+	for i := 1; i < consecutiveFailures; i++ {
+		if d >= maxWatchBackoff {
+			return maxWatchBackoff
+		}
+		d *= 2
+	}
+	if d > maxWatchBackoff {
+		d = maxWatchBackoff
+	}
+	return d
+}
+
+// runWatchLoop periodically checks index freshness and reindexes if stale —
+// including building an index for the first time when none exists yet
+// (e.g. 'ckb setup' wrote the MCP config but left indexing for watch mode,
+// which is now the non-blocking default). It backs off exponentially on
+// repeated failures and disables itself entirely once the indexer is
+// confirmed missing or failures cross maxWatchFailures, logging each
+// transition exactly once rather than spamming every tick.
+//
+// The first check runs immediately, before the ticker's first tick — with
+// setup no longer indexing in the foreground by default, a fresh project
+// has no SCIP index at all until watch mode notices, and waiting a full
+// poll interval (up to 5 minutes) to notice would be a regression from the
+// old blocking behavior, not an improvement on it.
 func runWatchLoop(repoRoot string, interval time.Duration, logger *slog.Logger) {
 	ckbDir := filepath.Join(repoRoot, ".ckb")
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	state := &watchState{}
+	permanentLogged := false
+
+	watchTick(repoRoot, ckbDir, interval, state, &permanentLogged, logger)
+
 	for range ticker.C {
-		meta, err := index.LoadMeta(ckbDir)
-		if err != nil || meta == nil {
-			// No metadata yet, skip
-			continue
+		watchTick(repoRoot, ckbDir, interval, state, &permanentLogged, logger)
+	}
+}
+
+// watchTick runs one staleness-check-and-maybe-reindex cycle. Extracted out
+// of runWatchLoop so the same logic can run once immediately on start and
+// again on every ticker.C fire, without duplicating it.
+func watchTick(repoRoot, ckbDir string, interval time.Duration, state *watchState, permanentLogged *bool, logger *slog.Logger) {
+	if state.disabled {
+		return
+	}
+
+	stale, trigger, triggerInfo, reason := watchCheckStale(repoRoot, ckbDir)
+	if !stale {
+		return
+	}
+
+	if state.consecutiveFailures > 0 {
+		if wait := watchBackoff(interval, state.consecutiveFailures); time.Since(state.lastAttempt) < wait {
+			return
 		}
+	}
 
-		freshness := meta.CheckFreshness(repoRoot)
-		if freshness.Fresh {
-			continue
+	state.lastAttempt = time.Now()
+	logger.Info("Index stale, triggering reindex", "trigger", string(trigger), "reason", reason)
+
+	err := triggerReindex(repoRoot, ckbDir, trigger, triggerInfo, logger)
+	switch {
+	case err == nil:
+		state.consecutiveFailures = 0
+
+	case errors.Is(err, errIndexerUnavailable), errors.Is(err, errRepoTooLarge):
+		if !*permanentLogged {
+			logger.Warn("Watch mode: disabling auto-reindex for this project",
+				"reason", err.Error(),
+				"hint", "install the indexer (or run 'ckb index --scip' for large repos), then run 'ckb index' or restart the MCP server",
+			)
+			*permanentLogged = true
 		}
+		state.disabled = true
 
-		// Determine trigger type based on freshness reason
-		trigger := index.TriggerStale
-		triggerInfo := freshness.Reason
-		if freshness.CommitsBehind > 0 {
-			trigger = index.TriggerHEAD
-			// Try to get branch info for triggerInfo
-			if meta.CommitHash != "" && freshness.CurrentCommit != "" {
-				triggerInfo = fmt.Sprintf("%d commit(s) behind", freshness.CommitsBehind)
-			}
-		}
-
-		logger.Info("Index stale, triggering reindex",
-			"trigger", string(trigger),
-			"reason", freshness.Reason,
-		)
-
-		if err := triggerReindex(repoRoot, ckbDir, trigger, triggerInfo, logger); err != nil {
-			logger.Error("Reindex failed", "error", err.Error())
+	default:
+		state.consecutiveFailures++
+		logger.Error("Reindex failed", "error", err.Error(), "consecutiveFailures", state.consecutiveFailures)
+		if state.consecutiveFailures >= maxWatchFailures {
+			logger.Warn("Watch mode: reindex failed repeatedly — disabling auto-reindex until the MCP server restarts",
+				"failures", state.consecutiveFailures)
+			state.disabled = true
 		}
 	}
 }
 
-// triggerReindex runs the SCIP indexer and updates metadata
-func triggerReindex(repoRoot, ckbDir string, trigger index.RefreshTrigger, triggerInfo string, logger *slog.Logger) error {
-	// Load project config to get language and indexer
-	config, err := project.LoadConfig(repoRoot)
-	if err != nil {
-		return err
+// watchCheckStale reports whether the index needs a (re)build: either
+// there's no metadata yet (never indexed — including a fresh 'ckb setup'
+// that skipped indexing), or an existing index has gone stale.
+func watchCheckStale(repoRoot, ckbDir string) (stale bool, trigger index.RefreshTrigger, triggerInfo, reason string) {
+	meta, err := index.LoadMeta(ckbDir)
+	if err != nil || meta == nil {
+		return true, index.TriggerStale, "", "no index yet"
 	}
 
-	// Get indexer command
-	indexer := project.GetIndexerInfo(config.Language)
-	if indexer == nil {
-		return nil // No indexer for this language
+	freshness := meta.CheckFreshness(repoRoot)
+	if freshness.Fresh {
+		return false, "", "", ""
+	}
+
+	trigger = index.TriggerStale
+	triggerInfo = freshness.Reason
+	if freshness.CommitsBehind > 0 {
+		trigger = index.TriggerHEAD
+		if meta.CommitHash != "" && freshness.CurrentCommit != "" {
+			triggerInfo = fmt.Sprintf("%d commit(s) behind", freshness.CommitsBehind)
+		}
+	}
+	return true, trigger, triggerInfo, freshness.Reason
+}
+
+// watchDetectLanguage resolves the project language to index: the saved
+// project config if one exists (written after the first successful index),
+// or a fresh auto-detect otherwise — covering the "never indexed yet" case
+// that project.json can't answer. Returns ok=false if no single supported
+// language can be determined.
+func watchDetectLanguage(repoRoot string) (project.Language, bool) {
+	if cfg, err := project.LoadConfig(repoRoot); err == nil {
+		return cfg.Language, true
+	}
+	lang, _, allLangs := project.DetectAllLanguages(repoRoot)
+	if lang == project.LangUnknown || len(allLangs) > 1 {
+		return project.LangUnknown, false
+	}
+	return lang, true
+}
+
+// triggerReindex runs the SCIP indexer and updates metadata. It never
+// writes to stdout (unlike the CLI's performIndex) since this runs inside
+// 'ckb mcp', whose stdout is the JSON-RPC transport — all status goes
+// through logger (file + stderr).
+//
+// The command it runs comes from buildIndexPlan — the same plan builder
+// `ckb index` uses via performIndex — so C++'s --compdb-path flag, Ruby's
+// bundle-aware prefix, PHP's prerequisite check, and a custom
+// scip.indexPath's --output flag are never missed here the way a
+// hand-rolled `indexer.Command` would miss them.
+func triggerReindex(repoRoot, ckbDir string, trigger index.RefreshTrigger, triggerInfo string, logger *slog.Logger) error {
+	lang, ok := watchDetectLanguage(repoRoot)
+	if !ok {
+		return errIndexerUnavailable
+	}
+
+	// Never kick off an hours-long SCIP build from a background watch tick;
+	// that requires the explicit opt-in 'ckb index --scip'.
+	if fileCount := countSourceFiles(repoRoot, lang); fileCount >= scipLargeRepoThreshold {
+		return errRepoTooLarge
+	}
+
+	manifest := project.FindManifestForLanguage(repoRoot, lang)
+	indexPath := resolveIndexPath(repoRoot)
+
+	plan, planResult := buildIndexPlan(repoRoot, lang, manifest, "", indexPath)
+	if plan == nil {
+		switch planResult.Outcome {
+		case indexOutcomeIndexerMissing, indexOutcomeIndexerRequirementMissing:
+			logger.Warn("Watch mode: cannot build index plan", "reason", planResult.Message)
+			return errIndexerUnavailable
+		default:
+			return fmt.Errorf("building index plan: %s", planResult.Message)
+		}
+	}
+	if planResult.Warning != "" {
+		logger.Warn("Index plan warning", "warning", planResult.Warning)
 	}
 
 	// Acquire lock
@@ -318,14 +475,13 @@ func triggerReindex(repoRoot, ckbDir string, trigger index.RefreshTrigger, trigg
 
 	// Run indexer
 	start := time.Now()
-	command := indexer.Command
-	parts := strings.Fields(command)
+	parts := strings.Fields(plan.Command)
 	if len(parts) == 0 {
-		return nil
+		return errIndexerUnavailable
 	}
 
 	cmd := exec.Command(parts[0], parts[1:]...) // #nosec G204 //nolint:gosec // command from trusted indexer config
-	cmd.Dir = repoRoot
+	cmd.Dir = plan.IndexerDir
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -339,12 +495,23 @@ func triggerReindex(repoRoot, ckbDir string, trigger index.RefreshTrigger, trigg
 
 	duration := time.Since(start)
 
+	// Verify the index file the plan targeted actually exists before ever
+	// writing metadata that would claim success — a language whose indexer
+	// exits 0 without producing output (or a custom --output path that
+	// wasn't honored) must be reported as a failure, not silently recorded
+	// as a fresh index.
+	if _, statErr := os.Stat(plan.IndexPath); os.IsNotExist(statErr) {
+		err := fmt.Errorf("indexer completed but %s was not created", plan.IndexPath)
+		logger.Error("Reindex failed", "error", err.Error())
+		return err
+	}
+
 	// Update metadata with refresh trigger info
 	newMeta := &index.IndexMeta{
 		CreatedAt:   time.Now(),
-		FileCount:   countSourceFiles(repoRoot, config.Language),
+		FileCount:   countSourceFiles(repoRoot, lang),
 		Duration:    duration.Round(time.Millisecond * 100).String(),
-		Indexer:     indexer.CheckCommand,
+		Indexer:     plan.Indexer.CheckCommand,
 		IndexerArgs: parts,
 		LastRefresh: &index.LastRefresh{
 			At:          time.Now(),
@@ -363,9 +530,20 @@ func triggerReindex(repoRoot, ckbDir string, trigger index.RefreshTrigger, trigg
 		logger.Error("Failed to save index metadata", "error", err.Error())
 	}
 
+	// Persist project config so future ticks (and 'ckb index') don't need to
+	// re-detect the language, same as the CLI's performIndex does.
+	if saveErr := project.SaveConfig(repoRoot, &project.ProjectConfig{
+		Language:     lang,
+		Indexer:      plan.Indexer.CheckCommand,
+		ManifestPath: plan.Manifest,
+		DetectedAt:   time.Now(),
+	}); saveErr != nil {
+		logger.Warn("Could not save project config", "error", saveErr.Error())
+	}
+
 	// Populate incremental tracking tables so subsequent incremental updates work
-	if project.SupportsIncrementalIndexing(config.Language) {
-		populateIncrementalTracking(repoRoot, config.Language)
+	if project.SupportsIncrementalIndexing(lang) {
+		populateIncrementalTracking(repoRoot, lang)
 	}
 
 	logger.Info("Reindex complete",
