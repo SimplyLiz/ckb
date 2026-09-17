@@ -2,7 +2,7 @@
 
 Status: Draft
 Date: 2026-09-17
-Version: 0.1
+Version: 0.3
 
 Inputs:
 1. `docs/specs/knowledge-store/00-survey-current-state.md` — evidence about the current state
@@ -10,7 +10,49 @@ Inputs:
 3. `docs/specs/knowledge-store/02-retrieval-decisions.md` — retrieval and agent-facing decisions
 4. `docs/specs/knowledge-store/03-reconciliation.md` — rulings that resolve conflicts between 01 and 02
 
-This document is self-contained. Where it summarizes an input, the input is cited as `NN §x.y` (e.g. `01 §3.2`); where it cites code, the citation is `path:line` and was read from the inputs, not re-derived.
+This document is self-contained. Where it summarizes an input, the input is cited as `NN §x.y` (e.g. `01 §3.2`); where it cites code, the citation is `path:line` and was read from the inputs, not re-derived. **All line numbers are as of commit `5554fd4`** and drift by 1–4 lines against later commits; the symbol named in each citation is the thing to look for.
+
+Changes in 0.2 and 0.3:
+
+0.2:
+
+- A1 — `node_fts` `body` column removed; body text moves to a `node_body` side table with its own external-content FTS (§6.2).
+- A2 — `edge_type` tier pair becomes a bitmask (`src_tiers`/`dst_tiers`) so one edge type can span tiers and keep a write-time check (§5.2, §6.2, §6.3).
+- A3 — ruling: edges are HEAD-only; the A12 validity window applies to `node` and `fact` (§7.2, Appendix C).
+- A4 — evidence base weight is 1.00 for all three SCIP rows; freshness enters once, via §10.2 (§10.1).
+- A5 — `source` and `repo_state` move to Phase 1 alongside the tables whose FKs point at them (§13.2).
+- A6 — `carry_forward` added to `fact_key`, not `source` (§6.2, §7.3).
+- A7 — `usage_overlay` DDL added (§6.2) and listed in the table disposition (§13.1).
+- A8 — wire ↔ storage edge mapping table added, with the deliberately non-navigable types named (§9.2).
+- A9 — `n:` id stability in §9.4 corrected to match §5.5.
+- A10 — `parent_id` rule for nested symbols stated (§4.1).
+- A11 — canonical ordering `src_id < dst_id` for undirected edge types (§6.3).
+- A12 — blame-derived `owns` moves to index time; no request-path writes (§7.1).
+- B1 — WAL figure unified at 74 MB (§2).
+- B2 — §2.8 heading corrected to four bugs.
+- B3 — §9.1 heading corrected to three new tools.
+- B4 — duplicate "No vector store" bullets merged (§3.2).
+- B5 — duplicate `cartographer_run` DDL removed from §7.5.
+- B6 — cross-references in §5.5 and §6.2 repointed at Appendix B / §7.5 / §14.3.
+- B7 — distinct example ids in §9.2 and §9.3.
+- B8 — missing `REFERENCES` added on `edge` and `node_alias` (§6.2).
+- B9 — §9.4 now points at the full id-form list in §5.5.
+- B10 — relationship between `UNIQUE(src_id, type, dst_id)` and `idx_edge_out` stated (§6.7).
+- C1 — `localPkg` is a set discovered from go.work/go.mod (§5.1).
+- C2 — derive-once enforcement mechanism made concrete (§7.4).
+- C3 — edge row at 10× labelled an estimate pending Phase 0 re-measurement (§6.6).
+- C4 — `index_meta` gains a *key*, not a column (§5.7).
+
+0.3:
+
+- N1 — `edges:["contains"]` with `direction:out|in` stated as an alias for `direction:down|up`; same walk either way (§9.2).
+- N2 — §9.5 Q5's `changed-at (time)` replaced by `direction:time (A8)`, which is the actual mechanism (§9.5).
+- N3 — §10.2's score formula split so the usage prior's 5% gate is explicit, matching §11.2 (§10.2).
+- N4 — `resolve()` returns the split case of §5.3 as `alternatives[]` with `confidence < 1` (§5.5).
+- N5 — `view_cache` shape cited from `schema.go:478-484` and the composite-key serialization stated (§8.5).
+- N6 — §13.1 heading corrected from "~14" to 15 model tables, counted from §6.2 plus `node_alias` (§13.1).
+- N7 — payload-efficiency baseline labelled as quoted from `02 V3` and unmeasured (§12.3).
+- N8 — `arch.health` trend is the key's own temporal history, not a second key (§6.4).
 
 ---
 
@@ -22,7 +64,7 @@ This is being built now because the root causes are cheap to fix and the payoff 
 
 **The three axes.** The store organizes all data as a cube: **level** (repo ⊃ container ⊃ file ⊃ symbol, vertical, via `parent_id`), **relation** (typed edges — calls, imports, owns, tests, documents — horizontal), and **state** (evidence: `source`, `repo_state`, `observed_at`, `confidence`, carried on every edge and fact). A cell answers: what does relation R (or fact K) say about node N, as of state S, according to source P (`01 §1.5`). All three coordinates are indexed; provenance is part of the primary key, which is what makes "evidence first" a structural property instead of a slogan.
 
-**The single unlocking change.** Today a SCIP symbol for a Go package embeds the indexed commit hash, so a reindex at a new commit changes the identity of every symbol and `PopulateFromFullIndexStreaming` must delete and rewrite the whole database every time (`01 §2.2`, `updater.go:405-413`). `CanonicalSymbolKey(scipSymbol, localPkg)` strips the local package's version field to SCIP's unspecified-version placeholder (`.`), leaving external package versions untouched. With that key, an unchanged symbol keeps its integer node id across reindexes, and every fact and edge attached to it survives without recomputation. This is Phase 0, ships with no schema change, and unlocks everything that follows (`03 R-4`).
+**The single unlocking change.** Today a SCIP symbol for a Go package embeds the indexed commit hash, so a reindex at a new commit changes the identity of every symbol and `PopulateFromFullIndexStreaming` must delete and rewrite the whole database every time (`01 §2.2`, `updater.go:405-413`). `CanonicalSymbolKey(scipSymbol, localPkgs)` strips the local package's version field to SCIP's unspecified-version placeholder (`.`), leaving external package versions untouched. With that key, an unchanged symbol keeps its integer node id across reindexes, and every fact and edge attached to it survives without recomputation. This is Phase 0, ships with no schema change, and unlocks everything that follows (`03 R-4`).
 
 **The three first materializations** (`01 §5.3`):
 1. Symbol-level `calls` edges with a real caller (fixes the NULL `caller_id` bug; retires the per-call in-memory rebuild for the hot path).
@@ -35,7 +77,7 @@ This is being built now because the root causes are cheap to fix and the payoff 
 
 ## 2. Problem statement
 
-All numbers in this section are measured on this repo's own `.ckb/ckb.db` (48 MB + 71 MB WAL, 798 files, scip-go) or read from the cited source lines (`00`, `01 §0`).
+All numbers in this section are measured on this repo's own `.ckb/ckb.db` (48 MB + 74 MB WAL, 798 files, scip-go) or read from the cited source lines (`00`, `01 §0`). `00` recorded 71 MB of WAL at an earlier checkpoint; 74 MB is the re-measurement in `01 §0.1` item 6 and is the figure used throughout.
 
 ### 2.1 Schema-only tables
 
@@ -99,7 +141,7 @@ Valuable intermediates are thrown away entirely: the full depth-4 impact graph, 
 
 `explore`, `understand`, `prepareChange`, `planRefactor`, `exportForLLM`, `explainSymbol`, `explainFile`, `getArchitecture`, `analyzeImpact` each fan out to 3–6 extractors and stitch results by: SCIP symbol string → file path (via symbol location), file path → module (path prefix, `internal/query/compound.go:1696-1701` uses `filepath.Dir`), file path → owner (glob, tests by glob at `compound.go:1350-1385`), file path → hotspot (string equality), symbol → tests (file-name heuristic), symbol → docs (suffix match). ADRs are attached by a path-prefix walk (`internal/query/annotation_integration.go:39-60`). None of these joins is indexed; none is validated; no table has a foreign key across key spaces (`00 §8`, `00 §2`).
 
-### 2.8 Two more concrete bugs found while re-verifying the survey (`01 §0.1`)
+### 2.8 Four more concrete bugs found while re-verifying the survey (`01 §0.1`)
 
 | # | Bug | Evidence |
 |---|---|---|
@@ -124,12 +166,11 @@ Valuable intermediates are thrown away entirely: the full depth-4 impact graph, 
 
 ### 3.2 Non-goals
 
-- **No vector store.** Embeddings are admitted in exactly two pipeline stages (seed, rank tie-break), never as the primary retrieval mechanism, and the repo stays a single Go binary (`02 R1`, `02 R3`; rejects "chunk-and-embed the repo", `docs/ideas.md:384-386`).
+- **No vector store, no chunking, no embedding-only hits in an answer body.** Embeddings are admitted in exactly two pipeline stages (seed, rank tie-break), never as the primary retrieval mechanism, and the repo stays a single Go binary; semantic-only results are quarantined to a separate `leads[]` list capped at 5% of budget (`02 R1`, `02 R3`; rejects "chunk-and-embed the repo", `docs/ideas.md:384-386`).
 - **No UI in 1.x.** Text first, evidence first (`00 §10`; product decision, see `project_no_ui_in_1x`).
 - **No new toolchain.** Pure-Go SQLite (`modernc.org/sqlite`); cgo stays scoped to the optional Cartographer static lib (`00 §10`; decision recorded in `docs/plans/change-intelligence-and-activity-ledger.md`).
 - **No LLM in the retrieval path.** `intent` classification is deterministic rules, not an LLM call (`02 R2`, "no LLM" in the `intent` stage row). LLM notes are an explicit, out-of-band tool call, never computed automatically (`01 §4.1`).
 - **No behavioural data in risk scores.** Usage signals feed retrieval *priors* only, capped at `w_usage ≤ 0.10`, applied only when structural scores are within 5%, and are explicitly excluded from anything entering a risk score or change-safety verdict (`02 L1`, `L2`, `L3`).
-- No vector store, no chunking, and no embedding-only hits in an answer body — semantic-only results are quarantined to a separate `leads[]` list, capped at 5% of budget (`02 R3`).
 - No closure/transitive-closure tables materialized eagerly — k-hop expansions stay query-shaped because edge indexes make them cheap and the closure is n² to store (`01 §4.1`).
 
 ---
@@ -148,6 +189,8 @@ Valuable intermediates are thrown away entirely: the full depth-4 impact graph, 
 | actor | 5 | `email:…` / `gh:…` / `team:@org/x` | ~10 → 200 |
 
 Tiers 0–3 form the **spine**: exactly one `parent_id`, one canonical key, containment is a tree. Tiers 4–5 hang off the spine via typed edges, not via containment (`01 §1.1`).
+
+**Ruling — `parent_id` for nested symbols.** A symbol's `parent_id` is the **enclosing symbol node** when its SCIP descriptor nests (a method inside a type, a func inside a func), otherwise the **file node**. `file_id` is always the file node and `container_id` always the package/container node, regardless of nesting depth. Rationale: `parent_id` is the tree, so it must express the deepest containment available, while the denormalized pointers exist precisely so a reader never has to walk the tree to get file or module — one integer join either way.
 
 ### 4.2 Node, edge, occurrence, fact, source, repo_state
 
@@ -190,10 +233,12 @@ The overlay `(node, key, value, source, state, confidence)` fact table carries c
 
 ```go
 // internal/identity/canonical.go
-func CanonicalSymbolKey(scipSymbol string, localPkg string) string
+func CanonicalSymbolKey(scipSymbol string, localPkgs map[string]struct{}) string
 ```
 
-Parse with `scip.ParseSCIPIdentifier` (`internal/backends/scip/ids.go:37-67`); if the package is the repo's own module (or its version equals short HEAD), replace field 4 with `.` (SCIP's unspecified-version placeholder); external packages keep their real version.
+Parse with `scip.ParseSCIPIdentifier` (`internal/backends/scip/ids.go:37-67`); if the package is one of the repo's own modules (or its version equals short HEAD), replace field 4 with `.` (SCIP's unspecified-version placeholder); external packages keep their real version.
+
+`localPkgs` is a **set**, not a single string: a repo may declare several local modules (a `go.work` with several `go.mod`s, a monorepo with per-service modules). It is discovered once per index run — every `module` line of every `go.mod` named by `go.work`'s `use` directives, falling back to the single root `go.mod` when no `go.work` exists — and the per-indexer analogue in §5.6 is likewise a set (workspace `package.json`s, reactor `pom.xml` modules). A symbol whose package is not in the set is external and keeps its version verbatim.
 
 ```
 live:      scip-go gomod github.com/SimplyLiz/CodeMCP 1ce495bdb45a `…/internal/a2a`/TaskStatusUpdateEvent#
@@ -208,7 +253,9 @@ Today a reindex at a new commit changes the identity of every symbol, which is w
 
 `node(id INTEGER PRIMARY KEY, tier, nkey, …) UNIQUE(tier, nkey)`. Only `id` appears in edges, facts, occurrences, and FTS rowids. `nkey` stays legible and survives a DB rebuild. A call edge shrinks from ~126+35 bytes × (row + 3 indexes) to ~20 bytes; at 10× that is roughly 30 MB instead of 240 MB for the call graph alone (`01 §2.1`).
 
-A node reference is always an integer; **edge type implies the tier pair** — there is no `target_id TEXT + target_type TEXT` anywhere in the new schema. `src_tier`/`dst_tier` live once, on `edge_type`, and are a write-time validity check (`01 §2.5`).
+A node reference is always an integer; **edge type constrains the tier pair** — there is no `target_id TEXT + target_type TEXT` anywhere in the new schema. The constraint lives once, on `edge_type`, as two tier **bitmasks** (`src_tiers`, `dst_tiers`; bit *i* set = tier *i* permitted), checked at write time as `(1 << node.tier) & mask != 0` (`01 §2.5`).
+
+**Ruling — bitmask, not one type per tier pair.** Three relations legitimately span tiers (`documents` → symbol|container, `decides` → container|symbol, `owns` → file|container). Splitting them into `documents_symbol`/`documents_container`/… would double the catalog and force the wire vocabulary (§9.2) to expose the split, while a nullable `dst_tier` would drop the write-time check entirely; a bitmask keeps one type per relation, one wire name, and an exact check that is a single integer AND.
 
 ### 5.3 node_alias and in-place rename
 
@@ -217,7 +264,9 @@ CREATE TABLE node_alias (
   tier INTEGER NOT NULL, old_nkey TEXT NOT NULL,
   node_id INTEGER NOT NULL REFERENCES node(id) ON DELETE CASCADE,
   reason TEXT NOT NULL,            -- renamed|moved|merged|split|fuzzy
-  confidence REAL NOT NULL, source_id INTEGER NOT NULL, from_state INTEGER NOT NULL,
+  confidence REAL NOT NULL,
+  source_id INTEGER NOT NULL REFERENCES source(source_id),
+  from_state INTEGER NOT NULL REFERENCES repo_state(state_id),
   PRIMARY KEY (tier, old_nkey, node_id)
 );
 CREATE INDEX idx_alias_node ON node_alias(node_id);
@@ -248,7 +297,7 @@ Deletion is a tombstone, not a row delete: `node.state = 'deleted'`, `last_state
 - `id` = `"n:<node.id in base36>"`. Stable for the life of the database. Cheap to echo, cheap to resolve.
 - `handle` = a short, human-legible form derived from the canonical key: for symbols `<container short name>.<Name>` (e.g. `query.Engine.FindReferences`), for files the repo-relative path, for containers the container path, for docs the path+anchor, for actors the display handle. Handles are **not unique** — they are for reading, not for resolving.
 - `nkey` (the full canonical key, e.g. the commit-free SCIP string) is returned only under `include:["rawIds"]`, in a single `ids` map at the end of the response.
-- `resolve()` (access path A1, §8) accepts **all** of: `n:…` ids, canonical keys, raw SCIP strings (commit-bearing), handles, bare names, `path:line`, and any `old_nkey` from `node_alias`. A stale `n:` id after a database rebuild returns `unknown-id` together with the resolution by handle, so an agent recovers in one call.
+- `resolve()` (access path A1, Appendix B) accepts **all** of: `n:…` ids, canonical keys, raw SCIP strings (commit-bearing), handles, bare names, `path:line`, and any `old_nkey` from `node_alias`. A stale `n:` id after a database rebuild returns `unknown-id` together with the resolution by handle, so an agent recovers in one call. When `node_alias` returns more than one row for a key, `resolve()` returns the highest-confidence match as `nodeId` and the rest in `alternatives[]` with `confidence < 1` — this is the split case of §5.3, and the only way an alias lookup populates `alternatives[]`.
 - A database rebuild (schema migration, `ckb index --full --rebuild`) re-mints integer ids. That is acceptable because it is rare and every response carries the handle. The database stores a `db_epoch` in `index_meta`; the envelope reports it so a client can detect a rebuild.
 
 Why not the full key on the wire: `01` measured 126 bytes average per key; `02` measured 40–60 tokens per key. A 50-row answer would spend more tokens on identifiers than on facts. Why not integers only: evidence-first — the handle gives the agent something it can sanity-check, and the `ids` map gives it the exact key when it needs one.
@@ -268,7 +317,7 @@ One golden fixture per language is required before Step 0 ships for that languag
 
 ### 5.7 db_epoch
 
-`index_meta` gains a `db_epoch` column, incremented on every full rebuild that re-mints integer ids. The envelope on every response reports it, so a client holding a cached `n:` id can detect that its ids are stale before trusting a lookup (`03 R-1`).
+`index_meta` is a key/value table (`internal/storage/schema.go:1143-1146`), so this is a **key**, not a column: `index_meta('db_epoch')`, incremented on every full rebuild that re-mints integer ids. The envelope on every response reports it, so a client holding a cached `n:` id can detect that its ids are stale before trusting a lookup (`03 R-1`).
 
 ---
 
@@ -280,7 +329,7 @@ One golden fixture per language is required before Step 0 ships for that languag
 
 Rejected: a pure property graph — a metric read would scan a table dominated by ~1.5M edges, and FTS wants a stable integer rowid, which a property graph doesn't naturally give it. Rejected: fully typed per-tier tables — that is the *current* schema, and it is 49 tables with 5 populated and 20 of 28 extractors never persisted (`01 §3.1`).
 
-### 6.2 Full schema (verbatim, `01 §3.2`, plus `node_change` and `cartographer_run` from `03`/`01 §4.3`)
+### 6.2 Full schema (`01 §3.2`, plus `node_change` and `cartographer_run` from `03`/`01 §4.3`, plus `node_body`/`body_fts` and `usage_overlay` — see the rulings below this block)
 
 ```sql
 -- evidence axis
@@ -318,7 +367,7 @@ CREATE INDEX idx_node_live ON node(tier, state, last_state);
 -- relation axis
 CREATE TABLE edge_type (
   type_id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
-  src_tier INTEGER NOT NULL, dst_tier INTEGER NOT NULL,
+  src_tiers INTEGER NOT NULL, dst_tiers INTEGER NOT NULL,   -- tier bitmask, bit i = tier i permitted (§5.2)
   directed INTEGER NOT NULL DEFAULT 1, derived INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE edge (
@@ -328,8 +377,9 @@ CREATE TABLE edge (
   type INTEGER NOT NULL REFERENCES edge_type(type_id),
   weight REAL, source_id INTEGER NOT NULL REFERENCES source(source_id),
   confidence REAL NOT NULL DEFAULT 1.0,
-  first_state INTEGER NOT NULL, last_state INTEGER NOT NULL,
-  owner_file_id INTEGER,                       -- file whose reindex owns this edge
+  first_state INTEGER NOT NULL REFERENCES repo_state(state_id),   -- first observed
+  last_state  INTEGER NOT NULL REFERENCES repo_state(state_id),   -- last confirmed; not a time-travel window (§7.2)
+  owner_file_id INTEGER REFERENCES node(id) ON DELETE CASCADE,    -- file whose reindex owns this edge
   UNIQUE(src_id, type, dst_id)
 );
 CREATE INDEX idx_edge_out ON edge(src_id, type, dst_id, weight DESC);
@@ -348,7 +398,8 @@ CREATE INDEX idx_occ_file ON occurrence(file_id, line);
 -- overlay
 CREATE TABLE fact_key (
   key TEXT PRIMARY KEY, value_type TEXT NOT NULL,   -- num|text|json
-  temporal INTEGER NOT NULL DEFAULT 0, unit TEXT, derived_from TEXT   -- JSON array of input keys
+  temporal INTEGER NOT NULL DEFAULT 0, unit TEXT, derived_from TEXT,  -- JSON array of input keys
+  carry_forward INTEGER NOT NULL DEFAULT 0          -- valid at a later state without recomputation (§7.3)
 );
 CREATE TABLE fact (
   node_id INTEGER NOT NULL REFERENCES node(id) ON DELETE CASCADE,
@@ -364,8 +415,17 @@ CREATE INDEX idx_fact_state ON fact(state_id);
 
 -- search
 CREATE VIRTUAL TABLE node_fts USING fts5(
-  name, signature, doc_comment, body,
+  name, signature, doc_comment,
   content='node', content_rowid='id', tokenize='unicode61 remove_diacritics 2'
+);
+-- body text (doc chunks, README/responsibility prose) lives off the hot table (§6.2 ruling)
+CREATE TABLE node_body (
+  node_id INTEGER PRIMARY KEY REFERENCES node(id) ON DELETE CASCADE,
+  body TEXT NOT NULL
+);
+CREATE VIRTUAL TABLE body_fts USING fts5(
+  body,
+  content='node_body', content_rowid='node_id', tokenize='unicode61 remove_diacritics 2'
 );
 
 -- node-level change log (access path A8; answers "01 §7 / 02 §7" open question, ruling 03 R-2)
@@ -384,13 +444,27 @@ CREATE TABLE cartographer_run (
   run_id INTEGER PRIMARY KEY, version TEXT NOT NULL, state_id INTEGER NOT NULL REFERENCES repo_state(state_id),
   started_at INTEGER NOT NULL, duration_ms INTEGER NOT NULL, functions TEXT NOT NULL   -- JSON: bridge calls covered
 );
+
+-- behavioural priors (§11.4); never read in `gather`, never a fact about code
+CREATE TABLE usage_overlay (
+  node_id INTEGER NOT NULL REFERENCES node(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,                          -- usage:access|usage:coaccess|usage:followThrough|usage:refinement
+  value REAL NOT NULL,
+  window_start INTEGER NOT NULL, window_end INTEGER NOT NULL,
+  PRIMARY KEY (node_id, kind, window_start)
+);
+CREATE INDEX idx_usage_kind ON usage_overlay(kind, value DESC);
 ```
 
-`node_change` is written by the index run when it upserts a node whose tracked columns differ from the previous state; it is access path A8 (§8, §14 R-2). `cartographer_run` records provenance for the batch of node/edge/fact rows a `MapProject`/`Health`/`GitChurn`/… run produces; see §7.3.
+**Ruling — `body` is not a `node` column.** FTS5 external-content tables read every declared column by name from the content table, so `node_fts(…, body, content='node')` would fail at `INSERT INTO node_fts(node_fts) VALUES('rebuild')`. Body text is also the one field the hot path never needs: `node` is read on every resolve, ancestor walk and edge expansion. It therefore lives in `node_body`, one row per node that has text, with its own external-content FTS sharing the node id as rowid — so a body hit and a name hit both return an integer that joins directly to `node`.
+
+`node_change` is written by the index run when it upserts a node whose tracked columns differ from the previous state; it is access path A8 (Appendix B; ruling `03 R-2`, §14.3). `cartographer_run` records provenance for the batch of node/edge/fact rows a `MapProject`/`Health`/`GitChurn`/… run produces; see §7.5.
 
 ### 6.3 Edge-type catalog
 
-| name | src_tier → dst_tier | directed | source | Replaces |
+Tier columns are the `src_tiers`/`dst_tiers` bitmasks of §5.2; a cell listing two tiers is one type whose mask has two bits set.
+
+| name | src_tiers → dst_tiers | directed | source | Replaces |
 |---|---|---|---|---|
 | `defines` | file → symbol | yes | scip | — |
 | `calls` | symbol → symbol | yes | scip | `callgraph` (with a real caller) |
@@ -413,9 +487,13 @@ CREATE TABLE cartographer_run (
 
 `edge_type.derived = 1` for edges computed from other edges (e.g. `depends_on` derived from `imports`) so the derive-once registry (§7.4) can enforce single computation.
 
+**Ruling — canonical ordering for undirected types.** For `directed = 0` types (`cochanges`, `hidden_coupling`) the writer normalizes to `src_id < dst_id` before insert, and a reader asking for neighbours of N unions `idx_edge_out` and `idx_edge_in`. Without the rule `UNIQUE(src_id, type, dst_id)` admits both orientations of the same pair, which would store the relation twice and make `edge.weight` mean half of itself.
+
 ### 6.4 Seed fact-key catalog
 
 `value_type` and `temporal` are assigned per `01`'s migration disposition ("hotspot_snapshots, risk_scores → fact (**temporal**)", `01 §5.1`) and `03 R-2`'s ruling that temporal keys keep history subject to the retention policy while non-temporal keys keep only the latest row per `(node, key, source)`. A key is marked `temporal` when its value is meaningful as a trend (churn windows, hotspot/risk scores and projections, coverage, telemetry, Cartographer health) and non-temporal when it is a structural classification recomputed fresh each run (test detection, responsibility summaries, per-run Cartographer node scores, match-quality labels).
+
+`carry_forward` is seeded as `NOT temporal` across this catalog, but it is a separate column because the two answer different questions: `temporal` says whether older rows are worth keeping, `carry_forward` says whether a row may be *served* at a later state it was not computed at (§7.3). A temporal key's absence at a state is itself data — "no churn measured at this state" is not "the 30-day churn is what it was last week".
 
 | key | value_type | temporal | unit | derived_from | Notes |
 |---|---|---|---|---|---|
@@ -433,7 +511,7 @@ CREATE TABLE cartographer_run (
 | `responsibility.summary` | text | 0 | — | — | from README/code extraction |
 | `telemetry.calls.30d` | num | 1 | count | — | on ingest command |
 | `telemetry.match_quality` | text | 0 | — | — | stored alongside `fact.confidence` (`03 R-2`) |
-| `arch.health` | num | 1 | score | — | Cartographer `Health`, trend via `Evolution(days)` |
+| `arch.health` | num | 1 | score | — | Cartographer `Health`; the trend is this key's own temporal history, which replaces Cartographer `Evolution(days)` |
 | `arch.bridge_score` | num | 0 | score | — | Cartographer `MapProject` node field, latest run only |
 | `arch.cohesion` | num | 0 | score | — | Cartographer `GodModules.CohesionScore` |
 | `arch.instability` | num | 0 | score | — | Cartographer node metadata |
@@ -460,10 +538,12 @@ WHERE s.id = :sym;
 |---|---|---|
 | node | — | ~60 MB |
 | node_fts | — | ~40 MB |
-| edge | ~900k pairs | ~54 MB |
+| edge | ~900k pairs (**estimate**) | ~54 MB |
 | occurrence | ~500k | ~20 MB |
 | fact | ~500k | ~30 MB |
 | **Total** | | **~200 MB**, vs ~480 MB extrapolated for today's schema holding *less* data (`01 §3.6`) |
+
+The edge row is extrapolated from today's *file-level* 17,208 distinct pairs; distinct **symbol-level** call pairs cannot be counted until the caller bug is fixed (§14.1 item 5). Re-measure at the end of Phase 0 before committing to edge/occurrence sizing.
 
 Bulk-load pattern is kept as-is: `synchronous=OFF`, 128 MB cache, `wal_autocheckpoint=0`, batches of 1000, `wal_checkpoint(TRUNCATE)` at end (`updater.go:380-405`).
 
@@ -477,6 +557,7 @@ Bulk-load pattern is kept as-is: `synchronous=OFF`, 128 MB cache, `wal_autocheck
 | `idx_node_container(container_id, tier)` | "symbols in this container" (A3) without a join through `parent_id` |
 | `idx_node_file(file_id)` | "symbols in this file", `occurrence`-adjacent lookups |
 | `idx_node_live(tier, state, last_state)` | excluding tombstoned nodes cheaply; time-travel base case |
+| `UNIQUE(src_id, type, dst_id)` on `edge` | one row per distinct relation; with the §6.3 ordering rule this also collapses both orientations of an undirected pair |
 | `idx_edge_out(src_id, type, dst_id, weight DESC)` | access path A4 outbound, pre-sorted by weight for truncation |
 | `idx_edge_in(dst_id, type, src_id, weight DESC)` | access path A4 inbound (e.g. callers) |
 | `idx_edge_own(owner_file_id)` | file-node invalidation: `DELETE FROM edge WHERE owner_file_id = :f` (§7.2) |
@@ -485,7 +566,10 @@ Bulk-load pattern is kept as-is: `synchronous=OFF`, 128 MB cache, `wal_autocheck
 | `idx_fact_state(state_id)` | state-scoped reads and pruning sweeps (§7.5 retention) |
 | `idx_alias_node(node_id)` | reverse lookup: "what old keys point at this node" |
 | `idx_change_node(node_id, state_id)`, `idx_change_state(state_id)` | access path A8, `changedSince`/`changedNodes` |
-| FTS `content_rowid='id'` | one probe per hit instead of today's two (`symbols_fts_content` has its own rowid plus a 126-byte `id TEXT UNIQUE`, `schema.go:1330-1340`) |
+| `idx_usage_kind(kind, value DESC)` | A11 top-N prior lookup without a scan (§11.4) |
+| FTS `content_rowid='id'` on `node_fts`, `content_rowid='node_id'` on `body_fts` | one probe per hit instead of today's two (`symbols_fts_content` has its own rowid plus a 126-byte `id TEXT UNIQUE`, `internal/storage/schema.go:1334-1344`); both FTS rowids *are* node ids, so a hit joins to `node` with no lookup table |
+
+`idx_edge_out` duplicates the prefix of `UNIQUE(src_id, type, dst_id)` and is kept anyway: the trailing `weight DESC` is what makes A4's `LIMIT` index-order rather than a sort. The two cannot be folded into one unique index, because a unique index that includes `weight` would no longer constrain `(src_id, type, dst_id)`.
 
 ---
 
@@ -500,7 +584,7 @@ Bulk-load pattern is kept as-is: `synchronous=OFF`, 128 MB cache, `wal_autocheck
 | `complexity.*` (tree-sitter) | index time, per changed file (four extractors redo this today — collapses to one) |
 | `churn.*`, `cochanges`, `authored` | index time; refreshed when HEAD has moved > N commits since the last git pass |
 | `owns` from CODEOWNERS | index time |
-| `owns` from blame | first request per file, then persisted |
+| `owns` from blame | index time, for files with no CODEOWNERS match, on the same git pass as `churn.*` |
 | Cartographer container nodes, `depends_on`, `in_cycle`, `violates_layer`, health/bridge/god-module facts | index time when built with `-tags cartographer` (§7.3) |
 | `hotspot.score`, `risk.score`, `risk.factors` | index time, derived, `source='ckb-derived'` |
 | `documents`, `decides`, doc nodes | index time if docs indexing enabled, else on `IndexDocs` |
@@ -508,6 +592,8 @@ Bulk-load pattern is kept as-is: `synchronous=OFF`, 128 MB cache, `wal_autocheck
 | LIP `near` edges | never eagerly; written opportunistically with expiry |
 | LLM notes | never computed automatically; explicit tool call, stored in a versioned file, projected into node/fact (§7.6) |
 | impact closures, blast radius, k-hop expansions, transitive closure of calls | never — query-shaped; edge indexes make them cheap; closure is n² to store |
+
+**Ruling — nothing in this table is written on the request path.** Blame-derived `owns` was the last exception; it moves to index time so that the store has exactly two writers, the index run and the usage rollup under its lease (§11.4), and neither one is an MCP request. The blame pass is bounded by the files CODEOWNERS does not already match and shares the git walk that `churn.*` and `authored` already pay for, so "compute once per index run" costs nothing extra.
 
 ### 7.2 File-node invalidation
 
@@ -520,9 +606,13 @@ The invalidation unit is the **file node**:
 5. Inbound edges are left untouched (caller-owned invariant, `incremental/types.go:53-55`).
 6. Transitive invalidation reuses the existing `file_deps` BFS (`incremental/deps.go`), now walking `imports` edges instead of the `file_deps` table; `rescan_queue` finally gets fed real work.
 
+**Ruling — edges are HEAD-only; nodes and facts carry history.** Step 1 hard-deletes, so an edge that no longer exists at HEAD is gone: `edge.first_state` means "first observed" and `edge.last_state` means "last confirmed" — a provenance and staleness pair, **not** a time-travel window. The A12 validity-window predicate therefore applies to `node` and `fact` only (Appendix C). Two reasons: `UNIQUE(src_id, type, dst_id)` cannot hold a closed-window row and a reopened one for the same pair without putting a state in the key and paying for it on every A4 read, and no access path needs it — Q5 `history` (§9.5) and A8 are node-level, backed by `node_change`. Edge time travel is out of scope for 1.x.
+
 ### 7.3 State-scoped facts and carry-forward
 
-A fact is valid for its `state_id`. It is carried forward to a new state only if its `source` declares it carry-forwardable; otherwise a reader falls back to the latest state ≤ the requested one and reports the gap via `Freshness.IndexAge{CommitsBehind, StaleReason}` (`envelope.go:41-51`).
+A fact is valid for its `state_id`. It is carried forward to a new state only if `fact_key.carry_forward = 1`; otherwise a reader falls back to the latest state ≤ the requested one, marks the fact `stale`, and reports the gap via `Freshness.IndexAge{CommitsBehind, StaleReason}` (`envelope.go:41-51`).
+
+**Ruling — carry-forward is a property of the key, not the producer.** `is_test` is as true at the next commit as it was at the last one whether git, tree-sitter or a heuristic produced it; `churn.commits.30d` is stale the moment HEAD moves, from any producer. Putting the flag on `source` would force one answer for every key a producer writes.
 
 ### 7.4 Derive-once registry
 
@@ -537,16 +627,11 @@ New package `internal/derive`: one function per derived key, declaring `inputs [
 | test detection | 3 heuristics | 1 `is_test` fact |
 | co-change | 2 (internal/coupling + Cartographer) | 1 edge type, tagged by source |
 
-Enforcement: a test fails the build if a package outside `internal/derive` computes a value for a key registered in `fact_key`.
+Enforcement, concretely: `fact` rows are written through exactly one function, `derive.WriteFacts`, and a test in `internal/derive` walks the repo's ASTs (`go/packages`, the same load the complexity extractor already does) and fails the build if any package other than `internal/derive` and `internal/storage` (1) contains a string literal matching `INSERT INTO fact`/`INSERT OR REPLACE INTO fact`, or (2) calls a `storage` method whose name writes `fact`. A second table-driven test asserts that the set of `output` keys declared by the registry equals the set of keys in `fact_key` with a non-null `derived_from`, so a new derived key cannot be added without a registered owner.
 
 ### 7.5 Cartographer freeze
 
-```sql
-CREATE TABLE cartographer_run (
-  run_id INTEGER PRIMARY KEY, version TEXT NOT NULL, state_id INTEGER NOT NULL REFERENCES repo_state(state_id),
-  started_at INTEGER NOT NULL, duration_ms INTEGER NOT NULL, functions TEXT NOT NULL   -- JSON: bridge calls covered
-);
-```
+`cartographer_run` (DDL in §6.2) is the provenance row for one Cartographer pass.
 
 Outputs of `MapProject`, `Health`, `CheckLayers`, `GitChurn`, `GitCochange`, `HiddenCoupling`, `ShotgunSurgery`, `UnreferencedSymbols` become ordinary node/edge/fact rows with `source='cartographer@<ver>'` and the run's state. `reviewPR` reads instead of re-running. Cartographer `ModuleID`/`Path` is resolved to node ids at ingest time by path; the mapping is persisted, never re-derived per query.
 
@@ -602,7 +687,7 @@ Seeds ≤50, frontier ≤500, packed facts ≤120, default budget 2,000 tokens, 
 
 ### 8.5 Pack cache
 
-`view_cache` keyed `(intent, sortedSeedIds, budget, repoStateId)` — already state-keyed in the current schema, currently 0 rows because nothing populates it.
+`view_cache` keyed `(intent, sortedSeedIds, budget, repoStateId)` — already state-keyed in the current schema, currently 0 rows because nothing populates it. The table is `view_cache(key TEXT PRIMARY KEY, value_json, expires_at, state_id TEXT, created_at)` (`internal/storage/schema.go:478-484`): the composite key is serialized into `key`, and `repoStateId` also lands in `state_id` so the retention sweep can drop stale packs by state.
 
 ### 8.6 Drift to fix before adding any new ranking layer (`02 §0.2`)
 
@@ -613,7 +698,7 @@ Seeds ≤50, frontier ≤500, packed facts ≤120, default budget 2,000 tokens, 
 
 ## 9. Agent-facing surface
 
-### 9.1 Four tools, not twenty (`02 N1`)
+### 9.1 Three new tools, not twenty (`02 N1`)
 
 Today: 110 tools, page size 40 (`mcp/cursor.go:13`), core preset ~28 (`mcp/presets.go:29-76`), `EstimateActiveTokens` (`mcp/server.go:421-431`).
 
@@ -635,12 +720,33 @@ Rejected: one tool per movement direction (600–900 tokens per session just in 
  "depth":2,"limit":30,"since":null,"budget":600,"include":["location","module"]}
 ```
 
-`direction` ∈ `up | down | out | in | time`. `edges` is a closed vocabulary of ≤12 values: `calls`, `references`, `implements`, `contains`, `imports`, `co-changes-with`, `tested-by`, `owned-by`, `documented-in`, `decided-in`, `observed-calling`, `similar-to` (always labelled, since it's the semantic edge). Per-direction defaults mean `{"from":X,"direction":"in"}` is always a valid call.
+`direction` ∈ `up | down | out | in | time`. `edges` is a closed vocabulary of 12 values. Per-direction defaults mean `{"from":X,"direction":"in"}` is always a valid call.
+
+**Wire name → storage.** The wire vocabulary is the agent's; the catalog in §6.3 is the store's. This table is the whole mapping — a wire name that is not here is not a valid `edges` value.
+
+| Wire name | Storage type (§6.3) | Walk | Source filter |
+|---|---|---|---|
+| `calls` | `calls` | `src → dst` | any except `telemetry` |
+| `references` | `references` | `src → dst` | — |
+| `implements` | `implements` | `src → dst` | — |
+| `imports` | `imports` from a file node, `depends_on` from a container node | `src → dst` | — |
+| `contains` | not an edge — `parent_id` / `container_id` / `file_id` walk (§4.1) | down, or `⁻¹` for up | — |
+| `co-changes-with` | `cochanges` | either orientation (undirected, §6.3) | — |
+| `tested-by` | `tests` | `dst → src` (reversed) | — |
+| `owned-by` | `owns` | `dst → src` (reversed) | — |
+| `documented-in` | `documents` | `dst → src` (reversed) | — |
+| `decided-in` | `decides` | `dst → src` (reversed) | — |
+| `observed-calling` | `calls` | `src → dst` | `source.kind = telemetry` only |
+| `similar-to` | `near` | `src → dst` | `lip`; always labelled, since it's the semantic edge |
+
+`edges:["contains"]` with `direction:out|in` is an alias for `direction:down|up` — both forms are accepted and the store executes the same `parent_id`/`container_id`/`file_id` walk.
+
+**Deliberately not navigable.** `defines` is reached as `contains` from a file node, so exposing both would give the agent two names for one walk. `embeds` and `type_of` have no wire name in v1 — they are SCIP-precise but no fixture in §9.5 needs them; they get one when one does. `authored`, `hidden_coupling`, `violates_layer` and `in_cycle` are read as `ckbContext` sections (ownership, arch), not as movements: they answer "what is true of this node", not "where do I go from here".
 
 Row shape:
 
 ```json
-{"id":"n:9c2","handle":"query.Engine.FindReferences","edge":"calls","depth":1,
+{"id":"n:3f7","handle":"query.Engine.FindReferences","edge":"calls","depth":1,
  "at":"internal/query/symbols.go:812","module":"internal/query",
  "weight":0.91,"origin":"structural","evidence":"scip:reference","asOf":"head@1ce495b"}
 ```
@@ -694,7 +800,7 @@ Example response, for the request above, applying the response-shape rules in §
 
 ### 9.4 Short ids with a per-response id map (`02 N3`)
 
-`id:"n:9c2"` (stable within a repo-state, resolvable via A1) plus `handle`. Raw SCIP strings appear only under `include:["rawIds"]`. Saves 40–60 tokens per referenced symbol relative to today's raw-SCIP-string responses; this is independent of the store itself. A1 must accept all three id forms **forever**, because agents cache ids across sessions.
+`id:"n:9c2"` (stable for the life of the database, re-minted only by a rebuild, which `db_epoch` announces — §5.5, §5.7; resolvable via A1) plus `handle`. Raw SCIP strings appear only under `include:["rawIds"]`. Saves 40–60 tokens per referenced symbol relative to today's raw-SCIP-string responses; this is independent of the store itself. A1 must accept **all** the id forms listed in §5.5 **forever**, because agents cache ids across sessions.
 
 ### 9.5 The nine questions
 
@@ -704,7 +810,7 @@ Example response, for the request above, applying the response-shape rules in §
 | Q2 | If I change X, what breaks, which tests | `prepare-change` | + tests, co-change, ADR, risk, telemetry | calls⁻¹ (3, summarized beyond 1), contains (1), co-changes-with (1), tested-by (2), decided-in (1) | 3,000 (5,000 if moduleSpread>3 and public) | verdict line (risk + 2 driving factors); breaking surface; direct dependents by module; transitive summary (counts); tests to run as runnable command; untested downstream paths; co-changed files; ADRs; reviewers; arch impact | full transitive lists; generic advice |
 | Q3 | Where is the code for concept Y | `locate` | FTS over symbol+doc+responsibility, module, file | seed only + contains⁻¹ | 500 | ranked candidates (handle, file:line, why, origin); one "start here" | everything else |
 | Q4 | Shape of this module, where do I add | `module-map` | module, file, symbol, arch, ownership, responsibility | contains (2), imports/imports⁻¹ (1), owned-by (1) | 1,500 (3,000 deep) | responsibility + role; file table with symbol counts/roles; public surface; module edges; entry points; conventions; hotspots | per-symbol detail; private symbols; imports >10 |
-| Q5 | What changed recently here and why | `history` | node change log, git, ADR, churn | changed-at (time), co-changes-with (1), decided-in (1) | 1,000 | last N structural changes at node; commits with authors; ADRs dated near; churn trend; co-changed neighbours | full messages; diffs |
+| Q5 | What changed recently here and why | `history` | node change log, git, ADR, churn | `direction:time` (A8), co-changes-with (1), decided-in (1) | 1,000 | last N structural changes at node; commits with authors; ADRs dated near; churn trend; co-changed neighbours | full messages; diffs |
 | Q6 | Is there an ADR/doc about this | `docs` | docs, decisions, module | documented-in (1), decided-in (1), then ancestors fallback | 400 | direct hits; module-level hits labelled inherited; "none found" is valid | bodies |
 | Q7 | How does A reach B | `path` | symbol, file, module | calls BFS ≤6, k-shortest 3 | 1,200 | shortest path as numbered chain with file:line; ≤2 alternatives summarized; per-hop confidence; "no path" + what was searched | node detail beyond handle+location |
 | Q8 | I finished editing, what did I touch, what to verify | `assess-change` | working-tree diff, symbol, tests, contracts, ADR, ownership | as Q2, seeded from changed nodes | 2,500 | changed nodes by file; contract changes (labelled heuristic without reindex); tests to run; consumers with no reaching test; ADRs; reviewers; stale-index warning | unchanged code |
@@ -750,8 +856,8 @@ Example response, for the request above, applying the response-shape rules in §
 | Source | Class | Base | Envelope tier |
 |---|---|---|---|
 | SCIP def/ref at HEAD | exact | 1.00 | high |
-| SCIP, N commits behind | exact-stale | 1.00 × decay(N) | medium |
-| SCIP, file dirty | exact-preedit | 0.70 | medium |
+| SCIP, N commits behind | exact-stale | 1.00 | medium |
+| SCIP, file dirty | exact-preedit | 1.00 | medium |
 | ADR, CODEOWNERS, module annotation | declared | 0.90 | high |
 | telemetry observed | observed | 0.75 | medium |
 | LIP semantic, structurally confirmed | confirmed | 0.80 | medium |
@@ -762,12 +868,21 @@ Example response, for the request above, applying the response-shape rules in §
 | LLM note | generated | 0.30 | speculative (must carry model id + prompt version) |
 | LIP unconfirmed | speculative | 0.25 | speculative, leads only |
 
+`Base` is the weight of the *source*, never of its age: the three SCIP rows are all 1.00 because SCIP at a stale state is still SCIP. Staleness enters exactly once, as the `freshness` term in §10.2 (`0.98^commits`, `0.7` dirty — §10.4). The rows differ only in envelope tier, which is what makes a stale exact fact presentable-but-labelled rather than silently discounted twice.
+
 ### 10.2 Score formula (`02 E2`)
 
 ```
-score(fact) = w_evidence × w_intent(factKind, intent) × freshness(factState, queryState)
-            × (1 − redundancy(fact, packed)) + w_usage × usagePrior(node)   # w_usage ≤ 0.10
+score_structural(fact) = w_evidence × w_intent(factKind, intent) × freshness(factState, queryState)
+                       × (1 − redundancy(fact, packed))
+
+score(fact) = score_structural(fact)
+            + w_usage × usagePrior(node)   # w_usage ≤ 0.10; added only if
+                                           # |score_structural(fact) − score_structural(best)|
+                                           #   ≤ 0.05 · score_structural(best)
 ```
+
+The gate is what keeps usage a tie-breaker rather than a ranking signal: outside the 5% band the prior is simply not added (§11.2).
 
 `w_intent` replaces the fusion table from §8.6 item 1: relevance is a function of the question, not a fixed blend.
 
@@ -825,7 +940,7 @@ Code quality; anything entering a risk score or change-safety verdict (`usage:` 
 
 ### 11.4 Rollup, not request-path scans (`02 L4`)
 
-`usage_overlay(node_id, kind, value, window_start, window_end)`, written on MCP start plus an hourly ticker. Writer ownership (ruling `03 R-2`): the rollup runs inside a `ckb mcp` process holding a lease row in `index_meta` (`usage_rollup_lease`, expiry 2h); short transactions, batches of ≤500 rows; `ckb daemon` takes the lease when present; the request path never writes usage rows.
+`usage_overlay(node_id, kind, value, window_start, window_end)` (DDL in §6.2), written on MCP start plus an hourly ticker. Writer ownership (ruling `03 R-2`): the rollup runs inside a `ckb mcp` process holding a lease under the `index_meta` key `usage_rollup_lease` (expiry 2h); short transactions, batches of ≤500 rows; `ckb daemon` takes the lease when present; the request path never writes usage rows.
 
 ### 11.5 Default off (`02 L5`)
 
@@ -860,7 +975,7 @@ Today `internal/eval` calls only `SearchSymbols` (`eval/suite.go:227-238`); metr
 
 Every fixture runs in `mode=legacy` and `mode=store`, same repo-state, report delta. The legacy baseline must be captured **before** the store lands.
 
-Proposed public targets: tokens-to-target −50%, fact recall ≥0.9 at 2k, payload efficiency ≥0.5 (today estimated 0.15–0.25), impact recall ≥0.8, cost-of-no ≤300.
+Proposed public targets: tokens-to-target −50%, fact recall ≥0.9 at 2k, payload efficiency ≥0.5 (today estimated 0.15–0.25 in `02 V3`; unmeasured — the Phase 0 legacy baseline measures it), impact recall ≥0.8, cost-of-no ≤300.
 
 ### 12.4 Ground truth (`02 V4`)
 
@@ -870,7 +985,7 @@ Mined then hand-checked: ~40 locate fixtures for CKB itself, ~20 each for two OS
 
 ## 13. Migration and phasing
 
-### 13.1 Table disposition (49 → ~14 plus caches) (`01 §5.1`)
+### 13.1 Table disposition (49 → 15 model tables plus caches) (`01 §5.1`)
 
 **Become the model:**
 
@@ -886,9 +1001,9 @@ Mined then hand-checked: ~40 locate fixtures for CKB itself, ~20 each for two OS
 | `hotspot_snapshots`, `risk_scores` | `fact` (temporal) |
 | `coupling_cache` | `cochanges` |
 | `ownership`/`ownership_history` | `node` tier 5 + `owns` + `fact` |
-| `responsibilities` | `fact` + `node_fts` |
+| `responsibilities` | `fact` + `node_body`/`body_fts` (prose is body text, not a `node` column — §6.2) |
 | `decisions` | `node` tier 4 kind=adr + `decides` |
-| `docs`/`doc_references`/`doc_modules` | `node` tier 4 + `documents` |
+| `docs`/`doc_references`/`doc_modules` | `node` tier 4 + `documents` + `node_body`/`body_fts` |
 | `observed_usage`/`observed_callers` | `fact` + `calls`(source=telemetry) |
 | `coverage_snapshots` | `fact` |
 | `lip_annotations` | `fact`(source=lip) |
@@ -897,17 +1012,21 @@ Mined then hand-checked: ~40 locate fixtures for CKB itself, ~20 each for two OS
 
 **Stay:** `schema_version`, `index_meta`, `query_cache`, `view_cache`, `negative_cache`, `rescan_queue`, `telemetry_sync_log`, `observed_unmatched`, `wide_result_metrics` (until the activity ledger replaces it).
 
+**New in §6.2, with no old-table predecessor:** `node_body` + `body_fts` (body text off the hot table, §6.2), `usage_overlay` (behavioural priors, §11.4), `cartographer_run` (Cartographer provenance, §7.5).
+
 ### 13.2 Unified phase table (ruling `03 R-4`, merging `01 §5.2` and `02 §8`)
 
 | Phase | Data model (01) | Retrieval (02) | Ships |
 |---|---|---|---|
 | 0 | Step 0: canonical symbol key, accept both forms, return canonical; fix the caller-resolution bug in the persisted extractor; drop go-build rows at ingest | fix ranking doc/code drift; token estimator calibration; short ids + handle + `ids` map on existing tools; extend `internal/eval` with the six fixture types; capture the legacy baseline | stable symbol ids across reindex; persisted call graph with callers; measurable baseline |
-| 1 | Steps 1–2: `node`, `node_alias`, `node_fts`, `edge`, `occurrence`, dual-write, switch readers | A1/A2/A4/A6/A12/A13; `ckbFind`; `ckbNavigate` (up/down/out/in); pack v1 with understand, locate, module-map; evidence weights → envelope Factors | search-plus-context in one call; call graph as index lookups |
-| 2 | Steps 3–4: `source`, `repo_state`, `fact`, `internal/derive`, containers, actors, `owns`, `depends_on`, `node_change` | A5, A7, A8; `direction:"time"`; prepare-change and assess-change intents on the store; staleness labelling | the flagship cross-tier join as one SELECT; change safety on the store |
+| 1 | Steps 1–2: `repo_state`, `source`, `node`, `node_alias`, `node_fts`, `node_body`/`body_fts`, `edge_type`, `edge`, `occurrence`, dual-write, switch readers | A1/A2/A4/A6/A12/A13; `ckbFind`; `ckbNavigate` (up/down/out/in); pack v1 with understand, locate, module-map; evidence weights → envelope Factors | search-plus-context in one call; call graph as index lookups |
+| 2 | Steps 3–4: `fact_key`, `fact`, `internal/derive`, containers, actors, `owns`, `depends_on`, `node_change` | A5, A7, A8; `direction:"time"`; prepare-change and assess-change intents on the store; staleness labelling | the flagship cross-tier join as one SELECT; change safety on the store |
 | 3 | Step 5: Cartographer freeze, `cartographer_run` | usage rollup + priors (default off); priors-on vs priors-off eval | `reviewPR` reads instead of rescanning; measured learning loop |
 | 4 | Step 6: docs, ADRs, notes, LIP, telemetry as overlays; v13 drops superseded tables | tool surface consolidation; core preset 10–14; aliases for old names; retire `exportForLLM`'s parser | one store, one surface |
 
 **Phase 0 has no schema change** and splits into two independent halves that can both start immediately (`03 R-4`).
+
+`repo_state` and `source` ship in Phase 1, not Phase 2: `node.first_state`/`last_state` and `edge.source_id` are `NOT NULL REFERENCES` those tables (§6.2), so Phase 1 cannot create its own tables without them. They are two small catalogs, and making their FKs nullable for one phase would mean a migration and a nullability bug surface for no gain.
 
 ### 13.3 Three most valuable first materializations (recap, `01 §5.3`)
 
@@ -990,8 +1109,8 @@ None found. `03 R-1` settles the wire-format conflict (01's ids-only vs 02's sho
 | **handle** | A short, human-legible, non-unique label for a node, distinct from its id (§5.5). |
 | **node_alias** | Table mapping old natural keys to the current `node_id` after a rename/move/merge/split (§5.3). |
 | **tombstone** | `node.state='deleted'` with `last_state` frozen, instead of a row delete (§5.4). |
-| **db_epoch** | Counter in `index_meta` incremented on every full rebuild that re-mints integer ids (§5.7). |
-| **fact_key** | Catalog row declaring a fact's value type, whether it is temporal, its unit, and its derivation inputs (§6.4). |
+| **db_epoch** | Counter under the `index_meta` key `db_epoch`, incremented on every full rebuild that re-mints integer ids (§5.7). |
+| **fact_key** | Catalog row declaring a fact's value type, whether it is temporal, whether it carries forward, its unit, and its derivation inputs (§6.4). |
 | **derive-once registry** | `internal/derive`: one function per derived fact key, topologically evaluated once per index run, enforced by a test (§7.4). |
 | **cartographer_run** | Provenance row for a batch of Cartographer-sourced node/edge/fact rows (§7.5). |
 | **origin** | Tag on a pack item: `structural`, `semantic-confirmed`, or `semantic-only` (§8.3). |
@@ -1017,7 +1136,7 @@ None found. `03 R-1` settles the wire-format conflict (01's ids-only vs 02's sho
 | A6 | batch overlay fetch | `overlays(nodeIds[], kinds[], asOf)`, index `(node_id, kind, repo_state)` | 50–500 nodes × 6 kinds per pack | <10 ms |
 | A7 | reverse overlay lookup | `overlayTargets(kind, value) → nodeIds[]` | ADR → nodes, owner → nodes | <3 ms |
 | A8 | node-level time travel | `changedSince(nodeId, sinceState)`, `changedNodes(stateA, stateB)` | the time axis; git diff is file-granular | <10 ms |
-| A9 | FTS returning node ids | `fts(text, tierFilter, k) → [(nodeId, bm25)]` over symbols, doc chunks, module responsibility | candidate selection must not return strings to re-match | <5 ms |
+| A9 | FTS returning node ids | `fts(text, tierFilter, k) → [(nodeId, bm25)]` over `node_fts` (name/signature/doc comment) and `body_fts` (doc chunks, module responsibility); both rowids are node ids (§6.2) | candidate selection must not return strings to re-match | <5 ms |
 | A10 | persisted PPR-ready edge list + top-N neighbours | `graphEdges(limit)`, `neighborsTopN(nodeId, n)` | load once per process or skip graph for small fanouts | load <200 ms |
 | A11 | usage overlay batch read/write | as A6, namespace `usage:*`, written by rollup job | §11 | <5 ms |
 | A12 | snapshot-consistent read | every path accepts `asOf=repoStateId` and reports the state served | packs must not mix states silently | — |
@@ -1032,7 +1151,7 @@ A1, A4, A6, A12 are **load-bearing**. A5, A8, A10, A11 are optimizations.
 | **A1** `resolve(handle)` | Primary: `SELECT id, tier FROM node WHERE tier=? AND nkey=?` against `UNIQUE(tier, nkey)` (§6.2). Fallback: `SELECT node_id FROM node_alias WHERE tier=? AND old_nkey=?` using `idx_alias_node`/the `node_alias` primary key (§5.3). `path:line` handles resolve via `idx_node_path(path, tier)` plus `start_line`/`end_line` range check. A stale `n:` id (post-rebuild) is detected via `db_epoch` in `index_meta` (§5.7) and the caller falls back to handle resolution. |
 | **A4** `edges(nodeId, kinds[], dir, limit, orderBy=weight)` | Outbound: `idx_edge_out(src_id, type, dst_id, weight DESC)`. Inbound: `idx_edge_in(dst_id, type, src_id, weight DESC)`. Both indexes are pre-sorted by `weight DESC` so `LIMIT` truncation is index-order, not a sort step (§6.7). |
 | **A6** `overlays(nodeIds[], kinds[], asOf)` | `fact` table's primary key `(node_id, key, state_id, source_id)` has `node_id` as the leading column, so a batch `WHERE node_id IN (...) AND key IN (...) AND state_id = :asOf` is a set of PK range scans; `idx_fact_key(key, num_value DESC)` supports the complementary "top-N by metric" direction (§6.7). |
-| **A12** `asOf=repoStateId` on every path | `repo_state(state_id, state_key, head_commit, dirty, computed_at, indexer)` is the anchor; every `node`/`edge`/`fact` row carries `first_state`/`last_state` (node, edge) or `state_id` (fact), so a snapshot-consistent read is `... AND first_state <= :asOf AND last_state >= :asOf` (node/edge) or `... AND state_id = :asOf` with carry-forward fallback to the nearest earlier state (fact, §7.3). The envelope reports the state actually served on every response. |
+| **A12** `asOf=repoStateId` on every path | `repo_state(state_id, state_key, head_commit, dirty, computed_at, indexer)` is the anchor. **Nodes**: `... AND first_state <= :asOf AND last_state >= :asOf`. **Facts**: `... AND state_id = :asOf`, with carry-forward fallback to the nearest earlier state for keys where `fact_key.carry_forward = 1` (§7.3). **Edges are HEAD-only** (§7.2): they are hard-deleted on invalidation, so an `asOf` earlier than HEAD returns HEAD's edges labelled with the state actually served, not a reconstruction. The envelope reports the state actually served on every response. |
 
 ---
 
