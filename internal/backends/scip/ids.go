@@ -51,7 +51,7 @@ type SCIPIdentifier struct {
 // descriptors with their suffix kind (namespace '/', type '#', term '.',
 // method "().", type-parameter '[..]', parameter '(..)', meta ':', macro
 // '!'), correctly unescaping backtick-quoted names (e.g. "`<constructor>`",
-// or a name containing a literal backtick escaped as "``").
+// or a name containing a literal backtick, escaped by doubling it).
 //
 // Identifiers that don't conform to the strict SCIP grammar (e.g. "local
 // ..." symbols, or malformed/legacy test fixtures using a 4-field form
