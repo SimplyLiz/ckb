@@ -11,6 +11,7 @@ package lip
 import (
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -1014,6 +1015,20 @@ func Handshake(clientVersion string) (*HandshakeInfo, error) {
 // Transport
 // =============================================================================
 
+// maxFrameBytes bounds a single length-prefixed frame in either direction.
+const maxFrameBytes = 64 << 20
+
+// encodeFrame prefixes payload with its big-endian uint32 length.
+func encodeFrame(payload []byte) ([]byte, error) {
+	n := len(payload)
+	if n > maxFrameBytes {
+		return nil, fmt.Errorf("lip: frame of %d bytes exceeds %d", n, maxFrameBytes)
+	}
+	frame := make([]byte, 4, 4+n)
+	binary.BigEndian.PutUint32(frame, uint32(n)) // #nosec G115 -- 0 <= n <= maxFrameBytes, checked above
+	return append(frame, payload...), nil
+}
+
 // lipRPC is the shared transport for request→response LIP calls.
 // T is the JSON response type; U is the public return type.
 // Returns (nil, nil) on any error — callers treat nil as "LIP unavailable".
@@ -1026,12 +1041,15 @@ func lipRPC[T any, U any](req any, timeout time.Duration, maxRespBytes uint32, c
 	conn.SetDeadline(time.Now().Add(timeout)) //nolint:errcheck
 
 	payload, _ := json.Marshal(req)
-	lenBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(lenBuf, uint32(len(payload)))
-	if _, err := conn.Write(append(lenBuf, payload...)); err != nil {
+	frame, err := encodeFrame(payload)
+	if err != nil {
+		return nil, nil
+	}
+	if _, err := conn.Write(frame); err != nil {
 		return nil, nil
 	}
 
+	lenBuf := make([]byte, 4)
 	if _, err := io.ReadFull(conn, lenBuf); err != nil {
 		return nil, nil
 	}
