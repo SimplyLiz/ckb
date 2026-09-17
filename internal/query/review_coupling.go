@@ -1,9 +1,11 @@
 package query
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
-	"os"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -16,48 +18,106 @@ import (
 const maxCouplingAge = 180 * 24 * time.Hour
 
 // batchFileLastModified returns the last git modification time for each file
-// in a single git-log invocation, avoiding O(n) subprocess spawns.
+// from a single git-log invocation, avoiding O(n) subprocess spawns.
+//
+// git log walks history newest-first and, with --name-only restricted to the
+// requested paths, lists which of them each commit touched — so the first
+// commit a path shows up under is the one `git log -1 -- <path>` would report.
+// The walk stops as soon as every path has been seen.
+//
+// The paths come from git history, which on a PR branch is whatever the PR
+// author committed, so they go to git as argv — never through a shell — and
+// as literal pathspecs, so a name like ":(glob)**" matches only itself.
 func (e *Engine) batchFileLastModified(ctx context.Context, files []string) map[string]time.Time {
 	result := make(map[string]time.Time, len(files))
 	if len(files) == 0 {
 		return result
 	}
 
-	// git log --format="<file>\t<date>" with --name-only and --diff-filter
-	// won't work cleanly for this. Instead, one call per unique file but
-	// batched: ask git for dates of all files at once via
-	// "git log --format=%aI --name-only -1 -- file1 file2 ..."
-	// Unfortunately git log -1 with multiple paths returns only one result.
-	// Use a single git log with --stdin-paths is not supported either.
-	// Pragmatic: batch via a single shell invocation using a for-loop.
-	// This runs one process instead of N.
-	var script strings.Builder
-	for _, f := range files {
-		// Shell-safe: files are repo-relative paths, no user input
-		fmt.Fprintf(&script, "echo \"$(git log -1 --format=%%aI -- %q)\t%s\"\n", f, f)
-	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	// Use env -i to prevent the user's shell profile (.zshrc, .bashrc) from
-	// being sourced — profile side-effects (e.g. ~/.secrets/api-keys.env errors)
-	// would leak into our stdout and corrupt the output.
-	cmd := exec.CommandContext(ctx, "env", "-i", "PATH="+os.Getenv("PATH"), "HOME="+os.Getenv("HOME"), "sh", "-c", script.String())
+	args := []string{
+		"--literal-pathspecs", "log",
+		"-z", "--no-renames", "--name-only",
+		"--format=" + lastModifiedHeader + "%aI",
+		"--",
+	}
+	args = append(args, files...)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = e.repoRoot
-	out, err := cmd.Output()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return result
 	}
+	if err := cmd.Start(); err != nil {
+		return result
+	}
+	parseLastModified(stdout, files, result)
+	// Either git has finished, or every path is resolved and the rest of the
+	// history is not needed: cancel kills it, and its exit status is moot.
+	cancel()
+	_ = cmd.Wait()
+	return result
+}
 
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 || parts[0] == "" {
+// lastModifiedHeader prefixes the commit-date record in batchFileLastModified's
+// git log output, so it can be told apart from the path records around it.
+const lastModifiedHeader = "ckb-date:"
+
+// parseLastModified reads `git log -z --name-only --format=<header>%aI` output:
+// NUL-separated records, each either a commit header or a path the commit
+// touched. git puts a newline in front of the first path after a header and
+// nowhere else; a commit that touched none of the paths is a header followed
+// directly by the next header. The first date seen for each requested path is
+// recorded, and reading stops once all of them have one.
+func parseLastModified(r io.Reader, files []string, result map[string]time.Time) {
+	wanted := make(map[string]bool, len(files))
+	for _, f := range files {
+		wanted[f] = true
+	}
+
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	sc.Split(splitNUL)
+
+	var current time.Time
+	afterHeader := false
+	for sc.Scan() {
+		rec := sc.Text()
+		if afterHeader && strings.HasPrefix(rec, "\n") {
+			rec = rec[1:]
+		} else if !wanted[rec] {
+			if date, ok := strings.CutPrefix(rec, lastModifiedHeader); ok {
+				if t, err := time.Parse(time.RFC3339, date); err == nil {
+					current = t
+					afterHeader = true
+					continue
+				}
+			}
+		}
+		afterHeader = false
+		if !wanted[rec] || current.IsZero() {
 			continue
 		}
-		t, err := time.Parse(time.RFC3339, strings.TrimSpace(parts[0]))
-		if err == nil {
-			result[parts[1]] = t
+		if _, seen := result[rec]; !seen {
+			result[rec] = current
+			if len(result) == len(wanted) {
+				return
+			}
 		}
 	}
-	return result
+}
+
+// splitNUL is a bufio.SplitFunc for NUL-terminated records.
+func splitNUL(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexByte(data, 0); i >= 0 {
+		return i + 1, data[:i], nil
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 // CouplingGap represents a missing co-changed file.
@@ -145,7 +205,7 @@ func (e *Engine) checkCouplingGaps(ctx context.Context, changedFiles []string, d
 		}
 	}
 
-	// Batch-lookup last modification dates in a single shell invocation.
+	// Batch-lookup last modification dates in a single git invocation.
 	filesToLookup := make([]string, 0, len(missingFiles))
 	for f := range missingFiles {
 		filesToLookup = append(filesToLookup, f)

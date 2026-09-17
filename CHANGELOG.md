@@ -4,6 +4,17 @@ All notable changes to CKB will be documented in this file.
 
 ## [Unreleased]
 
+### Security — command injection in the review coupling check
+
+`ckb review` looked up when co-changed files were last modified by writing
+their paths into a `sh -c` script. Go's `%q` quoting is not shell quoting, so a
+path containing `$(…)`, backticks or a `"` ran as a command. Those paths come
+from git history, which on a PR branch is whatever the PR author committed —
+so running `ckb review` (or `reviewPR`) on an untrusted PR, e.g. in CI, could
+execute code on the runner. The lookup now runs one `git log` with the paths as
+argv and literal pathspecs; no shell is involved. Tab characters and pathspec
+magic like `:(glob)` in file names no longer produce wrong dates either.
+
 ### Added — change intelligence and an activity ledger, no UI
 
 Decided 2026-09-16 (see `docs/plans/change-intelligence-and-activity-ledger.md`):
