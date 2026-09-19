@@ -9,15 +9,32 @@
           "role": "target"
         },
         {
+          "file": "src/main.ts",
+          "kind": "",
+          "name": "main().(input)",
+          "role": "entrypoint"
+        }
+      ],
+      "pathType": "unknown"
+    },
+    {
+      "nodes": [
+        {
+          "file": "src/internal/util.ts",
+          "kind": "",
+          "name": "FormatOutput",
+          "role": "target"
+        },
+        {
           "file": "src/pkg/handler.ts",
           "kind": "",
           "name": "Handler#handle().(input)",
           "role": "entrypoint"
         }
       ],
-      "pathType": "api"
+      "pathType": "unknown"
     }
   ],
   "targetSymbol": "scip-typescript npm fixture 1.0.0 src/internal/`util.ts`/FormatOutput().",
-  "totalPathsFound": 1
+  "totalPathsFound": 2
 }

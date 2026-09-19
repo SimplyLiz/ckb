@@ -53,6 +53,22 @@ CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
 - Working-tree reviewer suggestions no longer list git's "not committed yet"
   pseudo-author.
 
+### Changed — unresolved dependent names/symbolIds now serialize as `""`, not `"unknown"`
+
+`directDependents[].name` / `.symbolId` (and other fields that report an
+enclosing/caller symbol CKB couldn't resolve — e.g. a package-level
+reference outside any function, or a module/namespace-level SCIP
+"enclosing symbol" with no short name) previously fell back to the string
+`"unknown"` when resolution failed, while `symbolId` was left `""` — an
+inconsistent pair that also collided with the real symbol kind value
+`"unknown"` (`KindUnknown`) elsewhere in responses. Both fields now use the
+same empty-string sentinel (`""`) for "not resolved."
+
+**If your integration checks for the literal string `"unknown"` to detect
+an unresolved name, update it to check for `""` instead** — this is a
+compatibility-affecting behavior change, even though the JSON key itself
+is still always present (schemaVersion 1 fields are not `omitempty`).
+
 ## [9.3.1] - 2026-09-13
 
 ### Fixed — linux binaries would not start on glibc < 2.39 ([#243](https://github.com/SimplyLiz/ckb/issues/243))

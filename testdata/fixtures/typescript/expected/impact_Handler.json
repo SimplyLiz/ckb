@@ -1,37 +1,58 @@
 {
   "blastRadius": {
-    "fileCount": 1,
-    "moduleCount": 0,
+    "fileCount": 2,
+    "moduleCount": 1,
     "riskLevel": "low",
-    "uniqueCallerCount": 1
+    "uniqueCallerCount": 0
   },
   "directImpact": [
     {
       "file": "src/pkg/server.ts",
       "kind": "unknown",
-      "name": "unknown"
+      "name": ""
     },
     {
       "file": "src/pkg/server.ts",
       "kind": "unknown",
-      "name": "unknown"
+      "name": "\u003cconstructor\u003e"
     },
     {
       "file": "src/pkg/server.ts",
       "kind": "unknown",
-      "name": "unknown"
+      "name": "Server"
+    },
+    {
+      "file": "src/pkg/server.ts",
+      "kind": "unknown",
+      "name": "getHandler"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "unknown",
+      "name": "newHandler"
+    },
+    {
+      "file": "src/pkg/server.ts",
+      "kind": "unknown",
+      "name": "newServer"
     }
   ],
-  "modulesAffected": [],
+  "modulesAffected": [
+    {
+      "impactCount": 6,
+      "moduleId": "src/pkg",
+      "name": "src/pkg"
+    }
+  ],
   "riskScore": {
-    "explanation": "Low risk: 0 direct caller(s) across 0 module(s). Changes have limited impact.",
+    "explanation": "Low risk: 0 direct caller(s) across 1 module(s). Changes have limited impact.",
     "level": "low",
-    "score": 0.31
+    "score": 0.36
   },
   "symbol": {
-    "file": "src/pkg/server.ts",
+    "file": "src/pkg/handler.ts",
     "kind": "class",
-    "name": "Server#handler"
+    "name": "Handler"
   },
   "visibility": {
     "confidence": 0.9,

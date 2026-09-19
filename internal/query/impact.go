@@ -95,6 +95,10 @@ type RiskFactor struct {
 
 // ImpactItem describes an impact from changing a symbol.
 type ImpactItem struct {
+	// StableId and ModuleId are NOT omitempty: schemaVersion 1 documents
+	// them as always-present strings, so an unresolved value serializes
+	// as "" rather than dropping the key (see PrepareDependent for the
+	// same contract).
 	StableId   string          `json:"stableId"`
 	Name       string          `json:"name,omitempty"`
 	Kind       string          `json:"kind"` // direct-caller, transitive-caller, type-dependency, test-dependency
@@ -295,6 +299,10 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 		refsResult, refsErr := e.scipAdapter.FindReferences(ctx, symbolIdForLookup, refOpts)
 		if refsErr == nil && refsResult != nil {
 			for _, ref := range refsResult.References {
+				fromModule := ""
+				if ref.Location.Path != "" {
+					fromModule = filepath.Dir(ref.Location.Path)
+				}
 				impactRef := impact.Reference{
 					Kind: impact.ReferenceKind(ref.Kind),
 					Location: &impact.Location{
@@ -302,6 +310,20 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 						StartLine: ref.Location.Line,
 					},
 					IsTest: isTestFilePath(ref.Location.Path), // Set IsTest based on file path
+					// FromSymbol/FromName resolve the enclosing symbol (e.g. the
+					// caller function containing this reference) when the backend
+					// found one. Left empty (not "unknown") when genuinely
+					// unresolvable, e.g. a package-level reference outside any
+					// function.
+					FromSymbol: ref.FromSymbol,
+					FromName:   ref.FromSymbolName,
+					// FromModule is derived from the reference's own file path,
+					// the same way resolvePrepareTarget derives ModuleId for a
+					// symbol-based prepareChange target: the backend doesn't
+					// resolve a module id on references, so without this every
+					// direct dependent reported an empty moduleId and the
+					// module-spread count in prepareChange silently undercounted.
+					FromModule: fromModule,
 				}
 				refs = append(refs, impactRef)
 			}

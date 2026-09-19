@@ -29,37 +29,37 @@
     {
       "file": "pkg/handler.go",
       "id": "scip-go gomod fixture 8366de42779a `fixture/pkg`/Handler#Handle().",
-      "name": "`fixture/pkg`/Handler#Handle",
+      "name": "Handler#Handle",
       "role": "transitive"
     },
     {
       "file": "pkg/service.go",
       "id": "scip-go gomod fixture 8366de42779a `fixture/pkg`/NewCachingService().",
-      "name": "`fixture/pkg`/NewCachingService",
+      "name": "NewCachingService",
       "role": "transitive"
     },
     {
       "file": "pkg/service.go",
       "id": "scip-go gomod fixture 8366de42779a `fixture/pkg`/NewDefaultService().",
-      "name": "`fixture/pkg`/NewDefaultService",
+      "name": "NewDefaultService",
       "role": "transitive"
     },
     {
       "file": "pkg/handler.go",
       "id": "scip-go gomod fixture 8366de42779a `fixture/pkg`/NewHandler().",
-      "name": "`fixture/pkg`/NewHandler",
+      "name": "NewHandler",
       "role": "transitive"
     },
     {
       "file": "pkg/server.go",
       "id": "scip-go gomod fixture 8366de42779a `fixture/pkg`/NewServer().",
-      "name": "`fixture/pkg`/NewServer",
+      "name": "NewServer",
       "role": "callee"
     },
     {
       "file": "pkg/server.go",
       "id": "scip-go gomod fixture 8366de42779a `fixture/pkg`/Server#RunServer().",
-      "name": "`fixture/pkg`/Server#RunServer",
+      "name": "Server#RunServer",
       "role": "callee"
     },
     {

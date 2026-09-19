@@ -5,6 +5,7 @@ package query
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1438,6 +1439,14 @@ type PrepareChangeTarget struct {
 
 // PrepareDependent describes a direct dependent.
 type PrepareDependent struct {
+	// SymbolId and Name identify the enclosing symbol (e.g. the caller
+	// function) that contains the reference. "" (not "unknown") when the
+	// backend couldn't resolve an enclosing symbol (e.g. a package-level
+	// reference outside any function). These fields are NOT omitempty:
+	// schemaVersion 1 documents them as always-present strings, so an
+	// empty value is serialized as "" rather than dropping the key —
+	// dropping it would be a breaking contract change for strict
+	// consumers without a schema version bump.
 	SymbolId string `json:"symbolId"`
 	Name     string `json:"name"`
 	Kind     string `json:"kind"`
@@ -1721,12 +1730,26 @@ func (e *Engine) resolvePrepareTarget(ctx context.Context, target string) (*Prep
 		path = symbolResp.Symbol.Location.FileId
 	}
 
+	// The SCIP backend doesn't resolve ModuleId on symbol lookups (see
+	// backends/scip/adapter.go convertToSymbolResult: "Module ID is
+	// resolved later by the query engine" — nothing downstream of
+	// GetSymbol ever did that resolution). Left empty, getPrepareTests'
+	// same-module test-file glob never runs (it's gated on
+	// target.ModuleId != ""), so every symbol-based prepareChange call
+	// reported "no tests found" regardless of actual test files sitting
+	// right next to the target. Derive it from the file path the same
+	// way the file/directory branches above already do.
+	moduleId := symbolResp.Symbol.ModuleId
+	if moduleId == "" && path != "" {
+		moduleId = filepath.Dir(path)
+	}
+
 	return &PrepareChangeTarget{
 		SymbolId:   symbolResp.Symbol.StableId,
 		Name:       symbolResp.Symbol.Name,
 		Kind:       symbolResp.Symbol.Kind,
 		Path:       path,
-		ModuleId:   symbolResp.Symbol.ModuleId,
+		ModuleId:   moduleId,
 		Visibility: visibility,
 	}, nil
 }
@@ -1764,7 +1787,9 @@ func (e *Engine) getPrepareImpact(ctx context.Context, symbolId string) ([]Prepa
 	moduleSet := make(map[string]bool)
 	maxDepth := 0
 	for _, imp := range impactResp.TransitiveImpact {
-		moduleSet[imp.ModuleId] = true
+		if imp.ModuleId != "" {
+			moduleSet[imp.ModuleId] = true
+		}
 		if imp.Distance > maxDepth {
 			maxDepth = imp.Distance
 		}
@@ -1818,6 +1843,40 @@ func (e *Engine) getPrepareTests(ctx context.Context, target *PrepareChangeTarge
 	}
 
 	return tests
+}
+
+// languageSupportsTestDiscovery reports whether getPrepareTests' glob-based
+// test discovery actually covers the target's language. Discovery only
+// recognizes Go (*_test.go) and TypeScript/JavaScript (*.test.ts/js,
+// *.spec.ts/js) test file conventions. For every other language (Python,
+// Rust, Java/Kotlin, C#, ...) an empty `tests` slice means "we never
+// looked", not "there are no tests" — so calculatePrepareRisk must not turn
+// it into a "No test files found" finding or score contribution for those
+// languages; that would be a false claim, not an honest gap.
+func (e *Engine) languageSupportsTestDiscovery(target *PrepareChangeTarget) bool {
+	if ext := filepath.Ext(target.Path); ext != "" {
+		switch ext {
+		case ".go", ".ts", ".js":
+			return true
+		default:
+			return false
+		}
+	}
+
+	// No extension on the target itself (e.g. a directory/module target) —
+	// infer from the module directory's contents rather than silently
+	// assuming Go/TS/JS.
+	if target.ModuleId == "" {
+		return false
+	}
+	dir := filepath.Join(e.repoRoot, target.ModuleId)
+	for _, ext := range []string{".go", ".ts", ".js"} {
+		matches, _ := filepath.Glob(filepath.Join(dir, "*"+ext))
+		if len(matches) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // getPrepareCoChanges finds files that historically change together.
@@ -1926,10 +1985,18 @@ func (e *Engine) calculatePrepareRisk(
 		suggestions = append(suggestions, "Ensure backward compatibility or bump major version")
 	}
 
-	// Factor: Test coverage
-	if len(tests) == 0 {
+	// Factor: Test coverage. tests comes from getPrepareTests, which only
+	// globs for *_test.go/*.test.ts/*.spec.ts files in the target's own
+	// module directory — it doesn't check whether the target symbol is
+	// itself referenced by any test, so word this as what it actually
+	// measures rather than implying broader test-coverage knowledge we
+	// don't have. Discovery itself is only implemented for Go and TS/JS
+	// (see languageSupportsTestDiscovery): for any other language an empty
+	// `tests` slice means discovery never ran, not that there are no
+	// tests, so the factor is omitted rather than asserted.
+	if len(tests) == 0 && e.languageSupportsTestDiscovery(target) {
 		score += 0.2
-		factors = append(factors, "No tests found")
+		factors = append(factors, "No test files found in target module")
 		suggestions = append(suggestions, "Add tests before modifying")
 	}
 
@@ -1951,19 +2018,28 @@ func (e *Engine) calculatePrepareRisk(
 	// Add existing factors
 	factors = append(factors, existingFactors...)
 
-	// Determine level
+	// Round at the output boundary: score is accumulated from binary
+	// floats (0.25, 0.15, 0.2, ...) whose sum isn't exactly representable,
+	// e.g. 0.15+0.2+0.15+0.2 prints as 0.7000000000000001 without this.
+	// Two decimals is all the factor weights above carry meaning to
+	// anyway. Level is derived from this same rounded value — deriving it
+	// from the raw, unrounded score let the level disagree with the
+	// displayed score at a threshold boundary (raw 0.6999999999999998
+	// prints as "0.70" but would classify as "high", not "critical").
+	roundedScore := math.Round(score*100) / 100
+
 	level := "low"
-	if score >= 0.7 {
+	if roundedScore >= 0.7 {
 		level = "critical"
-	} else if score >= 0.5 {
+	} else if roundedScore >= 0.5 {
 		level = "high"
-	} else if score >= 0.3 {
+	} else if roundedScore >= 0.3 {
 		level = "medium"
 	}
 
 	return &PrepareRisk{
 		Level:       level,
-		Score:       score,
+		Score:       roundedScore,
 		Factors:     factors,
 		Suggestions: suggestions,
 	}

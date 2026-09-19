@@ -54,6 +54,7 @@ type Reference struct {
 	Location   *Location     // Location of the reference
 	Kind       ReferenceKind // Kind of reference
 	FromSymbol string        // StableId of the referencing symbol
+	FromName   string        // Human-readable name of the referencing symbol, if resolved by the backend
 	FromModule string        // ModuleId of the referencing module
 	IsTest     bool          // Whether this reference is from a test
 }

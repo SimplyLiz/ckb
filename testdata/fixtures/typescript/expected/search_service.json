@@ -10,37 +10,9 @@
     {
       "file": "src/pkg/service.ts",
       "kind": "class",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "CachingService#cache"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "CachingService#inner"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "class",
       "line": 30,
       "moduleId": "src/pkg",
       "name": "DefaultService"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "DefaultService#model"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Handler#service"
     },
     {
       "file": "src/pkg/service.ts",
@@ -52,132 +24,6 @@
     {
       "file": "src/pkg/service.ts",
       "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "CachingService#`\u003cconstructor\u003e`"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "CachingService#`\u003cconstructor\u003e`().(inner)"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 41,
-      "moduleId": "src/pkg",
-      "name": "CachingService#process"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "CachingService#process().(input)"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 37,
-      "moduleId": "src/pkg",
-      "name": "CachingService#validate"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "CachingService#validate().(input)"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "DefaultService#`\u003cconstructor\u003e`"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "DefaultService#`\u003cconstructor\u003e`().(model)"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 41,
-      "moduleId": "src/pkg",
-      "name": "DefaultService#process"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "DefaultService#process().(input)"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 37,
-      "moduleId": "src/pkg",
-      "name": "DefaultService#validate"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "DefaultService#validate().(input)"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Handler#`\u003cconstructor\u003e`"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Handler#`\u003cconstructor\u003e`().(service)"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 41,
-      "moduleId": "src/pkg",
-      "name": "Service#process"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Service#process().(input)"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 37,
-      "moduleId": "src/pkg",
-      "name": "Service#validate"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Service#validate().(input)"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
       "line": 89,
       "moduleId": "src/pkg",
       "name": "newCachingService"
@@ -185,23 +31,9 @@
     {
       "file": "src/pkg/service.ts",
       "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "newCachingService().(inner)"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
       "line": 53,
       "moduleId": "src/pkg",
       "name": "newDefaultService"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "newDefaultService().(model)"
     },
     {
       "file": "src/pkg/handler.ts",
@@ -212,10 +44,178 @@
     },
     {
       "file": "src/pkg/handler.ts",
-      "kind": "function",
+      "kind": "method",
       "line": 0,
       "moduleId": "src/pkg",
-      "name": "newHandler().(service)"
+      "name": "\u003cconstructor\u003e"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "method",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "\u003cconstructor\u003e"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "method",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "\u003cconstructor\u003e"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "method",
+      "line": 41,
+      "moduleId": "src/pkg",
+      "name": "process"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "method",
+      "line": 41,
+      "moduleId": "src/pkg",
+      "name": "process"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "method",
+      "line": 41,
+      "moduleId": "src/pkg",
+      "name": "process"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "method",
+      "line": 37,
+      "moduleId": "src/pkg",
+      "name": "validate"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "method",
+      "line": 37,
+      "moduleId": "src/pkg",
+      "name": "validate"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "method",
+      "line": 37,
+      "moduleId": "src/pkg",
+      "name": "validate"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "namespace",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "service.ts"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "inner"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "inner"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "input"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "input"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "input"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "input"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "input"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "input"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "model"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "service"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "service"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "cache"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "inner"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "model"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "service"
     }
   ],
   "total": 31

@@ -126,9 +126,13 @@ func (a *ImpactAnalyzer) processDirectReferences(symbol *Symbol, refs []Referenc
 		kind, confidence := ClassifyImpactWithConfidence(&ref, symbol)
 
 		// Create impact item
+		name := ref.FromName
+		if name == "" {
+			name = extractNameFromStableId(ref.FromSymbol)
+		}
 		item := ImpactItem{
 			StableId:   ref.FromSymbol,
-			Name:       extractNameFromStableId(ref.FromSymbol),
+			Name:       name,
 			Kind:       kind,
 			Confidence: confidence,
 			ModuleId:   ref.FromModule,
@@ -201,22 +205,26 @@ func (a *ImpactAnalyzer) generateModuleSummaries(allImpact []ImpactItem) []Modul
 	return summaries
 }
 
-// extractNameFromStableId extracts a readable name from a stable identifier
+// extractNameFromStableId extracts a readable name from a stable identifier.
+// Used as a fallback when the backend didn't resolve a display name
+// (Reference.FromName); callers should treat "" as "not available" and omit
+// the field rather than display a placeholder.
 func extractNameFromStableId(stableId string) string {
 	// This is a simplified implementation
 	// In a real system, this would parse the stable ID format
 	if stableId == "" {
-		return "unknown"
+		return ""
 	}
 	return stableId
 }
 
-// extractModuleNameFromId extracts a readable module name from a module ID
+// extractModuleNameFromId extracts a readable module name from a module ID.
+// Returns "" (not "unknown") when unavailable so callers can omit the field.
 func extractModuleNameFromId(moduleId string) string {
 	// This is a simplified implementation
 	// In a real system, this would parse the module ID format
 	if moduleId == "" {
-		return "unknown"
+		return ""
 	}
 	return moduleId
 }

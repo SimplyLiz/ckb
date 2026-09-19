@@ -731,7 +731,37 @@ func parseScope(scope string) []string {
 	return []string{scope}
 }
 
+// isTypeLikeKind reports whether kind names a type-defining symbol (as
+// opposed to a member like a property/field/parameter). Used to break ties
+// between symbols whose names only match case-insensitively — e.g. a class
+// `Model` vs. a field `model` — in favor of the type.
+//
+// This covers every type-defining SymbolKind this codebase emits
+// (internal/backends/scip/types.go): class, interface, struct, type, and
+// enum (SCIP kind 3 / inferKindString case 3 — e.g. Go/TS/Java/Rust enums,
+// case-fold-matched by a query like "STATUS" against `enum Status`).
+// There is no separate trait/protocol/typealias SymbolKind in this
+// codebase — Rust traits and meta descriptors both resolve to KindType,
+// and Swift-style protocols aren't a distinct kind here — so nothing
+// further needs listing.
+func isTypeLikeKind(kind string) bool {
+	switch kind {
+	case "class", "interface", "struct", "type", "enum":
+		return true
+	default:
+		return false
+	}
+}
+
 // rankSearchResults applies ranking to search results with v5.2 signals.
+//
+// Case handling: a query like "Model" must outrank a case-insensitive-only
+// match like a field named "model" — matching Go's FTS candidate selection
+// (searchExact in internal/storage/fts.go), which already sorts a
+// case-sensitive exact match ahead of a case-fold-only one before any LIMIT
+// is applied, so the right candidate survives into this pool in the first
+// place. Here we replicate that preference in the score so it holds even
+// for the SCIP/tree-sitter fallback paths that don't go through FTS at all.
 func rankSearchResults(results []SearchResultItem, query string) {
 	queryLower := strings.ToLower(query)
 
@@ -739,18 +769,31 @@ func rankSearchResults(results []SearchResultItem, query string) {
 		score := 0.0
 		var matchType string
 
-		// Determine match type and apply score
+		// Determine match type and apply score. A case-sensitive exact match
+		// ("Model" == "Model") outranks a case-insensitive-only one
+		// ("Model" vs. "model") — the latter is still an "exact" name match,
+		// just not the one the user typed.
 		nameLower := strings.ToLower(results[i].Name)
-		if strings.EqualFold(results[i].Name, query) {
+		switch {
+		case results[i].Name == query:
 			matchType = "exact"
 			score += 100
-		} else if strings.HasPrefix(nameLower, queryLower) {
+		case strings.EqualFold(results[i].Name, query):
+			matchType = "exact-fold"
+			score += 80
+			// Among case-fold-only matches, prefer the type over a member
+			// (field/property/parameter) with the same name: a user typing
+			// "Model" almost always means the type, not a `model` field.
+			if isTypeLikeKind(results[i].Kind) {
+				score += 15
+			}
+		case strings.HasPrefix(nameLower, queryLower):
 			matchType = "partial"
 			score += 50
-		} else if strings.Contains(nameLower, queryLower) {
+		case strings.Contains(nameLower, queryLower):
 			matchType = "partial"
 			score += 25
-		} else {
+		default:
 			matchType = "fuzzy"
 			score += 10
 		}
@@ -770,14 +813,14 @@ func rankSearchResults(results []SearchResultItem, query string) {
 		}
 
 		// Kind weight
-		switch results[i].Kind {
-		case "class", "interface":
+		switch {
+		case isTypeLikeKind(results[i].Kind):
 			score += 25
-		case "function":
+		case results[i].Kind == "function":
 			score += 20
-		case "method":
+		case results[i].Kind == "method":
 			score += 15
-		case "property":
+		case results[i].Kind == "property":
 			score += 10
 		default:
 			score += 5

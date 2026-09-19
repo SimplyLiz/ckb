@@ -402,6 +402,151 @@ func TestPrepareChange_DeleteType(t *testing.T) {
 }
 
 // =============================================================================
+// calculatePrepareRisk Tests
+// =============================================================================
+
+// TestCalculatePrepareRisk_ScoreRounding is a regression test for ckb impact
+// prepare reporting "score": 0.7000000000000001 instead of 0.7. score is
+// accumulated from binary floats (0.15, 0.2, ...) whose sum isn't exactly
+// representable in float64; these specific factor weights (moderate
+// dependents 0.15 + module spread 0.2 + public visibility 0.15 + no tests
+// 0.2) are the exact combination that reproduces the reported value when
+// summed naively.
+//
+// Path is set to a .go file so the "no tests" factor actually fires: test
+// discovery (and therefore its risk factor) is language-gated — see
+// TestCalculatePrepareRisk_TestFactorOmittedForUnsupportedLanguage — and Go
+// is one of the two languages it's implemented for.
+func TestCalculatePrepareRisk_ScoreRounding(t *testing.T) {
+	engine := &Engine{}
+
+	dependents := make([]PrepareDependent, 8) // >5 -> +0.15 "moderate dependent count"
+	transitive := &PrepareTransitive{ModuleSpread: 6}
+	target := &PrepareChangeTarget{Visibility: "public", Path: "internal/example/widget.go"} // +0.15
+	// transitive module spread >5 -> +0.2, no tests -> +0.2
+
+	risk := engine.calculatePrepareRisk(target, dependents, transitive, nil, nil, nil, ChangeModify)
+
+	if risk.Score != 0.7 {
+		t.Errorf("Score = %v, want exactly 0.7 (rounded)", risk.Score)
+	}
+}
+
+// TestCalculatePrepareRisk_TestFactorWording is a regression test for the
+// "No tests found" risk factor overstating what's actually checked.
+// getPrepareTests only globs for *_test.go/*.test.ts/*.spec.ts files in the
+// target's own module directory — it never checks whether the target
+// symbol itself is referenced by any test — so the wording should describe
+// that narrower check, not imply broader test-coverage knowledge.
+//
+// Path is set to a .go file: the factor is language-gated (see
+// TestCalculatePrepareRisk_TestFactorOmittedForUnsupportedLanguage), and
+// this test is specifically about wording, not about the gate itself.
+func TestCalculatePrepareRisk_TestFactorWording(t *testing.T) {
+	engine := &Engine{}
+	target := &PrepareChangeTarget{Visibility: "internal", Path: "internal/example/widget.go"}
+
+	risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify)
+
+	foundOldWording := false
+	foundNewWording := false
+	for _, f := range risk.Factors {
+		if f == "No tests found" {
+			foundOldWording = true
+		}
+		if f == "No test files found in target module" {
+			foundNewWording = true
+		}
+	}
+	if foundOldWording {
+		t.Error(`factor "No tests found" overstates what the check actually verifies (same-module file existence, not symbol-level coverage)`)
+	}
+	if !foundNewWording {
+		t.Errorf("expected factor %q, got %v", "No test files found in target module", risk.Factors)
+	}
+}
+
+// TestCalculatePrepareRisk_TestFactorOmittedForUnsupportedLanguage is a
+// regression test for the "No test files found in target module" factor
+// firing for every language, even though getPrepareTests only implements
+// discovery for Go (*_test.go) and TypeScript/JavaScript (*.test.ts/js,
+// *.spec.ts/js). For a Python target (or any other language without
+// discovery support) an empty `tests` slice means discovery never looked,
+// not that there are genuinely no tests — asserting "no tests found" there
+// is a false claim, not a finding, so neither the factor nor its 0.2 score
+// contribution should appear.
+func TestCalculatePrepareRisk_TestFactorOmittedForUnsupportedLanguage(t *testing.T) {
+	engine := &Engine{}
+	target := &PrepareChangeTarget{Visibility: "internal", Path: "app/models/widget.py", ModuleId: "app/models"}
+
+	risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify)
+
+	for _, f := range risk.Factors {
+		if f == "No test files found in target module" {
+			t.Errorf("factor %q should not fire for a language (.py) test discovery doesn't support; got factors %v", f, risk.Factors)
+		}
+	}
+	if risk.Score != 0 {
+		t.Errorf("Score = %v, want 0 (no factors should have fired for a bare internal-visibility Python target)", risk.Score)
+	}
+}
+
+// TestCalculatePrepareRisk_SuggestionOnlyForPublicVisibility is a
+// regression test for "Ensure backward compatibility or bump major
+// version" being suggested for internal/unexported symbols. This follows
+// directly from the Go-method-visibility fix (SCIPIdentifier.GetSimpleName):
+// calculatePrepareRisk was already correctly gated on
+// `target.Visibility == "public"` (compound.go) — the observed bug was
+// entirely a symptom of visibility itself coming back "public" for
+// unexported Go methods (fixed separately). Once visibility is derived
+// correctly, this suggestion (and the "Public API change" factor) stops
+// firing for them without any change here; this test locks that in so a
+// future visibility regression would be caught here too.
+func TestCalculatePrepareRisk_SuggestionOnlyForPublicVisibility(t *testing.T) {
+	engine := &Engine{}
+
+	t.Run("internal visibility", func(t *testing.T) {
+		target := &PrepareChangeTarget{Visibility: "internal"}
+		risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify)
+
+		for _, f := range risk.Factors {
+			if f == "Public API change" {
+				t.Error(`"Public API change" factor should not fire for internal visibility`)
+			}
+		}
+		for _, s := range risk.Suggestions {
+			if s == "Ensure backward compatibility or bump major version" {
+				t.Error(`backward-compatibility suggestion should not fire for internal visibility`)
+			}
+		}
+	})
+
+	t.Run("public visibility", func(t *testing.T) {
+		target := &PrepareChangeTarget{Visibility: "public"}
+		risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify)
+
+		factorFound := false
+		for _, f := range risk.Factors {
+			if f == "Public API change" {
+				factorFound = true
+			}
+		}
+		suggestionFound := false
+		for _, s := range risk.Suggestions {
+			if s == "Ensure backward compatibility or bump major version" {
+				suggestionFound = true
+			}
+		}
+		if !factorFound {
+			t.Error(`expected "Public API change" factor for public visibility`)
+		}
+		if !suggestionFound {
+			t.Error(`expected backward-compatibility suggestion for public visibility`)
+		}
+	})
+}
+
+// =============================================================================
 // BatchGet Tests
 // =============================================================================
 
