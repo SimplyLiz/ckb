@@ -1,6 +1,10 @@
 package mcp
 
-import "github.com/SimplyLiz/CodeMCP/internal/envelope"
+import (
+	"fmt"
+
+	"github.com/SimplyLiz/CodeMCP/internal/envelope"
+)
 
 // Tool represents a CKB tool exposed via MCP
 type Tool struct {
@@ -12,9 +16,31 @@ type Tool struct {
 // ToolHandler is a function that handles a tool call and returns an envelope response.
 type ToolHandler func(params map[string]interface{}) (*envelope.Response, error)
 
+// expandToolsetDescFmt is the expandToolset tool description, minus the
+// per-preset tool counts. It is formatted with fmt.Sprintf against
+// len(GetPresetTools(...)) for each named preset (and the total tool count
+// for "full") in GetToolDefinitions below, so the counts can never drift
+// from presets.go the way the old hardcoded numbers did.
+//
+// "Replaces your current preset" (not "pick the smallest preset that has
+// the tools you need") matches the one-expansion-per-session rule enforced
+// in toolExpandToolset: a second call is rejected outright, so there is no
+// "start small, expand again later" path — the only real choice is "full"
+// vs. the one preset that covers the whole task.
+const expandToolsetDescFmt = "Switch to a larger toolset for a specific workflow. This replaces your " +
+	"current preset — one expansion per session, a second call is rejected — so pick " +
+	"\"full\" if the task spans multiple presets (e.g. review + refactor) rather than " +
+	"the smallest one that fits right now. Presets (each includes all core tools plus):\n" +
+	"• review (%d tools): reviewPR, auditCompliance, scanSecrets, analyzeTestGaps, getAffectedTests, compareAPI, findDeadCode, findUnwiredModules, auditRisk, getOwnership — use for PR reviews, test coverage analysis, compliance audits, security\n" +
+	"• refactor (%d tools): analyzeCoupling, findCycles, suggestRefactorings, findDeadCode, findUnwiredModules, compareAPI, explainOrigin — use for refactoring, dependency analysis, dead code removal\n" +
+	"• federation (%d tools): federationSearch*, listContracts, analyzeContractImpact — use for multi-repo queries, cross-repo analysis\n" +
+	"• docs (%d tools): indexDocs, getDocsForSymbol, checkDocStaleness, getDecisions, recordDecision — use for documentation, ADRs\n" +
+	"• ops (%d tools): doctor, reindex, daemonStatus, listJobs, webhooks, telemetry — use for diagnostics, daemon management\n" +
+	"• full (%d tools): everything — use when the task spans multiple presets"
+
 // GetToolDefinitions returns all tool definitions
 func (s *MCPServer) GetToolDefinitions() []Tool {
-	return []Tool{
+	tools := []Tool{
 		{
 			Name:        "getStatus",
 			Description: "Get CKB system status including backend health, cache stats, repository state, and usage hints for available capabilities.",
@@ -59,23 +85,20 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 				},
 			},
 		},
-		// Meta-tool for dynamic preset expansion
+		// Meta-tool for dynamic preset expansion. Description is filled in
+		// below (after the full tool list is built) via expandToolsetDescFmt,
+		// so the per-preset tool counts are computed from presets.go instead
+		// of hardcoded here.
 		{
-			Name: "expandToolset",
-			Description: "Switch to a larger toolset for a specific workflow. Call this when you need tools not in the current set. Presets (each includes all core tools plus):\n" +
-				"• review (40 tools): reviewPR, auditCompliance, scanSecrets, analyzeTestGaps, getAffectedTests, compareAPI, findDeadCode, findUnwiredModules, auditRisk, getOwnership — use for PR reviews, test coverage analysis, compliance audits, security\n" +
-				"• refactor (33 tools): analyzeCoupling, findCycles, suggestRefactorings, findDeadCode, findUnwiredModules, compareAPI, explainOrigin — use for refactoring, dependency analysis, dead code removal\n" +
-				"• federation (36 tools): federationSearch*, listContracts, analyzeContractImpact — use for multi-repo queries, cross-repo analysis\n" +
-				"• docs (27 tools): indexDocs, getDocsForSymbol, checkDocStaleness, getDecisions, recordDecision — use for documentation, ADRs\n" +
-				"• ops (33 tools): doctor, reindex, daemonStatus, listJobs, webhooks, telemetry — use for diagnostics, daemon management\n" +
-				"• full (94 tools): everything — use when you need tools from multiple presets",
+			Name:        "expandToolset",
+			Description: expandToolsetDescFmt,
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"preset": map[string]interface{}{
 						"type":        "string",
 						"enum":        []string{"review", "refactor", "federation", "docs", "ops", "full"},
-						"description": "The preset to expand to. Pick the smallest preset that has the tools you need.",
+						"description": "The preset to expand to. This replaces your current preset — one expansion per session — so pick \"full\" if your task spans multiple presets.",
 					},
 					"reason": map[string]interface{}{
 						"type":        "string",
@@ -2805,6 +2828,26 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 			},
 		},
 	}
+
+	// Fill in the real per-preset tool counts now that the full tool list
+	// exists (see expandToolsetDescFmt doc comment: this is what keeps the
+	// counts from drifting the way the old hardcoded numbers did).
+	for i := range tools {
+		if tools[i].Name != "expandToolset" {
+			continue
+		}
+		tools[i].Description = fmt.Sprintf(expandToolsetDescFmt,
+			len(GetPresetTools(PresetReview)),
+			len(GetPresetTools(PresetRefactor)),
+			len(GetPresetTools(PresetFederation)),
+			len(GetPresetTools(PresetDocs)),
+			len(GetPresetTools(PresetOps)),
+			len(tools),
+		)
+		break
+	}
+
+	return tools
 }
 
 // RegisterTools registers all tool handlers
