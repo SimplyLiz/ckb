@@ -363,6 +363,18 @@ CKB works with any MCP-compatible AI coding tool.
 <details>
 <summary><strong>Claude Code</strong></summary>
 
+As a plugin (MCP server plus `/ckb:review` and `/ckb:audit`, updated with each CKB release):
+
+```bash
+claude plugin marketplace add SimplyLiz/ckb
+claude plugin install ckb@lisa
+```
+
+The plugin runs `npx -y @tastehub/ckb mcp`. If you already added CKB with `ckb setup` or
+`claude mcp add`, remove that entry (`claude mcp remove ckb`) so the server is not started twice.
+
+Or configure it directly:
+
 ```bash
 # Auto-configure for current project
 npx @tastehub/ckb setup
