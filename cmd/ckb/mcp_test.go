@@ -314,13 +314,16 @@ mkdir -p "$(dirname "$out")"
 	logger := newLogger("human")
 	go runWatchLoop(dir, 1*time.Hour, logger)
 
-	deadline := time.Now().Add(3 * time.Second)
+	// Generous on purpose: the 1h interval is what proves the check ran
+	// before the first tick; this only bounds how long a failure takes, and
+	// a real subprocess under a loaded CI runner (-race) needs headroom.
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if meta, _ := index.LoadMeta(ckbDir); meta != nil {
 			return // success — the immediate pre-loop check ran and indexed
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("runWatchLoop did not perform its first check immediately on start (no metadata after 3s, with a 1h poll interval)")
+			t.Fatal("runWatchLoop did not perform its first check immediately on start (no metadata after 30s, with a 1h poll interval)")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
