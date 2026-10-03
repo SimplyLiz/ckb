@@ -141,8 +141,12 @@ func runMCP(cmd *cobra.Command, args []string) error {
 			case repos.ResolvedFromCWDGit:
 				// Auto-detected unregistered git repo
 				if resolved.State == repos.RepoStateUninitialized {
-					fmt.Fprintf(os.Stderr, "Repository: %s (%s) [auto-detected, uninitialized]\n", repoName, repoRoot)
-					fmt.Fprintf(os.Stderr, "  ⚠️  Run 'ckb init && ckb repo add %s .' to fully set up\n", repoName)
+					if err := selfInitRepo(repoRoot); err != nil {
+						fmt.Fprintf(os.Stderr, "Repository: %s (%s) [auto-detected, uninitialized]\n", repoName, repoRoot)
+						fmt.Fprintf(os.Stderr, "  ⚠️  Automatic init failed (%v) — run 'ckb init' to set up\n", err)
+					} else {
+						fmt.Fprintf(os.Stderr, "Repository: %s (%s) [auto-detected, initialized]\n", repoName, repoRoot)
+					}
 				} else {
 					fmt.Fprintf(os.Stderr, "Repository: %s (%s) [auto-detected]\n", repoName, repoRoot)
 					fmt.Fprintf(os.Stderr, "  ℹ️  Run 'ckb repo add %s .' to register permanently\n", repoName)
@@ -227,6 +231,8 @@ func runMCP(cmd *cobra.Command, args []string) error {
 
 		go runWatchLoop(repoRoot, watchInterval, logger)
 		logger.Info("Watch mode enabled", "pollInterval", watchInterval.String())
+	} else if hasCkbDir(repoRoot) {
+		startFirstIndex(repoRoot, logger)
 	}
 
 	if err := server.Start(); err != nil {

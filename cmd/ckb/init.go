@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -47,6 +48,12 @@ type initOptions struct {
 	// NoActivate registers the repo (if not already registered) without
 	// changing the user's global default/active repository.
 	NoActivate bool
+	// Dir is the directory to initialize; defaults to the current directory
+	// when empty.
+	Dir string
+	// Out receives the human-readable progress text; defaults to os.Stdout.
+	// 'ckb mcp' passes io.Discard because its stdout is the JSON-RPC transport.
+	Out io.Writer
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
@@ -56,10 +63,18 @@ func runInit(cmd *cobra.Command, args []string) error {
 func runInitCore(opts initOptions) error {
 	logger := newLogger("human")
 
-	// Get current directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		return errors.NewCkbError(errors.InternalError, "Failed to get current directory", err, nil, nil)
+	out := opts.Out
+	if out == nil {
+		out = os.Stdout
+	}
+
+	cwd := opts.Dir
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return errors.NewCkbError(errors.InternalError, "Failed to get current directory", err, nil, nil)
+		}
 	}
 
 	// Check if .ckb already exists
@@ -67,9 +82,9 @@ func runInitCore(opts initOptions) error {
 	if _, statErr := os.Stat(ckbDir); statErr == nil {
 		if !opts.Force {
 			// Idempotent behavior: already initialized is success (CI-friendly)
-			fmt.Println("CKB already initialized.")
-			fmt.Printf("Configuration at: %s\n", filepath.Join(ckbDir, "config.json"))
-			fmt.Println("\nRun 'ckb init --force' to reinitialize.")
+			fmt.Fprintln(out, "CKB already initialized.")
+			fmt.Fprintf(out, "Configuration at: %s\n", filepath.Join(ckbDir, "config.json"))
+			fmt.Fprintln(out, "\nRun 'ckb init --force' to reinitialize.")
 			return nil
 		}
 		// Remove existing directory
@@ -147,16 +162,16 @@ func runInitCore(opts initOptions) error {
 		}
 	}
 
-	fmt.Println("CKB initialized successfully!")
-	fmt.Printf("Configuration written to: %s\n", configPath)
-	fmt.Printf("Registered as: %s\n", repoName)
+	fmt.Fprintln(out, "CKB initialized successfully!")
+	fmt.Fprintf(out, "Configuration written to: %s\n", configPath)
+	fmt.Fprintf(out, "Registered as: %s\n", repoName)
 	if !opts.NoActivate {
-		fmt.Printf("Active repository: %s\n", repoName)
+		fmt.Fprintf(out, "Active repository: %s\n", repoName)
 	}
-	fmt.Println("\nNext steps:")
-	fmt.Println("  1. Run 'ckb index' to create SCIP index")
-	fmt.Println("  2. Run 'ckb doctor' to check your setup")
-	fmt.Println("  3. Run 'ckb status' to see system status")
+	fmt.Fprintln(out, "\nNext steps:")
+	fmt.Fprintln(out, "  1. Run 'ckb index' to create SCIP index")
+	fmt.Fprintln(out, "  2. Run 'ckb doctor' to check your setup")
+	fmt.Fprintln(out, "  3. Run 'ckb status' to see system status")
 
 	return nil
 }

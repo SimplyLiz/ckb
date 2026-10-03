@@ -120,35 +120,35 @@ go build -o ckb ./cmd/ckb
 
 ### Setup
 
-```bash
-cd /path/to/your/project
-
-# One command: initializes CKB and connects it to Claude Code
-ckb setup   # or: npx @tastehub/ckb setup
-
-# Or manually:
-claude mcp add --transport stdio ckb -- npx @tastehub/ckb mcp
-```
-
-`ckb setup` runs `ckb init` for you if needed, then writes the MCP config.
-Building the SCIP index is non-blocking by default: the generated config
-runs with `--watch`, so the index builds itself in the background the
-moment your AI tool starts the server — setup doesn't sit there running an
-indexer that can take anywhere from seconds to tens of minutes on a big
-repo. Want it ready before setup exits? `ckb setup --index-now`. Prefer to
-build it yourself whenever you like? `ckb index`.
-
-**Claude Code without installing ckb:** the plugin replaces `ckb setup`, once, for every repo,
-and brings `/ckb:review` and `/ckb:audit` with it:
+**Claude Code:** install the plugin once, done — for every repo, with `/ckb:review` and
+`/ckb:audit`:
 
 ```bash
 claude plugin marketplace add SimplyLiz/ckb
 claude plugin install ckb@lisa
 ```
 
-Each repo still needs `npx @tastehub/ckb init && npx @tastehub/ckb index`; without
-an index CKB falls back to git history and LSP. Pick one of `ckb setup` and the plugin, not
-both — otherwise the server starts twice.
+The first time Claude Code opens a repo, CKB initializes it and builds the SCIP index in
+the background (`.ckb/` and `index.scip` are kept out of `git status` via
+`.git/info/exclude`). Until the index is there — or if your language's indexer isn't
+installed — answers come from git history and LSP. Refresh the index after larger changes
+with `npx @tastehub/ckb index`.
+
+**Any other tool, or your own `ckb` binary:**
+
+```bash
+cd /path/to/your/project
+ckb setup   # or: npx @tastehub/ckb setup
+```
+
+`ckb setup` runs `ckb init` for you if needed, then writes the MCP config.
+Building the SCIP index is non-blocking by default: the generated config
+runs with `--watch`, so the index builds itself in the background the
+moment your AI tool starts the server and stays current after that. Want it
+ready before setup exits? `ckb setup --index-now`. Prefer to build it
+yourself whenever you like? `ckb index`.
+
+Pick one of `ckb setup` and the plugin, not both — otherwise the server starts twice.
 
 **Token efficiency shown at startup:**
 ```
@@ -361,8 +361,8 @@ claude plugin marketplace add SimplyLiz/ckb
 claude plugin install ckb@lisa
 ```
 
-It runs `npx -y @tastehub/ckb mcp`, so Node is required. Index each repo once
-(`npx @tastehub/ckb init && npx @tastehub/ckb index`) for symbol-level answers.
+It runs `npx -y @tastehub/ckb mcp`, so Node is required. Each repo is initialized and
+indexed on first use; `npx @tastehub/ckb index` refreshes the index.
 
 **`ckb setup`:**
 
