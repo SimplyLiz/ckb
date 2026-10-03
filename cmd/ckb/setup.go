@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	claudeplugin "github.com/SimplyLiz/CodeMCP/claude-plugin"
 	"github.com/spf13/cobra"
 )
 
@@ -798,6 +799,8 @@ func configureClaudeCodeGlobal(ckbCommand string, ckbArgs []string) error {
 }
 
 // installClaudeCodeSkills writes CKB's Claude Code slash commands to ~/.claude/commands/.
+// The texts are the plugin's SKILL.md files (see claude-plugin/skills.go); the
+// frontmatter is valid for a command file too, so they are written verbatim.
 func installClaudeCodeSkills() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -814,8 +817,8 @@ func installClaudeCodeSkills() error {
 		content  string
 		name     string
 	}{
-		{"ckb-review.md", ckbReviewSkill, "/ckb-review"},
-		{"ckb-audit.md", ckbAuditSkill, "/ckb-audit"},
+		{"ckb-review.md", claudeplugin.ReviewSkill, "/ckb-review"},
+		{"ckb-audit.md", claudeplugin.AuditSkill, "/ckb-audit"},
 	}
 
 	for _, s := range skills {
@@ -832,267 +835,6 @@ func installClaudeCodeSkills() error {
 	}
 	return nil
 }
-
-// ckbReviewSkill is the embedded /ckb-review slash command for Claude Code.
-const ckbReviewSkill = `Run a CKB-augmented code review optimized for minimal token usage.
-
-## Input
-$ARGUMENTS - Optional: base branch (default: main), or "staged" for staged changes, or a PR number
-
-## Philosophy
-
-CKB already answered the structural questions (secrets? breaking? dead code? test gaps?).
-The LLM's job is ONLY what CKB can't do: semantic reasoning about correctness, design,
-and intent. Every source line you read costs tokens — read only what CKB says is risky.
-
-### CKB's blind spots (what the LLM must catch)
-
-CKB runs 15 deterministic checks with AST rules, SCIP index, and git history.
-It is structurally sound but semantically blind:
-
-- **Logic errors**: wrong conditions (` + "`" + `>` + "`" + ` vs ` + "`" + `>=` + "`" + `), off-by-one, incorrect algorithm
-- **Business logic**: domain-specific mistakes CKB has no context for
-- **Design fitness**: wrong abstraction, leaky interface, coupling that metrics miss
-- **Input validation**: missing bounds checks, nil guards outside AST patterns
-- **Race conditions**: concurrency issues, mutex ordering, shared state
-- **Resource leaks**: file handles, goroutines, connections not closed on all paths
-- **Incomplete refactoring**: callers missed across module boundaries
-- **Domain edge cases**: error paths, boundary conditions tests don't cover
-
-CKB's scoring uses per-check caps (max -20) and per-rule caps (max -10), so a score
-of 85 can still hide multiple capped warnings. HoldTheLine only flags changed lines,
-so pre-existing issues interacting with new code won't surface.
-
-## Phase 1: Structural scan (~1k tokens into context)
-
-` + "```" + `bash
-ckb review --base=main --format=json --compact 2>/dev/null
-` + "```" + `
-
-If a PR number was given:
-` + "```" + `bash
-BASE=$(gh pr view $ARGUMENTS --json baseRefName -q .baseRefName)
-ckb review --base=$BASE --format=json --compact 2>/dev/null
-` + "```" + `
-
-If "staged" was given:
-` + "```" + `bash
-ckb review --staged --format=json --compact 2>/dev/null
-` + "```" + `
-
-Parse the JSON output to extract:
-- ` + "`" + `score` + "`" + `, ` + "`" + `verdict` + "`" + ` — overall quality
-- ` + "`" + `checks[]` + "`" + ` — status + summary per check (15 checks: breaking, secrets, tests, complexity,
-  coupling, hotspots, risk, health, dead-code, test-gaps, blast-radius, comment-drift,
-  format-consistency, bug-patterns, split)
-- ` + "`" + `findings[]` + "`" + ` — severity + file + message + ruleId
-- ` + "`" + `narrative` + "`" + ` — CKB AI-generated summary (if available)
-- ` + "`" + `prTier` + "`" + ` — small/medium/large
-- ` + "`" + `reviewEffort` + "`" + ` — estimated hours + complexity
-- ` + "`" + `reviewers[]` + "`" + ` — suggested reviewers with expertise areas
-- ` + "`" + `healthReport` + "`" + ` — degraded/improved file counts
-
-From the output, build three lists:
-- **SKIP**: passed checks — don't touch these files or topics
-- **INVESTIGATE**: warned/failed checks — these are your review scope
-- **READ**: hotspot files + files with warn/fail findings — the only files you'll read
-
-**Early exit**: Skip LLM ONLY when ALL conditions are met:
-1. Score >= 90 (not 80 — per-check caps hide warnings at 80)
-2. Zero warn/fail checks
-3. Small change (< 100 lines of diff)
-4. No new files (CKB has no SCIP history for them)
-
-If ANY condition fails, proceed to Phase 2 — CKB's structural pass does NOT mean
-the code is semantically correct.
-
-## Phase 2: Targeted source reading (the only token-expensive step)
-
-Do NOT read the full diff. Do NOT read every changed file.
-
-**For files CKB flagged (INVESTIGATE list):**
-Read only the changed hunks via ` + "`" + `git diff main...HEAD -- <file>` + "`" + `.
-
-**For new files** (CKB has no history — these are your biggest blind spot):
-- If it's a new package/module: read the entry point and types/interfaces first,
-  then follow references to understand the architecture before reading individual files
-- If < 500 lines: read the file
-- If > 500 lines: read the first 100 lines (types/imports) + functions CKB flagged
-- Skip generated files, test files for existing tests, and config/CI/docs files
-
-**For each file you read, look for exactly:**
-- Logic errors (wrong condition, off-by-one, nil deref, race condition)
-- Resource leaks (file handles, connections, goroutines not closed on error paths)
-- Security issues (injection, auth bypass, secrets CKB's 26 patterns missed)
-- Design problems (wrong abstraction, leaky interface, coupling metrics don't catch)
-- Missing edge cases the tests don't cover
-- Incomplete refactoring (callers that should have changed but didn't)
-
-Do NOT look for: style, naming, formatting, documentation, test coverage —
-CKB already checked these structurally.
-
-## Phase 3: Write the review (be terse)
-
-` + "```" + `markdown
-## [APPROVE|REQUEST CHANGES|DISCUSS] — CKB score: [N]/100
-
-[One sentence: what the PR does]
-
-[If CKB provided narrative, include it here]
-
-**PR tier:** [small/medium/large] | **Review effort:** [N]h ([complexity])
-**Health:** [N] degraded, [N] improved
-
-### Issues
-1. **[must-fix|should-fix]** ` + "`" + `file:line` + "`" + ` — [issue in one sentence]
-2. ...
-
-### CKB passed (no review needed)
-[comma-separated list of passed checks]
-
-### CKB flagged (verified above)
-[for each warn/fail finding: confirmed/false-positive + one-line reason]
-
-### Suggested reviewers
-[reviewer — expertise area]
-` + "```" + `
-
-If no issues found: just the header line + CKB passed list. Nothing else.
-
-## Anti-patterns (token waste)
-
-- Reading files CKB marked as pass — waste
-- Reading generated files — waste
-- Summarizing what the PR does in detail — waste (git log exists, CKB has narrative)
-- Explaining why passed checks passed — waste
-- Running MCP drill-down tools when CLI already gave enough signal — waste
-- Reading test files to "verify test quality" — waste unless CKB flagged test-gaps
-- Reading hotspot-only files with no findings — high churn does not mean needs review right now
-- Trusting score >= 80 as "safe to skip" — dangerous (per-check caps hide warnings)
-- Skipping new files because CKB did not flag them — CKB has no SCIP data for new files
-- Reading every new file in a large new package — read entry point + types first, then follow refs
-- Ignoring reviewEffort/prTier — these tell you how thorough to be
-`
-
-// ckbAuditSkill is the embedded /ckb-audit slash command for Claude Code.
-const ckbAuditSkill = `Run a CKB-augmented compliance audit optimized for minimal token usage.
-
-## Input
-$ARGUMENTS - Optional: framework(s) to audit (default: auto-detect from repo context). Examples: "gdpr", "gdpr,pci-dss,hipaa", "all"
-
-## Philosophy
-
-CKB already ran deterministic checks across 20 regulatory frameworks, mapped every finding
-to a specific regulation article, and assigned confidence scores. The LLM's job is ONLY what
-CKB can't do: assess whether findings are real compliance risks or false positives given the
-repo's actual purpose, and prioritize remediation by business impact.
-
-### Available frameworks (20 total)
-
-**Privacy:** gdpr, ccpa, iso27701
-**AI:** eu-ai-act
-**Security:** iso27001, nist-800-53, owasp-asvs, soc2, hipaa
-**Industry:** pci-dss, dora, nis2, fda-21cfr11, eu-cra
-**Supply chain:** sbom-slsa
-**Safety:** iec61508, iso26262, do-178c
-**Coding:** misra, iec62443
-
-### CKB's blind spots (what the LLM must catch)
-
-CKB maps code patterns to regulation articles using AST + regex + tree-sitter. It is
-structurally correct but contextually blind:
-
-- **Business context**: CKB flags PII patterns in a healthcare app and a game engine equally
-- **Architecture awareness**: a finding in dead/test code vs production code has different weight
-- **Compensating controls**: CKB can't see infrastructure-level encryption, WAFs, or IAM policies
-- **Regulatory applicability**: CKB flags HIPAA in a repo that doesn't handle PHI
-- **Risk prioritization**: 50 findings need ordering by actual business/legal exposure
-- **Cross-reference noise**: the same hardcoded credential maps to 6 frameworks — that's 1 fix, not 6
-
-## Phase 1: Structural scan (~2k tokens into context)
-
-` + "```" + `bash
-ckb audit compliance --framework=$ARGUMENTS --format=json --min-confidence=0.7 2>/dev/null
-` + "```" + `
-
-For large repos, scope to a specific path to reduce noise:
-` + "```" + `bash
-ckb audit compliance --framework=$ARGUMENTS --scope=src/api --format=json --min-confidence=0.7 2>/dev/null
-` + "```" + `
-
-If no framework specified, pick based on repo context:
-- Has health/patient/medical code — hipaa,gdpr
-- Has payment/billing/card code — pci-dss,soc2
-- EU company or processes EU data — gdpr,dora,nis2
-- AI/ML code — eu-ai-act
-- Safety-critical/embedded — iec61508,iso26262,misra
-- General SaaS — iso27001,soc2,owasp-asvs
-- If unsure — iso27001,owasp-asvs (broadest applicability)
-
-From the JSON output, extract:
-- ` + "`" + `score` + "`" + `, ` + "`" + `verdict` + "`" + ` (pass/warn/fail)
-- ` + "`" + `coverage[]` + "`" + ` — per-framework scores with passed/warned/failed/skipped check counts
-- ` + "`" + `findings[]` + "`" + ` — with check, severity, file, startLine, message, suggestion, confidence, CWE
-- ` + "`" + `checks[]` + "`" + ` — per-check status and summary
-- ` + "`" + `summary` + "`" + ` — total findings by severity, files scanned
-
-Note:
-- **Per-framework scores**: which frameworks are clean vs problematic
-- **Finding count by severity**: errors are your priority
-- **CWE references**: cross-reference with known vulnerability databases
-- **Confidence scores**: low confidence (< 0.7) findings are likely false positives
-
-**Early exit**: If verdict=pass and all framework scores >= 90, write a one-line summary and stop.
-
-## Phase 2: Triage findings (targeted reads only)
-
-Do NOT read every flagged file. Group findings by root cause first:
-
-1. **Deduplicate cross-framework findings** — a hardcoded secret flagged by GDPR, PCI DSS, HIPAA, and ISO 27001 is one fix
-2. **Check for dominant category** — if > 50% of findings are one category (e.g., "sql-injection"), investigate that category systemically rather than checking each file individually
-3. **Check applicability** — does this repo actually fall under the flagged framework? (e.g., HIPAA findings in a non-healthcare repo)
-4. **Read only error-severity files** — warnings and info can wait
-5. **For each error finding**, read just the flagged lines (not the whole file) and assess:
-   - Is this a real compliance risk or a pattern false positive?
-   - Are there compensating controls elsewhere? (check imports, config, middleware)
-   - What's the remediation effort: one-liner fix vs architectural change?
-
-## Phase 3: Write the audit summary (be terse)
-
-` + "```" + `markdown
-## [COMPLIANT|NEEDS REMEDIATION|NON-COMPLIANT] — CKB score: [N]/100
-
-[One sentence: what frameworks were audited and overall posture]
-
-### Critical findings (must remediate)
-1. **[framework]** ` + "`" + `file:line` + "`" + ` Art. [X] — [issue + remediation in one sentence]
-2. ...
-
-### Not applicable (false positives from context)
-[List findings CKB flagged but that don't apply to this repo, with one-line reason]
-
-### Cross-framework deduplication
-[N findings deduplicated to M root causes]
-
-### Framework scores
-| Framework | Score | Status | Checks |
-|-----------|-------|--------|--------|
-| [name]    | [N]   | [pass/warn/fail] | [passed]/[total] |
-` + "```" + `
-
-If fully compliant: just the header + framework scores. Nothing else.
-
-## Anti-patterns (token waste)
-
-- Reading every flagged file — waste (group by root cause, read only errors)
-- Treating cross-framework duplicates as separate issues — waste (1 code fix = 1 issue)
-- Explaining what each regulation requires — waste (CKB already mapped articles)
-- Re-checking frameworks CKB scored at 100 — waste
-- Auditing frameworks that don't apply to this repo — waste
-- Reading low-confidence findings (< 0.7) — waste (likely false positives)
-- Suggesting infrastructure controls for code-level findings — out of scope
-- Using wrong framework IDs (use pci-dss not pcidss, owasp-asvs not owaspasvs) — CKB error
-`
 
 func configureVSCodeGlobal(ckbCommand string, ckbArgs []string) error {
 	// Check if code command is available

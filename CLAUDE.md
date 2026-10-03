@@ -107,6 +107,7 @@ Everything that has to repeat it is derived from there by
 | `npm/package.json` `version` | package manifest |
 | `npm/package.json` `optionalDependencies` | platform package pins |
 | `README.md` | MCP banner sample output |
+| `claude-plugin/.claude-plugin/plugin.json` | Claude Code plugin manifest (pinned: users only re-fetch on a version change) |
 
 ```bash
 go run scripts/sync-version.go 9.4.0   # set everywhere
@@ -167,6 +168,8 @@ claude mcp add ckb -- npx @tastehub/ckb mcp
 ```
 
 `ckb setup --tool=claude-code` also installs the `/ckb-review` and `/ckb-audit` slash commands for Claude Code, which orchestrate CKB's structural analysis with LLM semantic review.
+
+The same two texts ship as a Claude Code plugin (`claude plugin marketplace add SimplyLiz/ckb && claude plugin install ckb@lisa`): `.claude-plugin/marketplace.json` at the repo root points at `claude-plugin/`, which holds the manifest, `.mcp.json` (`npx -y @tastehub/ckb mcp`) and `skills/{review,audit}/SKILL.md`. Those SKILL.md files are the single source of the skill texts — `setup.go` embeds them via `claude-plugin/skills.go`. Validate with `claude plugin validate ./claude-plugin` and `claude plugin validate .`.
 
 ### Key MCP Tools
 

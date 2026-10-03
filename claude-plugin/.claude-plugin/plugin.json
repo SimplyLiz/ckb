@@ -1,0 +1,13 @@
+{
+  "name": "ckb",
+  "displayName": "CKB · Code Knowledge Backend",
+  "version": "9.3.1",
+  "description": "Before your agent changes code, CKB tells it what can break. Impact analysis, references, ownership and PR review from SCIP, LSP and git history, plus /ckb:review and /ckb:audit.",
+  "author": {
+    "name": "SimplyLiz",
+    "url": "https://github.com/SimplyLiz"
+  },
+  "homepage": "https://github.com/SimplyLiz/ckb",
+  "repository": "https://github.com/SimplyLiz/ckb",
+  "keywords": ["code-intelligence", "impact-analysis", "scip", "code-review", "mcp"]
+}

@@ -137,12 +137,21 @@ ckb init   # or: npx @tastehub/ckb init
 # 2. Generate SCIP index (optional but recommended)
 ckb index  # auto-detects language and runs appropriate indexer
 
-# 3. Connect to Claude Code
+# 3. Connect to Claude Code (or Cursor, Windsurf, VS Code, ...)
 ckb setup  # creates .mcp.json automatically
-
-# Or manually:
-claude mcp add --transport stdio ckb -- npx @tastehub/ckb mcp
 ```
+
+**Claude Code without installing ckb:** the plugin replaces step 3, once, for every repo,
+and brings `/ckb:review` and `/ckb:audit` with it:
+
+```bash
+claude plugin marketplace add SimplyLiz/ckb
+claude plugin install ckb@lisa
+```
+
+Steps 1–2 still run per repo (`npx @tastehub/ckb init && npx @tastehub/ckb index`); without
+an index CKB falls back to git history and LSP. Pick one of `ckb setup` and the plugin, not
+both — otherwise the server starts twice.
 
 **Token efficiency shown at startup:**
 ```
@@ -362,6 +371,28 @@ CKB works with any MCP-compatible AI coding tool.
 
 <details>
 <summary><strong>Claude Code</strong></summary>
+
+Two ways in. Pick by what you have:
+
+| You have | Use | Why |
+|---|---|---|
+| `ckb` installed (npm, Homebrew, source) | `ckb setup` in the repo, or `ckb setup --global` | Uses your binary; also installs `/ckb-review` and `/ckb-audit` |
+| Only Claude Code | The plugin (below) | One install for every repo, no binary to manage, skills update with each CKB release |
+
+Don't do both: the plugin and `ckb setup` each register a `ckb` server, and Claude Code
+would start two. Switching to the plugin: `claude mcp remove ckb` first.
+
+**Plugin:**
+
+```bash
+claude plugin marketplace add SimplyLiz/ckb
+claude plugin install ckb@lisa
+```
+
+It runs `npx -y @tastehub/ckb mcp`, so Node is required. Index each repo once
+(`npx @tastehub/ckb init && npx @tastehub/ckb index`) for symbol-level answers.
+
+**`ckb setup`:**
 
 ```bash
 # Auto-configure for current project
