@@ -53,6 +53,20 @@ CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
 - Working-tree reviewer suggestions no longer list git's "not committed yet"
   pseudo-author.
 
+### Added — Claude Code plugin
+
+CKB installs into Claude Code as a plugin: `claude plugin marketplace add SimplyLiz/ckb`
+then `claude plugin install ckb@lisa`. One install covers every repo and brings the
+MCP server (`npx -y @tastehub/ckb mcp`) plus `/ckb:review` and `/ckb:audit`; the
+plugin version follows CKB releases, so the skills update with them. `ckb setup`
+is unchanged and remains the way in when `ckb` is installed; using both starts
+the server twice.
+
+The two skill texts now live in `claude-plugin/skills/` and are embedded into
+`ckb setup`, so the plugin and the slash commands cannot drift. Both gained an
+npx fallback: they shell out to `ckb`, which users who set up via
+`npx @tastehub/ckb setup` never had on PATH, so the commands failed silently.
+
 ## [9.3.1] - 2026-09-13
 
 ### Fixed — linux binaries would not start on glibc < 2.39 ([#243](https://github.com/SimplyLiz/ckb/issues/243))
