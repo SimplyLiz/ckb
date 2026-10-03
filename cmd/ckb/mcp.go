@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -362,6 +363,13 @@ func watchTick(repoRoot, ckbDir string, interval time.Duration, state *watchStat
 	switch {
 	case err == nil:
 		state.consecutiveFailures = 0
+		// The engine read its SCIP index when it was built; without this the
+		// session keeps the old one (or none) until the server restarts.
+		if eng := loadedEngine(); eng != nil {
+			if reloadErr := eng.ReloadSCIP(context.Background()); reloadErr != nil {
+				logger.Warn("Reindex finished but reloading it into the server failed", "error", reloadErr.Error())
+			}
+		}
 
 	case errors.Is(err, errIndexerUnavailable), errors.Is(err, errRepoTooLarge):
 		if !*permanentLogged {
