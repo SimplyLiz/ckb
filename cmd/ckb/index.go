@@ -603,7 +603,7 @@ func performIndex(repoRoot string) indexResult {
 
 	// Populate incremental tracking tables for supported languages
 	if project.SupportsIncrementalIndexing(lang) {
-		populateIncrementalTracking(repoRoot, lang)
+		populateIncrementalTracking(repoRoot, lang, os.Stdout)
 	}
 
 	// Success message
@@ -1074,8 +1074,9 @@ func tryIncrementalIndex(repoRoot, ckbDir string, lang project.Language) bool {
 }
 
 // populateIncrementalTracking sets up tracking tables after a full index.
-// This enables subsequent incremental updates.
-func populateIncrementalTracking(repoRoot string, lang project.Language) {
+// This enables subsequent incremental updates. The one-line confirmation goes
+// to out; 'ckb mcp' passes io.Discard.
+func populateIncrementalTracking(repoRoot string, lang project.Language, out io.Writer) {
 	// Create logger (silent for CLI)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -1109,7 +1110,7 @@ func populateIncrementalTracking(repoRoot string, lang project.Language) {
 		return
 	}
 
-	fmt.Println("  Incremental tracking enabled for future updates")
+	fmt.Fprintln(out, "  Incremental tracking enabled for future updates")
 }
 
 // runIndexWatchLoop watches for changes and runs incremental updates.

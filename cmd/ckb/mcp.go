@@ -551,7 +551,7 @@ func triggerReindex(repoRoot, ckbDir string, trigger index.RefreshTrigger, trigg
 
 	// Populate incremental tracking tables so subsequent incremental updates work
 	if project.SupportsIncrementalIndexing(lang) {
-		populateIncrementalTracking(repoRoot, lang)
+		populateIncrementalTracking(repoRoot, lang, io.Discard) // stdout is the JSON-RPC transport
 	}
 
 	logger.Info("Reindex complete",
