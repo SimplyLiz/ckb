@@ -36,7 +36,7 @@ func selfInitRepo(repoRoot string) error {
 // earlier run). Resolving the file through 'git rev-parse --git-path' keeps
 // it correct for worktrees, where .git is a file, not a directory.
 func excludeFromGit(repoRoot string, patterns []string) error {
-	out, err := exec.Command("git", "-C", repoRoot, "rev-parse", "--git-path", "info/exclude").Output()
+	out, err := exec.Command("git", "-C", repoRoot, "rev-parse", "--git-path", "info/exclude").Output() // #nosec G204 //nolint:gosec // fixed git subcommand; repoRoot is the detected git root
 	if err != nil {
 		return fmt.Errorf("locating info/exclude: %w", err)
 	}
@@ -58,7 +58,7 @@ func excludeFromGit(repoRoot string, patterns []string) error {
 		}
 		// check-ignore exits 0 when the path is already ignored.
 		path := strings.TrimPrefix(p, "/")
-		if exec.Command("git", "-C", repoRoot, "check-ignore", "-q", path).Run() == nil {
+		if exec.Command("git", "-C", repoRoot, "check-ignore", "-q", path).Run() == nil { // #nosec G204 //nolint:gosec // fixed git subcommand on a constant pattern
 			continue
 		}
 		missing = append(missing, p)
