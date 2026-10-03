@@ -73,7 +73,7 @@ ckb arch
 
 | AI Assistants | CI/CD | Your Tools |
 |---------------|-------|------------|
-| Claude Code, Cursor, Windsurf, VS Code | GitHub Actions, GitLab CI | CLI, HTTP API, Scripts |
+| Claude Code, Cursor, Windsurf, VS Code, Grok, Codex | GitHub Actions, GitLab CI | CLI, HTTP API, Scripts |
 
 **83% token reduction** with smart presets—load only the tools you need.
 
@@ -121,18 +121,24 @@ go build -o ckb ./cmd/ckb
 ### Setup
 
 ```bash
-# 1. Initialize in your project
 cd /path/to/your/project
-ckb init   # or: npx @tastehub/ckb init
 
-# 2. Generate SCIP index (optional but recommended)
-ckb index  # auto-detects language and runs appropriate indexer
+# One command: initializes CKB and connects it to Claude Code
+ckb setup   # or: npx @tastehub/ckb setup
 
-# 3. Connect to Claude Code (or Cursor, Windsurf, VS Code, ...)
-ckb setup  # creates .mcp.json automatically
+# Or manually:
+claude mcp add --transport stdio ckb -- npx @tastehub/ckb mcp
 ```
 
-**Claude Code without installing ckb:** the plugin replaces step 3, once, for every repo,
+`ckb setup` runs `ckb init` for you if needed, then writes the MCP config.
+Building the SCIP index is non-blocking by default: the generated config
+runs with `--watch`, so the index builds itself in the background the
+moment your AI tool starts the server — setup doesn't sit there running an
+indexer that can take anywhere from seconds to tens of minutes on a big
+repo. Want it ready before setup exits? `ckb setup --index-now`. Prefer to
+build it yourself whenever you like? `ckb index`.
+
+**Claude Code without installing ckb:** the plugin replaces `ckb setup`, once, for every repo,
 and brings `/ckb:review` and `/ckb:audit` with it:
 
 ```bash
@@ -140,7 +146,7 @@ claude plugin marketplace add SimplyLiz/ckb
 claude plugin install ckb@lisa
 ```
 
-Steps 1–2 still run per repo (`npx @tastehub/ckb init && npx @tastehub/ckb index`); without
+Each repo still needs `npx @tastehub/ckb init && npx @tastehub/ckb index`; without
 an index CKB falls back to git history and LSP. Pick one of `ckb setup` and the plugin, not
 both — otherwise the server starts twice.
 
@@ -174,7 +180,7 @@ Now Claude can answer questions like:
 
 | Interface | Best For |
 |-----------|----------|
-| **[MCP](https://github.com/SimplyLiz/CodeMCP/wiki/MCP-Integration)** | AI-assisted development — Claude, Cursor, Windsurf, VS Code, OpenCode |
+| **[MCP](https://github.com/SimplyLiz/CodeMCP/wiki/MCP-Integration)** | AI-assisted development — Claude, Cursor, Windsurf, VS Code, OpenCode, Grok, Codex |
 | **[CLI](https://github.com/SimplyLiz/CodeMCP/wiki/User-Guide)** | Quick lookups from terminal, scripting |
 | **[HTTP API](https://github.com/SimplyLiz/CodeMCP/wiki/API-Reference)** | IDE plugins, CI integration, custom tooling |
 
@@ -485,6 +491,48 @@ The `CKB_REPO` environment variable tells CKB which repository to analyze. Claud
 </details>
 
 <details>
+<summary><strong>Codex</strong></summary>
+
+Codex CLI supports both project-local config (`<repo>/.codex/config.toml`, for
+trusted projects) and user-global config (`~/.codex/config.toml`). By default
+`ckb setup --tool=codex` writes the project-local file, same as Cursor or
+VS Code; pass `--global` to write the global one instead.
+
+```bash
+# Project-local (default) — writes <repo>/.codex/config.toml
+npx @tastehub/ckb setup --tool=codex
+
+# Global — writes ~/.codex/config.toml, used across all projects
+npx @tastehub/ckb setup --tool=codex --global
+```
+
+Or manually add to either file:
+```toml
+[mcp_servers.ckb]
+command = "npx"
+args = ["-y", "@tastehub/ckb", "mcp", "--watch"]
+```
+
+`ckb setup` merges this table into your existing `config.toml` without
+touching anything else in the file — including any `[mcp_servers.ckb.env]`
+subtable you've hand-added for your own environment variables.
+
+On Windows, `ckb setup --tool=codex --npx` automatically wraps the command
+in `cmd /c` (Codex spawns commands directly, and `npx` on Windows is
+`npx.cmd`, which only resolves through a shell) — see the "Windows" section
+below if you're editing `config.toml` by hand instead.
+
+With the global config, `ckb mcp` has no per-project file to anchor it to,
+so it resolves the target repository the same way any other CKB command
+does when no `--repo`/`CKB_REPO` is set: from the working directory Codex
+launches the server in (matched against the registry, or auto-detected via
+the enclosing git repo), falling back to your default registered repo. Run
+`ckb setup` from inside each project once with `--tool=codex` (project
+scope) if you want an explicit, unambiguous per-project config instead.
+
+</details>
+
+<details>
 <summary><strong>Windows</strong></summary>
 
 Use `cmd /c` wrapper in any config above:
@@ -497,6 +545,13 @@ Use `cmd /c` wrapper in any config above:
     }
   }
 }
+```
+
+For Codex's TOML config, the same wrapper looks like:
+```toml
+[mcp_servers.ckb]
+command = "cmd"
+args = ["/c", "npx", "-y", "@tastehub/ckb", "mcp", "--watch"]
 ```
 
 </details>

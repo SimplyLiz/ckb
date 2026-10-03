@@ -599,6 +599,31 @@ func (e *Engine) StartBgTasks() {
 	}
 }
 
+// ReloadSCIP re-reads the SCIP index from disk into the running engine. The
+// adapter loads its index exactly once, at engine construction, so a
+// long-lived server that rebuilds the index (ckb mcp --watch) has to call
+// this afterwards — otherwise it keeps serving whatever it loaded at
+// startup, which for a fresh project is no index at all.
+//
+// On a failed load the previously loaded index (if any) stays in place.
+func (e *Engine) ReloadSCIP(ctx context.Context) error {
+	if e.scipAdapter == nil {
+		return nil
+	}
+	if err := e.scipAdapter.Reload(); err != nil {
+		return err
+	}
+	e.tierDetector.SetScipAvailable(e.scipAdapter.IsAvailable())
+
+	// Cached answers were computed against the old index (or none) —
+	// negative-cache entries in particular would keep hiding symbols the
+	// new index now has.
+	if err := e.ClearAllCache(); err != nil {
+		e.logger.Warn("Failed to clear caches after SCIP reload", "error", err.Error())
+	}
+	return e.PopulateFTSFromSCIP(ctx)
+}
+
 // DisableBgFTS is now a no-op kept for backward compatibility. Background tasks
 // are no longer started inside NewEngine; call StartBgTasks() explicitly.
 func (e *Engine) DisableBgFTS() {}

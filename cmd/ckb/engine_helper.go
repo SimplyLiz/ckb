@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/SimplyLiz/CodeMCP/internal/config"
 	"github.com/SimplyLiz/CodeMCP/internal/query"
@@ -18,7 +19,20 @@ var (
 	engineOnce   sync.Once
 	sharedEngine *query.Engine
 	engineErr    error
+
+	// builtEngine is sharedEngine, published once construction succeeded,
+	// for callers that must not trigger construction themselves (see
+	// loadedEngine).
+	builtEngine atomic.Pointer[query.Engine]
 )
+
+// loadedEngine returns the shared engine if something has already built it,
+// or nil. Unlike getEngine it never builds one: the watch loop uses it to
+// reload a fresh index into a running engine, and an engine nobody has asked
+// for yet will read the new index on its own when it is built.
+func loadedEngine() *query.Engine {
+	return builtEngine.Load()
+}
 
 // getEngine returns a shared Query Engine instance.
 // The engine is lazily initialized on first use.
@@ -63,6 +77,7 @@ func getEngine(repoRoot string, logger *slog.Logger) (*query.Engine, error) {
 		}
 
 		sharedEngine = engine
+		builtEngine.Store(engine)
 	})
 
 	return sharedEngine, engineErr
