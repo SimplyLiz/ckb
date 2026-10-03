@@ -149,8 +149,8 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 			case 1: // Metadata
 				v, n := protowire.ConsumeBytes(b)
 				if n < 0 {
-					b = b[max(n, 1):]
-					continue
+					parseErr = fmt.Errorf("protowire: malformed field %d at offset %d", num, len(data)-len(b))
+					return
 				}
 				var m scippb.Metadata
 				if discardUnknownOpts.Unmarshal(v, &m) == nil {
@@ -161,8 +161,8 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 			case 2: // Document (protobuf:"bytes,2,rep,name=documents")
 				v, n := protowire.ConsumeBytes(b)
 				if n < 0 {
-					b = b[max(n, 1):]
-					continue
+					parseErr = fmt.Errorf("protowire: malformed field %d at offset %d", num, len(data)-len(b))
+					return
 				}
 				var d scippb.Document
 				if discardUnknownOpts.Unmarshal(v, &d) == nil {
@@ -173,8 +173,8 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 			default: // external_symbols (field 3) or unknown fields — skip
 				n := protowire.ConsumeFieldValue(num, typ, b)
 				if n < 0 {
-					b = b[max(n, 1):]
-					continue
+					parseErr = fmt.Errorf("protowire: malformed field %d at offset %d", num, len(data)-len(b))
+					return
 				}
 				b = b[n:]
 			}
