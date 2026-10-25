@@ -5,7 +5,7 @@ updates:
     directory: "/"
     target-branch: "develop"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     groups:
       actions:
         patterns:
@@ -18,7 +18,7 @@ updates:
     directory: "/"
     target-branch: "develop"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     groups:
       go-deps:
         patterns:
@@ -35,6 +35,10 @@ updates:
     directory: "/npm"
     target-branch: "develop"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
+    groups:
+      npm-deps:
+        patterns:
+          - "*"
     commit-message:
       prefix: "fix(deps)"
