@@ -16,6 +16,7 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/compression"
 	"github.com/SimplyLiz/CodeMCP/internal/errors"
 	"github.com/SimplyLiz/CodeMCP/internal/output"
+	"github.com/SimplyLiz/CodeMCP/internal/symbols"
 )
 
 // GetSymbolOptions contains options for getSymbol.
@@ -1141,7 +1142,15 @@ func (e *Engine) searchWithTreesitter(ctx context.Context, opts SearchSymbolsOpt
 
 	// Extract all symbols from the directory — tree-sitter cgo requires mutex
 	e.tsMu.Lock()
-	allSymbols, err := e.treesitterExtractor.ExtractDirectory(ctx, searchRoot, nil)
+	// File list honours .gitignore (git work trees) and backends.treesitter.exclude.
+	var exclude []string
+	if e.config != nil {
+		exclude = e.config.Backends.Treesitter.Exclude
+	}
+	allSymbols, err := e.treesitterExtractor.ExtractDirectoryWithOptions(ctx, searchRoot, symbols.DirOptions{
+		RepoRoot: e.repoRoot,
+		Exclude:  exclude,
+	})
 	e.tsMu.Unlock()
 	if err != nil {
 		e.logger.Warn("Tree-sitter extraction failed",

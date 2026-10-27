@@ -38,6 +38,15 @@ CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
   Code transcript (tokens by class, turns, tool calls, files read) with the
   ledger rows of the same session into one record, and compares two. Produces
   neutral deltas; nothing is labeled "tokens saved".
+- `backends.treesitter.exclude` in `.ckb/config.json`: a list of globs the
+  tree-sitter symbol fallback (used by `searchSymbols` when no SCIP index is
+  loaded) must not index. Globs are matched against the repo-relative path with
+  `/` separators. Two forms are supported: `dir/**` (the directory and
+  everything below it, compared on whole path segments, so `build/**` does not
+  match `builder/`) and anything else is a Go `path.Match` pattern against the
+  full path (`*` does not cross `/`, so use `src/*.min.js`, not `*.min.js`, for
+  nested files). No leading `**`, no negation. Invalid patterns are rejected at
+  config load.
 
 ### Fixed
 
@@ -71,6 +80,15 @@ CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
   lists configured servers per language ("typescript: configured, starts on
   demand", "running", or "gopls not found on PATH") and only reports the
   backend unavailable when no configured binary is on PATH.
+- `searchSymbols` without a SCIP index no longer returns symbols from
+  git-ignored directories such as `dist/` or `build/` (minified bundles ranked
+  ahead of real `src/` symbols in Next.js repos). The tree-sitter fallback now
+  lists files with `git ls-files -co --exclude-standard` when the repo is a git
+  work tree, so nested `.gitignore` files are honoured and untracked files that
+  are not ignored are still searched. Outside git (or if git fails) it falls
+  back to the old directory walk, which does not read `.gitignore`; use
+  `backends.treesitter.exclude` there. Dot-directories, `node_modules`,
+  `vendor` and `__pycache__` are still skipped in both modes.
 
 ### Added — Claude Code plugin
 

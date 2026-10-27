@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -143,6 +144,19 @@ type BackendsConfig struct {
 	Scip ScipConfig `json:"scip" mapstructure:"scip"`
 	Lsp  LspConfig  `json:"lsp" mapstructure:"lsp"`
 	Git  GitConfig  `json:"git" mapstructure:"git"`
+
+	// Treesitter configures the tree-sitter symbol fallback used when no SCIP index is loaded.
+	Treesitter TreesitterConfig `json:"treesitter" mapstructure:"treesitter"`
+}
+
+// TreesitterConfig contains tree-sitter fallback configuration.
+type TreesitterConfig struct {
+	// Exclude lists globs of files/directories the fallback must not index.
+	// Matched against the repo-relative slash path. Supported: "dir/**"
+	// (dir and everything below it, whole path segments) and path.Match
+	// patterns against the full path ("*" does not cross "/").
+	// .gitignore is honoured automatically in git work trees.
+	Exclude []string `json:"exclude,omitempty" mapstructure:"exclude"`
 }
 
 // ScipConfig contains SCIP backend configuration
@@ -940,6 +954,18 @@ func (c *Config) Validate() error {
 		return &ConfigError{
 			Field:   "version",
 			Message: fmt.Sprintf("unsupported config version %d, supported versions: %v", c.Version, SupportedConfigVersions),
+		}
+	}
+
+	for i, g := range c.Backends.Treesitter.Exclude {
+		if strings.HasSuffix(g, "/**") {
+			continue // literal-prefix form, always valid
+		}
+		if _, err := path.Match(g, ""); err != nil {
+			return &ConfigError{
+				Field:   fmt.Sprintf("backends.treesitter.exclude[%d]", i),
+				Message: fmt.Sprintf("invalid glob %q: %v", g, err),
+			}
 		}
 	}
 
