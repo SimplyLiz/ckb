@@ -1,10 +1,15 @@
 package scip
 
 import (
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/SimplyLiz/CodeMCP/internal/config"
+	indexmeta "github.com/SimplyLiz/CodeMCP/internal/index"
 )
 
 func TestFileStamp_Equal(t *testing.T) {
@@ -72,5 +77,40 @@ func TestIndexFileChanged(t *testing.T) {
 	}
 	if a.IndexFileChanged() {
 		t.Fatal("deleted file reported as changed")
+	}
+}
+
+// scip-typescript (and others) write no commit into the SCIP metadata; the
+// commit 'ckb index' recorded in .ckb/index-meta.json fills the gap so
+// freshness is not "unknown" for those languages.
+func TestLoadIndex_FallsBackToIndexMetaCommit(t *testing.T) {
+	dir := t.TempDir()
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "..", "testdata", "fixtures", "go", ".scip", "index.scip"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.scip"), fixture, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".ckb"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	meta := &indexmeta.IndexMeta{CreatedAt: time.Now(), CommitHash: "abc123def"}
+	if err := meta.Save(filepath.Join(dir, ".ckb")); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.RepoRoot = dir
+	a, err := NewSCIPAdapter(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.IsAvailable() {
+		t.Fatal("index not loaded")
+	}
+	info := a.GetIndexInfo()
+	if info.IndexedCommit != "abc123def" && extractCommitFromToolInfo(a.GetIndex().Metadata.ToolInfo) == "" {
+		t.Fatalf("IndexedCommit = %q, want abc123def from index-meta.json", info.IndexedCommit)
 	}
 }

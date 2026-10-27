@@ -12,6 +12,7 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/backends"
 	"github.com/SimplyLiz/CodeMCP/internal/config"
 	"github.com/SimplyLiz/CodeMCP/internal/errors"
+	indexmeta "github.com/SimplyLiz/CodeMCP/internal/index"
 	"github.com/SimplyLiz/CodeMCP/internal/repostate"
 )
 
@@ -192,6 +193,17 @@ func (s *SCIPAdapter) LoadIndex() error {
 	if err != nil {
 		s.failedStamp = stamp
 		return err
+	}
+
+	// Indexers like scip-typescript record no commit in the SCIP metadata.
+	// 'ckb index' (full, incremental, watch, MCP reindex) writes the HEAD it
+	// built from to .ckb/index-meta.json; use that so freshness checks can
+	// work for every language, not only those whose indexer stamps a commit.
+	if index.IndexedCommit == "" {
+		if meta, err := indexmeta.LoadMeta(filepath.Join(s.repoRoot, ".ckb")); err == nil && meta != nil && meta.CommitHash != "" {
+			index.IndexedCommit = meta.CommitHash
+			s.logger.Debug("SCIP metadata has no commit; using .ckb/index-meta.json", "commit", meta.CommitHash)
+		}
 	}
 
 	s.index = index
