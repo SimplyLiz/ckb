@@ -53,7 +53,7 @@ func ComputeIndexFreshness(indexedCommit string, repoState *repostate.RepoState,
 		freshness.StaleAgainstHead = true
 
 		// Count commits between indexed commit and HEAD
-		commitsBehind, err := countCommitsBetween(repoRoot, indexedCommit, repoState.HeadCommit)
+		commitsBehind, err := CountCommitsBetween(repoRoot, indexedCommit, repoState.HeadCommit)
 		if err == nil {
 			freshness.CommitsBehindHead = commitsBehind
 		}
@@ -146,8 +146,8 @@ func (f *IndexFreshness) GetCompletenessScore() float64 {
 	return 0.3 // Very stale
 }
 
-// countCommitsBetween counts the number of commits between two commits
-func countCommitsBetween(repoRoot, fromCommit, toCommit string) (int, error) {
+// CountCommitsBetween counts the number of commits between two commits
+func CountCommitsBetween(repoRoot, fromCommit, toCommit string) (int, error) {
 	// Use git rev-list to count commits
 	// git rev-list --count fromCommit..toCommit
 	cmd := exec.Command("git", "rev-list", "--count", fmt.Sprintf("%s..%s", fromCommit, toCommit)) // #nosec G204 //nolint:gosec // git command with validated commit hashes

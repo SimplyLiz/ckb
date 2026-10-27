@@ -47,6 +47,26 @@ CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
   full path (`*` does not cross `/`, so use `src/*.min.js`, not `*.min.js`, for
   nested files). No leading `**`, no negation. Invalid patterns are rejected at
   config load.
+- **Per-result index freshness in SCIP-backed responses.** `findReferences`,
+  `analyzeImpact`, `prepareChange`, `getCallGraph` and `findDeadCode` now say
+  whether the loaded SCIP index is stale *for this query*, so you no longer have
+  to call `getStatus` first. `meta.indexFreshness`:
+  ```json
+  "indexFreshness": {
+    "indexedCommit": "75d7ab3",
+    "commitsBehind": 3,
+    "changedSinceIndex": ["src/lib/cv/store.ts"],
+    "affectsResult": true,
+    "hint": "1 result file(s) changed since indexing — call reindex for exact results"
+  }
+  ```
+  `changedSinceIndex` is every file changed (committed, uncommitted or
+  untracked) since the indexed commit, capped at 50 (`changedSinceIndexTruncated`
+  when cut). `affectsResult` is true only when one of those files appears in the
+  result; then `meta.confidence.score` is multiplied by 0.7. An old index over
+  code that has not changed keeps its confidence. If the index records no
+  commit, `indexedCommit` is empty and the hint says freshness cannot be
+  determined. The block is omitted when SCIP did not answer.
 
 ### Fixed
 

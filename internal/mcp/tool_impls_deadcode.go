@@ -66,6 +66,13 @@ func (s *MCPServer) toolFindDeadCode(params map[string]interface{}) (*envelope.R
 
 	// Build response with degradation warnings
 	resp := NewToolResponse().Data(result)
+	if result != nil {
+		deadFiles := make([]string, 0, len(result.DeadCode))
+		for _, item := range result.DeadCode {
+			deadFiles = append(deadFiles, item.FilePath)
+		}
+		resp.WithIndexFreshness(s.engine().IndexFreshnessFor(ctx, deadFiles))
+	}
 	engine, engineErr := s.GetEngine()
 	if engineErr == nil {
 		for _, dw := range engine.GetDegradationWarnings() {
