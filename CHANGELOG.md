@@ -167,6 +167,9 @@ npx fallback: they shell out to `ckb`, which users who set up via
   glibc floor (2.34, [#243](https://github.com/SimplyLiz/ckb/issues/243)) is
   unaffected: it comes from the pinned `ubuntu-22.04` runners, and
   `scripts/check-glibc-floor.go` still verifies every linux binary.
+- Dependencies with open HIGH advisories bumped: `github.com/klauspost/compress`
+  1.18.2 → 1.18.7, `golang.org/x/net` 0.58.0 → 0.60.0 (both DoS), and
+  `undici` 6.27.0 → 6.29.1 in the PR-analysis GitHub Action (bundle rebuilt).
 
 ## [9.3.1] - 2026-09-13
 
