@@ -254,13 +254,25 @@ func (s *MCPServer) getIndexStaleness() map[string]interface{} {
 	}
 
 	staleness := meta.GetStaleness(repoRoot)
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"exists":        true,
 		"fresh":         !staleness.IsStale,
 		"reason":        staleness.Reason,
 		"indexAge":      staleness.IndexAge,
 		"commitsBehind": staleness.CommitsBehind,
 	}
+
+	// Metadata describes the file on disk; "fresh" is only true if the
+	// running engine is actually serving it (#134).
+	if sb := s.engine().GetScipBackend(); sb != nil {
+		loaded := sb.IsAvailable()
+		result["loaded"] = loaded
+		if !loaded && !staleness.IsStale {
+			result["fresh"] = false
+			result["reason"] = "index file not loaded by the running server"
+		}
+	}
+	return result
 }
 
 // toolDoctor implements the doctor tool

@@ -72,6 +72,11 @@ type MCPServer struct {
 	engineLoader func() (*query.Engine, error)
 	engineOnce   sync.Once
 	engineErr    error
+
+	// reindex tool: injected by cmd/ckb (see ReindexRunner), nil otherwise;
+	// one run per repo at a time.
+	reindexRunner ReindexRunner
+	reindexGuard  reindexGuard
 }
 
 // NewMCPServer creates a new MCP server in legacy single-engine mode

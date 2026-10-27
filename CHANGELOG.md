@@ -67,6 +67,22 @@ CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
   code that has not changed keeps its confidence. If the index records no
   commit, `indexedCommit` is empty and the hint says freshness cannot be
   determined. The block is omitted when SCIP did not answer.
+- **MCP `reindex` builds and loads the index.** It used to answer with
+  guidance ("run `ckb index` in your terminal") and `skipped` whenever the
+  file on disk looked fresh — even when the running server had nothing loaded.
+  It now runs the `ckb index` code path in-process (incremental where the
+  language supports it, else full; same plan builder, lock and metadata as the
+  CLI) with a timeout (`timeoutSeconds`, default 300), then reloads the index
+  into the running engine. Returns `status` `reindexed` | `reloaded` (file was
+  fresh, server had not loaded it) | `skipped` (fresh and loaded; pass
+  `scope: "full"` to rebuild anyway) | `busy` (another run in progress for
+  this repo, or the index lock is held) | `failed` | `action_required` (no
+  indexer, or repo above the automatic size threshold), plus `mode`,
+  `durationMs`, `symbols`, `documents`, `commitsBehindBefore`. The tool is
+  now in the `review` and `refactor` presets as well as `ops`, since that is
+  where the impact tools that need a current index live. `getStatus.index`
+  gains `loaded` and reports `fresh: false` when the file on disk is not what
+  the server serves.
 
 ### Fixed
 

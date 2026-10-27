@@ -41,20 +41,20 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		},
 		{
 			Name:        "reindex",
-			Description: "Trigger a refresh of the SCIP index without restarting CKB. Returns actionable guidance on how to refresh the index based on current staleness.",
+			Description: "Build the SCIP index and load it into the running server — same as 'ckb index' (incremental where the language supports it) without a shell or restart. Returns status reindexed | reloaded (file was fresh, server had not loaded it) | skipped (fresh and loaded) | busy | failed | action_required, with durationMs, symbols, documents and commitsBehindBefore. Call before findReferences/analyzeImpact/prepareChange when a response's meta.indexFreshness says the result is affected.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"scope": map[string]interface{}{
 						"type":        "string",
-						"enum":        []string{"full", "incremental"},
-						"default":     "full",
-						"description": "Reindex scope: 'full' for complete reindex, 'incremental' for changed files only (Go only)",
+						"enum":        []string{"auto", "full", "incremental"},
+						"default":     "auto",
+						"description": "auto: incremental if supported, else full; also skips when the index is fresh. full: always rebuild.",
 					},
-					"async": map[string]interface{}{
-						"type":        "boolean",
-						"default":     false,
-						"description": "Return immediately and poll status (not yet implemented)",
+					"timeoutSeconds": map[string]interface{}{
+						"type":        "integer",
+						"default":     300,
+						"description": "Give up after this many seconds (10–1800).",
 					},
 				},
 			},

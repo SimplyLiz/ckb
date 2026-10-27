@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -134,7 +135,7 @@ func TestTriggerReindex_NoLanguage_ReturnsIndexerUnavailable(t *testing.T) {
 	}
 
 	logger := newLogger("human")
-	err := triggerReindex(dir, ckbDir, index.TriggerStale, "", logger)
+	err := triggerReindex(context.Background(), dir, ckbDir, index.TriggerStale, "", logger)
 	if !errors.Is(err, errIndexerUnavailable) {
 		t.Errorf("err = %v, want errIndexerUnavailable", err)
 	}
@@ -211,7 +212,7 @@ mkdir -p "$(dirname "$out")"
 `)
 
 	logger := newLogger("human")
-	err := triggerReindex(dir, ckbDir, index.TriggerStale, "", logger)
+	err := triggerReindex(context.Background(), dir, ckbDir, index.TriggerStale, "", logger)
 	if err != nil {
 		t.Fatalf("triggerReindex() error = %v, want nil", err)
 	}
@@ -248,7 +249,7 @@ func TestTriggerReindex_MissingOutputFile_ReturnsError(t *testing.T) {
 	writeFakeIndexer(t, "scip-go", `exit 0`)
 
 	logger := newLogger("human")
-	err := triggerReindex(dir, ckbDir, index.TriggerStale, "", logger)
+	err := triggerReindex(context.Background(), dir, ckbDir, index.TriggerStale, "", logger)
 	if err == nil {
 		t.Fatal("triggerReindex() error = nil, want an error for missing output file")
 	}
