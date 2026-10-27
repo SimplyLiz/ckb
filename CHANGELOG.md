@@ -125,6 +125,11 @@ CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
   back to the old directory walk, which does not read `.gitignore`; use
   `backends.treesitter.exclude` there. Dot-directories, `node_modules`,
   `vendor` and `__pycache__` are still skipped in both modes.
+- `ckb index` (and the MCP `reindex` tool) reported "Index is up to date.
+  Nothing to do." when the incremental tracking tables were intact but
+  `index.scip` itself had been deleted — leaving metadata that claimed a
+  current index while no index existed. A missing index file now forces a
+  full rebuild.
 
 ### Added — Claude Code plugin
 
