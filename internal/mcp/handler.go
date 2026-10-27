@@ -374,6 +374,8 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 		}, nil
 	}
 
+	s.refreshIndexIfChanged(toolName)
+
 	toolStart := time.Now()
 	result, err := handler(toolParams)
 	if err != nil {

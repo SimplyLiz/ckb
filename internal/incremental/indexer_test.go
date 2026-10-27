@@ -118,8 +118,13 @@ func TestNeedsFullReindex_NoIndex(t *testing.T) {
 }
 
 func TestNeedsFullReindex_WithFullIndex(t *testing.T) {
-	indexer, _, cleanup := setupTestIndexer(t)
+	indexer, tmpDir, cleanup := setupTestIndexer(t)
 	defer cleanup()
+
+	// The index file must exist for an incremental update to have anything to patch.
+	if err := os.WriteFile(filepath.Join(tmpDir, "index.scip"), nil, 0644); err != nil {
+		t.Fatalf("write index.scip: %v", err)
+	}
 
 	// HasIndex() checks if there are any files - need to add at least one
 	if err := indexer.store.SaveFileState(&IndexedFile{Path: "main.go", Hash: "abc"}); err != nil {
@@ -143,6 +148,31 @@ func TestNeedsFullReindex_WithFullIndex(t *testing.T) {
 	// Since we set a commit and schema version, it should not need full reindex
 	if needs {
 		t.Errorf("expected NeedsFullReindex=false after setup, got true with reason: %q", reason)
+	}
+}
+
+// Tracking tables intact but index.scip gone (deleted by hand): incremental
+// has nothing to patch and must not report "up to date".
+func TestNeedsFullReindex_IndexFileMissing(t *testing.T) {
+	indexer, _, cleanup := setupTestIndexer(t)
+	defer cleanup()
+
+	if err := indexer.store.SaveFileState(&IndexedFile{Path: "main.go", Hash: "abc"}); err != nil {
+		t.Fatalf("SaveFileState failed: %v", err)
+	}
+	if err := indexer.store.SetIndexStateFull(); err != nil {
+		t.Fatalf("SetIndexStateFull failed: %v", err)
+	}
+	if err := indexer.store.SetLastIndexedCommit("abc123"); err != nil {
+		t.Fatalf("SetLastIndexedCommit failed: %v", err)
+	}
+	if err := indexer.store.SetMetaInt(MetaKeySchemaVersion, int64(CurrentSchemaVersion)); err != nil {
+		t.Fatalf("SetMetaInt failed: %v", err)
+	}
+
+	needs, reason := indexer.NeedsFullReindex()
+	if !needs || reason != "index file missing" {
+		t.Errorf("NeedsFullReindex = %v, %q; want true, \"index file missing\"", needs, reason)
 	}
 }
 
@@ -452,8 +482,12 @@ func TestIndexState_DirtyModifiers(t *testing.T) {
 }
 
 func TestNeedsFullReindex_NoCommit_NonGitRepo(t *testing.T) {
-	indexer, _, cleanup := setupTestIndexer(t)
+	indexer, tmpDir, cleanup := setupTestIndexer(t)
 	defer cleanup()
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "index.scip"), nil, 0644); err != nil {
+		t.Fatalf("write index.scip: %v", err)
+	}
 
 	// Set up an index without commit (but not a git repo)
 	if err := indexer.store.SaveFileState(&IndexedFile{Path: "main.go", Hash: "abc"}); err != nil {

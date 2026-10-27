@@ -72,6 +72,11 @@ type MCPServer struct {
 	engineLoader func() (*query.Engine, error)
 	engineOnce   sync.Once
 	engineErr    error
+
+	// reindex tool: injected by cmd/ckb (see ReindexRunner), nil otherwise;
+	// one run per repo at a time.
+	reindexRunner ReindexRunner
+	reindexGuard  reindexGuard
 }
 
 // NewMCPServer creates a new MCP server in legacy single-engine mode
@@ -201,6 +206,43 @@ func NewMCPServerWithRegistry(version string, registry *repos.Registry, logger *
 	server.updateToolsetHash()
 
 	return server
+}
+
+// loadedEngine returns the active engine if one has already been built, nil
+// otherwise. Unlike engine() it never triggers the lazy load: an engine that
+// does not exist yet cannot be holding a stale index.
+func (s *MCPServer) loadedEngine() *query.Engine {
+	if s.legacyEngine != nil {
+		return s.legacyEngine
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.activeRepoPath != "" {
+		if entry, ok := s.engines[s.activeRepoPath]; ok {
+			return entry.engine
+		}
+	}
+	return nil
+}
+
+// refreshIndexIfChanged picks up an index that 'ckb index' rewrote while this
+// server was running (#134). One os.Stat per tool call when nothing changed.
+// The reindex tool is skipped: it does its own reload and reports it.
+func (s *MCPServer) refreshIndexIfChanged(toolName string) {
+	if toolName == "reindex" {
+		return
+	}
+	eng := s.loadedEngine()
+	if eng == nil {
+		return
+	}
+	reloaded, err := eng.EnsureSCIPLoaded(context.Background())
+	switch {
+	case err != nil:
+		s.logger.Warn("SCIP index changed on disk but reloading it failed", "error", err.Error())
+	case reloaded:
+		s.logger.Info("Reloaded SCIP index that changed on disk", "tool", toolName)
+	}
 }
 
 // engine returns the current engine (for backward compatibility with tool handlers)
@@ -474,6 +516,7 @@ func (s *MCPServer) CallTool(name string, params map[string]interface{}) (*envel
 	if !exists {
 		return nil, fmt.Errorf("tool not found: %s", name)
 	}
+	s.refreshIndexIfChanged(name)
 	return handler(params)
 }
 

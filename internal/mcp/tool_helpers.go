@@ -30,6 +30,13 @@ func (t *ToolResponse) WithProvenance(p *query.Provenance) *ToolResponse {
 	return t
 }
 
+// WithIndexFreshness adds per-result SCIP index freshness (nil is a no-op) and
+// lowers confidence when files in the result changed since indexing.
+func (t *ToolResponse) WithIndexFreshness(f *query.IndexFreshness) *ToolResponse {
+	t.builder.WithIndexFreshness(f)
+	return t
+}
+
 // WithTruncation adds truncation info.
 func (t *ToolResponse) WithTruncation(truncated bool, shown, total int, reason string) *ToolResponse {
 	t.builder.WithTruncation(truncated, shown, total, reason)

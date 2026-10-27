@@ -102,6 +102,7 @@ var Presets = map[string][]string{
 		"getFileComplexity",  // File complexity for review
 		"listEntrypoints",    // Key entry points in changed code
 		"auditCompliance",    // Regulatory compliance audit
+		"reindex",            // Rebuild+reload the index before impact analysis on a stale index
 	},
 
 	// Refactor: core + refactoring analysis tools
@@ -132,6 +133,7 @@ var Presets = map[string][]string{
 		"listSymbols",           // v8.3: Bulk symbol listing with complexity
 		"getSymbolGraph",        // v8.3: Batch call graph
 		"analyzeStructuralPerf", // v8.5: Loop call sites in hot files
+		"reindex",               // Rebuild+reload the index before impact analysis on a stale index
 	},
 
 	// Federation: core + federation + contract tools

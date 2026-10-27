@@ -980,6 +980,13 @@ func getSourceExtensions(lang project.Language) []string {
 // Returns true if incremental succeeded (caller should return early).
 // Returns false if full reindex is needed.
 func tryIncrementalIndex(repoRoot, ckbDir string, lang project.Language) bool {
+	return tryIncrementalIndexTo(repoRoot, ckbDir, lang, os.Stdout)
+}
+
+// tryIncrementalIndexTo is tryIncrementalIndex with progress written to out
+// instead of stdout, for callers whose stdout is a protocol transport
+// (the MCP reindex tool).
+func tryIncrementalIndexTo(repoRoot, ckbDir string, lang project.Language, out io.Writer) bool {
 	dbPath := filepath.Join(ckbDir, "ckb.db")
 
 	// Check if database exists
@@ -1018,7 +1025,7 @@ func tryIncrementalIndex(repoRoot, ckbDir string, lang project.Language) bool {
 	// Check if we need full reindex
 	needsFull, reason := indexer.NeedsFullReindex()
 	if needsFull {
-		fmt.Printf("Full reindex required: %s\n", reason)
+		fmt.Fprintf(out, "Full reindex required: %s\n", reason)
 		return false
 	}
 
@@ -1033,7 +1040,7 @@ func tryIncrementalIndex(repoRoot, ckbDir string, lang project.Language) bool {
 	// Check if incremental is available for this language
 	canUse, reason := indexer.CanUseIncremental(lang)
 	if !canUse {
-		fmt.Printf("Incremental not available: %s\n", reason)
+		fmt.Fprintf(out, "Incremental not available: %s\n", reason)
 		return false
 	}
 
@@ -1044,11 +1051,11 @@ func tryIncrementalIndex(repoRoot, ckbDir string, lang project.Language) bool {
 		// Check for specific errors that should fall back to full reindex
 		if strings.Contains(err.Error(), "not supported") ||
 			strings.Contains(err.Error(), "not installed") {
-			fmt.Printf("Incremental not available: %v\n", err)
+			fmt.Fprintf(out, "Incremental not available: %v\n", err)
 			return false
 		}
-		fmt.Printf("Incremental failed: %v\n", err)
-		fmt.Println("Falling back to full reindex...")
+		fmt.Fprintf(out, "Incremental failed: %v\n", err)
+		fmt.Fprintln(out, "Falling back to full reindex...")
 		return false
 	}
 
@@ -1056,7 +1063,7 @@ func tryIncrementalIndex(repoRoot, ckbDir string, lang project.Language) bool {
 	state := indexer.GetIndexState()
 
 	// Format and display results
-	fmt.Println(incremental.FormatStats(stats, state))
+	fmt.Fprintln(out, incremental.FormatStats(stats, state))
 
 	// Update metadata so freshness check stays in sync with incremental state
 	if rs, rsErr := repostate.ComputeRepoState(repoRoot); rsErr == nil {

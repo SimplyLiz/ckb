@@ -90,47 +90,43 @@ func (e *Extractor) ExtractSource(ctx context.Context, path string, source []byt
 	return symbols, nil
 }
 
-// ExtractDirectory walks a directory and extracts all symbols.
+// ExtractDirectory extracts all symbols under root. See
+// ExtractDirectoryWithOptions for which files are visited.
 func (e *Extractor) ExtractDirectory(ctx context.Context, root string, filter func(string) bool) ([]Symbol, error) {
-	var allSymbols []Symbol
+	return e.ExtractDirectoryWithOptions(ctx, root, DirOptions{Filter: filter})
+}
 
-	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return nil //nolint:nilerr // Intentionally skip walk errors and continue
-		}
-		if info.IsDir() {
-			// Skip hidden directories and common non-source directories
-			name := info.Name()
-			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "__pycache__" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// Check if file matches filter
-		if filter != nil && !filter(path) {
-			return nil
-		}
-
-		// Check if it's a supported file type
-		ext := strings.ToLower(filepath.Ext(path))
-		if _, ok := complexity.LanguageFromExtension(ext); !ok {
-			return nil
-		}
-
-		symbols, extractErr := e.ExtractFile(ctx, path)
-		if extractErr != nil {
-			return nil //nolint:nilerr // Intentionally skip files with parse errors
-		}
-
-		allSymbols = append(allSymbols, symbols...)
-		return nil
-	})
-
+// ExtractDirectoryWithOptions extracts all symbols under root.
+//
+// When root is inside a git work tree the file list comes from
+// `git ls-files -co --exclude-standard`, so .gitignore (including nested ones)
+// is honoured. Otherwise, or if git fails, the directory is walked. In both
+// cases dot-directories, node_modules, vendor and __pycache__ are skipped and
+// opts.Exclude globs are applied.
+func (e *Extractor) ExtractDirectoryWithOptions(ctx context.Context, root string, opts DirOptions) ([]Symbol, error) {
+	files, err := listSourceFiles(ctx, root, opts)
 	if err != nil {
 		return nil, err
 	}
 
+	var allSymbols []Symbol
+	for _, p := range files {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if opts.Filter != nil && !opts.Filter(p) {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(p))
+		if _, ok := complexity.LanguageFromExtension(ext); !ok {
+			continue
+		}
+		symbols, extractErr := e.ExtractFile(ctx, p)
+		if extractErr != nil {
+			continue // Intentionally skip files with parse errors
+		}
+		allSymbols = append(allSymbols, symbols...)
+	}
 	return allSymbols, nil
 }
 

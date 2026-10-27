@@ -228,6 +228,20 @@ func (s *MCPServer) toolPrepareChange(params map[string]interface{}) (*envelope.
 
 	activeBackend := engine.ActiveBackendName()
 
+	var changeFiles []string
+	if result != nil {
+		if result.Target != nil && result.Target.Path != "" {
+			changeFiles = append(changeFiles, result.Target.Path)
+		}
+		for _, d := range result.DirectDependents {
+			changeFiles = append(changeFiles, d.File)
+		}
+		for _, t := range result.RelatedTests {
+			changeFiles = append(changeFiles, t.File)
+		}
+	}
+	indexFreshness := engine.IndexFreshnessFor(ctx, changeFiles)
+
 	// Support compact format
 	format := "full"
 	if v, ok := params["format"].(string); ok && v != "" {
@@ -236,11 +250,11 @@ func (s *MCPServer) toolPrepareChange(params map[string]interface{}) (*envelope.
 
 	if format == "compact" {
 		compact := buildMCPCompactPrepareChange(target, result, activeBackend)
-		resp := NewToolResponse().Data(compact).WithBackend(activeBackend, s.logger)
+		resp := NewToolResponse().Data(compact).WithBackend(activeBackend, s.logger).WithIndexFreshness(indexFreshness)
 		return resp.Build(), nil
 	}
 
-	resp := NewToolResponse().Data(result).WithBackend(activeBackend, s.logger)
+	resp := NewToolResponse().Data(result).WithBackend(activeBackend, s.logger).WithIndexFreshness(indexFreshness)
 	for _, dw := range engine.GetDegradationWarnings() {
 		resp.Warning(dw.Message)
 	}

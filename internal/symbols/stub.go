@@ -51,6 +51,11 @@ func (e *Extractor) ExtractDirectory(ctx context.Context, root string, filter fu
 	return nil, nil
 }
 
+// ExtractDirectoryWithOptions returns empty when CGO is not available.
+func (e *Extractor) ExtractDirectoryWithOptions(ctx context.Context, root string, opts DirOptions) ([]Symbol, error) {
+	return nil, nil
+}
+
 // IsAvailable returns whether symbol extraction is available.
 func IsAvailable() bool {
 	return false

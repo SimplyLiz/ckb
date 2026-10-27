@@ -38,6 +38,54 @@ CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
   Code transcript (tokens by class, turns, tool calls, files read) with the
   ledger rows of the same session into one record, and compares two. Produces
   neutral deltas; nothing is labeled "tokens saved".
+- `backends.treesitter.exclude` in `.ckb/config.json`: a list of globs the
+  tree-sitter symbol fallback (used by `searchSymbols` when no SCIP index is
+  loaded) must not index. Globs are matched against the repo-relative path with
+  `/` separators. Two forms are supported: `dir/**` (the directory and
+  everything below it, compared on whole path segments, so `build/**` does not
+  match `builder/`) and anything else is a Go `path.Match` pattern against the
+  full path (`*` does not cross `/`, so use `src/*.min.js`, not `*.min.js`, for
+  nested files). No leading `**`, no negation. Invalid patterns are rejected at
+  config load.
+- **Per-result index freshness in SCIP-backed responses.** `findReferences`,
+  `analyzeImpact`, `prepareChange`, `getCallGraph` and `findDeadCode` now say
+  whether the loaded SCIP index is stale *for this query*, so you no longer have
+  to call `getStatus` first. `meta.indexFreshness`:
+  ```json
+  "indexFreshness": {
+    "indexedCommit": "75d7ab3",
+    "commitsBehind": 3,
+    "changedSinceIndex": ["src/lib/cv/store.ts"],
+    "affectsResult": true,
+    "hint": "1 result file(s) changed since indexing — call reindex for exact results"
+  }
+  ```
+  `changedSinceIndex` is every file changed (committed, uncommitted or
+  untracked) since the indexed commit, capped at 50 (`changedSinceIndexTruncated`
+  when cut). `affectsResult` is true only when one of those files appears in the
+  result; then `meta.confidence.score` is multiplied by 0.7. An old index over
+  code that has not changed keeps its confidence. If the index records no
+  commit, `indexedCommit` is empty and the hint says freshness cannot be
+  determined. The block is omitted when SCIP did not answer.
+  When the indexer records no commit in the SCIP metadata (scip-typescript
+  does not), the commit `ckb index` wrote to `.ckb/index-meta.json` is used,
+  so `indexedCommit` is not empty for TypeScript repos.
+- **MCP `reindex` builds and loads the index.** It used to answer with
+  guidance ("run `ckb index` in your terminal") and `skipped` whenever the
+  file on disk looked fresh — even when the running server had nothing loaded.
+  It now runs the `ckb index` code path in-process (incremental where the
+  language supports it, else full; same plan builder, lock and metadata as the
+  CLI) with a timeout (`timeoutSeconds`, default 300), then reloads the index
+  into the running engine. Returns `status` `reindexed` | `reloaded` (file was
+  fresh, server had not loaded it) | `skipped` (fresh and loaded; pass
+  `scope: "full"` to rebuild anyway) | `busy` (another run in progress for
+  this repo, or the index lock is held) | `failed` | `action_required` (no
+  indexer, or repo above the automatic size threshold), plus `mode`,
+  `durationMs`, `symbols`, `documents`, `commitsBehindBefore`. The tool is
+  now in the `review` and `refactor` presets as well as `ops`, since that is
+  where the impact tools that need a current index live. `getStatus.index`
+  gains `loaded` and reports `fresh: false` when the file on disk is not what
+  the server serves.
 
 ### Fixed
 
@@ -52,6 +100,39 @@ CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
   It does now.
 - Working-tree reviewer suggestions no longer list git's "not committed yet"
   pseudo-author.
+- A running `ckb mcp` / `ckb serve` now picks up an index that `ckb index`
+  built or rebuilt after it started ([#134](https://github.com/SimplyLiz/ckb/issues/134)).
+  The engine compares the index file's size and mtime with what it loaded
+  (one `os.Stat` before each tool call and in `getStatus`) and reloads on a
+  change, clearing caches and refreshing FTS; concurrent requests share one
+  reload. Before, a plain `ckb mcp` served whatever it loaded at startup — for
+  a fresh project no index at all — until the client reconnected, while
+  `getStatus` reported the index as fresh.
+- `findReferences` reported `totalCount` capped at twice the requested limit
+  (10 for `limit: 5` on a 17-reference symbol), so agents sized blast radius
+  from a number that was really the fetch cap. The SCIP adapter now counts
+  references without the cap and the engine reports the real total;
+  `searchSymbols` sets `totalIsLowerBound` when a backend stopped at its cap.
+- `getStatus` reported a configured but idle LSP server as "No servers
+  running" with a remediation to edit a config that was already right, and
+  `overallHealth` went `degraded`. LSP servers start on first use; status now
+  lists configured servers per language ("typescript: configured, starts on
+  demand", "running", or "gopls not found on PATH") and only reports the
+  backend unavailable when no configured binary is on PATH.
+- `searchSymbols` without a SCIP index no longer returns symbols from
+  git-ignored directories such as `dist/` or `build/` (minified bundles ranked
+  ahead of real `src/` symbols in Next.js repos). The tree-sitter fallback now
+  lists files with `git ls-files -co --exclude-standard` when the repo is a git
+  work tree, so nested `.gitignore` files are honoured and untracked files that
+  are not ignored are still searched. Outside git (or if git fails) it falls
+  back to the old directory walk, which does not read `.gitignore`; use
+  `backends.treesitter.exclude` there. Dot-directories, `node_modules`,
+  `vendor` and `__pycache__` are still skipped in both modes.
+- `ckb index` (and the MCP `reindex` tool) reported "Index is up to date.
+  Nothing to do." when the incremental tracking tables were intact but
+  `index.scip` itself had been deleted — leaving metadata that claimed a
+  current index while no index existed. A missing index file now forces a
+  full rebuild.
 
 ### Added — Claude Code plugin
 

@@ -254,13 +254,25 @@ func (s *MCPServer) getIndexStaleness() map[string]interface{} {
 	}
 
 	staleness := meta.GetStaleness(repoRoot)
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"exists":        true,
 		"fresh":         !staleness.IsStale,
 		"reason":        staleness.Reason,
 		"indexAge":      staleness.IndexAge,
 		"commitsBehind": staleness.CommitsBehind,
 	}
+
+	// Metadata describes the file on disk; "fresh" is only true if the
+	// running engine is actually serving it (#134).
+	if sb := s.engine().GetScipBackend(); sb != nil {
+		loaded := sb.IsAvailable()
+		result["loaded"] = loaded
+		if !loaded && !staleness.IsStale {
+			result["fresh"] = false
+			result["reason"] = "index file not loaded by the running server"
+		}
+	}
+	return result
 }
 
 // toolDoctor implements the doctor tool
@@ -573,6 +585,9 @@ func (s *MCPServer) toolSearchSymbols(params map[string]interface{}) (*envelope.
 		"symbols":    symbols,
 		"totalCount": searchResp.TotalCount,
 	}
+	if searchResp.TotalIsLowerBound {
+		data["totalIsLowerBound"] = true
+	}
 
 	// Record wide-result metrics
 	responseBytes := MeasureJSONSize(data)
@@ -725,10 +740,18 @@ func (s *MCPServer) toolFindReferences(params map[string]interface{}) (*envelope
 		ExecutionMs:     timer.ElapsedMs(),
 	})
 
+	refFiles := make([]string, 0, len(refsResp.References))
+	for _, r := range refsResp.References {
+		if r.Location != nil {
+			refFiles = append(refFiles, r.Location.FileId)
+		}
+	}
+
 	return NewToolResponse().
 		Data(data).
 		WithProvenance(refsResp.Provenance).
 		WithTruncation(refsResp.Truncated, len(refs), refsResp.TotalCount, "max-references").
+		WithIndexFreshness(s.engine().IndexFreshnessFor(ctx, refFiles)).
 		Build(), nil
 }
 
@@ -1170,10 +1193,22 @@ func (s *MCPServer) toolAnalyzeImpact(params map[string]interface{}) (*envelope.
 
 	eng := s.engine()
 	activeBackend := eng.ActiveBackendName()
+	var impactFiles []string
+	if impactResp.Symbol != nil && impactResp.Symbol.Location != nil {
+		impactFiles = append(impactFiles, impactResp.Symbol.Location.FileId)
+	}
+	for _, items := range [][]query.ImpactItem{impactResp.DirectImpact, impactResp.TransitiveImpact} {
+		for _, item := range items {
+			if item.Location != nil {
+				impactFiles = append(impactFiles, item.Location.FileId)
+			}
+		}
+	}
 	resp := NewToolResponse().
 		Data(data).
 		WithProvenance(impactResp.Provenance).
-		WithBackend(activeBackend, s.logger)
+		WithBackend(activeBackend, s.logger).
+		WithIndexFreshness(eng.IndexFreshnessFor(ctx, impactFiles))
 	for _, w := range lipWarnings {
 		resp.Warning(w)
 	}
@@ -1513,9 +1548,17 @@ func (s *MCPServer) toolGetCallGraph(params map[string]interface{}) (*envelope.R
 		ExecutionMs:     timer.ElapsedMs(),
 	})
 
+	nodeFiles := make([]string, 0, len(resp.Nodes))
+	for _, n := range resp.Nodes {
+		if n.Location != nil {
+			nodeFiles = append(nodeFiles, n.Location.FileId)
+		}
+	}
+
 	return NewToolResponse().
 		Data(resp).
 		WithProvenance(resp.Provenance).
+		WithIndexFreshness(s.engine().IndexFreshnessFor(ctx, nodeFiles)).
 		Build(), nil
 }
 

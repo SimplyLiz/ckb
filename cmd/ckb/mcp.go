@@ -201,6 +201,12 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		return getEngine(root, log)
 	}, logger)
 
+	// The reindex tool builds the index in-process with the same plan
+	// 'ckb index' uses; the plan builder lives in this package, not in mcp.
+	server.SetReindexRunner(func(ctx context.Context, repoRoot string, scope mcp.ReindexScope) (*mcp.ReindexRunInfo, error) {
+		return runReindexForMCP(ctx, repoRoot, scope, log)
+	})
+
 	// Apply preset configuration
 	if err := server.SetPreset(mcpPreset); err != nil {
 		return fmt.Errorf("failed to set preset: %w", err)
@@ -285,6 +291,10 @@ var errIndexerUnavailable = errors.New("no usable SCIP indexer for this project"
 // background goroutine — that path requires an explicit 'ckb index --scip'.
 var errRepoTooLarge = errors.New("repo exceeds automatic SCIP indexing threshold")
 
+// errIndexLocked means another process holds the .ckb index lock: someone
+// else is indexing this repo right now, so there is nothing to do but wait.
+var errIndexLocked = errors.New("index lock held by another process")
+
 // watchState tracks consecutive-failure backoff for runWatchLoop so a
 // persistently broken indexer doesn't retry an identical failure every
 // tick forever.
@@ -365,8 +375,12 @@ func watchTick(repoRoot, ckbDir string, interval time.Duration, state *watchStat
 	state.lastAttempt = time.Now()
 	logger.Info("Index stale, triggering reindex", "trigger", string(trigger), "reason", reason)
 
-	err := triggerReindex(repoRoot, ckbDir, trigger, triggerInfo, logger)
+	err := triggerReindex(context.Background(), repoRoot, ckbDir, trigger, triggerInfo, logger)
 	switch {
+	case errors.Is(err, errIndexLocked):
+		// Another process is indexing; its result shows up on the next tick.
+		return
+
 	case err == nil:
 		state.consecutiveFailures = 0
 		// The engine read its SCIP index when it was built; without this the
@@ -395,6 +409,37 @@ func watchTick(repoRoot, ckbDir string, interval time.Duration, state *watchStat
 				"failures", state.consecutiveFailures)
 			state.disabled = true
 		}
+	}
+}
+
+// runReindexForMCP is the ReindexRunner behind the MCP reindex tool: the
+// 'ckb index' code path without stdout (stdout is the JSON-RPC transport).
+// Incremental first where the language supports it (unless scope is full),
+// then the full build via triggerReindex — the same plan builder, lock and
+// metadata handling the watch loop uses. Sentinel errors the tool should
+// turn into guidance rather than a failure are wrapped accordingly.
+func runReindexForMCP(ctx context.Context, repoRoot string, scope mcp.ReindexScope, logger *slog.Logger) (*mcp.ReindexRunInfo, error) {
+	ckbDir := filepath.Join(repoRoot, ".ckb")
+
+	if scope != mcp.ReindexFull {
+		if lang, ok := watchDetectLanguage(repoRoot); ok && project.SupportsIncrementalIndexing(lang) {
+			if tryIncrementalIndexTo(repoRoot, ckbDir, lang, io.Discard) {
+				return &mcp.ReindexRunInfo{Mode: "incremental"}, nil
+			}
+			logger.Debug("reindex: incremental not possible, running full build")
+		}
+	}
+
+	err := triggerReindex(ctx, repoRoot, ckbDir, index.TriggerManual, "mcp reindex", logger)
+	switch {
+	case err == nil:
+		return &mcp.ReindexRunInfo{Mode: "full"}, nil
+	case errors.Is(err, errIndexerUnavailable), errors.Is(err, errRepoTooLarge):
+		return nil, fmt.Errorf("%w: %v", mcp.ErrReindexNotPossible, err)
+	case errors.Is(err, errIndexLocked):
+		return nil, mcp.ErrReindexLocked
+	default:
+		return nil, err
 	}
 }
 
@@ -449,7 +494,7 @@ func watchDetectLanguage(repoRoot string) (project.Language, bool) {
 // bundle-aware prefix, PHP's prerequisite check, and a custom
 // scip.indexPath's --output flag are never missed here the way a
 // hand-rolled `indexer.Command` would miss them.
-func triggerReindex(repoRoot, ckbDir string, trigger index.RefreshTrigger, triggerInfo string, logger *slog.Logger) error {
+func triggerReindex(ctx context.Context, repoRoot, ckbDir string, trigger index.RefreshTrigger, triggerInfo string, logger *slog.Logger) error {
 	lang, ok := watchDetectLanguage(repoRoot)
 	if !ok {
 		return errIndexerUnavailable
@@ -481,9 +526,8 @@ func triggerReindex(repoRoot, ckbDir string, trigger index.RefreshTrigger, trigg
 	// Acquire lock
 	lock, err := index.AcquireLock(ckbDir)
 	if err != nil {
-		// Another process is indexing, skip
 		logger.Debug("Skipping reindex, locked by another process")
-		return nil
+		return errIndexLocked
 	}
 	defer lock.Release()
 
@@ -494,7 +538,7 @@ func triggerReindex(repoRoot, ckbDir string, trigger index.RefreshTrigger, trigg
 		return errIndexerUnavailable
 	}
 
-	cmd := exec.Command(parts[0], parts[1:]...) // #nosec G204 //nolint:gosec // command from trusted indexer config
+	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...) // #nosec G204 //nolint:gosec // command from trusted indexer config
 	cmd.Dir = plan.IndexerDir
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
