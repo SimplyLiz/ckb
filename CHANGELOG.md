@@ -52,6 +52,14 @@ CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
   It does now.
 - Working-tree reviewer suggestions no longer list git's "not committed yet"
   pseudo-author.
+- A running `ckb mcp` / `ckb serve` now picks up an index that `ckb index`
+  built or rebuilt after it started ([#134](https://github.com/SimplyLiz/ckb/issues/134)).
+  The engine compares the index file's size and mtime with what it loaded
+  (one `os.Stat` before each tool call and in `getStatus`) and reloads on a
+  change, clearing caches and refreshing FTS; concurrent requests share one
+  reload. Before, a plain `ckb mcp` served whatever it loaded at startup — for
+  a fresh project no index at all — until the client reconnected, while
+  `getStatus` reported the index as fresh.
 
 ### Added — Claude Code plugin
 

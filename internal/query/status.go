@@ -47,6 +47,11 @@ type CacheStatus struct {
 func (e *Engine) GetStatus(ctx context.Context) (*StatusResponse, error) {
 	startTime := time.Now()
 
+	// Report the index that is on disk, not the one loaded at startup.
+	if _, err := e.EnsureSCIPLoaded(ctx); err != nil {
+		e.logger.Warn("failed to reload changed SCIP index", "error", err.Error())
+	}
+
 	// Get repo state
 	repoState, err := e.GetRepoState(ctx, "head")
 	if err != nil {

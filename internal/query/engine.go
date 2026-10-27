@@ -59,6 +59,11 @@ type Engine struct {
 	// concurrent use. All tree-sitter calls must hold this lock.
 	tsMu sync.Mutex
 
+	// scipReloadMu serialises SCIP reloads so that concurrent queries that
+	// all notice a changed index file share one reload instead of each
+	// parsing the index (see EnsureSCIPLoaded).
+	scipReloadMu sync.Mutex
+
 	// Cached repo state
 	repoStateMu     sync.RWMutex
 	cachedState     *RepoState
@@ -610,6 +615,36 @@ func (e *Engine) ReloadSCIP(ctx context.Context) error {
 	if e.scipAdapter == nil {
 		return nil
 	}
+	e.scipReloadMu.Lock()
+	defer e.scipReloadMu.Unlock()
+	return e.reloadSCIPLocked(ctx)
+}
+
+// EnsureSCIPLoaded reloads the SCIP index when the file on disk is not the
+// one the engine loaded — the state a long-running 'ckb mcp' or 'ckb serve'
+// is in after 'ckb index' ran in a terminal (#134). Costs one os.Stat when
+// nothing changed, so it is called before every MCP tool call and in
+// GetStatus. Concurrent callers that all see the change share one reload:
+// the mutex serialises them and the re-check after acquiring it turns the
+// late ones into no-ops. Returns true when a reload happened.
+func (e *Engine) EnsureSCIPLoaded(ctx context.Context) (bool, error) {
+	if e.scipAdapter == nil || !e.scipAdapter.IndexFileChanged() {
+		return false, nil
+	}
+	e.scipReloadMu.Lock()
+	defer e.scipReloadMu.Unlock()
+	if !e.scipAdapter.IndexFileChanged() {
+		return false, nil
+	}
+	e.logger.Info("SCIP index file changed on disk, reloading")
+	if err := e.reloadSCIPLocked(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// reloadSCIPLocked is ReloadSCIP's body; the caller holds scipReloadMu.
+func (e *Engine) reloadSCIPLocked(ctx context.Context) error {
 	if err := e.scipAdapter.Reload(); err != nil {
 		return err
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/auth"
+	"github.com/SimplyLiz/CodeMCP/internal/query"
 
 	"github.com/google/uuid"
 )
@@ -58,6 +59,22 @@ func LoggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 				"durationMs", duration.Milliseconds(),
 				"requestID", reqID,
 			)
+		})
+	}
+}
+
+// IndexRefreshMiddleware picks up a SCIP index that 'ckb index' rewrote while
+// this server was running (#134): one os.Stat per request when nothing
+// changed, a single shared reload when it did.
+func IndexRefreshMiddleware(engine *query.Engine, logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if engine != nil {
+				if _, err := engine.EnsureSCIPLoaded(r.Context()); err != nil {
+					logger.Warn("SCIP index changed on disk but reloading it failed", "error", err.Error())
+				}
+			}
+			next.ServeHTTP(w, r)
 		})
 	}
 }

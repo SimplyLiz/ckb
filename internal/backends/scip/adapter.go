@@ -30,6 +30,34 @@ type SCIPAdapter struct {
 
 	// freshness tracks index freshness
 	freshness *IndexFreshness
+
+	// loadedStamp is the size/mtime of the index file the loaded index came
+	// from, so a long-running server can notice when 'ckb index' rewrote it
+	// (IndexFileChanged). failedStamp is the stamp of the last file that
+	// failed to load — a half-written or corrupt file is not retried until it
+	// changes again.
+	loadedStamp fileStamp
+	failedStamp fileStamp
+}
+
+// fileStamp identifies one version of a file on disk cheaply (os.Stat, no
+// hashing). exists=false is the stamp of a missing file.
+type fileStamp struct {
+	exists  bool
+	size    int64
+	modTime time.Time
+}
+
+func statFile(path string) fileStamp {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{}
+	}
+	return fileStamp{exists: true, size: fi.Size(), modTime: fi.ModTime()}
+}
+
+func (a fileStamp) equal(b fileStamp) bool {
+	return a.exists == b.exists && a.size == b.size && a.modTime.Equal(b.modTime)
 }
 
 // NewSCIPAdapter creates a new SCIP adapter
@@ -94,6 +122,26 @@ func (s *SCIPAdapter) IsAvailable() bool {
 	return true
 }
 
+// IndexFileChanged reports whether the index file on disk is a different
+// version from the one this adapter loaded (or no index is loaded but a file
+// now exists): the situation after 'ckb index' ran in another process while
+// this one kept serving. One os.Stat, no I/O on the index itself. A file that
+// already failed to load is not reported again until it changes, and a
+// deleted file is not a change — IsAvailable covers that.
+func (s *SCIPAdapter) IndexFileChanged() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	cur := statFile(s.indexPath)
+	if !cur.exists {
+		return false
+	}
+	if cur.equal(s.loadedStamp) || cur.equal(s.failedStamp) {
+		return false
+	}
+	return true
+}
+
 // Capabilities returns the capabilities supported by SCIP
 func (s *SCIPAdapter) Capabilities() []string {
 	return []string{
@@ -135,12 +183,20 @@ func (s *SCIPAdapter) LoadIndex() error {
 		"path", s.indexPath,
 	)
 
+	// Stat before parsing: if the indexer rewrites the file while we parse it,
+	// the post-write stamp differs from this one and the next
+	// IndexFileChanged check triggers another load.
+	stamp := statFile(s.indexPath)
+
 	index, err := loadSCIPIndexInternal(s.indexPath, s.derivedCachePath())
 	if err != nil {
+		s.failedStamp = stamp
 		return err
 	}
 
 	s.index = index
+	s.loadedStamp = stamp
+	s.failedStamp = fileStamp{}
 
 	// Pre-warm CallerIndex in background so the first FindCallers / getCallGraph
 	// call is instant instead of blocking for several seconds on a large repo.
