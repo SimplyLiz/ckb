@@ -159,6 +159,15 @@ The two skill texts now live in `claude-plugin/skills/` and are embedded into
 npx fallback: they shell out to `ckb`, which users who set up via
 `npx @tastehub/ckb setup` never had on PATH, so the commands failed silently.
 
+### Changed
+
+- Go toolchain 1.26.6 → 1.26.10 (`go.mod`; CI and release builds read it via
+  `go-version-file`). Picks up the stdlib fixes in `net/http`, `net/textproto`,
+  `crypto/tls` and `crypto/x509` that govulncheck flagged as reachable. The
+  glibc floor (2.34, [#243](https://github.com/SimplyLiz/ckb/issues/243)) is
+  unaffected: it comes from the pinned `ubuntu-22.04` runners, and
+  `scripts/check-glibc-floor.go` still verifies every linux binary.
+
 ## [9.3.1] - 2026-09-13
 
 ### Fixed — linux binaries would not start on glibc < 2.39 ([#243](https://github.com/SimplyLiz/ckb/issues/243))
