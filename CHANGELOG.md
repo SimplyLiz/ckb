@@ -65,6 +65,12 @@ CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
   from a number that was really the fetch cap. The SCIP adapter now counts
   references without the cap and the engine reports the real total;
   `searchSymbols` sets `totalIsLowerBound` when a backend stopped at its cap.
+- `getStatus` reported a configured but idle LSP server as "No servers
+  running" with a remediation to edit a config that was already right, and
+  `overallHealth` went `degraded`. LSP servers start on first use; status now
+  lists configured servers per language ("typescript: configured, starts on
+  demand", "running", or "gopls not found on PATH") and only reports the
+  backend unavailable when no configured binary is on PATH.
 
 ### Added — Claude Code plugin
 
