@@ -414,3 +414,43 @@ func (idx *SCIPIndex) FindTypeReferences(symbolId string) ([]*SCIPReference, err
 
 	return typeRefs, nil
 }
+
+// CountReferences returns the number of distinct reference locations that
+// FindReferences would return for symbolId if it were not capped by
+// options.MaxResults. It applies the same filters as FindReferences (definition
+// handling) and skips context extraction and containing-symbol lookup, so it is
+// a cheap full count. MaxResults is ignored.
+func (idx *SCIPIndex) CountReferences(symbolId string, options ReferenceOptions) int {
+	type locKey struct {
+		path      string
+		line, col int
+	}
+	seen := make(map[locKey]struct{})
+
+	visit := func(doc *Document, occ *Occurrence) {
+		if determineReferenceKind(occ) == RefDefinition && !options.IncludeDefinition {
+			return
+		}
+		location := parseOccurrenceRange(occ, doc.RelativePath)
+		if location == nil {
+			return
+		}
+		seen[locKey{location.FileId, location.StartLine, location.StartColumn}] = struct{}{}
+	}
+
+	if idx.RefIndex != nil {
+		for _, occRef := range idx.RefIndex[symbolId] {
+			visit(occRef.Doc, occRef.Occ)
+		}
+	} else {
+		for _, doc := range idx.Documents {
+			for _, occ := range doc.Occurrences {
+				if occ.Symbol == symbolId {
+					visit(doc, occ)
+				}
+			}
+		}
+	}
+
+	return len(seen)
+}

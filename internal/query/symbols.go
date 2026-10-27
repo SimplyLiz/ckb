@@ -278,12 +278,15 @@ type SearchSymbolsOptions struct {
 
 // SearchSymbolsResponse is the response for searchSymbols.
 type SearchSymbolsResponse struct {
-	Symbols        []SearchResultItem `json:"symbols"`
-	TotalCount     int                `json:"totalCount"`
-	Truncated      bool               `json:"truncated"`
-	TruncationInfo *TruncationInfo    `json:"truncationInfo,omitempty"`
-	Provenance     *Provenance        `json:"provenance"`
-	Drilldowns     []output.Drilldown `json:"drilldowns,omitempty"`
+	Symbols    []SearchResultItem `json:"symbols"`
+	TotalCount int                `json:"totalCount"`
+	// TotalIsLowerBound is true when a backend stopped at its result cap, so
+	// TotalCount is the number seen, not the number that exist.
+	TotalIsLowerBound bool               `json:"totalIsLowerBound,omitempty"`
+	Truncated         bool               `json:"truncated"`
+	TruncationInfo    *TruncationInfo    `json:"truncationInfo,omitempty"`
+	Provenance        *Provenance        `json:"provenance"`
+	Drilldowns        []output.Drilldown `json:"drilldowns,omitempty"`
 }
 
 // RankingV52 contains v5.2 ranking signals for auditable, deterministic ordering.
@@ -396,6 +399,7 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 	var backendContribs []BackendContribution
 	var completeness CompletenessInfo
 	lipRanked := false // true when results already came from LIP semantic search
+	totalIsLowerBound := false
 
 	// Try FTS5 first for fast symbol search.
 	// Request more results when filters are set, since most will be excluded.
@@ -408,7 +412,11 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 	// vocabulary-mismatch misses. Falls back to the raw query when LIP is
 	// unavailable or returns nothing.
 	ftsQuery := e.expandQueryViaLIP(opts.Query)
-	ftsResults, ftsErr := e.SearchSymbolsFTS(ctx, ftsQuery, opts.Limit*ftsMultiplier)
+	ftsLimit := opts.Limit * ftsMultiplier
+	ftsResults, ftsErr := e.SearchSymbolsFTS(ctx, ftsQuery, ftsLimit)
+	if ftsErr == nil && len(ftsResults) >= ftsLimit {
+		totalIsLowerBound = true
+	}
 	if ftsErr == nil && len(ftsResults) > 0 {
 		for _, r := range ftsResults {
 			// Skip symbols with no name — they can match via documentation/signature
@@ -475,6 +483,9 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 		}
 		searchResult, err := e.scipAdapter.SearchSymbols(ctx, opts.Query, searchOpts)
 		if err == nil && searchResult != nil {
+			if len(searchResult.Symbols) >= searchOpts.MaxResults {
+				totalIsLowerBound = true
+			}
 			for _, sym := range searchResult.Symbols {
 				results = append(results, SearchResultItem{
 					StableId: sym.StableID,
@@ -701,12 +712,13 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 	drilldowns := e.generateDrilldowns(compTrunc, completeness, "", nil)
 
 	response := &SearchSymbolsResponse{
-		Symbols:        results,
-		TotalCount:     totalCount,
-		Truncated:      truncationInfo != nil,
-		TruncationInfo: truncationInfo,
-		Provenance:     provenance,
-		Drilldowns:     drilldowns,
+		Symbols:           results,
+		TotalCount:        totalCount,
+		TotalIsLowerBound: totalIsLowerBound,
+		Truncated:         truncationInfo != nil,
+		TruncationInfo:    truncationInfo,
+		Provenance:        provenance,
+		Drilldowns:        drilldowns,
 	}
 
 	// Store in cache
@@ -856,6 +868,7 @@ func (e *Engine) FindReferences(ctx context.Context, opts FindReferencesOptions)
 	var refs []ReferenceInfo
 	var backendContribs []BackendContribution
 	var completeness CompletenessInfo
+	backendTotal := 0 // uncapped count from the backend, set when SCIP answers
 
 	// Query SCIP for references
 	if e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
@@ -867,6 +880,7 @@ func (e *Engine) FindReferences(ctx context.Context, opts FindReferencesOptions)
 		}
 		refsResult, err := e.scipAdapter.FindReferences(ctx, symbolIdToQuery, refOpts)
 		if err == nil && refsResult != nil {
+			backendTotal = refsResult.TotalReferences
 			for _, ref := range refsResult.References {
 				refs = append(refs, ReferenceInfo{
 					Location: &LocationInfo{
@@ -909,16 +923,28 @@ func (e *Engine) FindReferences(ctx context.Context, opts FindReferencesOptions)
 	// Sort deterministically
 	sortReferences(refs)
 
-	// Apply limit and track truncation
+	// The backend was asked for at most Limit*2 refs, so len(refs) can be a
+	// capped subset. backendTotal is the uncapped distinct count; it is never
+	// smaller than what we actually got back, so take the max.
 	totalCount := len(refs)
+	if backendTotal > totalCount {
+		totalCount = backendTotal
+	}
+
+	// Apply limit and track truncation
 	var truncationInfo *TruncationInfo
-	if len(refs) > opts.Limit {
+	if totalCount > opts.Limit {
 		truncationInfo = &TruncationInfo{
 			Reason:        "max-refs",
 			OriginalCount: totalCount,
 			ReturnedCount: opts.Limit,
 		}
+	}
+	if len(refs) > opts.Limit {
 		refs = refs[:opts.Limit]
+	}
+	if truncationInfo != nil {
+		truncationInfo.ReturnedCount = len(refs)
 	}
 
 	// Build provenance

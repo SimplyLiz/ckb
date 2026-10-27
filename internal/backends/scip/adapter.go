@@ -366,13 +366,19 @@ func (s *SCIPAdapter) FindReferences(ctx context.Context, symbolID string, opts 
 		references[i] = s.convertToReference(scipRef)
 	}
 
+	// Real total, uncapped by MaxResults, so callers can report truncation honestly.
+	total := s.index.CountReferences(symbolID, scipOpts)
+	if total < len(references) {
+		total = len(references)
+	}
+
 	// Compute completeness
 	completeness := s.computeCompleteness()
 
 	return &backends.ReferencesResult{
 		References:      references,
 		Completeness:    completeness,
-		TotalReferences: len(references),
+		TotalReferences: total,
 	}, nil
 }
 

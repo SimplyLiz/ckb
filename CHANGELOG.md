@@ -60,6 +60,11 @@ CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
   reload. Before, a plain `ckb mcp` served whatever it loaded at startup — for
   a fresh project no index at all — until the client reconnected, while
   `getStatus` reported the index as fresh.
+- `findReferences` reported `totalCount` capped at twice the requested limit
+  (10 for `limit: 5` on a 17-reference symbol), so agents sized blast radius
+  from a number that was really the fetch cap. The SCIP adapter now counts
+  references without the cap and the engine reports the real total;
+  `searchSymbols` sets `totalIsLowerBound` when a backend stopped at its cap.
 
 ### Added — Claude Code plugin
 

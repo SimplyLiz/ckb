@@ -573,6 +573,9 @@ func (s *MCPServer) toolSearchSymbols(params map[string]interface{}) (*envelope.
 		"symbols":    symbols,
 		"totalCount": searchResp.TotalCount,
 	}
+	if searchResp.TotalIsLowerBound {
+		data["totalIsLowerBound"] = true
+	}
 
 	// Record wide-result metrics
 	responseBytes := MeasureJSONSize(data)
