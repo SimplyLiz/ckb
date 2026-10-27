@@ -31,7 +31,8 @@ func mapFile(path string) (data []byte, cleanup func(), err error) {
 		return []byte{}, func() {}, nil
 	}
 
-	data, err = unix.Mmap(int(f.Fd()), 0, int(size), unix.PROT_READ, unix.MAP_SHARED)
+	fd := int(f.Fd()) // #nosec G115 -- fd fits in int
+	data, err = unix.Mmap(fd, 0, int(size), unix.PROT_READ, unix.MAP_SHARED)
 	f.Close() // fd can be closed immediately after Mmap
 	if err != nil {
 		return nil, nil, fmt.Errorf("mmap: %w", err)
