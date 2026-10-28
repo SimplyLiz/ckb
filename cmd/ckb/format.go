@@ -625,15 +625,30 @@ func formatCallgraphHuman(resp *CallgraphResponseCLI) (string, error) {
 
 	b.WriteString(fmt.Sprintf("Nodes: %d, Edges: %d\n\n", len(resp.Nodes), len(resp.Edges)))
 
-	// Group by callers and callees based on depth
+	// Group by role, not by depth: Depth is always a non-negative distance
+	// from the root (0=root, 1=direct, 2=transitive) regardless of
+	// direction, so it can't distinguish callers from callees — Role is
+	// the field the query engine actually sets to "caller"/"callee"/
+	// "transitive"/"root" (see internal/query/navigation.go GetCallGraph).
+	// Grouping used to be `n.Depth < 0` / `n.Depth > 0`, but no code path
+	// ever emits a negative Depth, so every non-root node — callers
+	// included — fell into the ">0" (callees) bucket.
 	callers := make([]CallgraphNodeCLI, 0)
 	callees := make([]CallgraphNodeCLI, 0)
+	transitive := make([]CallgraphNodeCLI, 0)
 
 	for _, n := range resp.Nodes {
-		if n.Depth < 0 {
+		switch n.Role {
+		case "caller":
 			callers = append(callers, n)
-		} else if n.Depth > 0 {
+		case "callee":
 			callees = append(callees, n)
+		case "transitive":
+			// BFS nodes beyond depth 1 don't carry which direction they
+			// were reached from, so they can't be sorted into callers vs.
+			// callees without guessing — list them separately instead of
+			// mislabeling them as one or the other.
+			transitive = append(transitive, n)
 		}
 	}
 
@@ -655,6 +670,17 @@ func formatCallgraphHuman(resp *CallgraphResponseCLI) (string, error) {
 		}
 		if len(callees) > 15 {
 			b.WriteString(fmt.Sprintf("  ... and %d more\n", len(callees)-15))
+		}
+		b.WriteString("\n")
+	}
+
+	if len(transitive) > 0 {
+		b.WriteString("Transitive (indirect, direction not tracked):\n")
+		for _, n := range transitive[:min(15, len(transitive))] {
+			b.WriteString(fmt.Sprintf("  %s (depth %d)\n", n.Name, n.Depth))
+		}
+		if len(transitive) > 15 {
+			b.WriteString(fmt.Sprintf("  ... and %d more\n", len(transitive)-15))
 		}
 	}
 

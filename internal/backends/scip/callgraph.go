@@ -3,6 +3,8 @@ package scip
 import (
 	"sort"
 	"strings"
+
+	bindingscip "github.com/sourcegraph/scip/bindings/go/scip"
 )
 
 // DefaultMaxFunctionLines is the default maximum function length (in lines) used
@@ -564,8 +566,87 @@ func mapSCIPKind(kind int32) SymbolKind {
 	}
 }
 
-// extractSymbolName extracts a human-readable name from a SCIP symbol ID
+// extractSymbolName extracts a human-readable name from a SCIP symbol ID,
+// suitable for a call graph node label. Unlike SCIPIdentifier.GetSimpleName
+// (which returns the bare last-descriptor name, e.g. "handle"), this keeps
+// a "Type#Member" receiver prefix when the symbol is a member of a type —
+// call graph node names want that context.
+//
+// Uses the official scip bindings parser (descriptor-aware, so it handles
+// backtick-escaped names like "`<constructor>`" and dotted module paths
+// like "github.com/org/repo/pkg" correctly, unlike naive space/dot
+// splitting). Falls back to a legacy heuristic splitter for identifiers
+// that don't conform to the strict SCIP grammar (e.g. malformed/legacy
+// test fixtures using a 4-field form with no package version).
 func extractSymbolName(symbolId string) string {
+	sym, err := bindingscip.ParseSymbol(symbolId)
+	if err != nil || sym.Package == nil || len(sym.Descriptors) == 0 {
+		return legacyExtractSymbolName(symbolId)
+	}
+
+	if name := callgraphNameFromDescriptors(sym.Descriptors); name != "" {
+		return name
+	}
+
+	return legacyExtractSymbolName(symbolId)
+}
+
+// callgraphNameFromDescriptors joins a descriptor chain into a call-graph
+// node label, dropping package/module path segments (Namespace descriptors)
+// and adding back just enough of each descriptor's own suffix punctuation
+// to stay readable and unambiguous — "()." between a method and whatever
+// comes after it, "(...)" around a parameter, "#" after a type — while
+// omitting that trailing punctuation on the terminal descriptor (nobody
+// wants a call graph node literally named "buildModuleLevelResponse()."),
+// with the sole exception of a type descriptor's '#', which is part of how
+// a bare type's own symbol ID naturally ends (e.g. "Engine#").
+func callgraphNameFromDescriptors(descriptors []*bindingscip.Descriptor) string {
+	var b strings.Builder
+	for i, d := range descriptors {
+		isLast := i == len(descriptors)-1
+		switch d.Suffix {
+		case bindingscip.Descriptor_Namespace:
+			continue
+		case bindingscip.Descriptor_Type:
+			b.WriteString(d.Name)
+			b.WriteByte('#')
+		case bindingscip.Descriptor_Method:
+			b.WriteString(d.Name)
+			if !isLast {
+				b.WriteString("().")
+			}
+		case bindingscip.Descriptor_Parameter:
+			b.WriteByte('(')
+			b.WriteString(d.Name)
+			b.WriteByte(')')
+		case bindingscip.Descriptor_TypeParameter:
+			b.WriteByte('[')
+			b.WriteString(d.Name)
+			b.WriteByte(']')
+		case bindingscip.Descriptor_Meta:
+			b.WriteString(d.Name)
+			if !isLast {
+				b.WriteByte(':')
+			}
+		case bindingscip.Descriptor_Macro:
+			b.WriteString(d.Name)
+			if !isLast {
+				b.WriteByte('!')
+			}
+		default: // Descriptor_Term, Descriptor_Local
+			b.WriteString(d.Name)
+			if !isLast {
+				b.WriteByte('.')
+			}
+		}
+	}
+	return b.String()
+}
+
+// legacyExtractSymbolName is the original heuristic implementation, used as
+// a fallback when the identifier didn't parse through the strict SCIP
+// grammar.
+func legacyExtractSymbolName(symbolId string) string {
 	// SCIP symbol format: scheme ' ' package ' ' descriptor
 	// Example: "go local ... func NewEngine"
 	// We want to extract the last meaningful part

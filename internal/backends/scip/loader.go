@@ -23,9 +23,16 @@ type OccurrenceRef struct {
 }
 
 // NameEntry is a compact (name, symbolID) pair used in the sorted NameIndex.
+//
+// Alias is the container-qualified form ("Container.member") when the symbol
+// has a container, mirroring the FTS signature alias in
+// convertSymbolToFTSRecord — it lets a member stay findable by searching its
+// container's name (e.g. "Handler" finds "Handler#handle") on the non-FTS
+// SearchSymbols path too.
 type NameEntry struct {
-	Name string
-	ID   string
+	Name  string
+	Alias string
+	ID    string
 }
 
 // SCIPIndex represents a loaded SCIP index
@@ -414,7 +421,11 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 		// produce non-deterministic output since the map iteration order is random.
 		nameIdx := make([]NameEntry, 0, len(scipIndex.ConvertedSymbols))
 		for id, sym := range scipIndex.ConvertedSymbols {
-			nameIdx = append(nameIdx, NameEntry{Name: sym.Name, ID: id})
+			alias := ""
+			if sym.ContainerName != "" {
+				alias = sym.ContainerName + "." + sym.Name
+			}
+			nameIdx = append(nameIdx, NameEntry{Name: sym.Name, Alias: alias, ID: id})
 		}
 		sort.Slice(nameIdx, func(a, b int) bool {
 			if nameIdx[a].Name != nameIdx[b].Name {

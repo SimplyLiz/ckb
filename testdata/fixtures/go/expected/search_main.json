@@ -8,19 +8,26 @@
       "name": "Handler"
     },
     {
-      "file": "pkg/server.go",
-      "kind": "function",
-      "line": 22,
-      "moduleId": "pkg",
-      "name": "Server#RunServer"
-    },
-    {
       "file": "main.go",
       "kind": "function",
       "line": 12,
       "moduleId": ".",
       "name": "main"
+    },
+    {
+      "file": "pkg/server.go",
+      "kind": "method",
+      "line": 22,
+      "moduleId": "pkg",
+      "name": "RunServer"
+    },
+    {
+      "file": "main.go",
+      "kind": "namespace",
+      "line": 0,
+      "moduleId": ".",
+      "name": "fixture"
     }
   ],
-  "total": 3
+  "total": 4
 }

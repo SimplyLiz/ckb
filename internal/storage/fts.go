@@ -389,6 +389,19 @@ func (m *FTSManager) listAll(ctx context.Context, limit int) ([]FTSSearchResult,
 }
 
 // searchExact performs exact phrase match
+//
+// The unicode61 tokenizer FTS5 uses under the hood folds case, so "Model"
+// and "model" produce identical tokens and bm25() alone can't tell them
+// apart — ties break on SQLite's internal row order, which happens to put
+// the wrong symbol first as often as the right one (see fix/evidence-output-bugs:
+// TS fixture surfaces the field `model` before the class `Model`, Go
+// happens not to). We break that tie explicitly, before bm25 and before
+// the caller's LIMIT ever gets applied, so the correct candidate isn't
+// truncated away by the time Go-side ranking (rankSearchResults) runs:
+//  1. case-sensitive exact name match sorts first,
+//  2. among remaining case-fold-only matches, type-like kinds
+//     (class/interface/struct/type) sort ahead of properties/parameters/etc,
+//  3. bm25 breaks any remaining ties.
 func (m *FTSManager) searchExact(ctx context.Context, query string, limit int) ([]FTSSearchResult, error) {
 	// Use FTS5 phrase query with MATCH
 	ftsQuery := fmt.Sprintf(`"%s"`, escapeFTS5Query(query))
@@ -400,9 +413,12 @@ func (m *FTSManager) searchExact(ctx context.Context, query string, limit int) (
 		FROM symbols_fts f
 		JOIN symbols_fts_content c ON f.rowid = c.rowid
 		WHERE symbols_fts MATCH ?
-		ORDER BY rank
+		ORDER BY
+			(c.name <> ?),
+			CASE WHEN lower(c.name) = lower(?) AND c.kind NOT IN ('class','interface','struct','type') THEN 1 ELSE 0 END,
+			rank
 		LIMIT ?
-	`, ftsQuery, limit)
+	`, ftsQuery, query, query, limit)
 	if err != nil {
 		return nil, err
 	}
