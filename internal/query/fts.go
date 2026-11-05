@@ -49,6 +49,9 @@ func (e *Engine) PopulateFTSFromSCIP(ctx context.Context) error {
 	if err := ftsManager.BulkInsertFunc(ctx, func(flush func([]storage.SymbolFTSRecord) error) error {
 		chunk := make([]storage.SymbolFTSRecord, 0, ftsChunkSize)
 		for _, sym := range index.Symbols {
+			if scip.IsLocalSymbol(sym.Symbol) {
+				continue
+			}
 			chunk = append(chunk, convertSymbolToFTSRecord(sym, index))
 			if len(chunk) >= ftsChunkSize {
 				if err := flush(chunk); err != nil {
@@ -246,7 +249,7 @@ func (e *Engine) symbolsForFiles(_ context.Context, filePaths []string, limitPer
 
 	rows, err := e.db.Query(
 		`SELECT id, name, kind, COALESCE(documentation,''), COALESCE(signature,''), file_path, COALESCE(language,'')
-		 FROM symbols_fts_content WHERE file_path IN (`+placeholders+`)`,
+		 FROM symbols_fts_content WHERE file_path IN (`+placeholders+`) AND id NOT LIKE 'local %'`,
 		args...)
 	if err != nil {
 		return nil

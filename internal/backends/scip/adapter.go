@@ -316,10 +316,13 @@ func (s *SCIPAdapter) SearchSymbols(ctx context.Context, query string, opts back
 		)
 	}
 
-	// Convert results
-	symbols := make([]backends.SymbolResult, len(scipSymbols))
-	for i, scipSym := range scipSymbols {
-		symbols[i] = *s.convertToSymbolResult(scipSym)
+	// Convert results. A local means nothing to whoever is searching a repo.
+	symbols := make([]backends.SymbolResult, 0, len(scipSymbols))
+	for _, scipSym := range scipSymbols {
+		if IsLocalSymbol(scipSym.StableId) {
+			continue
+		}
+		symbols = append(symbols, *s.convertToSymbolResult(scipSym))
 	}
 
 	// Compute completeness

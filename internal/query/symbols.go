@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends"
+	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/complexity"
 	"github.com/SimplyLiz/CodeMCP/internal/compression"
 	"github.com/SimplyLiz/CodeMCP/internal/errors"
@@ -445,6 +446,10 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 			// Skip symbols with no name — they can match via documentation/signature
 			// in FTS5 but are meaningless as search results.
 			if r.Name == "" {
+				continue
+			}
+			// A table populated by an older version still has locals in it.
+			if scip.IsLocalSymbol(r.ID) {
 				continue
 			}
 			// Filter by kinds if specified

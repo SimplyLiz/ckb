@@ -321,12 +321,18 @@ func DefinitionBounds(doc *Document) []DefinitionBound {
 	return bounds
 }
 
+// IsLocalSymbol reports whether a symbol is a SCIP local ("local 12"): visible in
+// one document only, and with an ID that means nothing outside it.
+func IsLocalSymbol(symbolID string) bool {
+	return strings.HasPrefix(symbolID, "local ")
+}
+
 // IsChangeableDefinition reports whether a symbol is the kind of definition a
 // code change can belong to. Locals, parameters and type parameters are part of
 // the definition around them; a package or namespace is not changed because a
 // line inside it was.
 func IsChangeableDefinition(symbolID string) bool {
-	if symbolID == "" || strings.HasPrefix(symbolID, "local ") {
+	if symbolID == "" || IsLocalSymbol(symbolID) {
 		return false
 	}
 	sym, err := bindingscip.ParseSymbol(symbolID)
