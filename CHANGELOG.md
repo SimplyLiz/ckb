@@ -4,6 +4,39 @@ All notable changes to CKB will be documented in this file.
 
 ## [Unreleased]
 
+## [9.4.0] - 2026-11-05
+
+### Fixed — first contact with a repo
+
+- **`ckb changes` and `assessChange` no longer call a change low risk when they
+  could not look.** Without a SCIP index there is no consumer graph, so "0
+  consumers" meant nobody checked, and the headline still read `Risk: LOW`. The
+  risk level is now `not_assessed` (`Risk: NOT ASSESSED`, "downstream consumers
+  unknown") unless another backend did find consumers. **`riskScore.level`,
+  `summary.estimatedRisk` and `blastRadius.riskLevel` can now hold this value**;
+  anything switching on them has to handle it.
+- **Nested projects index.** With a manifest in a subdirectory
+  (`engine/Cargo.toml`, `svc/go.mod`) the indexer wrote `engine/index.scip` while
+  CKB checked the repo root, so `ckb index` failed with "index.scip was not
+  created". The index now lands at the configured path and its document paths
+  are rewritten to be repo-relative, so references resolve. This goes through
+  `ckb index`, `--watch` and MCP `reindex`.
+- **Nested projects always get a full index.** Incremental indexers run from the
+  repo root, found no project there and reported an empty success over a stale
+  index. Not fixed yet: the daemon's refresh path (`internal/daemon/refresh.go`)
+  has its own incremental and full runs and does not handle nested projects.
+- **The update box only goes to a terminal.** Agents and scripts capture stderr
+  with the result and were filtering the box out of every call by hand.
+
+### Changed — the automatic first index stays cheap
+
+`ckb mcp` builds a first index in the background in a repo that has none. The
+index lock is per repo, so every session opened in a different repo would have
+started an indexer at the same time. Now only one first index runs per machine
+(`~/.ckb/first-index/`); a session that finds it taken skips its build and the
+next session in that repo tries again. Linked git worktrees are neither
+initialized nor indexed automatically; `ckb index` there still works.
+
 ### Security — command injection in the review coupling check
 
 `ckb review` looked up when co-changed files were last modified by writing

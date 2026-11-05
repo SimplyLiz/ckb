@@ -161,7 +161,7 @@ Pick one of `ckb setup` and the plugin, not both — otherwise the server starts
 
 **Token efficiency shown at startup:**
 ```
-CKB MCP Server v9.3.1
+CKB MCP Server v9.4.0
   Active tools: 25 / 111 (23%)
   Estimated context: ~4k tokens
   Preset: core

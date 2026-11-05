@@ -1,7 +1,7 @@
 {
   "name": "ckb",
   "displayName": "CKB · Code Knowledge Backend",
-  "version": "9.3.1",
+  "version": "9.4.0",
   "description": "Before your agent changes code, CKB tells it what can break. Impact analysis, references, ownership and PR review from SCIP, LSP and git history, plus /ckb:review and /ckb:audit.",
   "author": {
     "name": "SimplyLiz",
