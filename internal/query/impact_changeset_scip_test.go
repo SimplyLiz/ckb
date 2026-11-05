@@ -524,3 +524,15 @@ func TestAnalyzeChangeSet_CommentOnlyHasNoBlastRadius(t *testing.T) {
 		t.Errorf("risk = %+v", resp.RiskScore)
 	}
 }
+
+func TestAnalyzeChangeSet_NoChangesIsNotARiskLevel(t *testing.T) {
+	engine := changeSetEngine(t)
+	gitInit(t, engine.repoRoot)
+	resp := runChangeSet(t, engine, AnalyzeChangeSetOptions{})
+	if resp.RiskScore.Level != RiskLevelNotAssessed || resp.Summary.EstimatedRisk != RiskLevelNotAssessed {
+		t.Errorf("risk = %+v, summary = %+v", resp.RiskScore, resp.Summary)
+	}
+	if resp.RiskScore.Explanation != NothingToAssess {
+		t.Errorf("explanation = %q", resp.RiskScore.Explanation)
+	}
+}

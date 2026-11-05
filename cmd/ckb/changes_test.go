@@ -288,3 +288,23 @@ func TestImpactTruncationIsVisible(t *testing.T) {
 		t.Errorf("output hides the cut:\n%s", out)
 	}
 }
+
+// `Risk: LOW` over an empty diff reads as a verdict on a change that doesn't exist.
+func TestNoChangesSaysSoInsteadOfARiskLevel(t *testing.T) {
+	resp := &ChangeSetResponseCLI{
+		Summary:   &ChangeSummaryCLI{EstimatedRisk: query.RiskLevelNotAssessed},
+		RiskScore: &RiskScoreCLI{Level: query.RiskLevelNotAssessed, Explanation: query.NothingToAssess},
+	}
+	for name, out := range map[string]string{
+		"changes":  formatChangesHuman(resp, false),
+		"diff":     formatChangeSetHuman(resp),
+		"markdown": formatImpactMarkdown(resp),
+	} {
+		if !strings.Contains(out, "Nothing to assess") {
+			t.Errorf("%s:\n%s", name, out)
+		}
+		if strings.Contains(out, "Risk") && name != "diff" {
+			t.Errorf("%s shows a risk over nothing:\n%s", name, out)
+		}
+	}
+}

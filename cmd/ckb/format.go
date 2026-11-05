@@ -1045,6 +1045,11 @@ func formatChangeSetHuman(resp *ChangeSetResponseCLI) string {
 	b.WriteString("Change Impact Analysis\n")
 	b.WriteString(strings.Repeat("=", 60) + "\n\n")
 
+	if nothingToAssess(resp) {
+		b.WriteString(query.NothingToAssess + "\n")
+		return b.String()
+	}
+
 	// Summary
 	if resp.Summary != nil {
 		b.WriteString("Summary:\n")
@@ -1182,6 +1187,11 @@ func countNoun(n int, singular, plural string) string {
 	return fmt.Sprintf("%d %s", n, plural)
 }
 
+// nothingToAssess reports a change set with no source changes in it.
+func nothingToAssess(resp *ChangeSetResponseCLI) bool {
+	return resp.RiskScore != nil && resp.RiskScore.Explanation == query.NothingToAssess
+}
+
 // truncationLine says a list of consumers was cut, so it can't read as complete.
 func truncationLine(info *TruncationInfoCLI) string {
 	if info == nil {
@@ -1257,6 +1267,11 @@ func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 		}
 	}
 	b.WriteString(fmt.Sprintf("Current change · %s (%s)\n\n", branch, mode))
+
+	if nothingToAssess(resp) {
+		b.WriteString(query.NothingToAssess + "\n")
+		return b.String()
+	}
 
 	// Risk
 	if resp.RiskScore != nil {

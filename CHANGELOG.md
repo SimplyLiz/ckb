@@ -105,6 +105,8 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   index, so anything `git add`ed looked unchanged.
 - **A comment-only change has no blast radius.** It was listed with its note, then
   analyzed like any other change anyway, consumers and all.
+- **`ckb changes` with nothing changed says so** instead of `Risk: LOW`, as does
+  `ckb impact diff`. In JSON the risk is `not_assessed`.
 
 ### Fixed — search and navigation
 

@@ -924,6 +924,11 @@ func formatImpactMarkdown(resp *ChangeSetResponseCLI) string {
 
 	b.WriteString(fmt.Sprintf("## %s Change Impact Analysis\n\n", emoji))
 
+	if nothingToAssess(resp) {
+		b.WriteString(query.NothingToAssess + "\n")
+		return b.String()
+	}
+
 	// Summary table
 	if resp.Summary != nil {
 		s := resp.Summary

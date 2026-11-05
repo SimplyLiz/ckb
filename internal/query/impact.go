@@ -1642,6 +1642,13 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		RiskLevel:         riskScore.Level,
 	}
 
+	// Nothing in the diff: there is nothing a level could describe.
+	if len(parsedDiff.Files) == 0 {
+		riskScore = &RiskScore{Level: RiskLevelNotAssessed, Explanation: NothingToAssess}
+		summary.EstimatedRisk = riskScore.Level
+		blastRadius.RiskLevel = riskScore.Level
+	}
+
 	// Without SCIP there is no consumer graph, so "0 consumers" means nobody
 	// looked, and a score built on it would read as a clean bill of health.
 	// Consumers found some other way still count as a lower bound.
@@ -2172,6 +2179,9 @@ func contractRecommendations(broken []brokenContract, changedSymbols []impact.Ch
 // RiskLevelNotAssessed is the risk level of a change whose consumers could not
 // be looked up. It is deliberately not on the low..critical scale.
 const RiskLevelNotAssessed = "not_assessed"
+
+// NothingToAssess explains a not-assessed risk for a diff with no source changes.
+const NothingToAssess = "Nothing to assess: no source changes in this diff."
 
 // hasConsumerGraph reports whether anything can answer who uses a symbol. Without
 // it, "0 consumers" means nobody looked.
