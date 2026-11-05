@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/config"
 	"github.com/SimplyLiz/CodeMCP/internal/incremental"
 	"github.com/SimplyLiz/CodeMCP/internal/index"
@@ -181,6 +182,38 @@ func resolveIndexPath(repoRoot string) string {
 		indexPath = filepath.Join(repoRoot, indexPath)
 	}
 	return indexPath
+}
+
+// finalizeIndexOutput makes the output of an indexer that ran in a subdirectory
+// (a nested manifest such as engine/Cargo.toml) look like a repo-root index.
+// Indexers write index.scip into their working directory unless told otherwise,
+// and they record document paths relative to that directory; every CKB consumer
+// expects the configured index path and repo-relative document paths.
+func finalizeIndexOutput(repoRoot string, plan *indexPlan) error {
+	if plan.IndexerDir == repoRoot {
+		return nil
+	}
+	written := filepath.Join(plan.IndexerDir, "index.scip")
+	if written != plan.IndexPath {
+		if _, err := os.Stat(written); err == nil {
+			// Replaces the previous run's index at the target path.
+			if err := os.Rename(written, plan.IndexPath); err != nil {
+				return fmt.Errorf("moving %s to %s: %w", written, plan.IndexPath, err)
+			}
+		} else if plan.IndexPath == filepath.Join(repoRoot, "index.scip") {
+			// Nothing new was written. Whatever sits at the target is an earlier,
+			// already rebased index and must not be rebased again.
+			return nil
+		}
+	}
+	prefix, err := filepath.Rel(repoRoot, plan.IndexerDir)
+	if err != nil {
+		return fmt.Errorf("resolving indexer directory: %w", err)
+	}
+	if err := scip.RebaseDocumentPaths(plan.IndexPath, filepath.ToSlash(prefix), repoRoot); err != nil {
+		return fmt.Errorf("rewriting index paths: %w", err)
+	}
+	return nil
 }
 
 // resolveIndexLanguage resolves which language to index for repoRoot: either
@@ -559,6 +592,11 @@ func performIndex(repoRoot string) indexResult {
 		fmt.Fprintln(os.Stderr, "")
 		showTroubleshooting(lang)
 		return indexResult{Outcome: indexOutcomeIndexingFailed, Message: "indexer failed", Err: err, Lang: lang}
+	}
+
+	if finalizeErr := finalizeIndexOutput(repoRoot, plan); finalizeErr != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", finalizeErr)
+		return indexResult{Outcome: indexOutcomeIndexingFailed, Message: finalizeErr.Error(), Err: finalizeErr, Lang: lang}
 	}
 
 	// Verify index was created
@@ -987,6 +1025,14 @@ func tryIncrementalIndex(repoRoot, ckbDir string, lang project.Language) bool {
 // instead of stdout, for callers whose stdout is a protocol transport
 // (the MCP reindex tool).
 func tryIncrementalIndexTo(repoRoot, ckbDir string, lang project.Language, out io.Writer) bool {
+	// Incremental indexers run from the repo root. With a nested manifest they
+	// find no project there and still exit cleanly, reporting an empty update
+	// over an index that has gone stale.
+	if manifest := project.FindManifestForLanguage(repoRoot, lang); filepath.Dir(manifest) != "." {
+		_, _ = fmt.Fprintln(out, "Nested project: incremental indexing not supported, running a full index")
+		return false
+	}
+
 	dbPath := filepath.Join(ckbDir, "ckb.db")
 
 	// Check if database exists

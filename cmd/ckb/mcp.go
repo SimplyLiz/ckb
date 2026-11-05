@@ -553,6 +553,11 @@ func triggerReindex(ctx context.Context, repoRoot, ckbDir string, trigger index.
 
 	duration := time.Since(start)
 
+	if err := finalizeIndexOutput(repoRoot, plan); err != nil {
+		logger.Error("Reindex failed", "error", err.Error())
+		return err
+	}
+
 	// Verify the index file the plan targeted actually exists before ever
 	// writing metadata that would claim success — a language whose indexer
 	// exits 0 without producing output (or a custom --output path that
