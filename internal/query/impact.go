@@ -1017,7 +1017,7 @@ type ChangeSummary struct {
 	SymbolsChanged       int    `json:"symbolsChanged"`
 	DirectlyAffected     int    `json:"directlyAffected"`
 	TransitivelyAffected int    `json:"transitivelyAffected"`
-	EstimatedRisk        string `json:"estimatedRisk"` // "low", "medium", "high", "critical"
+	EstimatedRisk        string `json:"estimatedRisk"` // "low", "medium", "high", "critical", or RiskLevelNotAssessed
 }
 
 // ChangedSymbolInfo represents a symbol affected by a code change.
@@ -1341,6 +1341,16 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		RiskLevel:         riskScore.Level,
 	}
 
+	// Without SCIP there is no consumer graph, so "0 consumers" means nobody
+	// looked, and a score built on it would read as a clean bill of health.
+	// Consumers found some other way still count as a lower bound.
+	hasSCIPIndex := e.scipAdapter != nil && e.scipAdapter.IsAvailable()
+	if !hasSCIPIndex && len(allDirectImpact)+len(allTransitiveImpact) == 0 && len(changedSymbols) > 0 {
+		riskScore = notAssessedRisk(len(changedSymbols))
+		summary.EstimatedRisk = riskScore.Level
+		blastRadius.RiskLevel = riskScore.Level
+	}
+
 	testGapsInfo := &TestGapsInfo{
 		UntestedConsumers: untestedConsumers,
 		Examples:          untestedExamples,
@@ -1606,6 +1616,18 @@ func bridgeMultiplierFromGraph(nodes []cartographer.GraphNode, files []string) (
 		Value:    maxScore / 1000.0, // 0.0-1.0 informational
 		Weight:   0,                 // applied as multiplier, not weighted mean
 		Evidence: fmt.Sprintf("on a critical architectural path (bridge score %.2f)", maxScore/1000.0),
+	}
+}
+
+// RiskLevelNotAssessed is the risk level of a change whose consumers could not
+// be looked up. It is deliberately not on the low..critical scale.
+const RiskLevelNotAssessed = "not_assessed"
+
+// notAssessedRisk is the risk of a change analyzed without a consumer graph.
+func notAssessedRisk(changedSymbols int) *RiskScore {
+	return &RiskScore{
+		Level:       RiskLevelNotAssessed,
+		Explanation: fmt.Sprintf("%d symbol(s) changed, but downstream impact was not assessed: no SCIP index. Run 'ckb index' for a risk score.", changedSymbols),
 	}
 }
 

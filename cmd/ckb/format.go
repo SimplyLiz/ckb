@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/SimplyLiz/CodeMCP/internal/query"
 )
 
 // OutputFormat represents the output format type
@@ -1151,7 +1153,12 @@ func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 
 	// Risk
 	if resp.RiskScore != nil {
-		b.WriteString(fmt.Sprintf("Risk: %s (%.2f)\n", strings.ToUpper(resp.RiskScore.Level), resp.RiskScore.Score))
+		if resp.RiskScore.Level == query.RiskLevelNotAssessed {
+			b.WriteString("Risk: NOT ASSESSED\n")
+			b.WriteString("  " + resp.RiskScore.Explanation + "\n")
+		} else {
+			b.WriteString(fmt.Sprintf("Risk: %s (%.2f)\n", strings.ToUpper(resp.RiskScore.Level), resp.RiskScore.Score))
+		}
 		for _, f := range resp.RiskScore.Factors {
 			label := changesRiskFactorLabels[f.Name]
 			if label == "" {
@@ -1173,10 +1180,15 @@ func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 		downstream = resp.Summary.DirectlyAffected
 	}
 	modules = len(resp.ModulesAffected)
-	b.WriteString(fmt.Sprintf("%s · %s · %s\n\n",
-		countNoun(symbolsChanged, "changed symbol", "changed symbols"),
-		countNoun(downstream, "downstream consumer", "downstream consumers"),
-		countNoun(modules, "affected module", "affected modules")))
+	if resp.RiskScore != nil && resp.RiskScore.Level == query.RiskLevelNotAssessed {
+		b.WriteString(fmt.Sprintf("%s · downstream consumers unknown\n\n",
+			countNoun(symbolsChanged, "changed symbol", "changed symbols")))
+	} else {
+		b.WriteString(fmt.Sprintf("%s · %s · %s\n\n",
+			countNoun(symbolsChanged, "changed symbol", "changed symbols"),
+			countNoun(downstream, "downstream consumer", "downstream consumers"),
+			countNoun(modules, "affected module", "affected modules")))
+	}
 
 	// Affected tests
 	if len(resp.AffectedTests) > 0 {

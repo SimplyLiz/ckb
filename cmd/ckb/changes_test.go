@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/SimplyLiz/CodeMCP/internal/query"
 )
 
 func syntheticChangesResponse() *ChangeSetResponseCLI {
@@ -155,5 +157,23 @@ func TestFormatChangesHuman_RangeMode(t *testing.T) {
 	out := formatChangesHuman(resp, false)
 	if !strings.Contains(out, "(vs main)") {
 		t.Errorf("expected range mode label 'vs main', got:\n%s", out)
+	}
+}
+
+func TestFormatChangesHuman_NotAssessedRisk(t *testing.T) {
+	resp := &ChangeSetResponseCLI{
+		Summary:   &ChangeSummaryCLI{SymbolsChanged: 43, EstimatedRisk: query.RiskLevelNotAssessed},
+		RiskScore: &RiskScoreCLI{Level: query.RiskLevelNotAssessed, Explanation: "no SCIP index"},
+	}
+	out := formatChangesHuman(resp, false)
+	for _, want := range []string{"Risk: NOT ASSESSED", "no SCIP index", "43 changed symbols", "downstream consumers unknown"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output misses %q:\n%s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"LOW", "0 downstream", "(0.00)"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("output contains %q:\n%s", unwanted, out)
+		}
 	}
 }
