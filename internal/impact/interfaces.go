@@ -18,9 +18,13 @@ type ChangedSymbol struct {
 	Lines      []int      // Changed line numbers
 	Confidence float64    // Mapping confidence (0.0-1.0)
 	HunkIndex  int        // Index of the hunk this change came from (for tracing)
-	// Note says why this entry isn't a resolved symbol, on file-level ("file:...")
-	// entries: which changed lines could not be attributed to a definition.
+	// Note qualifies the entry: on a file-level ("file:...") entry, which changed
+	// lines could not be attributed to a definition; on a symbol, that only comments
+	// or whitespace changed in it.
 	Note string
+	// Trivial means only comments or whitespace changed, which is why Confidence
+	// is low: unlike other low-confidence entries, this isn't a mapping problem.
+	Trivial bool
 	// DeletionUnresolved marks a file-level entry for removed code whose
 	// definition isn't in the index, so what used it is unknown.
 	DeletionUnresolved bool

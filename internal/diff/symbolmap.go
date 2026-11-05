@@ -2,8 +2,10 @@ package diff
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
@@ -121,6 +123,7 @@ const (
 	confidenceExactBody      = 0.8
 	confidenceInferredBody   = 0.6
 	confidenceUnresolved     = 0.3
+	confidenceTrivial        = 0.3 // Only comments or whitespace changed
 )
 
 // mapFileToSymbols maps changes in a single file to the definitions containing
@@ -167,12 +170,14 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 	for hunkIdx := range file.Hunks {
 		for _, block := range hunkBlocks(&file.Hunks[hunkIdx]) {
 			resolved := false
+			trivial := isTrivialBlock(filePath, block)
 			var outside []string
 			for i, pos := range blockPositions(block, side) {
 				enclosing := pos.enclosing(defs)
 				for _, def := range enclosing {
 					found[def.Symbol] = found[def.Symbol].merge(def, hunkIdx, pos.confidence(def))
 					found[def.Symbol].lines = append(found[def.Symbol].lines, newFileLines(block)...)
+					found[def.Symbol].substantive = found[def.Symbol].substantive || !trivial
 					resolved = true
 				}
 				if len(enclosing) == 0 {
@@ -187,9 +192,9 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 				continue
 			}
 			sawLinesOutsideDefs = true
-			if code := codeLines(outside); len(code) > 0 {
+			if code := codeLines(filePath, outside); len(code) > 0 && !trivial {
 				unresolvedLines = append(unresolvedLines, newFileLines(block)...)
-				if removed := codeLines(block.Removed); len(removed) > 0 {
+				if removed := codeLines(filePath, block.Removed); len(removed) > 0 {
 					unresolvedRemoved = append(unresolvedRemoved, removed...)
 				}
 			}
@@ -208,6 +213,11 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 			Lines:      uniqueLines(sym.lines),
 			Confidence: sym.confidence,
 			HunkIndex:  sym.hunkIndex,
+		}
+		if !sym.substantive {
+			entry.Trivial = true
+			entry.Confidence = confidenceTrivial
+			entry.Note = "only comments or whitespace changed"
 		}
 		if whole, ok := wholeChanges[symbolID]; ok {
 			entry.ChangeType = whole.changeType
@@ -231,8 +241,10 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 			"changed lines are outside every definition the index knows about"))
 	case len(result) == 0 && sawLinesOutsideDefs:
 		// Never silent about a file in the diff.
-		result = append(result, fileLevelEntry(file, filePath, changedNewLines(file),
-			"only comments, blank lines or imports changed, outside any definition"))
+		entry := fileLevelEntry(file, filePath, changedNewLines(file),
+			"only comments, blank lines or imports changed, outside any definition")
+		entry.Trivial = true
+		result = append(result, entry)
 	}
 
 	return result, nil
@@ -336,22 +348,18 @@ func mentions(lines []string, name string) bool {
 
 // codeLines drops the lines whose removal or addition changes no definition:
 // blank lines, comments, stray closing brackets, imports.
-func codeLines(lines []string) []string {
+func codeLines(path string, lines []string) []string {
 	var code []string
 	for _, line := range lines {
-		if !isNonCodeLine(line) {
+		if !isCommentOrBlank(path, line) && !isStructuralLine(line) {
 			code = append(code, line)
 		}
 	}
 	return code
 }
 
-func isNonCodeLine(line string) bool {
+func isStructuralLine(line string) bool {
 	trimmed := strings.TrimSpace(line)
-	if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") ||
-		strings.HasPrefix(trimmed, "/*") || strings.HasPrefix(trimmed, "*") {
-		return true
-	}
 	if strings.Trim(trimmed, "}])({[;,") == "" {
 		return true
 	}
@@ -362,6 +370,81 @@ func isNonCodeLine(line string) bool {
 	}
 	// A line of a Go import block is nothing but a quoted path.
 	return len(trimmed) > 2 && trimmed[0] == '"' && trimmed[len(trimmed)-1] == '"' && !strings.Contains(trimmed[1:len(trimmed)-1], `"`)
+}
+
+// isTrivialBlock reports whether a change block can't change behavior: all its
+// lines are comments or blank, or it only moved whitespace around. Line-based on
+// purpose, and leaning towards "not trivial": a trailing comment or a line inside
+// a block comment without a leading "*" counts as code, which is the safe error.
+func isTrivialBlock(path string, block impact.ChangeBlock) bool {
+	allComments := true
+	for _, lines := range [][]string{block.Removed, block.Added} {
+		for _, line := range lines {
+			if !isCommentOrBlank(path, line) {
+				allComments = false
+			}
+		}
+	}
+	if allComments {
+		return true
+	}
+	if whitespaceIsSignificant(path) {
+		return false
+	}
+	return stripWhitespace(block.Removed) == stripWhitespace(block.Added)
+}
+
+func stripWhitespace(lines []string) string {
+	var b strings.Builder
+	for _, line := range lines {
+		for _, r := range line {
+			if !unicode.IsSpace(r) {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
+}
+
+// whitespaceIsSignificant covers languages where indentation is syntax, so a
+// reindented line can mean something else.
+func whitespaceIsSignificant(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".py", ".pyi", ".yaml", ".yml", ".haml", ".nim", ".coffee", ".mk":
+		return true
+	}
+	return strings.EqualFold(filepath.Base(path), "Makefile")
+}
+
+// isCommentOrBlank reports whether a line is blank or nothing but a comment in
+// the file's language. Comments that do something count as code: Go's compiler
+// directives and build constraints, and a shebang.
+func isCommentOrBlank(path, line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".py", ".pyi", ".rb", ".sh", ".bash", ".zsh", ".yaml", ".yml", ".toml", ".pl", ".r", ".ex", ".exs", ".tf":
+		return strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "#!")
+	case ".sql", ".lua", ".hs":
+		return strings.HasPrefix(trimmed, "--")
+	case ".go":
+		for _, directive := range []string{"//go:", "// +build", "//export ", "//line ", "//nolint"} {
+			if strings.HasPrefix(trimmed, directive) {
+				return false
+			}
+		}
+	}
+	if strings.HasPrefix(trimmed, "//") {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "/*") {
+		// Code may follow a block comment closed on the same line.
+		end := strings.Index(trimmed, "*/")
+		return end < 0 || strings.TrimSpace(trimmed[end+2:]) == ""
+	}
+	return trimmed == "*" || trimmed == "*/" || strings.HasPrefix(trimmed, "* ")
 }
 
 // lookupDocument finds a changed file in the index. A renamed file is indexed
@@ -400,6 +483,8 @@ type attributedSymbol struct {
 	lines      []int
 	hunkIndex  int
 	confidence float64
+	// substantive is set once a change in it was more than comments or whitespace.
+	substantive bool
 }
 
 func (a *attributedSymbol) merge(def *SymbolDefInfo, hunkIdx int, confidence float64) *attributedSymbol {

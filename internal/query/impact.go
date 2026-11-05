@@ -1047,11 +1047,12 @@ type ChangedSymbolInfo struct {
 	SymbolID   string  `json:"symbolId"`
 	Name       string  `json:"name"`
 	File       string  `json:"file"`
-	ChangeType string  `json:"changeType"` // "added", "modified", "deleted"
+	ChangeType string  `json:"changeType"`      // "added", "modified", "deleted"
 	Lines      []int   `json:"lines,omitempty"` // New-file lines; a deleted symbol's are its old-file lines
 	Confidence float64 `json:"confidence"`
-	// Note explains a file-level entry (symbolId "file:..."): which changed lines
-	// could not be attributed to a definition, and why.
+	// Note qualifies the entry: on a file-level entry (symbolId "file:..."), which
+	// changed lines could not be attributed to a definition and why; on a symbol,
+	// that only comments or whitespace changed in it.
 	Note string `json:"note,omitempty"`
 }
 
@@ -2448,7 +2449,7 @@ func (e *Engine) generateRecommendations(
 	// Check for low-confidence mappings
 	lowConfidenceCount := 0
 	for _, sym := range changedSymbols {
-		if sym.Confidence < 0.5 {
+		if sym.Confidence < 0.5 && !sym.Trivial {
 			lowConfidenceCount++
 		}
 	}

@@ -456,3 +456,61 @@ func TestMapToSymbols_OperatorReferencesAreNotEvidence(t *testing.T) {
 		t.Fatalf("got %+v, want sum deleted", got)
 	}
 }
+
+func TestMapToSymbols_CommentAndWhitespaceChanges(t *testing.T) {
+	const code = confidenceExactBody
+	tests := []struct {
+		name       string
+		diff       string
+		confidence float64
+		trivial    bool
+	}{
+		{"comment added in a body", "@@ -8,2 +8,3 @@\n \ty := x + 1\n+\t// explain\n \tfmt.Println(y)\n", confidenceTrivial, true},
+		{"comment reworded", "@@ -8,3 +8,3 @@\n \ty := x + 1\n-\t// was\n+\t// is\n \tfmt.Println(y)\n", confidenceTrivial, true},
+		{"line reindented", "@@ -8,3 +8,3 @@\n \ty := x + 1\n-\tfmt.Println(y)\n+\t\tfmt.Println( y )\n \treturn y\n", confidenceTrivial, true},
+		{"blank line removed", "@@ -8,3 +8,2 @@\n \ty := x + 1\n-\n \tfmt.Println(y)\n", confidenceTrivial, true},
+		{"comment and code", "@@ -8,3 +8,4 @@\n \ty := x + 1\n+\t// explain\n-\tfmt.Println(y)\n+\tfmt.Print(y)\n \treturn y\n", code, false},
+		{"comment replaced by code", "@@ -8,3 +8,3 @@\n \ty := x + 1\n-\t// was\n+\tz := 1\n \tfmt.Println(y)\n", code, false},
+		{"trailing comment counts as code", "@@ -8,3 +8,3 @@\n \ty := x + 1\n-\tfmt.Println(y)\n+\tfmt.Println(y) // why\n \treturn y\n", code, false},
+		{"compiler directive counts as code", "@@ -8,2 +8,3 @@\n \ty := x + 1\n+\t//go:noinline\n \tfmt.Println(y)\n", code, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mapDoc(t, goDoc(), fileDiff("lib/lib.go", tt.diff))
+			if names(got) != "Target" {
+				t.Fatalf("changed symbols = %q, want Target", names(got))
+			}
+			if got[0].Confidence != tt.confidence || got[0].Trivial != tt.trivial {
+				t.Errorf("confidence %v trivial %v, want %v %v", got[0].Confidence, got[0].Trivial, tt.confidence, tt.trivial)
+			}
+		})
+	}
+}
+
+// Only comments outside any definition: reported at file level, and marked so.
+func TestMapToSymbols_CommentOutsideDefinitions(t *testing.T) {
+	got := mapDoc(t, goDoc(), fileDiff("lib/lib.go", "@@ -12,2 +12,3 @@\n \n+// Table is a table.\n var Table = map[string]int{\n"))
+	if len(got) != 1 || got[0].SymbolID != "file:lib/lib.go" || got[0].DeletionUnresolved {
+		t.Fatalf("got %+v, want one plain file-level entry", got)
+	}
+	if !strings.Contains(got[0].Note, "comments") {
+		t.Errorf("note = %q", got[0].Note)
+	}
+}
+
+func TestIsTrivialBlock_IndentationLanguages(t *testing.T) {
+	block := impact.ChangeBlock{Removed: []string{"    return x"}, Added: []string{"return x"}}
+	if isTrivialBlock("a.py", block) {
+		t.Error("reindenting Python changes behavior")
+	}
+	if !isTrivialBlock("a.go", block) {
+		t.Error("reindenting Go doesn't")
+	}
+	rustAttr := impact.ChangeBlock{Added: []string{"#[derive(Debug)]"}}
+	if isTrivialBlock("a.rs", rustAttr) {
+		t.Error("# isn't a comment in Rust")
+	}
+	if !isTrivialBlock("a.py", impact.ChangeBlock{Added: []string{"# note"}}) {
+		t.Error("# is a comment in Python")
+	}
+}
