@@ -1,6 +1,9 @@
 package scip
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 // TestSearchSymbols_ContainerQualifiedAlias_NoFTS is a regression test for a
 // bug where the non-FTS SearchSymbols path matched only a symbol's bare
@@ -68,5 +71,42 @@ func TestSearchSymbols_ContainerQualifiedAlias_NoFTS(t *testing.T) {
 			Symbols: map[string]*SymbolInformation{symbolID: symInfo},
 		}
 		assertFindsHandle(t, idx)
+	})
+}
+
+// Alias-only matches ("Server.Close" for query "Serve") must not consume the
+// MaxResults cap ahead of real name matches such as ServeHTTP.
+func TestSearchSymbols_AliasMatchesDoNotCrowdOutNameMatches(t *testing.T) {
+	converted := map[string]*SCIPSymbol{}
+	var names []NameEntry
+	add := func(id, name, container string) {
+		converted[id] = &SCIPSymbol{StableId: id, Name: name, ContainerName: container}
+		alias := ""
+		if container != "" {
+			alias = container + "." + name
+		}
+		names = append(names, NameEntry{Name: name, Alias: alias, ID: id})
+	}
+	// 40 alias-only members sort first.
+	for i := 0; i < 40; i++ {
+		add(fmt.Sprintf("a%02d", i), fmt.Sprintf("Method%02d", i), "Server")
+	}
+	add("z-serve", "ServeHTTP", "Mux")
+
+	check := func(t *testing.T, idx *SCIPIndex) {
+		t.Helper()
+		res, err := idx.SearchSymbols("Serve", SearchOptions{MaxResults: 30})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res) != 30 || res[0].Name != "ServeHTTP" {
+			t.Fatalf("want ServeHTTP first of 30, got %d results, first %q", len(res), res[0].Name)
+		}
+	}
+	t.Run("fast path", func(t *testing.T) {
+		check(t, &SCIPIndex{ConvertedSymbols: converted, NameIndex: names})
+	})
+	t.Run("map fallback", func(t *testing.T) {
+		check(t, &SCIPIndex{ConvertedSymbols: converted})
 	})
 }
