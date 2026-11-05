@@ -819,3 +819,43 @@ func TestFindReferences_IncludeTests(t *testing.T) {
 		})
 	}
 }
+
+// An exact-case match must outrank a case-fold match of the same kind, and
+// the three-way ranking for "model" must not contain a tie.
+func TestRankSearchResults_ExactCaseBeatsFoldNoTies(t *testing.T) {
+	pub := &VisibilityInfo{Visibility: "public"}
+	results := []SearchResultItem{
+		{Name: "Model", Kind: "class", Visibility: pub},
+		{Name: "model", Kind: "property", Visibility: pub},
+		{Name: "model", Kind: "function", Visibility: pub},
+		{Name: "Model", Kind: "function", Visibility: pub},
+		{Name: "Model", Kind: "property", Visibility: pub},
+	}
+	rankSearchResults(results, "model")
+	score := func(name, kind string) float64 {
+		for _, r := range results {
+			if r.Name == name && r.Kind == kind {
+				return r.Score
+			}
+		}
+		t.Fatalf("missing %s/%s", name, kind)
+		return 0
+	}
+	if score("model", "function") <= score("Model", "function") {
+		t.Errorf("exact function must beat fold function")
+	}
+	if score("model", "property") <= score("Model", "property") {
+		t.Errorf("exact property must beat fold property")
+	}
+	seen := map[float64]string{}
+	for _, r := range results[:3] {
+		if prev, dup := seen[r.Score]; dup {
+			t.Errorf("tie at %v between %s and %s/%s", r.Score, prev, r.Name, r.Kind)
+		}
+		seen[r.Score] = r.Name + "/" + r.Kind
+	}
+	// Kind ranking still counts: fold-matched type beats an exact-case member.
+	if score("Model", "class") <= score("model", "property") {
+		t.Errorf("fold class should still beat exact property")
+	}
+}
