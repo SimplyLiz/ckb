@@ -2701,6 +2701,7 @@ func (e *Engine) hasReachingTest(ctx context.Context, consumer ImpactItem) bool 
 		SymbolId:     consumer.StableId,
 		Depth:        2,
 		IncludeTests: true,
+		AllItems:     true, // Tests sort last, so a budget cuts them first
 	})
 	if err != nil {
 		return false

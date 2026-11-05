@@ -111,6 +111,9 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   SCIP index hands out `ts-` IDs. Impact then said "not found, use `ckb search`",
   which returns the same ID. It can't analyze those without an index, so it now
   says that and how to get one.
+- **A widely used consumer no longer looks untested.** `testGaps` read a budgeted
+  consumer list in which tests sort last, so past 20 consumers its test was the first
+  thing cut.
 
 ### Fixed — search and navigation
 

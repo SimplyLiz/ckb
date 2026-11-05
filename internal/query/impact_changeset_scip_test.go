@@ -231,11 +231,15 @@ func TestAnalyzeChangeSet_IncludeTestsCountsThem(t *testing.T) {
 
 // wideConsumers is one document per consumer of Target, in cmd-less package paths.
 func wideConsumers(n int) []*scippb.Document {
+	return wideConsumersOf(symTarget, n)
+}
+
+func wideConsumersOf(symbol string, n int) []*scippb.Document {
 	docs := make([]*scippb.Document, 0, n)
 	for i := 0; i < n; i++ {
 		fn := fmt.Sprintf("scip-go gomod example.com/m v1 `example.com/m/c%d`/Use%d().", i, i)
 		docs = append(docs, fixtureDoc(fmt.Sprintf("c%d/use.go", i),
-			[]fixtureFunc{{fn, 2, 6}}, []fixtureRef{{symTarget, 3}}))
+			[]fixtureFunc{{fn, 2, 6}}, []fixtureRef{{symbol, 3}}))
 	}
 	return docs
 }
@@ -549,5 +553,15 @@ func TestAnalyzeImpact_TreesitterIDSaysAnIndexIsNeeded(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "needs a SCIP index") || strings.Contains(err.Error(), "not found") {
 		t.Errorf("error = %v", err)
+	}
+}
+
+// Tests sort last among consumers, so a budgeted list was the first to lose them:
+// a widely used function looked untested because of how widely it is used.
+func TestHasReachingTest_WideConsumerKeepsItsTest(t *testing.T) {
+	engine := changeSetEngine(t, wideConsumersOf(symRun, 40)...)
+	consumer := ImpactItem{StableId: symRun, Location: &LocationInfo{FileId: "app/app.go"}}
+	if !engine.hasReachingTest(context.Background(), consumer) {
+		t.Error("app/app_test.go calls Run")
 	}
 }
