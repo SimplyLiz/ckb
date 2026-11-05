@@ -18,6 +18,16 @@ type ChangedSymbol struct {
 	Lines      []int      // Changed line numbers
 	Confidence float64    // Mapping confidence (0.0-1.0)
 	HunkIndex  int        // Index of the hunk this change came from (for tracing)
+	// Note qualifies the entry: on a file-level ("file:...") entry, which changed
+	// lines could not be attributed to a definition; on a symbol, that only comments
+	// or whitespace changed in it.
+	Note string
+	// Trivial means only comments or whitespace changed, which is why Confidence
+	// is low: unlike other low-confidence entries, this isn't a mapping problem.
+	Trivial bool
+	// DeletionUnresolved marks a file-level entry for removed code whose
+	// definition isn't in the index, so what used it is unknown.
+	DeletionUnresolved bool
 }
 
 // ParsedDiff represents a parsed git diff with structured information
@@ -43,6 +53,23 @@ type ChangedHunk struct {
 	NewLines int   // Number of lines in new file
 	Added    []int // Line numbers of added lines (in new file)
 	Removed  []int // Line numbers of removed lines (in old file)
+
+	// The fields below are only set by the diff parser; a hunk built by hand
+	// leaves them empty and is taken to be in new-file coordinates.
+	OldText []string      // Text of the hunk's old-file lines (context and removed), from OldStart
+	NewText []string      // Text of the hunk's new-file lines (context and added), from NewStart
+	Blocks  []ChangeBlock // Runs of adjacent removed and added lines
+}
+
+// ChangeBlock is one run of adjacent removed and added lines in a hunk: a
+// modification if it has both, a pure deletion or insertion if it has one. A
+// side with no lines marks a position: the block sits between OldLine-1 and
+// OldLine in the old file, or between NewLine-1 and NewLine in the new file.
+type ChangeBlock struct {
+	OldLine int      // First removed line, or the old-file line following an insertion
+	NewLine int      // First added line, or the new-file line following a deletion
+	Removed []string // Text of the removed lines
+	Added   []string // Text of the added lines
 }
 
 // DiffParser parses git diffs into structured data

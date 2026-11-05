@@ -80,7 +80,7 @@
     {
       "file": "pkg/service.go",
       "kind": "method",
-      "line": 26,
+      "line": 54,
       "moduleId": "pkg",
       "name": "Process"
     },
@@ -94,49 +94,49 @@
     {
       "file": "pkg/service.go",
       "kind": "method",
-      "line": 32,
+      "line": 64,
       "moduleId": "pkg",
       "name": "Validate"
     },
     {
       "file": "pkg/service.go",
       "kind": "property",
-      "line": 26,
+      "line": 8,
       "moduleId": "pkg",
       "name": "Process"
     },
     {
       "file": "pkg/service.go",
       "kind": "property",
-      "line": 32,
+      "line": 9,
       "moduleId": "pkg",
       "name": "Validate"
     },
     {
       "file": "pkg/service.go",
       "kind": "property",
-      "line": 0,
+      "line": 42,
       "moduleId": "pkg",
       "name": "cache"
     },
     {
       "file": "pkg/service.go",
       "kind": "property",
-      "line": 0,
+      "line": 41,
       "moduleId": "pkg",
       "name": "inner"
     },
     {
       "file": "pkg/service.go",
       "kind": "property",
-      "line": 0,
+      "line": 14,
       "moduleId": "pkg",
       "name": "model"
     },
     {
       "file": "pkg/handler.go",
       "kind": "property",
-      "line": 0,
+      "line": 8,
       "moduleId": "pkg",
       "name": "service"
     }

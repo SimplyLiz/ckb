@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SimplyLiz/CodeMCP/internal/repos"
@@ -164,4 +168,64 @@ func TestEnsureCkbInitialized_Idempotent(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, ".ckb", "config.json")); err == nil {
 		t.Error("expected no config.json to be written when .ckb/ already existed")
 	}
+}
+
+func TestExcludeInitFilesFromGit(t *testing.T) {
+	t.Run("repo root", func(t *testing.T) {
+		dir := gitInitTemp(t)
+		if err := os.MkdirAll(filepath.Join(dir, ".ckb"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{".ckb/config.json", "index.scip"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if status := gitStatusPorcelain(t, dir); status == "" {
+			t.Fatal("expected untracked files before excluding them")
+		}
+
+		var out bytes.Buffer
+		excludeInitFilesFromGit(dir, slog.New(slog.DiscardHandler), &out)
+
+		if status := gitStatusPorcelain(t, dir); status != "" {
+			t.Errorf("git status still shows:\n%s", status)
+		}
+		if !strings.Contains(out.String(), "info/exclude") {
+			t.Errorf("output doesn't say what happened: %q", out.String())
+		}
+
+		// Running it again adds nothing.
+		exclude := filepath.Join(dir, ".git", "info", "exclude")
+		before, _ := os.ReadFile(exclude)
+		excludeInitFilesFromGit(dir, slog.New(slog.DiscardHandler), io.Discard)
+		if after, _ := os.ReadFile(exclude); !bytes.Equal(before, after) {
+			t.Errorf("second run changed info/exclude:\n%s", after)
+		}
+	})
+
+	t.Run("subdirectory", func(t *testing.T) {
+		dir := gitInitTemp(t)
+		sub := filepath.Join(dir, "services", "api")
+		if err := os.MkdirAll(filepath.Join(sub, ".ckb"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{".ckb/config.json", "index.scip"} {
+			if err := os.WriteFile(filepath.Join(sub, name), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		excludeInitFilesFromGit(sub, slog.New(slog.DiscardHandler), io.Discard)
+		if status := gitStatusPorcelain(t, dir); status != "" {
+			t.Errorf("git status still shows:\n%s", status)
+		}
+	})
+
+	t.Run("outside a git repo", func(t *testing.T) {
+		var out bytes.Buffer
+		excludeInitFilesFromGit(t.TempDir(), slog.New(slog.DiscardHandler), &out)
+		if out.Len() != 0 {
+			t.Errorf("printed %q for a directory that isn't a repo", out.String())
+		}
+	})
 }

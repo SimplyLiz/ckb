@@ -2,9 +2,12 @@ package diff
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
+	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
 )
 
@@ -36,13 +39,15 @@ type OccurrenceInfo struct {
 	IsDefinition bool
 }
 
-// SymbolDefInfo contains symbol definition data
+// SymbolDefInfo contains symbol definition data. Lines are 1-based and inclusive.
 type SymbolDefInfo struct {
 	Symbol    string
 	Name      string
 	Kind      string
 	StartLine int
 	EndLine   int
+	DefLine   int                  // Line of the defining identifier; 0 means StartLine
+	Precision scip.BoundsPrecision // How far StartLine..EndLine can be trusted
 }
 
 // SymbolInfo contains symbol metadata
@@ -110,7 +115,30 @@ func (m *DiffSymbolMapper) MapToSymbols(diff *impact.ParsedDiff) ([]impact.Chang
 	return result, nil
 }
 
-// mapFileToSymbols maps changes in a single file to symbols
+// Mapping confidences. A definition's own line changing is certain; a change
+// inside an indexer-given range nearly so; a range inferred from the next
+// function also contains whatever sits between functions.
+const (
+	confidenceDefinitionLine = 1.0
+	confidenceExactBody      = 0.8
+	confidenceInferredBody   = 0.6
+	confidenceUnresolved     = 0.3
+	confidenceTrivial        = 0.3 // Only comments or whitespace changed
+)
+
+// mapFileToSymbols maps changes in a single file to the definitions containing
+// them: the innermost function, method, type or other named definition around
+// each changed line. A symbol merely referenced on a changed line is not changed,
+// and neither is the package around it or a local inside it.
+//
+// Lines that no definition can be shown to contain come back as one file-level
+// entry at low confidence, with a note, rather than as a guess at a symbol.
+//
+// Deletions depend on which side of the diff the index is on. If it predates the
+// change, a deleted definition is still in it: it is reported as deleted, and
+// impact analysis finds its callers. If it already includes the change, the
+// definition is gone and the removed code has no symbol to name, so a file-level
+// entry with DeletionUnresolved set says so and quotes the removed lines.
 func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.ChangedSymbol, error) {
 	// Determine the file path to look up
 	filePath := file.NewPath
@@ -121,110 +149,615 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 		return nil, nil
 	}
 
-	// Get document from index
-	doc := m.index.GetDocument(filePath)
-	if doc == nil {
-		// Try without leading slash or with different path formats
-		doc = m.index.GetDocument(strings.TrimPrefix(filePath, "/"))
-	}
+	doc, docPath := m.lookupDocument(file, filePath)
 	if doc == nil {
 		// File not in index - return with low confidence
 		return m.mapFileWithoutIndex(file)
 	}
 
-	// Determine change type
-	changeType := impact.ChangeModified
-	if file.IsNew {
-		changeType = impact.ChangeAdded
-	} else if file.Deleted {
-		changeType = impact.ChangeDeleted
+	side := resolveIndexSide(file, doc, docPath)
+	if side == indexMatchesNeither {
+		return []impact.ChangedSymbol{fileLevelEntry(file, filePath, changedNewLines(file),
+			"index does not match this file on either side of the diff; run 'ckb index' to attribute these lines")}, nil
 	}
 
-	var result []impact.ChangedSymbol
+	defs := changeableDefinitions(doc)
+	found := make(map[string]*attributedSymbol)
+	var unresolvedLines []int
+	var unresolvedRemoved []string
+	sawLinesOutsideDefs := false
 
-	// Get all changed lines
-	changedLines := make(map[int]int) // line -> hunk index
-	for hunkIdx, hunk := range file.Hunks {
-		for _, line := range hunk.Added {
-			changedLines[line] = hunkIdx
-		}
-		// For deletions, we need to find symbols that were on removed lines
-		// This requires looking at the old file, which we may not have
-		// For now, focus on added/modified lines
-	}
-
-	// Find symbols that overlap with changed lines
-	symbolLines := make(map[string][]int) // symbol -> lines
-	symbolHunks := make(map[string]int)   // symbol -> first hunk index
-	symbolConfidence := make(map[string]float64)
-
-	// First pass: find definitions that span changed lines
-	for _, symDef := range doc.Symbols {
-		for line, hunkIdx := range changedLines {
-			if line >= symDef.StartLine && line <= symDef.EndLine {
-				symbolLines[symDef.Symbol] = append(symbolLines[symDef.Symbol], line)
-				if _, exists := symbolHunks[symDef.Symbol]; !exists {
-					symbolHunks[symDef.Symbol] = hunkIdx
+	for hunkIdx := range file.Hunks {
+		for _, block := range hunkBlocks(&file.Hunks[hunkIdx]) {
+			resolved := false
+			trivial := isTrivialBlock(filePath, block)
+			var outside []string
+			for i, pos := range blockPositions(block, side) {
+				enclosing := pos.enclosing(defs)
+				for _, def := range enclosing {
+					found[def.Symbol] = found[def.Symbol].merge(def, hunkIdx, pos.confidence(def))
+					found[def.Symbol].lines = append(found[def.Symbol].lines, newFileLines(block)...)
+					found[def.Symbol].substantive = found[def.Symbol].substantive || !trivial
+					resolved = true
 				}
-				// High confidence for definition match
-				if symDef.StartLine == line {
-					symbolConfidence[symDef.Symbol] = 1.0 // Exact definition line
-				} else if symbolConfidence[symDef.Symbol] < 0.8 {
-					symbolConfidence[symDef.Symbol] = 0.8 // Symbol body contains change
+				if len(enclosing) == 0 {
+					outside = append(outside, positionText(block, side, i)...)
+				}
+			}
+			if !resolved {
+				// Nothing here has a position of its own on the other side.
+				outside = append(outside, otherSideText(block, side)...)
+			}
+			if len(outside) == 0 {
+				continue
+			}
+			sawLinesOutsideDefs = true
+			if code := codeLines(filePath, outside); len(code) > 0 && !trivial {
+				unresolvedLines = append(unresolvedLines, newFileLines(block)...)
+				if removed := codeLines(filePath, block.Removed); len(removed) > 0 {
+					unresolvedRemoved = append(unresolvedRemoved, removed...)
 				}
 			}
 		}
 	}
 
-	// Second pass: find occurrences (references) on changed lines
-	for _, occ := range doc.Occurrences {
-		for line, hunkIdx := range changedLines {
-			if occ.StartLine == line || (line >= occ.StartLine && line <= occ.EndLine) {
-				if _, exists := symbolLines[occ.Symbol]; !exists {
-					symbolLines[occ.Symbol] = []int{}
-					symbolHunks[occ.Symbol] = hunkIdx
-				}
-				symbolLines[occ.Symbol] = append(symbolLines[occ.Symbol], line)
-
-				// Confidence based on occurrence type
-				if occ.IsDefinition {
-					symbolConfidence[occ.Symbol] = 1.0
-				} else if symbolConfidence[occ.Symbol] < 0.7 {
-					symbolConfidence[occ.Symbol] = 0.7 // Reference on changed line
-				}
-			}
-		}
-	}
-
-	// Build result
-	for symbolID, lines := range symbolLines {
-		// Get symbol info
-		symInfo := m.index.GetSymbolInfo(symbolID)
-		name := extractSymbolName(symbolID)
-		if symInfo != nil && symInfo.Name != "" {
-			name = symInfo.Name
-		}
-
-		confidence := symbolConfidence[symbolID]
-		if confidence == 0 {
-			confidence = 0.5 // Default confidence
-		}
-
-		// Lower confidence for whitespace-only or comment changes
-		// (This would require parsing the actual content, simplified here)
-
-		result = append(result, impact.ChangedSymbol{
+	wholeChanges := wholeDefinitionChanges(file, defs, side)
+	changeType := fileChangeType(file)
+	result := make([]impact.ChangedSymbol, 0, len(found)+1)
+	for symbolID, sym := range found {
+		entry := impact.ChangedSymbol{
 			SymbolID:   symbolID,
-			Name:       name,
+			Name:       m.symbolName(symbolID, sym.name),
 			File:       filePath,
 			ChangeType: changeType,
-			Lines:      uniqueLines(lines),
-			Confidence: confidence,
-			HunkIndex:  symbolHunks[symbolID],
-		})
+			Lines:      uniqueLines(sym.lines),
+			Confidence: sym.confidence,
+			HunkIndex:  sym.hunkIndex,
+		}
+		if !sym.substantive {
+			entry.Trivial = true
+			entry.Confidence = confidenceTrivial
+			entry.Note = "only comments or whitespace changed"
+		}
+		if whole, ok := wholeChanges[symbolID]; ok {
+			entry.ChangeType = whole.changeType
+			entry.Confidence = confidenceDefinitionLine
+			if whole.changeType == impact.ChangeDeleted {
+				entry.Lines = whole.lines // A deleted definition has no new-file lines
+			}
+		}
+		result = append(result, entry)
+	}
+
+	switch {
+	case len(unresolvedLines) > 0 && file.Deleted && len(found) > 0:
+		// A deleted file's definitions are all reported; the rest is imports and the like.
+	case len(unresolvedRemoved) > 0:
+		entry := fileLevelEntry(file, filePath, unresolvedLines, removedCodeNote(unresolvedRemoved))
+		entry.DeletionUnresolved = true
+		result = append(result, entry)
+	case len(unresolvedLines) > 0:
+		result = append(result, fileLevelEntry(file, filePath, unresolvedLines,
+			"changed lines are outside every definition the index knows about"))
+	case len(result) == 0 && sawLinesOutsideDefs:
+		// Never silent about a file in the diff.
+		entry := fileLevelEntry(file, filePath, changedNewLines(file),
+			"only comments, blank lines or imports changed, outside any definition")
+		entry.Trivial = true
+		result = append(result, entry)
 	}
 
 	return result, nil
+}
+
+// positionText returns the diff text behind one of blockPositions' positions: a
+// line on the index's side, or for a gap everything the other side has there.
+func positionText(block impact.ChangeBlock, side indexSide, i int) []string {
+	lines := block.Added
+	if side == indexMatchesOld {
+		lines = block.Removed
+	}
+	if len(lines) == 0 {
+		return otherSideText(block, side)
+	}
+	return lines[i : i+1]
+}
+
+func otherSideText(block impact.ChangeBlock, side indexSide) []string {
+	if side == indexMatchesOld {
+		return block.Added
+	}
+	return block.Removed
+}
+
+// removedCodeNote quotes removed lines, since nothing else can name what they were.
+func removedCodeNote(removed []string) string {
+	const maxQuoted = 3
+	quoted := make([]string, 0, maxQuoted)
+	for _, line := range removed {
+		if len(quoted) == maxQuoted {
+			break
+		}
+		quoted = append(quoted, fmt.Sprintf("%q", strings.TrimSpace(line)))
+	}
+	return fmt.Sprintf("%d removed line(s) the index has no definition for, so what used them is not resolved: %s",
+		len(removed), strings.Join(quoted, ", "))
+}
+
+// wholeChange is a definition that was removed or added in its entirety.
+type wholeChange struct {
+	changeType impact.ChangeType
+	lines      []int
+}
+
+// wholeDefinitionChanges finds definitions the diff removes or adds entirely: on
+// the index's side all their lines changed, and the other side doesn't mention
+// the name, which would make it a rewrite. Only a side the index covers can show
+// this, and a bound inferred from the next function says nothing about where the
+// definition really ends, so there only its own line is checked.
+func wholeDefinitionChanges(file *impact.ChangedFile, defs []*SymbolDefInfo, side indexSide) map[string]wholeChange {
+	changed := make(map[int]bool)
+	var otherSide []string
+	for i := range file.Hunks {
+		for _, block := range hunkBlocks(&file.Hunks[i]) {
+			start, count := block.NewLine, len(block.Added)
+			if side == indexMatchesOld {
+				start, count = block.OldLine, len(block.Removed)
+			}
+			for j := 0; j < count; j++ {
+				changed[start+j] = true
+			}
+			otherSide = append(otherSide, otherSideText(block, side)...)
+		}
+	}
+
+	changeType := impact.ChangeAdded
+	if side == indexMatchesOld {
+		changeType = impact.ChangeDeleted
+	}
+
+	whole := make(map[string]wholeChange)
+	for _, def := range defs {
+		start, end := def.StartLine, def.EndLine
+		if def.Precision == scip.BoundsInferred {
+			start, end = def.DefLine, def.DefLine
+		}
+		lines := make([]int, 0, end-start+1)
+		for line := start; line <= end && changed[line]; line++ {
+			lines = append(lines, line)
+		}
+		if len(lines) != end-start+1 {
+			continue
+		}
+		if name := scip.SymbolSimpleName(def.Symbol); name != "" && mentions(otherSide, name) {
+			continue
+		}
+		whole[def.Symbol] = wholeChange{changeType: changeType, lines: lines}
+	}
+	return whole
+}
+
+func mentions(lines []string, name string) bool {
+	for _, line := range lines {
+		if containsWord(line, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// codeLines drops the lines whose removal or addition changes no definition:
+// blank lines, comments, stray closing brackets, imports.
+func codeLines(path string, lines []string) []string {
+	var code []string
+	for _, line := range lines {
+		if !isCommentOrBlank(path, line) && !isStructuralLine(line) {
+			code = append(code, line)
+		}
+	}
+	return code
+}
+
+func isStructuralLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if strings.Trim(trimmed, "}])({[;,") == "" {
+		return true
+	}
+	for _, prefix := range []string{"import ", "use ", "from ", "package ", "#include"} {
+		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	// A line of a Go import block is nothing but a quoted path.
+	return len(trimmed) > 2 && trimmed[0] == '"' && trimmed[len(trimmed)-1] == '"' && !strings.Contains(trimmed[1:len(trimmed)-1], `"`)
+}
+
+// isTrivialBlock reports whether a change block can't change behavior: all its
+// lines are comments or blank, or it only moved whitespace around. Line-based on
+// purpose, and leaning towards "not trivial": a trailing comment or a line inside
+// a block comment without a leading "*" counts as code, which is the safe error.
+func isTrivialBlock(path string, block impact.ChangeBlock) bool {
+	allComments := true
+	for _, lines := range [][]string{block.Removed, block.Added} {
+		for _, line := range lines {
+			if !isCommentOrBlank(path, line) {
+				allComments = false
+			}
+		}
+	}
+	if allComments {
+		return true
+	}
+	if whitespaceIsSignificant(path) {
+		return false
+	}
+	return stripWhitespace(block.Removed) == stripWhitespace(block.Added)
+}
+
+func stripWhitespace(lines []string) string {
+	var b strings.Builder
+	for _, line := range lines {
+		for _, r := range line {
+			if !unicode.IsSpace(r) {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
+}
+
+// whitespaceIsSignificant covers languages where indentation is syntax, so a
+// reindented line can mean something else.
+func whitespaceIsSignificant(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".py", ".pyi", ".yaml", ".yml", ".haml", ".nim", ".coffee", ".mk":
+		return true
+	}
+	return strings.EqualFold(filepath.Base(path), "Makefile")
+}
+
+// isCommentOrBlank reports whether a line is blank or nothing but a comment in
+// the file's language. Comments that do something count as code: Go's compiler
+// directives and build constraints, and a shebang.
+func isCommentOrBlank(path, line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".py", ".pyi", ".rb", ".sh", ".bash", ".zsh", ".yaml", ".yml", ".toml", ".pl", ".r", ".ex", ".exs", ".tf":
+		return strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "#!")
+	case ".sql", ".lua", ".hs":
+		return strings.HasPrefix(trimmed, "--")
+	case ".go":
+		for _, directive := range []string{"//go:", "// +build", "//export ", "//line ", "//nolint"} {
+			if strings.HasPrefix(trimmed, directive) {
+				return false
+			}
+		}
+	}
+	if strings.HasPrefix(trimmed, "//") {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "/*") {
+		// Code may follow a block comment closed on the same line.
+		end := strings.Index(trimmed, "*/")
+		return end < 0 || strings.TrimSpace(trimmed[end+2:]) == ""
+	}
+	return trimmed == "*" || trimmed == "*/" || strings.HasPrefix(trimmed, "* ")
+}
+
+// lookupDocument finds a changed file in the index. A renamed file is indexed
+// under its old path if the index predates the rename.
+func (m *DiffSymbolMapper) lookupDocument(file *impact.ChangedFile, filePath string) (*DocumentInfo, string) {
+	paths := []string{filePath, strings.TrimPrefix(filePath, "/")}
+	if file.Renamed && file.OldPath != "" {
+		paths = append(paths, file.OldPath)
+	}
+	for _, path := range paths {
+		if doc := m.index.GetDocument(path); doc != nil {
+			return doc, path
+		}
+	}
+	return nil, ""
+}
+
+// symbolName returns a display name for a symbol. scip-typescript sets no
+// display names, so the identifier's last descriptor stands in for them.
+func (m *DiffSymbolMapper) symbolName(symbolID, defName string) string {
+	if info := m.index.GetSymbolInfo(symbolID); info != nil && info.Name != "" {
+		return info.Name
+	}
+	if defName != "" {
+		return defName
+	}
+	if name := scip.SymbolSimpleName(symbolID); name != "" {
+		return name
+	}
+	return extractSymbolName(symbolID)
+}
+
+// attributedSymbol accumulates the changes attributed to one definition.
+type attributedSymbol struct {
+	name       string
+	lines      []int
+	hunkIndex  int
+	confidence float64
+	// substantive is set once a change in it was more than comments or whitespace.
+	substantive bool
+}
+
+func (a *attributedSymbol) merge(def *SymbolDefInfo, hunkIdx int, confidence float64) *attributedSymbol {
+	if a == nil {
+		a = &attributedSymbol{name: def.Name, hunkIndex: hunkIdx}
+	}
+	if confidence > a.confidence {
+		a.confidence = confidence
+	}
+	return a
+}
+
+// changeableDefinitions returns a document's definitions a change can belong to.
+func changeableDefinitions(doc *DocumentInfo) []*SymbolDefInfo {
+	defs := make([]*SymbolDefInfo, 0, len(doc.Symbols))
+	for i := range doc.Symbols {
+		def := &doc.Symbols[i]
+		if !scip.IsChangeableDefinition(def.Symbol) || def.StartLine <= 0 {
+			continue
+		}
+		defs = append(defs, def)
+	}
+	return defs
+}
+
+// innermostDefinitions returns the narrowest definitions among those the match
+// function accepts. More than one only if they span the same lines, as with
+// "const a, b = 1, 2".
+func innermostDefinitions(defs []*SymbolDefInfo, match func(*SymbolDefInfo) bool) []*SymbolDefInfo {
+	var best []*SymbolDefInfo
+	bestSpan := 0
+	for _, def := range defs {
+		if !match(def) {
+			continue
+		}
+		span := def.EndLine - def.StartLine
+		switch {
+		case best == nil || span < bestSpan:
+			best, bestSpan = []*SymbolDefInfo{def}, span
+		case span == bestSpan:
+			best = append(best, def)
+		}
+	}
+	return best
+}
+
+// indexPosition is where a changed line or block sits in the index's coordinates:
+// on a line, or for a pure insertion or deletion in the gap before that line.
+type indexPosition struct {
+	line  int
+	isGap bool
+}
+
+// enclosing returns the innermost definitions containing this position. A gap
+// has to be strictly inside: code inserted right after a function's closing
+// brace isn't part of it.
+func (p indexPosition) enclosing(defs []*SymbolDefInfo) []*SymbolDefInfo {
+	if p.isGap {
+		return innermostDefinitions(defs, func(d *SymbolDefInfo) bool {
+			return d.StartLine < p.line && p.line <= d.EndLine
+		})
+	}
+	return innermostDefinitions(defs, func(d *SymbolDefInfo) bool {
+		return d.StartLine <= p.line && p.line <= d.EndLine
+	})
+}
+
+func (p indexPosition) confidence(def *SymbolDefInfo) float64 {
+	if !p.isGap && (p.line == def.StartLine || p.line == def.DefLine) {
+		return confidenceDefinitionLine
+	}
+	if def.Precision == scip.BoundsInferred {
+		return confidenceInferredBody
+	}
+	return confidenceExactBody
+}
+
+// blockPositions returns the positions of a change block in the index's
+// coordinates. A modification is located by the lines it has on the index's side
+// of the diff, so it can't fall out of a function whose last line it replaced.
+func blockPositions(block impact.ChangeBlock, side indexSide) []indexPosition {
+	start, count := block.NewLine, len(block.Added)
+	if side == indexMatchesOld {
+		start, count = block.OldLine, len(block.Removed)
+	}
+	if count == 0 {
+		return []indexPosition{{line: start, isGap: true}}
+	}
+	positions := make([]indexPosition, count)
+	for i := range positions {
+		positions[i] = indexPosition{line: start + i}
+	}
+	return positions
+}
+
+// hunkBlocks returns a hunk's change blocks. A hunk built by hand has no text or
+// old-file positions, so it gets blocks in new-file coordinates with unknown text.
+func hunkBlocks(hunk *impact.ChangedHunk) []impact.ChangeBlock {
+	if len(hunk.Blocks) > 0 {
+		return hunk.Blocks
+	}
+	blocks := make([]impact.ChangeBlock, 0, len(hunk.Added)+1)
+	for _, line := range hunk.Added {
+		blocks = append(blocks, impact.ChangeBlock{NewLine: line, Added: []string{"?"}})
+	}
+	if len(hunk.Added) == 0 && len(hunk.Removed) > 0 {
+		removed := make([]string, len(hunk.Removed))
+		for i := range removed {
+			removed[i] = "?"
+		}
+		blocks = append(blocks, impact.ChangeBlock{NewLine: hunk.NewStart, Removed: removed})
+	}
+	return blocks
+}
+
+// indexSide says which side of a diff an index's line numbers refer to. Usually
+// the old one: an index built at HEAD, and a diff of the working tree on top of
+// it. Once something is reindexed (watch mode, or a diff of commits already
+// indexed), it is the new one.
+type indexSide int
+
+const (
+	indexMatchesOld indexSide = iota
+	indexMatchesNew
+	indexMatchesNeither
+)
+
+// resolveIndexSide decides which side of the diff a document's line numbers refer
+// to, by checking the hunks' own text against the occurrences on those lines. The
+// lines a change sits on are all covered by its hunk, so the check is about
+// exactly the lines it has to be right for.
+func resolveIndexSide(file *impact.ChangedFile, doc *DocumentInfo, docPath string) indexSide {
+	switch {
+	case file.IsNew:
+		return indexMatchesNew
+	case file.Deleted:
+		return indexMatchesOld
+	case file.Renamed:
+		if docPath == file.OldPath {
+			return indexMatchesOld
+		}
+		return indexMatchesNew
+	}
+
+	oldLines := make(map[int]string)
+	newLines := make(map[int]string)
+	for i := range file.Hunks {
+		hunk := &file.Hunks[i]
+		for j, text := range hunk.OldText {
+			oldLines[hunk.OldStart+j] = text
+		}
+		for j, text := range hunk.NewText {
+			newLines[hunk.NewStart+j] = text
+		}
+	}
+	if len(oldLines) == 0 && len(newLines) == 0 {
+		return indexMatchesNew // Built by hand: no text, and Added is all there is
+	}
+
+	var oldScore, newScore, defsSeen, defsMatched int
+	names := make(map[string]string)
+	for _, occ := range doc.Occurrences {
+		if strings.HasPrefix(occ.Symbol, "local ") {
+			continue
+		}
+		name, known := names[occ.Symbol]
+		if !known {
+			name = scip.SymbolSimpleName(occ.Symbol)
+			names[occ.Symbol] = name
+		}
+		if name == "" {
+			continue
+		}
+		oldText, inOld := oldLines[occ.StartLine]
+		newText, inNew := newLines[occ.StartLine]
+		if !inOld && !inNew {
+			continue
+		}
+		// Only hits count: an occurrence whose name isn't on its line, like
+		// rust-analyzer's "add" for a "+", says nothing about either side.
+		oldHit := inOld && containsWord(oldText, name)
+		newHit := inNew && containsWord(newText, name)
+		if oldHit {
+			oldScore++
+		}
+		if newHit {
+			newScore++
+		}
+		if occ.IsDefinition && scip.IsChangeableDefinition(occ.Symbol) {
+			defsSeen++
+			if oldHit || newHit {
+				defsMatched++
+			}
+		}
+	}
+
+	switch {
+	case defsSeen > 0 && defsMatched == 0:
+		return indexMatchesNeither
+	case newScore > oldScore:
+		return indexMatchesNew
+	}
+	// A tie means nothing in the hunks moved relative to the index, so either
+	// side locates the change the same way.
+	return indexMatchesOld
+}
+
+// containsWord reports whether name occurs in text as a whole identifier.
+func containsWord(text, name string) bool {
+	for offset := 0; ; {
+		i := strings.Index(text[offset:], name)
+		if i < 0 {
+			return false
+		}
+		start := offset + i
+		end := start + len(name)
+		if (start == 0 || !isIdentByte(text[start-1])) && (end == len(text) || !isIdentByte(text[end])) {
+			return true
+		}
+		offset = start + 1
+	}
+}
+
+func isIdentByte(c byte) bool {
+	return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
+}
+
+// newFileLines returns where a block sits in the new file: its added lines, or
+// for a pure deletion the line now following it.
+func newFileLines(block impact.ChangeBlock) []int {
+	if len(block.Added) == 0 {
+		return []int{block.NewLine}
+	}
+	lines := make([]int, len(block.Added))
+	for i := range lines {
+		lines[i] = block.NewLine + i
+	}
+	return lines
+}
+
+// changedNewLines returns the new-file lines of every change block in a file.
+func changedNewLines(file *impact.ChangedFile) []int {
+	var lines []int
+	for i := range file.Hunks {
+		for _, block := range hunkBlocks(&file.Hunks[i]) {
+			lines = append(lines, newFileLines(block)...)
+		}
+	}
+	return lines
+}
+
+func fileChangeType(file *impact.ChangedFile) impact.ChangeType {
+	switch {
+	case file.IsNew:
+		return impact.ChangeAdded
+	case file.Deleted:
+		return impact.ChangeDeleted
+	}
+	return impact.ChangeModified
+}
+
+// fileLevelEntry is the honest answer when no definition can be named: this file
+// changed on these lines, and here is why nothing more precise can be said.
+func fileLevelEntry(file *impact.ChangedFile, filePath string, lines []int, note string) impact.ChangedSymbol {
+	return impact.ChangedSymbol{
+		SymbolID:   fmt.Sprintf("file:%s", filePath),
+		Name:       filePath,
+		File:       filePath,
+		ChangeType: fileChangeType(file),
+		Lines:      uniqueLines(lines),
+		Confidence: confidenceUnresolved,
+		Note:       note,
+	}
 }
 
 // mapFileWithoutIndex creates low-confidence entries for files not in the index
@@ -235,13 +768,6 @@ func (m *DiffSymbolMapper) mapFileWithoutIndex(file *impact.ChangedFile) ([]impa
 	}
 	if filePath == "" {
 		return nil, nil
-	}
-
-	changeType := impact.ChangeModified
-	if file.IsNew {
-		changeType = impact.ChangeAdded
-	} else if file.Deleted {
-		changeType = impact.ChangeDeleted
 	}
 
 	// Collect all changed lines (added for new/modified, removed for deleted)
@@ -259,15 +785,12 @@ func (m *DiffSymbolMapper) mapFileWithoutIndex(file *impact.ChangedFile) ([]impa
 	}
 
 	// Create a single entry for the file with low confidence
-	return []impact.ChangedSymbol{{
-		SymbolID:   fmt.Sprintf("file:%s", filePath),
-		Name:       filePath,
-		File:       filePath,
-		ChangeType: changeType,
-		Lines:      uniqueLines(allLines),
-		Confidence: 0.3, // Low confidence - no index data
-		HunkIndex:  0,
-	}}, nil
+	if file.Deleted {
+		entry := fileLevelEntry(file, filePath, allLines, "deleted file is not in the index, so what used it is not resolved")
+		entry.DeletionUnresolved = true
+		return []impact.ChangedSymbol{entry}, nil
+	}
+	return []impact.ChangedSymbol{fileLevelEntry(file, filePath, allLines, "file is not in the index")}, nil
 }
 
 // extractSymbolName extracts a readable name from a SCIP symbol ID

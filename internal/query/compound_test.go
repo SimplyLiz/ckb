@@ -4,7 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/SimplyLiz/CodeMCP/internal/testutil"
 )
 
 // createTestDirectory creates a test directory structure in the engine's repo root.
@@ -794,4 +797,99 @@ func TestSummarizeTransitive_CountsDirectAndTransitiveModules(t *testing.T) {
 	if got := summarizeTransitive(&AnalyzeImpactResponse{DirectImpact: resp.DirectImpact}); got.ModuleSpread != 2 {
 		t.Errorf("direct-only spread = %d, want 2", got.ModuleSpread)
 	}
+}
+
+func TestMarkConsumersNotAssessed(t *testing.T) {
+	t.Run("low becomes not assessed, evidence stays", func(t *testing.T) {
+		risk := &PrepareRisk{Level: "low", Score: 0.2, Factors: []string{"No test files found in target module"}}
+		markConsumersNotAssessed(risk, 0)
+		if risk.Level != RiskLevelNotAssessed || risk.Score != 0 {
+			t.Errorf("risk = %s %.2f, want %s 0", risk.Level, risk.Score, RiskLevelNotAssessed)
+		}
+		if len(risk.Factors) != 2 || risk.Factors[1] != "No test files found in target module" {
+			t.Errorf("factors = %v, want the evidence kept", risk.Factors)
+		}
+	})
+
+	t.Run("evidence that reaches medium stands, as a lower bound", func(t *testing.T) {
+		risk := &PrepareRisk{Level: "high", Score: 0.5}
+		markConsumersNotAssessed(risk, 0)
+		if risk.Level != "high" || risk.Score != 0.5 {
+			t.Errorf("risk = %s %.2f, want it unchanged", risk.Level, risk.Score)
+		}
+		if len(risk.Factors) == 0 || !strings.Contains(risk.Factors[0], "not assessed") {
+			t.Errorf("factors = %v, want the gap named", risk.Factors)
+		}
+	})
+
+	t.Run("known dependents are left alone", func(t *testing.T) {
+		risk := &PrepareRisk{Level: "low", Score: 0.1}
+		markConsumersNotAssessed(risk, 2)
+		if risk.Level != "low" || len(risk.Factors) != 0 {
+			t.Errorf("risk = %+v, want it unchanged", risk)
+		}
+	})
+}
+
+// The same engine with and without its index: the blind spot is only without.
+func TestPrepareChange_NoIndexIsNotAssessed(t *testing.T) {
+	testutil.ForEachLanguage(t, func(t *testing.T, fixture *testutil.FixtureContext) {
+		engine, cleanup := setupGoldenEngine(t, fixture)
+		defer cleanup()
+		ctx := context.Background()
+
+		var target string
+		for _, doc := range engine.scipAdapter.GetIndex().Documents {
+			target = doc.RelativePath
+			break
+		}
+
+		engine.scipAdapter = nil
+		resp, err := engine.PrepareChange(ctx, PrepareChangeOptions{Target: target, ChangeType: ChangeModify})
+		if err != nil {
+			t.Fatalf("PrepareChange(%s): %v", target, err)
+		}
+		if resp.RiskAssessment == nil {
+			t.Fatal("no risk assessment")
+		}
+		if resp.RiskAssessment.Level == "low" {
+			t.Errorf("risk is low with no consumer graph: %+v", resp.RiskAssessment)
+		}
+		named := false
+		for _, f := range resp.RiskAssessment.Factors {
+			named = named || strings.Contains(f, "not assessed")
+		}
+		if !named {
+			t.Errorf("factors don't name the gap: %v", resp.RiskAssessment.Factors)
+		}
+	})
+}
+
+// AnalyzeImpact can still reach its analysis without an index, on a symbol known
+// from identity data. Nothing looked up its references then, so it isn't low.
+func TestAnalyzeImpact_IdentityOnlyIsNotAssessed(t *testing.T) {
+	testutil.ForEachLanguage(t, func(t *testing.T, fixture *testutil.FixtureContext) {
+		engine, cleanup := setupGoldenEngine(t, fixture)
+		defer cleanup()
+
+		const id = "ckb:test:sym:identityonly"
+		_, err := engine.db.Conn().Exec(`INSERT INTO symbol_mappings
+			(stable_id, state, fingerprint_json, location_json, definition_version_semantics, last_verified_at, last_verified_state_id)
+			VALUES (?, 'active', '{"name":"Lonely","kind":"function","qualifiedContainer":""}', '{"path":"a.go","line":1,"column":1}', 'unknown', datetime('now'), 'state1')`, id)
+		if err != nil {
+			t.Fatalf("insert mapping: %v", err)
+		}
+
+		engine.scipAdapter = nil
+		resp, err := engine.AnalyzeImpact(context.Background(), AnalyzeImpactOptions{SymbolId: id})
+		if err != nil {
+			t.Fatalf("AnalyzeImpact: %v", err)
+		}
+		if resp.RiskScore.Level != RiskLevelNotAssessed {
+			t.Errorf("risk = %+v, want %s", resp.RiskScore, RiskLevelNotAssessed)
+		}
+		if resp.BlastRadius != nil && resp.BlastRadius.RiskLevel != RiskLevelNotAssessed {
+			t.Errorf("blast radius risk = %s, want %s", resp.BlastRadius.RiskLevel, RiskLevelNotAssessed)
+		}
+	})
 }

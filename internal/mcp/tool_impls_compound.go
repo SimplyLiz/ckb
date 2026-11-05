@@ -59,6 +59,9 @@ func buildMCPCompactPrepareChange(target string, r *query.PrepareChangeResponse,
 	}
 
 	summary := fmt.Sprintf("Changing %s affects %d files with %s risk.", target, len(affectedFiles), risk)
+	if risk == query.RiskLevelNotAssessed {
+		summary = fmt.Sprintf("Changing %s: what depends on it was not assessed (no SCIP index).", target)
+	}
 
 	return CompactPrepareChange{
 		Target:        target,

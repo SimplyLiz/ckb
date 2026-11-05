@@ -59,14 +59,14 @@
     {
       "file": "pkg/server.go",
       "kind": "property",
-      "line": 0,
+      "line": 6,
       "moduleId": "pkg",
       "name": "handler"
     },
     {
       "file": "pkg/handler.go",
       "kind": "property",
-      "line": 0,
+      "line": 8,
       "moduleId": "pkg",
       "name": "service"
     }

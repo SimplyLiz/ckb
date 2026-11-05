@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends"
+	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/complexity"
 	"github.com/SimplyLiz/CodeMCP/internal/compression"
 	"github.com/SimplyLiz/CodeMCP/internal/errors"
@@ -73,6 +74,26 @@ type LocationInfo struct {
 	EndColumn   int    `json:"endColumn,omitempty"`
 }
 
+// ftsResultLocation locates a symbol found through the FTS table, which only
+// stores its file. The rest comes from its SCIP definition, in the same 1-based
+// lines as every other location; without an index only the file is known, and
+// the lines stay 0.
+func (e *Engine) ftsResultLocation(symbolID, filePath string) *LocationInfo {
+	loc := &LocationInfo{FileId: filePath}
+	if e.scipAdapter == nil || !e.scipAdapter.IsAvailable() {
+		return loc
+	}
+	def := e.scipAdapter.DefinitionLocation(symbolID)
+	if def == nil {
+		return loc
+	}
+	loc.StartLine = def.Line
+	loc.StartColumn = def.Column
+	loc.EndLine = def.EndLine
+	loc.EndColumn = def.EndColumn
+	return loc
+}
+
 // TruncationInfo describes why results were truncated.
 type TruncationInfo struct {
 	Reason        string `json:"reason"`
@@ -98,9 +119,10 @@ func (e *Engine) GetSymbol(ctx context.Context, opts GetSymbolOptions) (*GetSymb
 	// Resolve symbol ID through aliases
 	resolved, err := e.resolver.ResolveSymbolId(opts.SymbolId)
 	if err != nil {
-		// If identity resolution fails and this looks like a raw SCIP ID,
-		// try querying SCIP directly as a fallback
-		if strings.HasPrefix(opts.SymbolId, "scip-") && e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
+		// If identity resolution fails, this may be a raw SCIP ID: ask the index.
+		// It's a map lookup, and the scheme says nothing about whether the ID is
+		// in there: rust-analyzer, semanticdb and cxx don't start with "scip-".
+		if e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
 			result, scipErr := e.scipAdapter.GetSymbol(ctx, opts.SymbolId)
 			if scipErr == nil && result != nil {
 				// Successfully found in SCIP - build response directly
@@ -341,7 +363,9 @@ type SemanticEvidenceChunk struct {
 func generateSearchCacheKey(opts SearchSymbolsOptions) string {
 	// Build a deterministic key from the options
 	keyParts := []string{
-		"search",
+		// Bump when the shape of a cached result changes: entries live until the
+		// next commit, across an upgrade of the binary.
+		"search-v2",
 		opts.Query,
 		opts.Scope,
 		fmt.Sprintf("%d", opts.Limit),
@@ -425,6 +449,10 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 			if r.Name == "" {
 				continue
 			}
+			// A table populated by an older version still has locals in it.
+			if scip.IsLocalSymbol(r.ID) {
+				continue
+			}
 			// Filter by kinds if specified
 			if len(opts.Kinds) > 0 {
 				matchKind := false
@@ -448,9 +476,7 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 				Name:     r.Name,
 				Kind:     r.Kind,
 				ModuleId: filepath.Dir(r.FilePath),
-				Location: &LocationInfo{
-					FileId: r.FilePath,
-				},
+				Location: e.ftsResultLocation(r.ID, r.FilePath),
 				Visibility: &VisibilityInfo{
 					Visibility: inferVisibility(r.Name, r.Kind),
 					Confidence: 0.7,
@@ -573,7 +599,7 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 						Name:     s.Name,
 						Kind:     s.Kind,
 						ModuleId: filepath.Dir(s.FilePath),
-						Location: &LocationInfo{FileId: s.FilePath},
+						Location: e.ftsResultLocation(s.ID, s.FilePath),
 						Visibility: &VisibilityInfo{
 							Visibility: inferVisibility(s.Name, s.Kind),
 							Confidence: 0.6,

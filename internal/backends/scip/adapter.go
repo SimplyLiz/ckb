@@ -329,10 +329,13 @@ func (s *SCIPAdapter) SearchSymbols(ctx context.Context, query string, opts back
 		)
 	}
 
-	// Convert results
-	symbols := make([]backends.SymbolResult, len(scipSymbols))
-	for i, scipSym := range scipSymbols {
-		symbols[i] = *s.convertToSymbolResult(scipSym)
+	// Convert results. A local means nothing to whoever is searching a repo.
+	symbols := make([]backends.SymbolResult, 0, len(scipSymbols))
+	for _, scipSym := range scipSymbols {
+		if IsLocalSymbol(scipSym.StableId) {
+			continue
+		}
+		symbols = append(symbols, *s.convertToSymbolResult(scipSym))
 	}
 
 	// Compute completeness
@@ -405,6 +408,28 @@ func (s *SCIPAdapter) FindReferences(ctx context.Context, symbolID string, opts 
 		Completeness:    completeness,
 		TotalReferences: total,
 	}, nil
+}
+
+// DefinitionLocation returns where a symbol is defined, 1-indexed like every
+// location this adapter returns, or nil if the index has no definition for it.
+func (s *SCIPAdapter) DefinitionLocation(symbolID string) *backends.Location {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.index == nil {
+		return nil
+	}
+	loc := findSymbolLocationFast(symbolID, s.index)
+	if loc == nil {
+		return nil
+	}
+	return &backends.Location{
+		Path:      loc.FileId,
+		Line:      loc.StartLine + 1, // Convert to 1-indexed
+		Column:    loc.StartColumn + 1,
+		EndLine:   loc.EndLine + 1,
+		EndColumn: loc.EndColumn + 1,
+	}
 }
 
 // convertToSymbolResult converts a SCIPSymbol to a SymbolResult

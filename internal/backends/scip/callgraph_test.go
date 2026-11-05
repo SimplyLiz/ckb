@@ -733,3 +733,80 @@ func TestIsFunctionSymbol(t *testing.T) {
 		})
 	}
 }
+
+// Bounds and caller attribution with the EnclosingRange real indexers emit.
+func TestFunctionBounds_EnclosingRange(t *testing.T) {
+	pkg := "scip-typescript npm demo 1.0.0 src/`a.ts`/"
+	doc := &Document{
+		RelativePath: "src/a.ts",
+		Occurrences: []*Occurrence{
+			{Range: []int32{0, 0, 3}, Symbol: pkg + "outer().", SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{0, 0, 10, 1}},
+			{Range: []int32{0, 6, 7}, Symbol: pkg + "outer().(x)", SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{2, 2, 3}, Symbol: pkg + "inner().", SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{2, 2, 4, 3}},
+			{Range: []int32{3, 4, 5}, Symbol: pkg + "callee().", SymbolRoles: 8},
+			{Range: []int32{5, 4, 5}, Symbol: pkg + "other().", SymbolRoles: 8},
+			{Range: []int32{6, 4, 5}, Symbol: pkg + "outer().(x)", SymbolRoles: 8},
+			{Range: []int32{12, 0, 5}, Symbol: pkg + "LIMIT.", SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{12, 8, 12}, Symbol: pkg + "topLevel().", SymbolRoles: 8},
+		},
+		Symbols: []*SymbolInformation{
+			{Symbol: pkg + "outer()."},
+			{Symbol: pkg + "outer().(x)"},
+			{Symbol: pkg + "inner()."},
+			{Symbol: pkg + "LIMIT.", Kind: 8}, // SCIP's Constant: not a function
+		},
+	}
+
+	ranges := buildFunctionRanges(doc)
+	if len(ranges) != 2 {
+		t.Fatalf("ranges = %+v, want outer and inner only: no parameter, no constant", ranges)
+	}
+	if r := ranges[pkg+"outer()."]; r.start != 0 || r.end != 10 {
+		t.Errorf("outer = %+v, want its EnclosingRange 0-10", r)
+	}
+
+	callers := buildCallerIndex([]*Document{doc})
+	if got := callers[pkg+"callee()."]; len(got) != 1 || got[0] != pkg+"inner()." {
+		t.Errorf("callers of callee = %v, want the innermost function", got)
+	}
+	if got := callers[pkg+"other()."]; len(got) != 1 || got[0] != pkg+"outer()." {
+		t.Errorf("callers of other = %v, want outer", got)
+	}
+	if got := callers[pkg+"topLevel()."]; len(got) != 0 {
+		t.Errorf("callers of topLevel = %v, want none: line 12 is outside every function", got)
+	}
+}
+
+func TestDefinitionBounds_Exclusions(t *testing.T) {
+	pkg := "rust-analyzer cargo demo 0.1.0 "
+	doc := &Document{
+		Occurrences: []*Occurrence{
+			{Range: []int32{0, 0, 24, 0}, Symbol: pkg + "crate/", SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{0, 0, 24, 0}},
+			{Range: []int32{2, 10, 15}, Symbol: pkg + "LIMIT.", SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{2, 0, 26}},
+			{Range: []int32{4, 7, 13}, Symbol: pkg + "run().", SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{5, 8, 9}, Symbol: "local 1", SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{5, 8, 9}},
+			{Range: []int32{7, 7, 13}, Symbol: pkg + "T#", SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{8, 7, 13}, Symbol: pkg + "byKind.", SymbolRoles: SymbolRoleDefinition},
+		},
+		Symbols: []*SymbolInformation{
+			{Symbol: pkg + "run()."},
+			{Symbol: pkg + "byKind.", Kind: 29}, // Module
+		},
+	}
+	got := make(map[string]DefinitionBound)
+	for _, b := range DefinitionBounds(doc) {
+		got[b.Symbol] = b
+	}
+	if len(got) != 3 {
+		t.Fatalf("bounds = %+v, want LIMIT, run and T", got)
+	}
+	if b := got[pkg+"LIMIT."]; b.Start != 2 || b.End != 2 || b.Precision != BoundsExact {
+		t.Errorf("LIMIT = %+v, want a single-line exact range", b)
+	}
+	if b := got[pkg+"run()."]; b.Precision != BoundsInferred || b.End != 4+DefaultMaxFunctionLines {
+		t.Errorf("run = %+v, want an inferred range", b)
+	}
+	if b := got[pkg+"T#"]; b.Precision != BoundsPoint || b.Start != 7 || b.End != 7 {
+		t.Errorf("T = %+v, want a point", b)
+	}
+}

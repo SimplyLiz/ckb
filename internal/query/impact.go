@@ -438,6 +438,13 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 	visibility := symbolInfo.Visibility
 	riskScore := convertRiskScore(result.RiskScore)
 
+	// Reached on identity data alone: the symbol is known, but no references were
+	// looked up, so a low score here would be a statement about nothing.
+	consumersNotAssessed := !e.hasConsumerGraph() && len(refs) == 0
+	if consumersNotAssessed {
+		riskScore = notAssessedRisk(1)
+	}
+
 	// Build provenance
 	provenance := e.buildProvenance(repoState, "full", startTime, backendContribs, completeness)
 	if result.AnalysisLimits != nil && result.AnalysisLimits.HasLimitations() {
@@ -542,6 +549,10 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 				Similarity: sc.Similarity,
 			})
 		}
+	}
+
+	if blastRadius != nil && consumersNotAssessed {
+		blastRadius.RiskLevel = riskScore.Level
 	}
 
 	resp := &AnalyzeImpactResponse{
@@ -1062,9 +1073,13 @@ type ChangedSymbolInfo struct {
 	SymbolID   string  `json:"symbolId"`
 	Name       string  `json:"name"`
 	File       string  `json:"file"`
-	ChangeType string  `json:"changeType"` // "added", "modified", "deleted"
-	Lines      []int   `json:"lines,omitempty"`
+	ChangeType string  `json:"changeType"`      // "added", "modified", "deleted"
+	Lines      []int   `json:"lines,omitempty"` // New-file lines; a deleted symbol's are its old-file lines
 	Confidence float64 `json:"confidence"`
+	// Note qualifies the entry: on a file-level entry (symbolId "file:..."), which
+	// changed lines could not be attributed to a definition and why; on a symbol,
+	// that only comments or whitespace changed in it.
+	Note string `json:"note,omitempty"`
 }
 
 // Recommendation suggests an action based on impact analysis.
@@ -1234,6 +1249,14 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	untestedConsumers := 0
 	var untestedExamples []string
 
+	// Deleted symbols whose consumers were not touched by this diff: they don't
+	// compile anymore unless something else changes.
+	changedFilePaths := make(map[string]bool, len(parsedDiff.Files))
+	for i := range parsedDiff.Files {
+		changedFilePaths[diff.GetEffectivePath(&parsedDiff.Files[i])] = true
+	}
+	var brokenDeletions []brokenDeletion
+
 	// Confidence input: average symbol-mapping confidence across changed symbols.
 	var totalMappingConfidence float64
 	var mappingConfidenceCount int
@@ -1256,6 +1279,12 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		})
 		if err != nil {
 			continue // Skip symbols that can't be analyzed
+		}
+
+		if sym.ChangeType == impact.ChangeDeleted {
+			if broken := findBrokenDeletion(sym.Name, impactResult.DirectImpact, changedFilePaths); broken != nil {
+				brokenDeletions = append(brokenDeletions, *broken)
+			}
 		}
 
 		// Collect direct impact (deduplicated)
@@ -1343,6 +1372,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			ChangeType: string(sym.ChangeType),
 			Lines:      sym.Lines,
 			Confidence: sym.Confidence,
+			Note:       sym.Note,
 		}
 	}
 
@@ -1356,6 +1386,13 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 
 	// Calculate aggregated risk score
 	riskScore := e.calculateAggregatedRisk(changedSymbols, allDirectImpact, allTransitiveImpact, modulesAffected)
+	applyBrokenDeletionsToRisk(riskScore, brokenDeletions)
+	for _, sym := range changedSymbols {
+		if sym.DeletionUnresolved {
+			riskScore.Explanation += " Removed code could not be traced to its consumers, so this is a lower bound."
+			break
+		}
+	}
 	summary.EstimatedRisk = riskScore.Level
 
 	// Calculate blast radius
@@ -1381,8 +1418,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	// Without SCIP there is no consumer graph, so "0 consumers" means nobody
 	// looked, and a score built on it would read as a clean bill of health.
 	// Consumers found some other way still count as a lower bound.
-	hasSCIPIndex := e.scipAdapter != nil && e.scipAdapter.IsAvailable()
-	if !hasSCIPIndex && len(allDirectImpact)+len(allTransitiveImpact) == 0 && len(changedSymbols) > 0 {
+	if !e.hasConsumerGraph() && len(allDirectImpact)+len(allTransitiveImpact) == 0 && len(changedSymbols) > 0 {
 		riskScore = notAssessedRisk(len(changedSymbols))
 		summary.EstimatedRisk = riskScore.Level
 		blastRadius.RiskLevel = riskScore.Level
@@ -1395,6 +1431,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 
 	// Generate recommendations
 	recommendations := e.generateRecommendations(summary, riskScore, changedSymbols, modulesAffected, testGapsInfo, contracts)
+	recommendations = append(deletionRecommendations(brokenDeletions, changedSymbols), recommendations...)
 
 	// Apply budget
 	budget := e.compressor.GetBudget()
@@ -1448,6 +1485,11 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	// Add staleness warning if applicable
 	if indexStaleness != nil && indexStaleness.IsStale {
 		provenance.Warnings = append(provenance.Warnings, indexStaleness.StalenessMessage)
+	}
+	for _, sym := range changedSymbols {
+		if sym.DeletionUnresolved {
+			provenance.Warnings = append(provenance.Warnings, fmt.Sprintf("deleted symbols not resolved in %s: %s", sym.File, sym.Note))
+		}
 	}
 
 	// Change: what was diffed (branch, base, mode).
@@ -1656,9 +1698,94 @@ func bridgeMultiplierFromGraph(nodes []cartographer.GraphNode, files []string) (
 	}
 }
 
+// brokenDeletion is a deleted symbol still used outside the files in the diff.
+type brokenDeletion struct {
+	name      string
+	consumers []string
+}
+
+// findBrokenDeletion returns the deleted symbol's direct consumers outside the
+// diff, or nil if there are none. A consumer in a file the diff also changes may
+// well have been updated, and the index can't tell.
+func findBrokenDeletion(name string, direct []ImpactItem, changedFiles map[string]bool) *brokenDeletion {
+	var consumers []string
+	for _, item := range direct {
+		if item.Location != nil && changedFiles[item.Location.FileId] {
+			continue
+		}
+		consumer := item.Name
+		if consumer == "" && item.Location != nil {
+			consumer = item.Location.FileId // A use at file level, such as an import
+		}
+		consumers = append(consumers, consumer)
+	}
+	if len(consumers) == 0 {
+		return nil
+	}
+	return &brokenDeletion{name: name, consumers: consumers}
+}
+
+// applyBrokenDeletionsToRisk keeps the score from calling a change low when it
+// removes something code outside the diff still uses: however few consumers
+// there are, that breaks them.
+func applyBrokenDeletionsToRisk(risk *RiskScore, broken []brokenDeletion) {
+	if len(broken) == 0 {
+		return
+	}
+	const highRiskFloor = 0.6
+	if risk.Score < highRiskFloor {
+		risk.Score = highRiskFloor
+		risk.Level = "high"
+	}
+	risk.Factors = append(risk.Factors, RiskFactor{
+		Name:     "deleted_with_consumers",
+		Value:    1,
+		Evidence: fmt.Sprintf("%d deleted symbol(s) still used outside this diff", len(broken)),
+	})
+	risk.Explanation += fmt.Sprintf(" %d deleted symbol(s) are still used outside this diff.", len(broken))
+}
+
+// deletionRecommendations says what deleting symbols breaks, or that it can't tell.
+func deletionRecommendations(broken []brokenDeletion, changedSymbols []impact.ChangedSymbol) []Recommendation {
+	var recs []Recommendation
+	for _, b := range broken {
+		shown := b.consumers
+		more := ""
+		if len(shown) > 5 {
+			more = fmt.Sprintf(" and %d more", len(shown)-5)
+			shown = shown[:5]
+		}
+		recs = append(recs, Recommendation{
+			Type:     "review",
+			Severity: "error",
+			Message:  fmt.Sprintf("Deleted %s is still used by %s%s, outside this diff.", b.name, strings.Join(shown, ", "), more),
+			Action:   "Update those consumers, or keep the symbol",
+			Source:   "deleted-symbols",
+		})
+	}
+	for _, sym := range changedSymbols {
+		if sym.DeletionUnresolved {
+			recs = append(recs, Recommendation{
+				Type:     "coverage",
+				Severity: "warning",
+				Message:  fmt.Sprintf("Removed code in %s can't be traced: %s.", sym.File, sym.Note),
+				Action:   "The index already includes this deletion. Index the base revision and re-run to see the consumers, or search for the removed names",
+				Source:   "deleted-symbols",
+			})
+		}
+	}
+	return recs
+}
+
 // RiskLevelNotAssessed is the risk level of a change whose consumers could not
 // be looked up. It is deliberately not on the low..critical scale.
 const RiskLevelNotAssessed = "not_assessed"
+
+// hasConsumerGraph reports whether anything can answer who uses a symbol. Without
+// it, "0 consumers" means nobody looked.
+func (e *Engine) hasConsumerGraph() bool {
+	return e.scipAdapter != nil && e.scipAdapter.IsAvailable()
+}
 
 // notAssessedRisk is the risk of a change analyzed without a consumer graph.
 func notAssessedRisk(changedSymbols int) *RiskScore {
@@ -2353,7 +2480,7 @@ func (e *Engine) generateRecommendations(
 	// Check for low-confidence mappings
 	lowConfidenceCount := 0
 	for _, sym := range changedSymbols {
-		if sym.Confidence < 0.5 {
+		if sym.Confidence < 0.5 && !sym.Trivial {
 			lowConfidenceCount++
 		}
 	}

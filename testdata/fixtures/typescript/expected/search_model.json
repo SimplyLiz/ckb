@@ -31,14 +31,14 @@
     {
       "file": "src/pkg/model.ts",
       "kind": "method",
-      "line": 0,
+      "line": 35,
       "moduleId": "src/pkg",
       "name": "\u003cconstructor\u003e"
     },
     {
       "file": "src/pkg/service.ts",
       "kind": "method",
-      "line": 0,
+      "line": 33,
       "moduleId": "src/pkg",
       "name": "\u003cconstructor\u003e"
     },
@@ -66,63 +66,63 @@
     {
       "file": "src/pkg/model.ts",
       "kind": "namespace",
-      "line": 0,
+      "line": 1,
       "moduleId": "src/pkg",
       "name": "model.ts"
     },
     {
       "file": "src/pkg/model.ts",
       "kind": "parameter",
-      "line": 0,
+      "line": 54,
       "moduleId": "src/pkg",
       "name": "cfg"
     },
     {
       "file": "src/pkg/service.ts",
       "kind": "parameter",
-      "line": 0,
+      "line": 33,
       "moduleId": "src/pkg",
       "name": "model"
     },
     {
       "file": "src/pkg/service.ts",
       "kind": "parameter",
-      "line": 0,
+      "line": 53,
       "moduleId": "src/pkg",
       "name": "model"
     },
     {
       "file": "src/pkg/model.ts",
       "kind": "parameter",
-      "line": 0,
+      "line": 35,
       "moduleId": "src/pkg",
       "name": "name"
     },
     {
       "file": "src/pkg/model.ts",
       "kind": "parameter",
-      "line": 0,
+      "line": 79,
       "moduleId": "src/pkg",
       "name": "name"
     },
     {
       "file": "src/pkg/model.ts",
       "kind": "property",
-      "line": 0,
+      "line": 33,
       "moduleId": "src/pkg",
       "name": "config"
     },
     {
       "file": "src/pkg/service.ts",
       "kind": "property",
-      "line": 0,
+      "line": 31,
       "moduleId": "src/pkg",
       "name": "model"
     },
     {
       "file": "src/pkg/model.ts",
       "kind": "property",
-      "line": 0,
+      "line": 31,
       "moduleId": "src/pkg",
       "name": "name"
     }

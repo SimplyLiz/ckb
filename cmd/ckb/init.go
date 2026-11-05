@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/SimplyLiz/CodeMCP/internal/config"
 	"github.com/SimplyLiz/CodeMCP/internal/errors"
@@ -57,7 +60,38 @@ type initOptions struct {
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
-	return runInitCore(initOptions{Force: initForce, Name: initName, NoActivate: initNoActivate})
+	if err := runInitCore(initOptions{Force: initForce, Name: initName, NoActivate: initNoActivate}); err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil //nolint:nilerr // the init itself succeeded; this only tidies git status
+	}
+	excludeInitFilesFromGit(cwd, newLogger("human"), os.Stdout)
+	return nil
+}
+
+// excludeInitFilesFromGit keeps .ckb/ and the index out of 'git status', the same
+// way selfInitRepo does: through .git/info/exclude, so nothing in the repo changes
+// and nothing is committed. Outside a git repo there is nothing to do, and failing
+// here shouldn't fail an init that worked.
+func excludeInitFilesFromGit(dir string, logger *slog.Logger, out io.Writer) {
+	top, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output() // #nosec G204 //nolint:gosec // fixed git subcommand; dir is the directory being initialized
+	if err != nil {
+		return
+	}
+	prefix, err := exec.Command("git", "-C", dir, "rev-parse", "--show-prefix").Output() // #nosec G204 //nolint:gosec // fixed git subcommand; dir is the directory being initialized
+	if err != nil {
+		return
+	}
+	// The index sits next to .ckb/, which isn't the repo root if init ran in a subdirectory.
+	patterns := []string{".ckb/", "/" + strings.TrimSpace(string(prefix)) + "index.scip"}
+	if err := excludeFromGit(strings.TrimSpace(string(top)), patterns); err != nil {
+		logger.Warn("Failed to add CKB's files to .git/info/exclude", "error", err.Error())
+		return
+	}
+	fmt.Fprintln(out, "\nKept out of 'git status' through .git/info/exclude: .ckb/ and index.scip.")
+	fmt.Fprintln(out, "To share the config with your team, 'git add -f .ckb/config.json'.")
 }
 
 func runInitCore(opts initOptions) error {
