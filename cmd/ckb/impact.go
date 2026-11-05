@@ -607,6 +607,7 @@ type ChangedSymbolCLI struct {
 	ChangeType string  `json:"changeType"`
 	Lines      []int   `json:"lines,omitempty"`
 	Confidence float64 `json:"confidence"`
+	Note       string  `json:"note,omitempty"`
 }
 
 // BlastRadiusCLI summarizes the impact spread
@@ -646,6 +647,7 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 			ChangeType: sym.ChangeType,
 			Lines:      sym.Lines,
 			Confidence: sym.Confidence,
+			Note:       sym.Note,
 		})
 	}
 

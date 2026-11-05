@@ -1078,6 +1078,9 @@ func formatChangeSetHuman(resp *ChangeSetResponseCLI) string {
 		for _, s := range resp.ChangedSymbols[:shown] {
 			b.WriteString(fmt.Sprintf("  %s %s\n", s.ChangeType, s.Name))
 			b.WriteString(fmt.Sprintf("    %s\n", s.File))
+			if s.Note != "" {
+				b.WriteString(fmt.Sprintf("    (not attributed to a symbol: %s)\n", s.Note))
+			}
 		}
 		if len(resp.ChangedSymbols) > shown {
 			b.WriteString(fmt.Sprintf("  ... and %d more\n", len(resp.ChangedSymbols)-shown))

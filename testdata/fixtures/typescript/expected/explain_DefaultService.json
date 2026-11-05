@@ -7,7 +7,7 @@
       "name": "DefaultService"
     },
     "usage": {
-      "calleeCount": 18,
+      "calleeCount": 10,
       "callerCount": 0,
       "referenceCount": 2
     }

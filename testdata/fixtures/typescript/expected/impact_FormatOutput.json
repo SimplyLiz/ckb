@@ -3,7 +3,7 @@
     "fileCount": 2,
     "moduleCount": 2,
     "riskLevel": "low",
-    "uniqueCallerCount": 0
+    "uniqueCallerCount": 2
   },
   "directImpact": [
     {

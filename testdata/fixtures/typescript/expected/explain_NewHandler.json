@@ -7,7 +7,7 @@
       "name": "newHandler"
     },
     "usage": {
-      "calleeCount": 0,
+      "calleeCount": 1,
       "callerCount": 0,
       "referenceCount": 4
     }

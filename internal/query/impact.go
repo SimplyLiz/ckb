@@ -1050,6 +1050,9 @@ type ChangedSymbolInfo struct {
 	ChangeType string  `json:"changeType"` // "added", "modified", "deleted"
 	Lines      []int   `json:"lines,omitempty"`
 	Confidence float64 `json:"confidence"`
+	// Note explains a file-level entry (symbolId "file:..."): which changed lines
+	// could not be attributed to a definition, and why.
+	Note string `json:"note,omitempty"`
 }
 
 // Recommendation suggests an action based on impact analysis.
@@ -1328,6 +1331,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			ChangeType: string(sym.ChangeType),
 			Lines:      sym.Lines,
 			Confidence: sym.Confidence,
+			Note:       sym.Note,
 		}
 	}
 

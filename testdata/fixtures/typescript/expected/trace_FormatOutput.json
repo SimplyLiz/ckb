@@ -9,13 +9,13 @@
           "role": "target"
         },
         {
-          "file": "src/main.ts",
+          "file": "src/pkg/handler.ts",
           "kind": "",
-          "name": "main().(input)",
+          "name": "handle",
           "role": "entrypoint"
         }
       ],
-      "pathType": "unknown"
+      "pathType": "api"
     },
     {
       "nodes": [
@@ -28,11 +28,17 @@
         {
           "file": "src/pkg/handler.ts",
           "kind": "",
-          "name": "Handler#handle().(input)",
+          "name": "handle",
+          "role": "intermediate"
+        },
+        {
+          "file": "src/pkg/handler.ts",
+          "kind": "",
+          "name": "handleBatch",
           "role": "entrypoint"
         }
       ],
-      "pathType": "unknown"
+      "pathType": "api"
     }
   ],
   "targetSymbol": "scip-typescript npm fixture 1.0.0 src/internal/`util.ts`/FormatOutput().",
