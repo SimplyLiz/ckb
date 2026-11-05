@@ -603,6 +603,11 @@ type ContractSignalCLI struct {
 	File   string `json:"file"`
 	Kind   string `json:"kind"`
 	Basis  string `json:"basis"`
+
+	Before        string   `json:"before,omitempty"`
+	After         string   `json:"after,omitempty"`
+	ConsumerCount int      `json:"consumerCount,omitempty"`
+	Consumers     []string `json:"consumers,omitempty"`
 }
 
 // RelatedDecisionCLI is a lightweight ADR reference.
@@ -639,6 +644,8 @@ type ChangedSymbolCLI struct {
 	Lines      []int   `json:"lines,omitempty"`
 	Confidence float64 `json:"confidence"`
 	Note       string  `json:"note,omitempty"`
+	// Declaration: unchanged (a body edit), compatible, changed or removed (heuristic).
+	Declaration string `json:"declaration,omitempty"`
 }
 
 // BlastRadiusCLI summarizes the impact spread
@@ -672,13 +679,14 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 	changedSymbols := make([]ChangedSymbolCLI, 0, len(resp.ChangedSymbols))
 	for _, sym := range resp.ChangedSymbols {
 		changedSymbols = append(changedSymbols, ChangedSymbolCLI{
-			SymbolID:   sym.SymbolID,
-			Name:       sym.Name,
-			File:       sym.File,
-			ChangeType: sym.ChangeType,
-			Lines:      sym.Lines,
-			Confidence: sym.Confidence,
-			Note:       sym.Note,
+			SymbolID:    sym.SymbolID,
+			Name:        sym.Name,
+			File:        sym.File,
+			ChangeType:  sym.ChangeType,
+			Lines:       sym.Lines,
+			Confidence:  sym.Confidence,
+			Note:        sym.Note,
+			Declaration: sym.Declaration,
 		})
 	}
 
@@ -838,6 +846,11 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 				File:   c.File,
 				Kind:   c.Kind,
 				Basis:  c.Basis,
+
+				Before:        c.Before,
+				After:         c.After,
+				ConsumerCount: c.ConsumerCount,
+				Consumers:     c.Consumers,
 			})
 		}
 	}

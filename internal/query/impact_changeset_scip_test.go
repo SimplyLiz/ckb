@@ -306,3 +306,145 @@ func TestBuildConsumerFiles_CutsTransitiveFirstAndSaysSo(t *testing.T) {
 		t.Errorf("listed twice: %+v", both)
 	}
 }
+
+const signatureEditOfTarget = `diff --git a/lib/lib.go b/lib/lib.go
+--- a/lib/lib.go
++++ b/lib/lib.go
+@@ -1,6 +1,6 @@
+ package lib
+ 
+-func Target(a int) int {
++func Target(a int, b string) int {
+ 	return a
+ }
+ 
+`
+
+const optionalAdditionToTarget = `diff --git a/lib/lib.go b/lib/lib.go
+--- a/lib/lib.go
++++ b/lib/lib.go
+@@ -1,6 +1,6 @@
+ package lib
+ 
+-func Target(a int) int {
++func Target(a int, opts ...string) int {
+ 	return a
+ }
+ 
+`
+
+const removalOfTarget = `diff --git a/lib/lib.go b/lib/lib.go
+--- a/lib/lib.go
++++ b/lib/lib.go
+@@ -1,7 +1,3 @@
+ package lib
+ 
+-func Target(a int) int {
+-	return a
+-}
+-
+ func Other() {}
+`
+
+// The eval's result: a changed signature broke the build at low risk, because the
+// score only counts. One consumer is enough.
+func TestAnalyzeChangeSet_RiskFollowsTheDeclaration(t *testing.T) {
+	engine := changeSetEngine(t)
+
+	tests := []struct {
+		name, diff, wantRisk, wantDecl, wantKind string
+		wantFactor                               string
+	}{
+		{"signature changed", signatureEditOfTarget, "high", "changed", "signature-changed", "signature_changed_with_consumers"},
+		{"removed", removalOfTarget, "high", "removed", "definition-removed", "deleted_with_consumers"},
+		{"body only", bodyEditOfTarget, "low", "unchanged", "", ""},
+		{"optional parameter", optionalAdditionToTarget, "low", "compatible", "compatible-signature-change", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := runChangeSet(t, engine, AnalyzeChangeSetOptions{DiffContent: tt.diff})
+			if resp.RiskScore.Level != tt.wantRisk {
+				t.Errorf("risk = %s (%.2f): %s", resp.RiskScore.Level, resp.RiskScore.Score, resp.RiskScore.Explanation)
+			}
+			if resp.Summary.EstimatedRisk != tt.wantRisk {
+				t.Errorf("summary risk = %s", resp.Summary.EstimatedRisk)
+			}
+			var target *ChangedSymbolInfo
+			for i := range resp.ChangedSymbols {
+				if resp.ChangedSymbols[i].SymbolID == symTarget {
+					target = &resp.ChangedSymbols[i]
+				}
+			}
+			if target == nil || target.Declaration != tt.wantDecl {
+				t.Fatalf("changed symbol %+v, want declaration %q", target, tt.wantDecl)
+			}
+
+			var signal *ContractSignal
+			for i := range resp.Contracts {
+				if resp.Contracts[i].File == "lib/lib.go" {
+					signal = &resp.Contracts[i]
+				}
+			}
+			if tt.wantKind == "" {
+				if signal != nil {
+					t.Errorf("a body edit flagged %+v", signal)
+				}
+			} else if signal == nil || signal.Kind != tt.wantKind || !strings.HasPrefix(signal.Basis, "heuristic") {
+				t.Errorf("contract = %+v, want %s, labelled a heuristic", signal, tt.wantKind)
+			}
+
+			hasFactor := tt.wantFactor == ""
+			for _, f := range resp.RiskScore.Factors {
+				hasFactor = hasFactor || f.Name == tt.wantFactor
+			}
+			if !hasFactor {
+				t.Errorf("factors = %+v, want %s", resp.RiskScore.Factors, tt.wantFactor)
+			}
+		})
+	}
+}
+
+// What agents read first: the files likely to break, and nothing else.
+func TestAnalyzeChangeSet_ContractChangedNamesWhatBreaks(t *testing.T) {
+	engine := changeSetEngine(t)
+
+	resp := runChangeSet(t, engine, AnalyzeChangeSetOptions{DiffContent: signatureEditOfTarget})
+	files := resp.ConsumerFiles
+	if strings.Join(files.ContractChanged, ",") != "app/app.go" {
+		t.Errorf("contractChanged = %v, want the direct consumer only, not cmd/main.go", files.ContractChanged)
+	}
+	if strings.Join(files.ContractChangedTests, ",") != "lib/lib_test.go" {
+		t.Errorf("contractChangedTests = %v, want lib/lib_test.go", files.ContractChangedTests)
+	}
+
+	resp = runChangeSet(t, engine, AnalyzeChangeSetOptions{DiffContent: bodyEditOfTarget})
+	if len(resp.ConsumerFiles.ContractChanged)+len(resp.ConsumerFiles.ContractChangedTests) != 0 {
+		t.Errorf("a body edit names files as likely to break: %+v", resp.ConsumerFiles)
+	}
+}
+
+// Every consumer updated in the same change: the build is fine, so no floor on an
+// unexported symbol, and only the can't-see-other-repos floor on an exported one.
+func TestAnalyzeChangeSet_ConsumersInTheDiffDontCount(t *testing.T) {
+	engine := changeSetEngine(t)
+	withCaller := signatureEditOfTarget + `diff --git a/app/app.go b/app/app.go
+--- a/app/app.go
++++ b/app/app.go
+@@ -5,3 +5,3 @@
+ func Run() {
+-	lib.Target(1)
++	lib.Target(1, "x")
+ }
+`
+	resp := runChangeSet(t, engine, AnalyzeChangeSetOptions{DiffContent: withCaller})
+	if resp.RiskScore.Level == "high" || resp.RiskScore.Level == "critical" {
+		t.Errorf("risk = %s, with the only consumer in the diff: %s", resp.RiskScore.Level, resp.RiskScore.Explanation)
+	}
+	found := false
+	for _, f := range resp.RiskScore.Factors {
+		found = found || f.Name == "public_contract_changed"
+	}
+	if !found || resp.RiskScore.Level != "medium" {
+		t.Errorf("exported Target: risk %s, factors %+v, want medium from public_contract_changed", resp.RiskScore.Level, resp.RiskScore.Factors)
+	}
+}

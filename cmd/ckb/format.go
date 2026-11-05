@@ -1164,6 +1164,10 @@ var changesRiskFactorLabels = map[string]string{
 	"transitive_impact": "transitive reach",
 	"module_spread":     "module spread",
 	"bridge_centrality": "architectural bridge",
+
+	"deleted_with_consumers":           "deleted, still used",
+	"signature_changed_with_consumers": "signature changed, still used",
+	"public_contract_changed":          "public contract changed",
 }
 
 // formatChangesHuman renders the `ckb changes` human-readable report: a
@@ -1190,6 +1194,14 @@ func truncationLine(info *TruncationInfoCLI) string {
 // writeConsumerFiles lists the files behind the consumer items. Lists stop at 10
 // unless all is set; the rest stay in the JSON output.
 func writeConsumerFiles(b *strings.Builder, files *query.ConsumerFiles, all bool) {
+	if files != nil && len(files.ContractChanged)+len(files.ContractChangedTests) > 0 {
+		b.WriteString(fmt.Sprintf("Look at these first: they use a symbol whose declaration changed (%d, heuristic)\n",
+			len(files.ContractChanged)+len(files.ContractChangedTests)))
+		for _, p := range append(append([]string{}, files.ContractChanged...), files.ContractChangedTests...) {
+			b.WriteString("  " + p + "\n")
+		}
+		b.WriteString("\n")
+	}
 	if files == nil || files.Total == 0 {
 		return
 	}
@@ -1313,10 +1325,28 @@ func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 	// Possible contract changes
 	if len(resp.Contracts) > 0 {
 		basis := resp.Contracts[0].Basis
+		for _, c := range resp.Contracts {
+			if c.Basis != basis {
+				basis = "heuristic: compared as text, not compiled"
+			}
+		}
 		b.WriteString(fmt.Sprintf("Possible contract changes (%d)  [%s]\n", len(resp.Contracts), basis))
 		shown := cap10(len(resp.Contracts))
 		for _, c := range resp.Contracts[:shown] {
 			b.WriteString(fmt.Sprintf("  %-20s%s\n", c.Symbol, c.File))
+			if c.Kind != "possible-contract-change" {
+				line := "    " + c.Kind
+				if c.ConsumerCount > 0 {
+					line += fmt.Sprintf(", %s outside this change", countNoun(c.ConsumerCount, "consumer file", "consumer files"))
+				}
+				b.WriteString(line + "\n")
+			}
+			if verbose && c.Before != "" {
+				b.WriteString(fmt.Sprintf("    - %s\n", c.Before))
+			}
+			if verbose && c.After != "" {
+				b.WriteString(fmt.Sprintf("    + %s\n", c.After))
+			}
 		}
 		if len(resp.Contracts) > shown {
 			b.WriteString(fmt.Sprintf("  … and %d more\n", len(resp.Contracts)-shown))

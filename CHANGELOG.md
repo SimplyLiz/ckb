@@ -83,6 +83,23 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   the CLI JSON and the human output. `summary` counts are now the real ones rather
   than counts of the per-symbol samples, so a wide change reports more consumers,
   and can score higher, than before.
+- **Risk now looks at what the change did to the declaration.** It scored counts of
+  symbols, consumers and modules, so a changed signature with one caller came out
+  `low` next to a broken build, while the "possible contract change" flag fired on
+  any edit of an exported symbol, including a body edit, and never on an unexported
+  one whose callers break all the same. The diff is now read for each changed
+  symbol's old and new declaration, in Go, TypeScript/JavaScript and Rust:
+  `declaration` on `changedSymbols` says `unchanged`, `compatible` (a new optional
+  parameter, wider visibility), `changed` or `removed`. A changed or removed
+  declaration with production consumers outside the diff is at least `high`
+  (`signature_changed_with_consumers`, alongside the existing
+  `deleted_with_consumers`), an exported one without any is at least `medium`
+  (`public_contract_changed`), and a body edit gets no floor and no contract flag.
+  `contracts` entries now say which (`signature-changed`, `definition-removed`,
+  `compatible-signature-change`, with `before` and `after`) and only fall back on
+  visibility for code that can't be read. `consumerFiles.contractChanged` and
+  `contractChangedTests` name the files using such a symbol: the ones to look at
+  first. This compares text and compiles nothing, so it stays labelled a heuristic.
 
 ### Fixed — search and navigation
 

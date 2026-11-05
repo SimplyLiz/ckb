@@ -304,29 +304,29 @@ func TestDeletedSymbolWithConsumersOutsideDiff(t *testing.T) {
 		{Name: "Sibling", Location: &LocationInfo{FileId: "lib/lib.go"}},
 	}
 
-	broken := findBrokenDeletion("Doomed", direct, map[string]bool{"lib/lib.go": true})
+	broken := findBrokenContract("Doomed", impact.DeclRemoved, direct, map[string]bool{"lib/lib.go": true})
 	if broken == nil || len(broken.consumers) != 1 || broken.consumers[0] != "Run" {
 		t.Fatalf("broken = %+v, want Run only: Sibling's file is in the diff", broken)
 	}
 
 	risk := &RiskScore{Level: "low", Score: 0.17}
-	applyBrokenDeletionsToRisk(risk, []brokenDeletion{*broken})
+	applyContractChangesToRisk(risk, []brokenContract{*broken}, 0)
 	if risk.Level != "high" || risk.Score != 0.6 {
 		t.Errorf("risk = %s %.2f, want a floor of high 0.60", risk.Level, risk.Score)
 	}
 
-	recs := deletionRecommendations([]brokenDeletion{*broken}, nil)
+	recs := contractRecommendations([]brokenContract{*broken}, nil)
 	if len(recs) != 1 || recs[0].Severity != "error" || !strings.Contains(recs[0].Message, "Deleted Doomed is still used by Run") {
 		t.Errorf("recommendations = %+v", recs)
 	}
 
-	if broken := findBrokenDeletion("Doomed", direct[1:], map[string]bool{"lib/lib.go": true}); broken != nil {
+	if broken := findBrokenContract("Doomed", impact.DeclRemoved, direct[1:], map[string]bool{"lib/lib.go": true}); broken != nil {
 		t.Errorf("consumers all in the diff: broken = %+v, want nil", broken)
 	}
 }
 
 func TestDeletionNotResolvedIsRecommended(t *testing.T) {
-	recs := deletionRecommendations(nil, []impact.ChangedSymbol{
+	recs := contractRecommendations(nil, []impact.ChangedSymbol{
 		{File: "lib/lib.go", Note: "1 removed line(s)", DeletionUnresolved: true},
 		{File: "lib/lib.go", Name: "Target"},
 	})

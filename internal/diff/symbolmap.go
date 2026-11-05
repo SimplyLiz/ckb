@@ -226,6 +226,13 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 				entry.Lines = whole.lines // A deleted definition has no new-file lines
 			}
 		}
+		if !entry.Trivial && sym.def != nil {
+			name := scip.SymbolSimpleName(symbolID)
+			if name == "" {
+				name = sym.def.Name
+			}
+			entry.Declaration, entry.DeclarationBefore, entry.DeclarationAfter = classifyDeclaration(file, sym.def, name, side, entry.ChangeType, filePath)
+		}
 		result = append(result, entry)
 	}
 
@@ -479,6 +486,7 @@ func (m *DiffSymbolMapper) symbolName(symbolID, defName string) string {
 
 // attributedSymbol accumulates the changes attributed to one definition.
 type attributedSymbol struct {
+	def        *SymbolDefInfo
 	name       string
 	lines      []int
 	hunkIndex  int
@@ -489,7 +497,7 @@ type attributedSymbol struct {
 
 func (a *attributedSymbol) merge(def *SymbolDefInfo, hunkIdx int, confidence float64) *attributedSymbol {
 	if a == nil {
-		a = &attributedSymbol{name: def.Name, hunkIndex: hunkIdx}
+		a = &attributedSymbol{def: def, name: def.Name, hunkIndex: hunkIdx}
 	}
 	if confidence > a.confidence {
 		a.confidence = confidence

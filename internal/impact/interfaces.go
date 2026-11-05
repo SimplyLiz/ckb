@@ -28,7 +28,28 @@ type ChangedSymbol struct {
 	// DeletionUnresolved marks a file-level entry for removed code whose
 	// definition isn't in the index, so what used it is unknown.
 	DeletionUnresolved bool
+	// Declaration says what the diff did to the definition's declaration, as far as
+	// its text shows. Empty means it can't tell: another language, or too little text.
+	Declaration DeclarationChange
+	// DeclarationBefore and DeclarationAfter are the text compared, where known.
+	DeclarationBefore string
+	DeclarationAfter  string
 }
+
+// DeclarationChange is what a change did to a definition's declaration, for code
+// using it. It comes from comparing text, not types, so it is a heuristic.
+type DeclarationChange string
+
+const (
+	// DeclUnchanged: only the body, formatting or parameter names changed.
+	DeclUnchanged DeclarationChange = "unchanged"
+	// DeclCompatible: existing uses keep working, as with a new optional parameter.
+	DeclCompatible DeclarationChange = "compatible"
+	// DeclChanged: the signature changed in a way existing uses may not survive.
+	DeclChanged DeclarationChange = "changed"
+	// DeclRemoved: the declaration is gone from this file, deleted or renamed.
+	DeclRemoved DeclarationChange = "removed"
+)
 
 // ParsedDiff represents a parsed git diff with structured information
 type ParsedDiff struct {
