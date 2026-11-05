@@ -16,10 +16,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
-	"github.com/SimplyLiz/CodeMCP/internal/config"
 	"github.com/SimplyLiz/CodeMCP/internal/incremental"
 	"github.com/SimplyLiz/CodeMCP/internal/index"
+	"github.com/SimplyLiz/CodeMCP/internal/indexplan"
 	"github.com/SimplyLiz/CodeMCP/internal/project"
 	"github.com/SimplyLiz/CodeMCP/internal/repostate"
 	"github.com/SimplyLiz/CodeMCP/internal/storage"
@@ -148,72 +147,17 @@ type indexResult struct {
 	Warning string
 }
 
-// indexPlan is the fully-resolved recipe for building a SCIP index for one
-// language: the exact command to run, the directory to run it from, and the
-// resolved index output path. performIndex (`ckb index`) and triggerReindex
-// (the `ckb mcp --watch` background loop) both build their command through
-// buildIndexPlan instead of each hand-rolling it — a C++ --compdb-path flag,
-// a Ruby bundle-aware prefix, a PHP prerequisite check, or a custom
-// scip.indexPath --output flag added on one path and not the other is
-// exactly the drift that made watch mode silently fail to build a usable
-// index for C++ repos and custom output paths.
-type indexPlan struct {
-	Lang       project.Language
-	Manifest   string
-	Indexer    *project.IndexerInfo
-	Command    string
-	IndexerDir string
-	IndexPath  string
-}
+// indexPlan is the recipe all index paths share; see internal/indexplan.
+type indexPlan = indexplan.Plan
 
-// resolveIndexPath resolves the SCIP index output path for repoRoot: the
-// configured scip.indexPath if set, else the default index.scip at the repo
-// root. Always returns an absolute path. Both performIndex and
-// buildIndexPlan (and therefore triggerReindex) call this — a divergence
-// here is exactly what let the watch loop silently ignore a custom
-// scip.indexPath: it never added --output, and never checked the right file
-// for existence afterward.
+// resolveIndexPath resolves the SCIP index output path for repoRoot.
 func resolveIndexPath(repoRoot string) string {
-	indexPath := "index.scip"
-	if cfg, err := config.LoadConfig(repoRoot); err == nil && cfg.Backends.Scip.IndexPath != "" {
-		indexPath = cfg.Backends.Scip.IndexPath
-	}
-	if !filepath.IsAbs(indexPath) {
-		indexPath = filepath.Join(repoRoot, indexPath)
-	}
-	return indexPath
+	return indexplan.ResolveIndexPath(repoRoot)
 }
 
-// finalizeIndexOutput makes the output of an indexer that ran in a subdirectory
-// (a nested manifest such as engine/Cargo.toml) look like a repo-root index.
-// Indexers write index.scip into their working directory unless told otherwise,
-// and they record document paths relative to that directory; every CKB consumer
-// expects the configured index path and repo-relative document paths.
+// finalizeIndexOutput makes an indexer's output look like a repo-root index.
 func finalizeIndexOutput(repoRoot string, plan *indexPlan) error {
-	if plan.IndexerDir == repoRoot {
-		return nil
-	}
-	written := filepath.Join(plan.IndexerDir, "index.scip")
-	if written != plan.IndexPath {
-		if _, err := os.Stat(written); err == nil {
-			// Replaces the previous run's index at the target path.
-			if err := os.Rename(written, plan.IndexPath); err != nil {
-				return fmt.Errorf("moving %s to %s: %w", written, plan.IndexPath, err)
-			}
-		} else if plan.IndexPath == filepath.Join(repoRoot, "index.scip") {
-			// Nothing new was written. Whatever sits at the target is an earlier,
-			// already rebased index and must not be rebased again.
-			return nil
-		}
-	}
-	prefix, err := filepath.Rel(repoRoot, plan.IndexerDir)
-	if err != nil {
-		return fmt.Errorf("resolving indexer directory: %w", err)
-	}
-	if err := scip.RebaseDocumentPaths(plan.IndexPath, filepath.ToSlash(prefix), repoRoot); err != nil {
-		return fmt.Errorf("rewriting index paths: %w", err)
-	}
-	return nil
+	return indexplan.Finalize(repoRoot, plan)
 }
 
 // resolveIndexLanguage resolves which language to index for repoRoot: either
@@ -241,114 +185,26 @@ func resolveIndexLanguage(repoRoot string, langOverride project.Language) (lang 
 	return lang, manifest, nil, true
 }
 
-// buildIndexPlan builds the indexer command for lang/manifest given the
-// resolved index output path (see resolveIndexPath) and an optional C/C++
-// compdb override (empty string means "auto-detect"). Returns a nil plan and
-// a failure indexResult (indexOutcomeIndexerMissing,
-// indexOutcomeIndexerRequirementMissing, or indexOutcomeError) when the plan
-// can't be built — the caller must not proceed to execution in that case.
-// The returned indexResult's Warning field may be set even when plan is
-// non-nil (currently only PHP's missing composer.lock notice), so callers
+// buildIndexPlan builds the indexer command for lang/manifest (see
+// indexplan.Build), in terms of this command's outcomes. Returns a nil plan and a
+// failure indexResult (indexOutcomeIndexerMissing,
+// indexOutcomeIndexerRequirementMissing, or indexOutcomeError) when the plan can't
+// be built — the caller must not proceed to execution in that case. The returned
+// indexResult's Warning field may be set even when plan is non-nil, so callers
 // should check it independently of success/failure.
 func buildIndexPlan(repoRoot string, lang project.Language, manifest, compdbOverride, indexPath string) (*indexPlan, indexResult) {
-	indexer := project.GetIndexerInfo(lang)
-	if indexer == nil {
-		return nil, indexResult{
-			Outcome: indexOutcomeIndexerMissing,
-			Message: fmt.Sprintf("no SCIP indexer available for %s", project.LanguageDisplayName(lang)),
-			Lang:    lang,
-		}
+	plan, warning, failure := indexplan.Build(repoRoot, lang, manifest, compdbOverride, indexPath)
+	if failure == nil {
+		return plan, indexResult{Warning: warning}
 	}
-
-	// Check if using non-default index path (requires --output flag)
-	defaultIndexPath := filepath.Join(repoRoot, "index.scip")
-	needsOutputFlag := indexPath != defaultIndexPath
-
-	// Ensure output directory exists (for custom paths)
-	if needsOutputFlag {
-		outputDir := filepath.Dir(indexPath)
-		if err := os.MkdirAll(outputDir, 0755); err != nil {
-			return nil, indexResult{Outcome: indexOutcomeError, Message: fmt.Sprintf("could not create index directory: %v", err), Err: err, Lang: lang}
-		}
+	outcome := indexOutcomeError
+	switch failure.Kind {
+	case indexplan.FailureIndexerMissing:
+		outcome = indexOutcomeIndexerMissing
+	case indexplan.FailureRequirementMissing:
+		outcome = indexOutcomeIndexerRequirementMissing
 	}
-
-	var command string
-	var warning string
-
-	// Build command - some languages need special handling
-	switch lang {
-	case project.LangCpp:
-		cppCmd, err := project.BuildCppCommand(repoRoot, compdbOverride)
-		if err != nil || cppCmd == "" {
-			return nil, indexResult{
-				Outcome: indexOutcomeIndexerRequirementMissing,
-				Message: "compile_commands.json not found (generate with cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -B build)",
-				Lang:    lang,
-			}
-		}
-		command = cppCmd
-
-	case project.LangRuby:
-		rubyCmd, err := project.BuildRubyCommand(repoRoot)
-		if err != nil {
-			return nil, indexResult{
-				Outcome: indexOutcomeIndexerRequirementMissing,
-				Message: "bundle not found (install with: gem install bundler)",
-				Lang:    lang,
-			}
-		}
-		command = rubyCmd
-
-	case project.LangPHP:
-		w, err := project.ValidatePHPSetup(repoRoot)
-		warning = w
-		if err != nil {
-			return nil, indexResult{
-				Outcome: indexOutcomeIndexerRequirementMissing,
-				Message: "scip-php not installed (composer require --dev davidrjenni/scip-php && composer install)",
-				Lang:    lang,
-				Warning: warning,
-			}
-		}
-		command = indexer.Command
-
-	default:
-		// Standard languages: use base command as-is.
-		command = indexer.Command
-	}
-
-	if needsOutputFlag {
-		command = fmt.Sprintf("%s --output %s", command, indexPath)
-	}
-
-	// Check if indexer is installed
-	if !isIndexerInstalled(indexer.CheckCommand) {
-		return nil, indexResult{
-			Outcome: indexOutcomeIndexerMissing,
-			Message: fmt.Sprintf("%s not installed (install with: %s)", indexer.CheckCommand, indexer.InstallCommand),
-			Lang:    lang,
-			Warning: warning,
-		}
-	}
-
-	// Run the indexer from the manifest's directory.
-	// For monorepos, the manifest may be in a subdirectory (e.g., src/cli/go.mod).
-	indexerDir := repoRoot
-	if manifest != "" && manifest != "(specified via --lang)" {
-		manifestDir := filepath.Dir(filepath.Join(repoRoot, manifest))
-		if manifestDir != repoRoot {
-			indexerDir = manifestDir
-		}
-	}
-
-	return &indexPlan{
-		Lang:       lang,
-		Manifest:   manifest,
-		Indexer:    indexer,
-		Command:    command,
-		IndexerDir: indexerDir,
-		IndexPath:  indexPath,
-	}, indexResult{Warning: warning}
+	return nil, indexResult{Outcome: outcome, Message: failure.Message, Err: failure.Err, Lang: lang, Warning: warning}
 }
 
 // printIndexPlanFailure prints the same stderr diagnostics performIndex has
@@ -780,20 +636,6 @@ func migrateIndexPath(repoRoot, targetPath string) {
 	}
 }
 
-// isIndexerInstalled checks if the indexer command is available.
-func isIndexerInstalled(command string) bool {
-	// Extract just the binary name (first word)
-	parts := strings.Fields(command)
-	if len(parts) == 0 {
-		return false
-	}
-	binary := parts[0]
-
-	// Try to find in PATH
-	_, err := exec.LookPath(binary)
-	return err == nil
-}
-
 // runIndexerCommand runs the indexer and streams output.
 // By default, indexer output is captured and only shown on error.
 // With -v, output streams to stderr in real-time.
@@ -1025,10 +867,7 @@ func tryIncrementalIndex(repoRoot, ckbDir string, lang project.Language) bool {
 // instead of stdout, for callers whose stdout is a protocol transport
 // (the MCP reindex tool).
 func tryIncrementalIndexTo(repoRoot, ckbDir string, lang project.Language, out io.Writer) bool {
-	// Incremental indexers run from the repo root. With a nested manifest they
-	// find no project there and still exit cleanly, reporting an empty update
-	// over an index that has gone stale.
-	if manifest := project.FindManifestForLanguage(repoRoot, lang); filepath.Dir(manifest) != "." {
+	if indexplan.IsNested(repoRoot, lang) {
 		_, _ = fmt.Fprintln(out, "Nested project: incremental indexing not supported, running a full index")
 		return false
 	}
@@ -1052,21 +891,8 @@ func tryIncrementalIndexTo(repoRoot, ckbDir string, lang project.Language, out i
 	}
 	defer func() { _ = db.Close() }()
 
-	// Get SCIP index path from config (default: index.scip in root)
-	indexPath := "index.scip"
-	if cfg, loadErr := config.LoadConfig(repoRoot); loadErr == nil && cfg.Backends.Scip.IndexPath != "" {
-		indexPath = cfg.Backends.Scip.IndexPath
-	}
-
-	// Create incremental config with the configured index path
-	incConfig := &incremental.Config{
-		IndexPath:            indexPath,
-		IncrementalThreshold: 50,
-		IndexTests:           false,
-	}
-
 	// Create incremental indexer
-	indexer := incremental.NewIncrementalIndexer(repoRoot, db, incConfig, logger)
+	indexer := incremental.NewIncrementalIndexer(repoRoot, db, indexplan.IncrementalConfig(repoRoot), logger)
 
 	// Check if we need full reindex
 	needsFull, reason := indexer.NeedsFullReindex()
@@ -1141,21 +967,8 @@ func populateIncrementalTracking(repoRoot string, lang project.Language, out io.
 	}
 	defer func() { _ = db.Close() }()
 
-	// Get SCIP index path from config (default: index.scip in root)
-	indexPath := "index.scip"
-	if cfg, loadErr := config.LoadConfig(repoRoot); loadErr == nil && cfg.Backends.Scip.IndexPath != "" {
-		indexPath = cfg.Backends.Scip.IndexPath
-	}
-
-	// Create incremental config with the configured index path
-	incConfig := &incremental.Config{
-		IndexPath:            indexPath,
-		IncrementalThreshold: 50,
-		IndexTests:           false,
-	}
-
 	// Create incremental indexer
-	indexer := incremental.NewIncrementalIndexer(repoRoot, db, incConfig, logger)
+	indexer := incremental.NewIncrementalIndexer(repoRoot, db, indexplan.IncrementalConfig(repoRoot), logger)
 
 	// Populate tracking tables from the full index
 	if popErr := indexer.PopulateAfterFullIndex(); popErr != nil {

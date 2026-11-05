@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/SimplyLiz/CodeMCP/internal/incremental"
 	"github.com/SimplyLiz/CodeMCP/internal/index"
+	"github.com/SimplyLiz/CodeMCP/internal/indexplan"
 	"github.com/SimplyLiz/CodeMCP/internal/project"
 	"github.com/SimplyLiz/CodeMCP/internal/repostate"
 	"github.com/SimplyLiz/CodeMCP/internal/storage"
@@ -94,30 +96,15 @@ func (rm *RefreshManager) RunIncrementalRefreshWithTrigger(ctx context.Context, 
 
 	rm.stdLogger.Printf("Starting incremental refresh for %s (trigger: %s)", repoPath, trigger)
 
-	// Open database
-	db, err := storage.Open(repoPath, rm.logger)
+	stats, fallback, err := rm.runIncrementalUpdate(ctx, repoPath)
 	if err != nil {
 		rm.stdLogger.Printf("Failed to open database for %s: %v", repoPath, err)
 		result.Error = fmt.Sprintf("database error: %v", err)
 		result.Duration = time.Since(start)
 		return result
 	}
-	defer func() { _ = db.Close() }()
-
-	// Create incremental indexer with default config
-	indexer := incremental.NewIncrementalIndexer(repoPath, db, nil, rm.logger)
-
-	// Check if full reindex is needed
-	needsFull, reason := indexer.NeedsFullReindex()
-	if needsFull {
-		rm.stdLogger.Printf("Incremental not possible for %s: %s, falling back to full", repoPath, reason)
-		return rm.RunFullReindexWithTrigger(ctx, repoPath, trigger, triggerInfo)
-	}
-
-	// Run incremental update
-	stats, err := indexer.IndexIncremental(ctx, "")
-	if err != nil {
-		rm.stdLogger.Printf("Incremental refresh failed for %s: %v, falling back to full", repoPath, err)
+	if fallback != "" {
+		rm.stdLogger.Printf("Incremental not possible for %s: %s, falling back to full", repoPath, fallback)
 		return rm.RunFullReindexWithTrigger(ctx, repoPath, trigger, triggerInfo)
 	}
 
@@ -155,6 +142,46 @@ func (rm *RefreshManager) RunIncrementalRefreshWithTrigger(ctx context.Context, 
 	})
 
 	return result
+}
+
+// runIncrementalUpdate runs an incremental update, with the same preconditions as
+// 'ckb index'. A non-empty fallback says why a full reindex has to run instead;
+// everything here is released by then, the index lock in particular. An error
+// means the repo's database can't be opened, which a full reindex wouldn't fix.
+func (rm *RefreshManager) runIncrementalUpdate(ctx context.Context, repoPath string) (stats *incremental.DeltaStats, fallback string, err error) {
+	db, err := storage.Open(repoPath, rm.logger)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = db.Close() }()
+
+	lang, _, _ := project.DetectAllLanguages(repoPath)
+	if lang == project.LangUnknown {
+		return nil, "could not detect project language", nil
+	}
+	if indexplan.IsNested(repoPath, lang) {
+		return nil, "nested project", nil
+	}
+
+	indexer := incremental.NewIncrementalIndexer(repoPath, db, indexplan.IncrementalConfig(repoPath), rm.logger)
+	if needsFull, reason := indexer.NeedsFullReindex(); needsFull {
+		return nil, reason, nil
+	}
+	if canUse, reason := indexer.CanUseIncremental(lang); !canUse {
+		return nil, reason, nil
+	}
+
+	lock, lockErr := index.AcquireLock(filepath.Join(repoPath, ".ckb"))
+	if lockErr != nil {
+		return nil, fmt.Sprintf("could not acquire lock: %v", lockErr), nil
+	}
+	defer lock.Release()
+
+	stats, indexErr := indexer.IndexIncrementalWithLang(ctx, "", lang)
+	if indexErr != nil {
+		return nil, indexErr.Error(), nil
+	}
+	return stats, "", nil
 }
 
 // emitWebhookEvent sends a webhook event with the given data
@@ -195,7 +222,7 @@ func (rm *RefreshManager) RunFullReindexWithTrigger(ctx context.Context, repoPat
 	rm.stdLogger.Printf("Starting full reindex for %s (trigger: %s)", repoPath, trigger)
 
 	// Detect language
-	lang, _, _ := project.DetectAllLanguages(repoPath)
+	lang, manifest, _ := project.DetectAllLanguages(repoPath)
 	if lang == project.LangUnknown {
 		result.Error = "could not detect project language"
 		result.Duration = time.Since(start)
@@ -203,10 +230,11 @@ func (rm *RefreshManager) RunFullReindexWithTrigger(ctx context.Context, repoPat
 		return result
 	}
 
-	// Get indexer info
-	indexer := project.GetIndexerInfo(lang)
-	if indexer == nil {
-		result.Error = fmt.Sprintf("no indexer available for %s", project.LanguageDisplayName(lang))
+	// Same recipe as 'ckb index': nested manifests, custom index paths, and the
+	// languages whose command needs building.
+	plan, _, failure := indexplan.Build(repoPath, lang, manifest, "", indexplan.ResolveIndexPath(repoPath))
+	if failure != nil {
+		result.Error = failure.Message
 		result.Duration = time.Since(start)
 		rm.stdLogger.Printf("Full reindex failed for %s: %s", repoPath, result.Error)
 		return result
@@ -233,8 +261,7 @@ func (rm *RefreshManager) RunFullReindexWithTrigger(ctx context.Context, repoPat
 	defer lock.Release()
 
 	// Run indexer
-	command := indexer.Command
-	parts := strings.Fields(command)
+	parts := strings.Fields(plan.Command)
 	if len(parts) == 0 {
 		result.Error = "empty indexer command"
 		result.Duration = time.Since(start)
@@ -242,12 +269,28 @@ func (rm *RefreshManager) RunFullReindexWithTrigger(ctx context.Context, repoPat
 	}
 
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...) // #nosec G204 //nolint:gosec // command from trusted indexer config
-	cmd.Dir = repoPath
+	cmd.Dir = plan.IndexerDir
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
 		result.Error = fmt.Sprintf("indexer failed: %v (%s)", err, strings.TrimSpace(stderr.String()))
+		result.Duration = time.Since(start)
+		rm.stdLogger.Printf("Full reindex failed for %s: %s", repoPath, result.Error)
+		return result
+	}
+
+	if err := indexplan.Finalize(repoPath, plan); err != nil {
+		result.Error = err.Error()
+		result.Duration = time.Since(start)
+		rm.stdLogger.Printf("Full reindex failed for %s: %s", repoPath, result.Error)
+		return result
+	}
+
+	// An indexer can exit 0 without producing anything. That must not be recorded
+	// as a fresh index.
+	if _, statErr := os.Stat(plan.IndexPath); statErr != nil {
+		result.Error = fmt.Sprintf("indexer completed but %s was not created", plan.IndexPath)
 		result.Duration = time.Since(start)
 		rm.stdLogger.Printf("Full reindex failed for %s: %s", repoPath, result.Error)
 		return result
@@ -259,7 +302,7 @@ func (rm *RefreshManager) RunFullReindexWithTrigger(ctx context.Context, repoPat
 	meta := &index.IndexMeta{
 		CreatedAt:   time.Now(),
 		Duration:    duration.Round(time.Millisecond * 100).String(),
-		Indexer:     indexer.CheckCommand,
+		Indexer:     plan.Indexer.CheckCommand,
 		IndexerArgs: parts,
 		LastRefresh: &index.LastRefresh{
 			At:          time.Now(),
@@ -278,6 +321,11 @@ func (rm *RefreshManager) RunFullReindexWithTrigger(ctx context.Context, repoPat
 		rm.stdLogger.Printf("Warning: could not save index metadata for %s: %v", repoPath, saveErr)
 	}
 
+	// Without tracking data the next incremental refresh has nothing to start from.
+	if project.SupportsIncrementalIndexing(lang) {
+		rm.populateIncrementalTracking(repoPath)
+	}
+
 	result.Success = true
 	result.Duration = duration
 
@@ -290,4 +338,19 @@ func (rm *RefreshManager) RunFullReindexWithTrigger(ctx context.Context, repoPat
 	})
 
 	return result
+}
+
+// populateIncrementalTracking sets up the tracking tables after a full reindex.
+func (rm *RefreshManager) populateIncrementalTracking(repoPath string) {
+	db, err := storage.Open(repoPath, rm.logger)
+	if err != nil {
+		rm.stdLogger.Printf("Warning: could not open database for incremental tracking of %s: %v", repoPath, err)
+		return
+	}
+	defer func() { _ = db.Close() }()
+
+	indexer := incremental.NewIncrementalIndexer(repoPath, db, indexplan.IncrementalConfig(repoPath), rm.logger)
+	if err := indexer.PopulateAfterFullIndex(); err != nil {
+		rm.stdLogger.Printf("Warning: could not populate incremental tracking for %s: %v", repoPath, err)
+	}
 }
