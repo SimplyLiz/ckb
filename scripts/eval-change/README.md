@@ -6,7 +6,7 @@ hides the callers, and checks what CKB predicts. `git grep` on the same name is 
 baseline, because that is what an agent gets for free.
 
 The current numbers are in `docs/eval/change-prediction.md`; the raw output behind them
-is `results/ckb.jsonl`.
+is `results/ckb.jsonl`, and `results/ckb-b550825.jsonl` is the first measurement.
 
 ## Run it
 
@@ -55,6 +55,20 @@ symbol from the commit, run `ckb changes --format json`.
 Also: whether `changedSymbols` named the symbol, the risk level, test files via
 `affectedTests`, a second run with `budget.maxImpactItems` lifted, and a class for
 every missed file, from the index's own `ckb refs`.
+
+Tools in the report, all scored the same way:
+
+| | |
+|---|---|
+| `ckb` | files of `affectedSymbols`, the budgeted item list. The original measure |
+| `ckb_direct_only` | those at distance 1 |
+| `ckb_uncapped` | `ckb` with the item budget lifted |
+| `ckb_files` | `consumerFiles.direct` and `.transitive`, from a binary that has them |
+| `ckb_files_direct` | `consumerFiles.direct` |
+| `ckb_contract` | `consumerFiles.contractChanged`: direct users, outside the change, of a symbol whose declaration changed or went away |
+| `grep` | `git grep -l -w <symbol>` |
+
+Results from an older binary still report, without the `consumerFiles` rows.
 
 ## What it can't tell you
 

@@ -403,7 +403,23 @@ def changes_view(data, target, definers, lang):
     named = [s for s in changed if name_matches(s.get("name"), target) and s.get("file") in definers]
     summary = data.get("summary") or {}
     risk = data.get("riskScore") or {}
+    # Absent from a binary older than the field: keeps old results readable.
+    cf = data.get("consumerFiles")
+    consumer = {}
+    if cf is not None:
+        consumer = {
+            "files_direct": sorted(set(cf.get("direct") or []) - set(definers)),
+            "files": sorted((set(cf.get("direct") or []) | set(cf.get("transitive") or [])) - set(definers)),
+            "files_tests": sorted(cf.get("tests") or []),
+            "contract_changed": sorted(set(cf.get("contractChanged") or []) - set(definers)),
+            "contract_changed_tests": sorted(cf.get("contractChangedTests") or []),
+            "files_truncated": bool(cf.get("truncated")),
+        }
     return {
+        **consumer,
+        "tests_seen_using": sorted({t["filePath"] for t in (data.get("affectedTests") or [])
+                                    if t.get("filePath") and t.get("reason") in ("direct", "transitive")}),
+        "named_declaration": sorted({s.get("declaration") or "" for s in named}),
         "predicted": sorted(files - set(definers)),
         "predicted_direct": sorted(direct - set(definers)),
         "affected_tests": sorted(tests),
@@ -491,7 +507,7 @@ def classify_compile_misses(rec, uncapped, ref_files, index_bytes):
     if not comp:
         return {}
     ckb = rec["ckb"]
-    seen = set(ckb["predicted"]) | set(ckb["affected_tests"])
+    seen = set(ckb["predicted"]) | set(ckb["affected_tests"]) | set(ckb.get("files") or [])
     return {
         p: miss_class(p, ckb, uncapped, ref_files, index_bytes)
         for p in comp["broken"] + comp["broken_tests"] if p not in seen
@@ -696,6 +712,14 @@ def analyse(records):
         "ckb_uncapped": lambda r: (r.get("ckb_uncapped") or r["ckb"])["predicted"],
         "grep": lambda r: r["grep"]["predicted"],
     }
+    # consumerFiles, from binaries that have it. Same scoring, other lists.
+    if ok and "files" in ok[0]["ckb"]:
+        tools.update({
+            "ckb_files": lambda r: r["ckb"]["files"],
+            "ckb_files_direct": lambda r: r["ckb"]["files_direct"],
+            "ckb_contract": lambda r: r["ckb"]["contract_changed"],
+        })
+    result_tools = list(tools)
     def non_test(r, files):
         return [p for p in files if not is_test(p, r["lang"])]
 
@@ -706,6 +730,7 @@ def analyse(records):
         "truth_all": {},
         "truth_ref": {},
         "tests": {},
+        "tools": result_tools,
     }
     for r in records:
         result["status"][r["status"]] = result["status"].get(r["status"], 0) + 1
@@ -726,6 +751,9 @@ def analyse(records):
         "ckb": aggregate([score(ckb_tests(r), r["entry"]["truth_tests_ref"]) for r in with_tests]),
         "grep": aggregate([score(r["grep"]["predicted_tests"], r["entry"]["truth_tests_ref"]) for r in with_tests]),
     }
+    if ok and "files" in ok[0]["ckb"]:
+        result["tests"]["ckb_seen_using"] = aggregate(
+            [score(r["ckb"]["tests_seen_using"], r["entry"]["truth_tests_ref"]) for r in with_tests])
 
     compiled = [r for r in ok if r.get("compile")]
     broke = [r for r in compiled if r["compile"]["broken"]]
@@ -740,6 +768,23 @@ def analyse(records):
             "grep": aggregate([score(r["grep"]["predicted_tests"], r["compile"]["broken_tests"]) for r in broke_t]),
         },
     }
+    if ok and "files" in ok[0]["ckb"]:
+        result["compile"]["tests"]["ckb_contract"] = aggregate(
+            [score(r["ckb"]["contract_changed_tests"], r["compile"]["broken_tests"]) for r in broke_t])
+    # What the direct list got wrong: uses of the target that the compiler let through,
+    # or uses of another symbol in the applied file.
+    wrong = {"target_not_broken": 0, "other_symbol": 0, "right": 0}
+    for r in compiled:
+        comp = r["compile"]
+        refs = set(r.get("ref_files") or [])
+        for p in non_test(r, r["ckb"]["predicted_direct"]):
+            if p in comp["broken"]:
+                wrong["right"] += 1
+            elif p in refs:
+                wrong["target_not_broken"] += 1
+            else:
+                wrong["other_symbol"] += 1
+    result["compile"]["direct_wrong"] = wrong
     causes_c = {}
     for r in ok:
         for cause in (r.get("compile_misses") or {}).values():
@@ -836,7 +881,7 @@ def report_markdown(records, redact):
         w.append("")
         w.append("| Tool | n | recall (mean) | recall (pooled) | precision (mean) | precision (pooled) | hit/truth | predicted files | empty | full recall | zero recall |")
         w.append("|---|---|---|---|---|---|---|---|---|---|---|")
-        for tool in ("ckb", "ckb_direct_only", "ckb_uncapped", "grep"):
+        for tool in res["tools"]:
             a = res[key][tool]
             w.append(f"| {tool} | {a['n']} | {pct(a['recall_mean'])} | {pct(a['recall_pooled'])} | "
                      f"{pct(a['precision_mean'])} | {pct(a['precision_pooled'])} | {a['hit']}/{a['truth']} | "
@@ -847,16 +892,20 @@ def report_markdown(records, redact):
     w.append("")
     w.append("| Tool | n | recall (mean) | recall (pooled) | precision (mean) | precision (pooled) | hit/truth | predicted files | zero recall |")
     w.append("|---|---|---|---|---|---|---|---|---|")
-    for tool in ("ckb", "ckb_direct_only", "ckb_uncapped", "grep"):
+    for tool in res["tools"]:
         a = c["non_test"][tool]
         w.append(f"| {tool} | {a['n']} | {pct(a['recall_mean'])} | {pct(a['recall_pooled'])} | "
                  f"{pct(a['precision_mean'])} | {pct(a['precision_pooled'])} | {a['hit']}/{a['truth']} | "
                  f"{a['predicted']} | {a['zero_recall']} |")
-    for tool in ("ckb", "grep"):
+    for tool in c["tests"]:
         a = c["tests"][tool]
         w.append(f"| test files: {tool} | {a['n']} | {pct(a['recall_mean'])} | {pct(a['recall_pooled'])} | "
                  f"{pct(a['precision_mean'])} | {pct(a['precision_pooled'])} | {a['hit']}/{a['truth']} | "
                  f"{a['predicted']} | {a['zero_recall']} |")
+    w.append("")
+    d = c["direct_wrong"]
+    w.append(f"Direct files against the compiler (of commits checked): {d['right']} broke, "
+             f"{d['target_not_broken']} use the target but didn't break, {d['other_symbol']} only use another symbol in the applied file.")
     w.append("")
     w.append("Compiler-broken files missed by CKB, by class (test files included):")
     w.append("")
@@ -870,7 +919,9 @@ def report_markdown(records, redact):
     w.append("")
     w.append("| Tool | recall (mean) | hit/truth | predicted test files |")
     w.append("|---|---|---|---|")
-    for tool in ("ckb", "grep"):
+    for tool in t:
+        if tool not in ("ckb", "ckb_seen_using", "grep"):
+            continue
         a = t[tool]
         w.append(f"| {tool} | {pct(a['recall_mean'])} | {a['hit']}/{a['truth']} | {a['predicted']} |")
     w.append("")
@@ -898,12 +949,12 @@ def report_markdown(records, redact):
     if not redact:
         w.append("### Per commit")
         w.append("")
-        w.append("| Commit | Symbol | Status | Named | Risk | truth | CKB hit/pred | uncapped hit/pred | grep hit/pred | mention truth | CKB hit | grep hit | broken | CKB hit | grep hit | broken tests | CKB hit | grep hit | Miss classes |")
-        w.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+        w.append("| Commit | Symbol | Status | Named | Declaration | Risk | truth | CKB hit/pred | uncapped hit/pred | grep hit/pred | mention truth | CKB hit | grep hit | broken | CKB hit | direct hit/pred | contract hit/pred | grep hit/pred | broken tests | CKB hit | grep hit | Miss classes |")
+        w.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         for r in records:
             e = r["entry"]
             if r["status"] != "ok":
-                w.append(f"| {r['sha'][:9]} | `{e['symbol']}` | {r['status']} | | | {len(e['truth_all'])} | | | | | | | | | | | | | |")
+                w.append(f"| {r['sha'][:9]} | `{e['symbol']}` | {r['status']} | | | | {len(e['truth_all'])} | | | | | | | | | | | | | | | |")
                 continue
             c, u, g = r["ckb"], r.get("ckb_uncapped") or r["ckb"], r["grep"]
             nt = lambda files: [p for p in files if not is_test(p, r["lang"])]
@@ -914,13 +965,19 @@ def report_markdown(records, redact):
                 classes[v] = classes.get(v, 0) + 1
             cl = ", ".join(f"{k} {v}" for k, v in sorted(classes.items())) or "-"
             comp = r.get("compile") or {"broken": [], "broken_tests": []}
-            bc, bg = score(nt(c["predicted"]), comp["broken"])["hit"], score(g["predicted"], comp["broken"])["hit"]
+            bc = score(nt(c["predicted"]), comp["broken"])["hit"]
             test_seen = set(c["affected_tests"]) | set(c["predicted"])
             tc, tg = score(test_seen, comp["broken_tests"])["hit"], score(g["predicted_tests"], comp["broken_tests"])["hit"]
-            w.append(f"| {r['sha'][:9]} | `{e['symbol']}` | ok | {'yes' if c['named'] else 'no'} | {c['risk']} | "
+            bd = score(nt(c["predicted_direct"]), comp["broken"])
+            bk = score(nt(c.get("contract_changed") or []), comp["broken"])
+            bgs = score(g["predicted"], comp["broken"])
+            decl = ",".join(c.get("named_declaration") or []) or "-"
+            contract = f"{bk['hit']}/{bk['pred']}" if "contract_changed" in c else "-"
+            w.append(f"| {r['sha'][:9]} | `{e['symbol']}` | ok | {'yes' if c['named'] else 'no'} | {decl} | {c['risk']} | "
                      f"{len(e['truth_all'])} | {sc['hit']}/{sc['pred']} | {su['hit']}/{su['pred']} | "
                      f"{sg['hit']}/{sg['pred']} | {len(e['truth_ref'])} | {rc['hit']} | {rg['hit']} | "
-                     f"{len(comp['broken'])} | {bc} | {bg} | {len(comp['broken_tests'])} | {tc} | {tg} | {cl} |")
+                     f"{len(comp['broken'])} | {bc} | {bd['hit']}/{bd['pred']} | {contract} | {bgs['hit']}/{bgs['pred']} | "
+                     f"{len(comp['broken_tests'])} | {tc} | {tg} | {cl} |")
         w.append("")
     return "\n".join(w)
 
