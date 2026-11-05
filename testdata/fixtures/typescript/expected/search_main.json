@@ -9,10 +9,10 @@
     },
     {
       "file": "src/main.ts",
-      "kind": "function",
+      "kind": "namespace",
       "line": 0,
       "moduleId": "src",
-      "name": "main().(input)"
+      "name": "main.ts"
     }
   ],
   "total": 2

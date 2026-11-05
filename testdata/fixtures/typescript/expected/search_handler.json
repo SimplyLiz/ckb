@@ -8,13 +8,6 @@
       "name": "Handler"
     },
     {
-      "file": "src/pkg/handler.ts",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Handler#service"
-    },
-    {
       "file": "src/pkg/server.ts",
       "kind": "class",
       "line": 10,
@@ -22,88 +15,11 @@
       "name": "Server"
     },
     {
-      "file": "src/pkg/server.ts",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Server#handler"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Handler#`\u003cconstructor\u003e`"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Handler#`\u003cconstructor\u003e`().(service)"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "function",
-      "line": 23,
-      "moduleId": "src/pkg",
-      "name": "Handler#handle"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Handler#handle().(input)"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "function",
-      "line": 33,
-      "moduleId": "src/pkg",
-      "name": "Handler#handleBatch"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Handler#handleBatch().(inputs)"
-    },
-    {
-      "file": "src/pkg/server.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Server#`\u003cconstructor\u003e`"
-    },
-    {
-      "file": "src/pkg/server.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "Server#`\u003cconstructor\u003e`().(handler)"
-    },
-    {
-      "file": "src/pkg/server.ts",
-      "kind": "function",
-      "line": 21,
-      "moduleId": "src/pkg",
-      "name": "Server#getHandler"
-    },
-    {
       "file": "src/pkg/handler.ts",
       "kind": "function",
       "line": 53,
       "moduleId": "src/pkg",
       "name": "handler"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "handler().(input)"
     },
     {
       "file": "src/main.ts",
@@ -120,13 +36,6 @@
       "name": "newHandler"
     },
     {
-      "file": "src/pkg/handler.ts",
-      "kind": "function",
-      "line": 0,
-      "moduleId": "src/pkg",
-      "name": "newHandler().(service)"
-    },
-    {
       "file": "src/pkg/server.ts",
       "kind": "function",
       "line": 43,
@@ -134,12 +43,96 @@
       "name": "newServer"
     },
     {
-      "file": "src/pkg/server.ts",
-      "kind": "function",
+      "file": "src/pkg/handler.ts",
+      "kind": "method",
       "line": 0,
       "moduleId": "src/pkg",
-      "name": "newServer().(handler)"
+      "name": "\u003cconstructor\u003e"
+    },
+    {
+      "file": "src/pkg/server.ts",
+      "kind": "method",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "\u003cconstructor\u003e"
+    },
+    {
+      "file": "src/pkg/server.ts",
+      "kind": "method",
+      "line": 21,
+      "moduleId": "src/pkg",
+      "name": "getHandler"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "method",
+      "line": 23,
+      "moduleId": "src/pkg",
+      "name": "handle"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "method",
+      "line": 33,
+      "moduleId": "src/pkg",
+      "name": "handleBatch"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "namespace",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "handler.ts"
+    },
+    {
+      "file": "src/pkg/server.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "handler"
+    },
+    {
+      "file": "src/pkg/server.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "handler"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "input"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "inputs"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "parameter",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "service"
+    },
+    {
+      "file": "src/pkg/server.ts",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "handler"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "src/pkg",
+      "name": "service"
     }
   ],
-  "total": 20
+  "total": 19
 }

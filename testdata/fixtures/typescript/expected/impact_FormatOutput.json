@@ -1,7 +1,7 @@
 {
   "blastRadius": {
     "fileCount": 2,
-    "moduleCount": 0,
+    "moduleCount": 2,
     "riskLevel": "low",
     "uniqueCallerCount": 0
   },
@@ -9,29 +9,40 @@
     {
       "file": "src/main.ts",
       "kind": "unknown",
-      "name": "unknown"
+      "name": ""
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "unknown",
+      "name": ""
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "unknown",
+      "name": "handle"
     },
     {
       "file": "src/main.ts",
       "kind": "unknown",
-      "name": "unknown"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "unknown",
-      "name": "unknown"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "unknown",
-      "name": "unknown"
+      "name": "main"
     }
   ],
-  "modulesAffected": [],
+  "modulesAffected": [
+    {
+      "impactCount": 2,
+      "moduleId": "src",
+      "name": "src"
+    },
+    {
+      "impactCount": 2,
+      "moduleId": "src/pkg",
+      "name": "src/pkg"
+    }
+  ],
   "riskScore": {
-    "explanation": "Low risk: 0 direct caller(s) across 0 module(s). Changes have limited impact.",
+    "explanation": "Low risk: 0 direct caller(s) across 2 module(s). Changes have limited impact.",
     "level": "low",
-    "score": 0.31
+    "score": 0.39
   },
   "symbol": {
     "file": "src/internal/util.ts",

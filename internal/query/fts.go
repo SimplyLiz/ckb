@@ -122,11 +122,26 @@ func convertSymbolToFTSRecord(symInfo *scip.SymbolInformation, index *scip.SCIPI
 		}
 	}
 
-	// Build signature from display name and enclosing symbol
+	// Build a container-qualified signature (e.g. "Handler.handle") so a
+	// member stays findable by searching its container's name — FTS5
+	// matches across name/documentation/signature, so "Handler" still
+	// finds "handle" even though its own display name doesn't contain it.
+	//
+	// Prefer the symbol's own descriptor chain (GetContainerName walks
+	// back to the nearest enclosing type descriptor) over EnclosingSymbol:
+	// scip-go/scip-typescript frequently leave EnclosingSymbol unset, but
+	// the container is still recoverable from the symbol's own ID.
 	signature := name
-	if symInfo.EnclosingSymbol != "" {
+	if scipId != nil {
+		if container := scipId.GetContainerName(); container != "" {
+			signature = container + "." + name
+		}
+	}
+	if signature == name && symInfo.EnclosingSymbol != "" {
 		if enclosingId, err := scip.ParseSCIPIdentifier(symInfo.EnclosingSymbol); err == nil {
-			signature = enclosingId.GetSimpleName() + "." + name
+			if enclosingName := enclosingId.GetSimpleName(); enclosingName != "" {
+				signature = enclosingName + "." + name
+			}
 		}
 	}
 

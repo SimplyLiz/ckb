@@ -1301,10 +1301,15 @@ func (e *Engine) ListEntrypoints(ctx context.Context, opts ListEntrypointsOption
 					if strings.Contains(sym.Location.Path, "_test.") {
 						continue
 					}
-					// Check if it looks like an API handler
-					if strings.HasPrefix(sym.Name, "Handle") ||
-						strings.HasSuffix(sym.Name, "Handler") ||
-						strings.HasPrefix(sym.Name, "Serve") {
+					// Check if it looks like an API handler. Case-insensitive:
+					// Go convention capitalizes exported names ("Handle",
+					// "Handler"), but TS/JS methods are typically lowercase
+					// ("handle") — the naming convention this is meant to
+					// detect isn't specific to Go's export casing.
+					nameLower := strings.ToLower(sym.Name)
+					if strings.HasPrefix(nameLower, "handle") ||
+						strings.HasSuffix(nameLower, "handler") ||
+						strings.HasPrefix(nameLower, "serve") {
 						fanOut := e.scipAdapter.GetCalleeCount(sym.StableID)
 						entrypoints = append(entrypoints, EntrypointV52{
 							SymbolId: sym.StableID,

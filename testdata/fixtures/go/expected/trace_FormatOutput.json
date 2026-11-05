@@ -9,6 +9,23 @@
           "role": "target"
         },
         {
+          "file": "pkg/handler.go",
+          "kind": "",
+          "name": "Handle",
+          "role": "entrypoint"
+        }
+      ],
+      "pathType": "api"
+    },
+    {
+      "nodes": [
+        {
+          "file": "internal/util.go",
+          "kind": "",
+          "name": "FormatOutput",
+          "role": "target"
+        },
+        {
           "file": "main.go",
           "kind": "",
           "name": "Handler",
@@ -28,30 +45,13 @@
         {
           "file": "pkg/handler.go",
           "kind": "",
-          "name": "Handler#Handle",
-          "role": "entrypoint"
-        }
-      ],
-      "pathType": "api"
-    },
-    {
-      "nodes": [
-        {
-          "file": "internal/util.go",
-          "kind": "",
-          "name": "FormatOutput",
-          "role": "target"
-        },
-        {
-          "file": "pkg/handler.go",
-          "kind": "",
-          "name": "Handler#Handle",
+          "name": "Handle",
           "role": "intermediate"
         },
         {
           "file": "pkg/handler.go",
           "kind": "",
-          "name": "Handler#HandleBatch",
+          "name": "HandleBatch",
           "role": "entrypoint"
         }
       ],
@@ -68,17 +68,17 @@
         {
           "file": "pkg/handler.go",
           "kind": "",
-          "name": "Handler#Handle",
+          "name": "Handle",
           "role": "intermediate"
         },
         {
           "file": "pkg/server.go",
           "kind": "",
-          "name": "Server#RunServer",
+          "name": "RunServer",
           "role": "entrypoint"
         }
       ],
-      "pathType": "api"
+      "pathType": "job"
     }
   ],
   "targetSymbol": "scip-go gomod fixture 8366de42779a `fixture/internal`/FormatOutput().",

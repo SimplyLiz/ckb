@@ -228,3 +228,70 @@ func TestGenerateModuleSummaries(t *testing.T) {
 		t.Errorf("expected module1 impact count 2, got %d", module1Summary.ImpactCount)
 	}
 }
+
+// TestProcessDirectReferences_UsesResolvedFromName is a regression test for
+// a bug where ckb impact prepare's directDependents entries all showed
+// symbolId: "" and name: "unknown", with only file/line set. The backend
+// now resolves the enclosing (caller) symbol via Reference.FromSymbol and
+// Reference.FromName (see internal/backends/scip's convertToReference);
+// this verifies the analyzer prefers a resolved FromName over echoing the
+// raw stable ID.
+func TestProcessDirectReferences_UsesResolvedFromName(t *testing.T) {
+	analyzer := NewImpactAnalyzer(2)
+	symbol := &Symbol{StableId: "sym.Target", Name: "Target", Kind: KindFunction}
+
+	refs := []Reference{
+		{
+			Location:   &Location{FileId: "caller.go", StartLine: 5},
+			Kind:       RefCall,
+			FromSymbol: "scip-go gomod mod v0 `pkg`/Engine#buildProvenance().",
+			FromName:   "buildProvenance",
+			FromModule: "internal/query",
+		},
+	}
+
+	items := analyzer.processDirectReferences(symbol, refs, nil)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 impact item, got %d", len(items))
+	}
+
+	item := items[0]
+	if item.StableId != refs[0].FromSymbol {
+		t.Errorf("StableId = %q, want %q", item.StableId, refs[0].FromSymbol)
+	}
+	if item.Name != "buildProvenance" {
+		t.Errorf("Name = %q, want %q (resolved FromName should win over the raw stable ID)", item.Name, "buildProvenance")
+	}
+}
+
+// TestProcessDirectReferences_OmitsUnresolvedEnclosingSymbol verifies that
+// when the backend genuinely can't resolve an enclosing symbol, the
+// analyzer reports empty StableId/Name rather than fabricating "unknown" —
+// callers (JSON encoders using `omitempty`) are expected to drop the
+// field, not display a placeholder.
+func TestProcessDirectReferences_OmitsUnresolvedEnclosingSymbol(t *testing.T) {
+	analyzer := NewImpactAnalyzer(2)
+	symbol := &Symbol{StableId: "sym.Target", Name: "Target", Kind: KindFunction}
+
+	refs := []Reference{
+		{
+			Location: &Location{FileId: "pkg-level.go", StartLine: 1},
+			Kind:     RefCall,
+			// FromSymbol/FromName intentionally left empty: no enclosing
+			// function could be resolved for this reference.
+		},
+	}
+
+	items := analyzer.processDirectReferences(symbol, refs, nil)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 impact item, got %d", len(items))
+	}
+
+	item := items[0]
+	if item.StableId != "" {
+		t.Errorf("StableId = %q, want empty", item.StableId)
+	}
+	if item.Name != "" {
+		t.Errorf("Name = %q, want empty (not \"unknown\")", item.Name)
+	}
+}

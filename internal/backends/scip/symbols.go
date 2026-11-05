@@ -351,7 +351,9 @@ func (idx *SCIPIndex) SearchSymbols(query string, options SearchOptions) ([]*SCI
 		// The cache-line advantage of []NameEntry over map iteration already
 		// gives a significant speedup at large N.
 		for _, entry := range idx.NameIndex {
-			if !strings.Contains(strings.ToLower(entry.Name), queryLower) {
+			nameMatch := strings.Contains(strings.ToLower(entry.Name), queryLower)
+			aliasMatch := entry.Alias != "" && strings.Contains(strings.ToLower(entry.Alias), queryLower)
+			if !nameMatch && !aliasMatch {
 				continue
 			}
 			sym, ok := idx.ConvertedSymbols[entry.ID]
@@ -408,9 +410,16 @@ type SearchOptions struct {
 
 // matchesQuery checks if a symbol matches a search query
 func matchesQuery(sym *SCIPSymbol, queryLower string, options SearchOptions) bool {
-	// Check name match
+	// Check name match, including the container-qualified alias
+	// ("Handler.handle") so a member stays findable by searching its
+	// container's name even when FTS is unavailable.
 	nameLower := strings.ToLower(sym.Name)
-	if !strings.Contains(nameLower, queryLower) {
+	nameMatch := strings.Contains(nameLower, queryLower)
+	aliasMatch := false
+	if !nameMatch && sym.ContainerName != "" {
+		aliasMatch = strings.Contains(strings.ToLower(sym.ContainerName+"."+sym.Name), queryLower)
+	}
+	if !nameMatch && !aliasMatch {
 		return false
 	}
 

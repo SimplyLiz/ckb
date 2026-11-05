@@ -523,6 +523,46 @@ func TestFormatCallgraphHuman(t *testing.T) {
 	}
 }
 
+// TestFormatCallgraphHuman_CallersOnlyDirection is a regression test for a
+// bug where `ckb callgraph <sym> --direction=callers` printed the header
+// "Callees (what this calls)" even though every node had role "caller".
+// internal/query/navigation.go's GetCallGraph always sets Depth to a
+// non-negative distance (1 for direct callers/callees, 2 for transitive)
+// regardless of direction — it never emits a negative Depth for callers.
+// The old grouping logic (`n.Depth < 0` => caller, `n.Depth > 0` => callee)
+// therefore always classified real caller nodes as callees. This fixture
+// mirrors what --direction=callers actually produces: caller nodes with
+// Depth: 1, not the unrealistic Depth: -1 the older test used.
+func TestFormatCallgraphHuman_CallersOnlyDirection(t *testing.T) {
+	resp := &CallgraphResponseCLI{
+		Root: "Engine.buildProvenance",
+		Nodes: []CallgraphNodeCLI{
+			{ID: "root", Name: "buildProvenance", Depth: 0, Role: "root"},
+			{ID: "1", Name: "Engine#AnalyzeImpact", Depth: 1, Role: "caller"},
+			{ID: "2", Name: "Engine#PrepareChange", Depth: 1, Role: "caller"},
+		},
+		Edges: []CallgraphEdgeCLI{
+			{From: "1", To: "root"},
+			{From: "2", To: "root"},
+		},
+	}
+
+	result, err := formatCallgraphHuman(resp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(result, "Callers (who calls this)") {
+		t.Error("expected callers section header for role=caller nodes")
+	}
+	if strings.Contains(result, "Callees (what this calls)") {
+		t.Error("callers-only response should not print the callees header")
+	}
+	if !strings.Contains(result, "Engine#AnalyzeImpact (caller)") {
+		t.Error("missing caller node under the callers section")
+	}
+}
+
 func TestFormatCallgraphHuman_Empty(t *testing.T) {
 	resp := &CallgraphResponseCLI{
 		Root:  "Orphan",

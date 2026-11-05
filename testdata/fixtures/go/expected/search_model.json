@@ -15,13 +15,6 @@
       "name": "DefaultService"
     },
     {
-      "file": "pkg/service.go",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "pkg",
-      "name": "DefaultService#model"
-    },
-    {
       "file": "pkg/model.go",
       "kind": "class",
       "line": 7,
@@ -30,52 +23,59 @@
     },
     {
       "file": "pkg/model.go",
-      "kind": "class",
-      "line": 13,
-      "moduleId": "pkg",
-      "name": "Model#Config"
-    },
-    {
-      "file": "pkg/model.go",
-      "kind": "class",
-      "line": 0,
-      "moduleId": "pkg",
-      "name": "Model#Name"
-    },
-    {
-      "file": "pkg/service.go",
-      "kind": "function",
-      "line": 26,
-      "moduleId": "pkg",
-      "name": "DefaultService#Process"
-    },
-    {
-      "file": "pkg/model.go",
-      "kind": "function",
-      "line": 49,
-      "moduleId": "pkg",
-      "name": "Model#Clone"
-    },
-    {
-      "file": "pkg/model.go",
-      "kind": "function",
-      "line": 44,
-      "moduleId": "pkg",
-      "name": "Model#SetConfig"
-    },
-    {
-      "file": "pkg/model.go",
-      "kind": "function",
-      "line": 35,
-      "moduleId": "pkg",
-      "name": "Model#Transform"
-    },
-    {
-      "file": "pkg/model.go",
       "kind": "function",
       "line": 27,
       "moduleId": "pkg",
       "name": "NewModel"
+    },
+    {
+      "file": "pkg/model.go",
+      "kind": "method",
+      "line": 49,
+      "moduleId": "pkg",
+      "name": "Clone"
+    },
+    {
+      "file": "pkg/service.go",
+      "kind": "method",
+      "line": 26,
+      "moduleId": "pkg",
+      "name": "Process"
+    },
+    {
+      "file": "pkg/model.go",
+      "kind": "method",
+      "line": 44,
+      "moduleId": "pkg",
+      "name": "SetConfig"
+    },
+    {
+      "file": "pkg/model.go",
+      "kind": "method",
+      "line": 35,
+      "moduleId": "pkg",
+      "name": "Transform"
+    },
+    {
+      "file": "pkg/model.go",
+      "kind": "property",
+      "line": 13,
+      "moduleId": "pkg",
+      "name": "Config"
+    },
+    {
+      "file": "pkg/model.go",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "pkg",
+      "name": "Name"
+    },
+    {
+      "file": "pkg/service.go",
+      "kind": "property",
+      "line": 0,
+      "moduleId": "pkg",
+      "name": "model"
     }
   ],
   "total": 11

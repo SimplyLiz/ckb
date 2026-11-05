@@ -1,20 +1,57 @@
 {
   "blastRadius": {
-    "fileCount": 0,
-    "moduleCount": 0,
+    "fileCount": 2,
+    "moduleCount": 1,
     "riskLevel": "low",
-    "uniqueCallerCount": 0
+    "uniqueCallerCount": 2
   },
-  "directImpact": [],
-  "modulesAffected": [],
+  "directImpact": [
+    {
+      "file": "pkg/handler.go",
+      "kind": "type-dependency",
+      "name": ""
+    },
+    {
+      "file": "pkg/handler.go",
+      "kind": "type-dependency",
+      "name": ""
+    },
+    {
+      "file": "pkg/handler.go",
+      "kind": "type-dependency",
+      "name": ""
+    },
+    {
+      "file": "pkg/handler.go",
+      "kind": "type-dependency",
+      "name": ""
+    },
+    {
+      "file": "pkg/server.go",
+      "kind": "type-dependency",
+      "name": ""
+    },
+    {
+      "file": "pkg/server.go",
+      "kind": "type-dependency",
+      "name": ""
+    }
+  ],
+  "modulesAffected": [
+    {
+      "impactCount": 6,
+      "moduleId": "pkg",
+      "name": "pkg"
+    }
+  ],
   "riskScore": {
-    "explanation": "Low risk: 0 direct caller(s) across 0 module(s). Changes have limited impact.",
+    "explanation": "Low risk: 0 direct caller(s) across 1 module(s). Changes have limited impact.",
     "level": "low",
-    "score": 0.1
+    "score": 0.36
   },
   "symbol": {
-    "file": "main.go",
-    "kind": "function",
+    "file": "pkg/handler.go",
+    "kind": "class",
     "name": "Handler"
   },
   "visibility": {
