@@ -478,7 +478,7 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 				ModuleId: filepath.Dir(r.FilePath),
 				Location: e.ftsResultLocation(r.ID, r.FilePath),
 				Visibility: &VisibilityInfo{
-					Visibility: inferVisibility(r.Name, r.Kind),
+					Visibility: inferFTSVisibility(r.ID, r.Name, r.Kind),
 					Confidence: 0.7,
 					Source:     "fts",
 				},
@@ -1299,6 +1299,19 @@ func generateTreesitterSymbolId(path, name, kind string, line int) string {
 }
 
 // inferVisibility guesses visibility from naming conventions.
+// inferFTSVisibility is inferVisibility for an FTS row, which also has the SCIP
+// ID: an exported Go name on an unexported type (engine#Build) is not public API.
+func inferFTSVisibility(id, name, kind string) string {
+	if strings.HasPrefix(id, "scip-go ") {
+		if parsed, err := scip.ParseSCIPIdentifier(id); err == nil {
+			if container := parsed.GetContainerName(); container != "" && container[0] >= 'a' && container[0] <= 'z' {
+				return "private"
+			}
+		}
+	}
+	return inferVisibility(name, kind)
+}
+
 func inferVisibility(name, kind string) string {
 	if name == "" {
 		return "unknown"
