@@ -205,9 +205,10 @@ func (s *SCIPIdentifier) legacyGetSimpleName() string {
 // enclosing type (e.g. a package-level function or namespace member).
 func (s *SCIPIdentifier) GetContainerName() string {
 	if s.descriptors != nil {
-		for i := len(s.descriptors) - 2; i >= 0; i-- {
-			if s.descriptors[i].Suffix == bindingscip.Descriptor_Type {
-				return s.descriptors[i].Name
+		descs := normalizeImplDescriptors(s.descriptors)
+		for i := len(descs) - 2; i >= 0; i-- {
+			if descs[i].Suffix == bindingscip.Descriptor_Type {
+				return descs[i].Name
 			}
 		}
 		return ""
@@ -254,9 +255,39 @@ func (s *SCIPIdentifier) GetStableID() string {
 //     uppercase, else "property"
 func (s *SCIPIdentifier) ExtractSymbolKind() SymbolKind {
 	if s.descriptors != nil {
-		return kindFromDescriptors(s.descriptors)
+		return kindFromDescriptors(normalizeImplDescriptors(s.descriptors))
 	}
 	return s.legacyExtractSymbolKind()
+}
+
+// normalizeImplDescriptors rewrites rust-analyzer's impl-block descriptors
+// into the shape every other indexer uses for a member of a type.
+//
+// rust-analyzer does not emit "Foo#bar()." for a method in `impl Foo`; it
+// emits "impl#[Foo]bar()." for an inherent impl and "impl#[Foo][Greet]hi()."
+// for `impl Greet for Foo`: a Type descriptor literally named "impl",
+// followed by type-parameter descriptors holding the self type and then the
+// trait. Read naively that makes the container "impl" and, because the
+// method's parent is a type-parameter, the kind "function". The chain is
+// rewritten to [Foo# bar().]: the first bracketed entry is the self type, the
+// rest (the trait) are dropped. Chains that don't match are returned as is.
+func normalizeImplDescriptors(descs []*bindingscip.Descriptor) []*bindingscip.Descriptor {
+	for i := 0; i+1 < len(descs); i++ {
+		if descs[i].Suffix != bindingscip.Descriptor_Type || descs[i].Name != "impl" ||
+			descs[i+1].Suffix != bindingscip.Descriptor_TypeParameter {
+			continue
+		}
+		j := i + 1
+		for j < len(descs) && descs[j].Suffix == bindingscip.Descriptor_TypeParameter {
+			j++
+		}
+		out := make([]*bindingscip.Descriptor, 0, len(descs))
+		out = append(out, descs[:i]...)
+		out = append(out, &bindingscip.Descriptor{Name: descs[i+1].Name, Suffix: bindingscip.Descriptor_Type})
+		out = append(out, normalizeImplDescriptors(descs[j:])...)
+		return out
+	}
+	return descs
 }
 
 func kindFromDescriptors(descriptors []*bindingscip.Descriptor) SymbolKind {

@@ -112,12 +112,45 @@ func TestParseSCIPIdentifier_DescriptorAware(t *testing.T) {
 			wantKind:      KindMethod,
 			wantContainer: "Response",
 		},
+		// The rust cases below are verbatim symbols from a real
+		// `rust-analyzer scip` run over a crate with `struct Foo`,
+		// `impl Foo { fn bar, fn new }`, `trait Greet` and
+		// `impl Greet for Foo { fn hi }`. rust-analyzer does not emit
+		// "Foo#bar()." for impl members; it emits "impl#[Foo]bar().".
 		{
-			name:          "rust: method on a struct via a nested module path",
-			symbol:        "scip-rust cargo tokio 1.0.0 tokio/runtime/Runtime#block_on().",
-			wantName:      "block_on",
+			name:          "rust-analyzer: inherent impl method",
+			symbol:        "rust-analyzer cargo demo 0.1.0 impl#[Foo]bar().",
+			wantName:      "bar",
 			wantKind:      KindMethod,
-			wantContainer: "Runtime",
+			wantContainer: "Foo",
+		},
+		{
+			name:          "rust-analyzer: inherent impl associated fn",
+			symbol:        "rust-analyzer cargo demo 0.1.0 impl#[Foo]new().",
+			wantName:      "new",
+			wantKind:      KindMethod,
+			wantContainer: "Foo",
+		},
+		{
+			name:          "rust-analyzer: trait impl method (self type, then trait)",
+			symbol:        "rust-analyzer cargo demo 0.1.0 impl#[Foo][Greet]hi().",
+			wantName:      "hi",
+			wantKind:      KindMethod,
+			wantContainer: "Foo",
+		},
+		{
+			name:          "rust-analyzer: trait declaration method",
+			symbol:        "rust-analyzer cargo demo 0.1.0 Greet#hi().",
+			wantName:      "hi",
+			wantKind:      KindMethod,
+			wantContainer: "Greet",
+		},
+		{
+			name:          "rust-analyzer: free function",
+			symbol:        "rust-analyzer cargo demo 0.1.0 free().",
+			wantName:      "free",
+			wantKind:      KindFunction,
+			wantContainer: "",
 		},
 	}
 

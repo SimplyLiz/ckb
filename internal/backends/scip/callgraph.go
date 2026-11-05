@@ -601,6 +601,7 @@ func extractSymbolName(symbolId string) string {
 // with the sole exception of a type descriptor's '#', which is part of how
 // a bare type's own symbol ID naturally ends (e.g. "Engine#").
 func callgraphNameFromDescriptors(descriptors []*bindingscip.Descriptor) string {
+	descriptors = normalizeImplDescriptors(descriptors)
 	var b strings.Builder
 	for i, d := range descriptors {
 		isLast := i == len(descriptors)-1
