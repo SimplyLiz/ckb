@@ -1291,11 +1291,14 @@ func (e *Engine) searchWithTreesitter(ctx context.Context, opts SearchSymbolsOpt
 	return results, nil
 }
 
+// treesitterIDPrefix starts the IDs of symbols found by tree-sitter.
+const treesitterIDPrefix = "ts-"
+
 // generateTreesitterSymbolId creates a stable ID for tree-sitter extracted symbols.
 func generateTreesitterSymbolId(path, name, kind string, line int) string {
 	key := fmt.Sprintf("%s:%s:%s:%d", path, name, kind, line)
 	hash := sha256.Sum256([]byte(key))
-	return "ts-" + hex.EncodeToString(hash[:8])
+	return treesitterIDPrefix + hex.EncodeToString(hash[:8])
 }
 
 // inferVisibility guesses visibility from naming conventions.

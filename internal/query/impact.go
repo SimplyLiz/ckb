@@ -437,6 +437,19 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 		completeness = CompletenessInfo{Score: 0.5, Reason: "identity-only"}
 	}
 
+	// Search without a SCIP index hands out tree-sitter IDs, which are hashes of a
+	// position: they name nothing here, and suggesting another search would only
+	// produce the same ID.
+	if symbolInfo == nil && strings.HasPrefix(opts.SymbolId, treesitterIDPrefix) {
+		return nil, errors.NewCkbError(
+			errors.IndexMissing,
+			fmt.Sprintf("Impact analysis needs a SCIP index, and %s came from a tree-sitter search without one", opts.SymbolId),
+			nil,
+			errors.GetSuggestedFixes(errors.IndexMissing),
+			nil,
+		)
+	}
+
 	// If we still don't have symbol info, return not found
 	if symbolInfo == nil {
 		return nil, errors.NewCkbError(

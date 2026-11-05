@@ -536,3 +536,18 @@ func TestAnalyzeChangeSet_NoChangesIsNotARiskLevel(t *testing.T) {
 		t.Errorf("explanation = %q", resp.RiskScore.Explanation)
 	}
 }
+
+// Search falls back to tree-sitter without an index, and `ckb impact` with that ID
+// said "not found, use ckb search", which hands out the same ID again.
+func TestAnalyzeImpact_TreesitterIDSaysAnIndexIsNeeded(t *testing.T) {
+	engine, cleanup := testEngine(t)
+	defer cleanup()
+	id := generateTreesitterSymbolId("a.go", "F", "function", 1)
+	_, err := engine.AnalyzeImpact(context.Background(), AnalyzeImpactOptions{SymbolId: id})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !strings.Contains(err.Error(), "needs a SCIP index") || strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v", err)
+	}
+}

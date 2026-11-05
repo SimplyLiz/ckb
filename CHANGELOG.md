@@ -107,6 +107,10 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   analyzed like any other change anyway, consumers and all.
 - **`ckb changes` with nothing changed says so** instead of `Risk: LOW`, as does
   `ckb impact diff`. In JSON the risk is `not_assessed`.
+- **`ckb impact` with a tree-sitter ID says an index is needed.** Search without a
+  SCIP index hands out `ts-` IDs. Impact then said "not found, use `ckb search`",
+  which returns the same ID. It can't analyze those without an index, so it now
+  says that and how to get one.
 
 ### Fixed — search and navigation
 
