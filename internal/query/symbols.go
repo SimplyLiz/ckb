@@ -119,9 +119,10 @@ func (e *Engine) GetSymbol(ctx context.Context, opts GetSymbolOptions) (*GetSymb
 	// Resolve symbol ID through aliases
 	resolved, err := e.resolver.ResolveSymbolId(opts.SymbolId)
 	if err != nil {
-		// If identity resolution fails and this looks like a raw SCIP ID,
-		// try querying SCIP directly as a fallback
-		if strings.HasPrefix(opts.SymbolId, "scip-") && e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
+		// If identity resolution fails, this may be a raw SCIP ID: ask the index.
+		// It's a map lookup, and the scheme says nothing about whether the ID is
+		// in there: rust-analyzer, semanticdb and cxx don't start with "scip-".
+		if e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
 			result, scipErr := e.scipAdapter.GetSymbol(ctx, opts.SymbolId)
 			if scipErr == nil && result != nil {
 				// Successfully found in SCIP - build response directly

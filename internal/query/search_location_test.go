@@ -130,3 +130,39 @@ func TestSearchSymbols_NoLocals(t *testing.T) {
 		}
 	})
 }
+
+// Which indexer wrote an ID decides nothing about whether it can be looked up.
+func TestGetSymbol_RawIDFromAnyIndexer(t *testing.T) {
+	testutil.ForEachLanguage(t, func(t *testing.T, fixture *testutil.FixtureContext) {
+		engine, cleanup := setupGoldenEngine(t, fixture)
+		defer cleanup()
+
+		index := engine.scipAdapter.GetIndex()
+		for _, id := range []string{
+			"rust-analyzer cargo demo 0.1.0 util/helper().",
+			"semanticdb maven maven/com.example/demo 1.0 com/example/Main#run().",
+			"cxx . . $ demo/helper(abc123).",
+		} {
+			sym := &scip.SymbolInformation{Symbol: id, DisplayName: "helper"}
+			occ := &scip.Occurrence{Range: []int32{3, 0, 6}, Symbol: id, SymbolRoles: scip.SymbolRoleDefinition}
+			doc := &scip.Document{RelativePath: "demo.src", Occurrences: []*scip.Occurrence{occ}, Symbols: []*scip.SymbolInformation{sym}}
+			index.Documents = append(index.Documents, doc)
+			index.Symbols[id] = sym
+			index.RefIndex[id] = []*scip.OccurrenceRef{{Doc: doc, Occ: occ}}
+			index.DefinitionIndex[id] = index.RefIndex[id][0]
+
+			resp, err := engine.GetSymbol(context.Background(), GetSymbolOptions{SymbolId: id})
+			if err != nil {
+				t.Errorf("GetSymbol(%q): %v", id, err)
+				continue
+			}
+			if resp.Symbol == nil || resp.Symbol.StableId != id {
+				t.Errorf("GetSymbol(%q) = %+v", id, resp.Symbol)
+			}
+		}
+
+		if _, err := engine.GetSymbol(context.Background(), GetSymbolOptions{SymbolId: "rust-analyzer cargo demo 0.1.0 nope()."}); err == nil {
+			t.Error("an ID the index doesn't have should still be not found")
+		}
+	})
+}

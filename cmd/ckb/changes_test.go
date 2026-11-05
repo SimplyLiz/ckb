@@ -223,3 +223,19 @@ func TestFormatChangeSetHuman_AssessedRiskUnchanged(t *testing.T) {
 		}
 	}
 }
+
+func TestLooksLikeSCIPID(t *testing.T) {
+	for id, want := range map[string]bool{
+		"scip-go gomod example.com/demo abc `example.com/demo/lib`/Target().": true,
+		"rust-analyzer cargo demo 0.1.0 target().":                            true,
+		"semanticdb maven maven/com.example/demo 1.0 com/example/Main#run().": true,
+		"cxx . . $ demo/helper(abc123).":                                      true,
+		"local 12":                                                            true,
+		"Target":                                                              false,
+		"find the handler":                                                    false,
+	} {
+		if got := looksLikeSCIPID(id); got != want {
+			t.Errorf("looksLikeSCIPID(%q) = %v, want %v", id, got, want)
+		}
+	}
+}

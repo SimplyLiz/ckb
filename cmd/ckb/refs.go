@@ -6,14 +6,21 @@ import (
 	"strings"
 	"time"
 
+	bindingscip "github.com/sourcegraph/scip/bindings/go/scip"
 	"github.com/spf13/cobra"
 
 	"github.com/SimplyLiz/CodeMCP/internal/query"
 )
 
-// looksLikeSCIPID returns true if the string looks like a SCIP symbol ID
+// looksLikeSCIPID returns true if the string looks like a SCIP symbol ID, from
+// any indexer. Parsing is what tells them apart from a name to search for; the
+// scheme is free-form: rust-analyzer, semanticdb and cxx all have their own.
 func looksLikeSCIPID(s string) bool {
-	return strings.HasPrefix(s, "scip-") || strings.HasPrefix(s, "local ")
+	if strings.HasPrefix(s, "local ") {
+		return true
+	}
+	sym, err := bindingscip.ParseSymbol(s)
+	return err == nil && len(sym.Descriptors) > 0
 }
 
 var (
