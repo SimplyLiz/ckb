@@ -210,11 +210,10 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 				doc := convertDocument(pbDoc)
 
 				r := docResult{
-					doc:              doc,
-					symbols:          make(map[string]*SymbolInformation, len(doc.Symbols)),
-					refEntries:       make(map[string][]*OccurrenceRef, len(doc.Occurrences)/4+1),
-					defEntries:       make(map[string]*OccurrenceRef),
-					containerEntries: make(map[string]string),
+					doc:        doc,
+					symbols:    make(map[string]*SymbolInformation, len(doc.Symbols)),
+					refEntries: make(map[string][]*OccurrenceRef, len(doc.Occurrences)/4+1),
+					defEntries: make(map[string]*OccurrenceRef),
 				}
 
 				for _, sym := range doc.Symbols {
@@ -247,43 +246,7 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 					}
 				}
 
-				// ContainerIndex: sort def-scopes by size so first match = innermost.
-				type defScope struct {
-					symbol    string
-					startLine int32
-					endLine   int32
-				}
-				var defScopes []defScope
-				for _, occ := range doc.Occurrences {
-					if occ.SymbolRoles&SymbolRoleDefinition != 0 && len(occ.EnclosingRange) >= 3 {
-						startLine := occ.EnclosingRange[0]
-						endLine := startLine
-						if len(occ.EnclosingRange) >= 4 {
-							endLine = occ.EnclosingRange[2]
-						}
-						defScopes = append(defScopes, defScope{occ.Symbol, startLine, endLine})
-					}
-				}
-				if len(defScopes) > 0 {
-					sort.Slice(defScopes, func(a, b int) bool {
-						return (defScopes[a].endLine - defScopes[a].startLine) <
-							(defScopes[b].endLine - defScopes[b].startLine)
-					})
-					for _, occ := range doc.Occurrences {
-						if len(occ.Range) < 2 {
-							continue
-						}
-						occLine := occ.Range[0]
-						for di := range defScopes {
-							ds := &defScopes[di]
-							if occLine >= ds.startLine && occLine <= ds.endLine {
-								r.containerEntries[fmt.Sprintf("%s:%d:%d",
-									doc.RelativePath, occ.Range[0], occ.Range[1])] = ds.symbol
-								break
-							}
-						}
-					}
-				}
+				r.containerEntries = containerEntries(doc)
 
 				resultsMu.Lock()
 				results = append(results, r)
@@ -640,4 +603,51 @@ func GetIndexPath(repoRoot string, configPath string) string {
 		return configPath
 	}
 	return filepath.Join(repoRoot, configPath)
+}
+
+// containerEntries maps each occurrence in a document to the innermost definition
+// containing it, keyed by path, line and column. Only a definition a change can
+// belong to is a container. rust-analyzer gives a local variable's definition an
+// enclosing range covering its let statement, so counting those would answer
+// "local 12" for the call in `let id = project.save(x)`, and the caller is lost.
+func containerEntries(doc *Document) map[string]string {
+	entries := make(map[string]string)
+	type defScope struct {
+		symbol    string
+		startLine int32
+		endLine   int32
+	}
+	var defScopes []defScope
+	for _, occ := range doc.Occurrences {
+		if occ.SymbolRoles&SymbolRoleDefinition != 0 && len(occ.EnclosingRange) >= 3 && IsChangeableDefinition(occ.Symbol) {
+			startLine := occ.EnclosingRange[0]
+			endLine := startLine
+			if len(occ.EnclosingRange) >= 4 {
+				endLine = occ.EnclosingRange[2]
+			}
+			defScopes = append(defScopes, defScope{occ.Symbol, startLine, endLine})
+		}
+	}
+	if len(defScopes) == 0 {
+		return entries
+	}
+	// Smallest first, so the first match is the innermost.
+	sort.Slice(defScopes, func(a, b int) bool {
+		return (defScopes[a].endLine - defScopes[a].startLine) <
+			(defScopes[b].endLine - defScopes[b].startLine)
+	})
+	for _, occ := range doc.Occurrences {
+		if len(occ.Range) < 2 {
+			continue
+		}
+		occLine := occ.Range[0]
+		for di := range defScopes {
+			ds := &defScopes[di]
+			if occLine >= ds.startLine && occLine <= ds.endLine {
+				entries[fmt.Sprintf("%s:%d:%d", doc.RelativePath, occ.Range[0], occ.Range[1])] = ds.symbol
+				break
+			}
+		}
+	}
+	return entries
 }

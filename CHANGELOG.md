@@ -56,6 +56,15 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
 - **Members of unexported Go types** are no longer public API, in the SCIP and
   the search path.
 
+- **A caller is no longer lost to a local variable in it, or to another blank
+  consumer.** rust-analyzer gives `let id = save(x)` an enclosing range, so the
+  local counted as the reference's container and the caller came back blank.
+  Consumers were then deduped on that blank ID, across the whole change: the first
+  one survived and every other file-level consumer (imports, top-level uses, and
+  those lost callers) vanished without a trace. Locals and parameters are no longer
+  containers, blank consumers dedupe per file, and a consumer that is direct for one
+  changed symbol stays direct when another changed symbol reaches it first.
+
 ### Fixed — search and navigation
 
 - **Search results have real locations.** The FTS path only set the file, so

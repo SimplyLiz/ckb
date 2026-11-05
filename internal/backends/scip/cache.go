@@ -12,7 +12,9 @@ import (
 // a SCIP index changes, so installs upgrading in place rebuild them
 // automatically. History: 1 = first versioned release (container-qualified
 // Alias in NameIndex, descriptor-aware kinds, rust-analyzer impl blocks).
-const DerivedCacheVersion = 1
+// 2 = local variables and parameters no longer count as containers in
+// ContainerIndex.
+const DerivedCacheVersion = 2
 
 // derivedCache is the on-disk representation of the expensive derived indexes.
 // It is keyed by the .scip file's mtime+size so it is invalidated automatically

@@ -1230,7 +1230,6 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	var allDirectImpact []ImpactItem
 	var allTransitiveImpact []ImpactItem
 	moduleImpactMap := make(map[string]*ModuleImpact)
-	seenAffected := make(map[string]bool)
 
 	// v1: decisions surfaced per changed symbol's module, deduped by ADR ID, capped at 10.
 	var changeDecisions []RelatedDecision
@@ -1287,21 +1286,8 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			}
 		}
 
-		// Collect direct impact (deduplicated)
-		for _, item := range impactResult.DirectImpact {
-			if !seenAffected[item.StableId] {
-				seenAffected[item.StableId] = true
-				allDirectImpact = append(allDirectImpact, item)
-			}
-		}
-
-		// Collect transitive impact (deduplicated)
-		for _, item := range impactResult.TransitiveImpact {
-			if !seenAffected[item.StableId] {
-				seenAffected[item.StableId] = true
-				allTransitiveImpact = append(allTransitiveImpact, item)
-			}
-		}
+		allDirectImpact = append(allDirectImpact, impactResult.DirectImpact...)
+		allTransitiveImpact = append(allTransitiveImpact, impactResult.TransitiveImpact...)
 
 		// Aggregate module impacts
 		for _, mod := range impactResult.ModulesAffected {
@@ -1342,7 +1328,8 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			if testGapConsumersChecked >= maxTestGapConsumers {
 				break
 			}
-			if seenGapConsumers[consumer.StableId] {
+			// A use outside any definition has no callers a test could reach it through.
+			if consumer.StableId == "" || seenGapConsumers[consumer.StableId] {
 				continue
 			}
 			seenGapConsumers[consumer.StableId] = true
@@ -1352,6 +1339,8 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			untestedConsumers, untestedExamples = recordTestGap(untestedConsumers, untestedExamples, consumer.Name, sym.Name, hasTest)
 		}
 	}
+
+	allDirectImpact, allTransitiveImpact = mergeConsumers(allDirectImpact, allTransitiveImpact)
 
 	// Convert module map to slice
 	modulesAffected := make([]ModuleImpact, 0, len(moduleImpactMap))
@@ -1559,6 +1548,58 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		Reviewers:       reviewers,
 		Confidence:      confidence,
 	}, nil
+}
+
+// consumerKey identifies a consumer across changed symbols. A reference outside
+// any definition, like an import or a package-level initializer, has no symbol to
+// name, so its file stands in: those are consumers too, and two of them in
+// different files are not the same one.
+func consumerKey(item ImpactItem) string {
+	if item.StableId != "" {
+		return item.StableId
+	}
+	if item.Location != nil {
+		return "file:" + item.Location.FileId
+	}
+	return "name:" + item.Name
+}
+
+// mergeConsumers dedupes the consumers of all changed symbols. Direct beats
+// transitive, whichever changed symbol came first: a consumer calling one changed
+// symbol and reaching another is a direct consumer. A file-level entry says nothing
+// more once the file has a named consumer, which is the usual fate of an import.
+func mergeConsumers(direct, transitive []ImpactItem) (mergedDirect, mergedTransitive []ImpactItem) {
+	namedFiles := make(map[string]bool)
+	for i := range direct {
+		if direct[i].StableId != "" && direct[i].Location != nil {
+			namedFiles[direct[i].Location.FileId] = true
+		}
+	}
+	seen := make(map[string]bool, len(direct)+len(transitive))
+	for _, item := range direct {
+		key := consumerKey(item)
+		if seen[key] || (item.StableId == "" && item.Location != nil && namedFiles[item.Location.FileId]) {
+			continue
+		}
+		seen[key] = true
+		mergedDirect = append(mergedDirect, item)
+	}
+	closest := make(map[string]int, len(transitive))
+	for _, item := range transitive {
+		key := consumerKey(item)
+		if seen[key] {
+			continue
+		}
+		if i, ok := closest[key]; ok {
+			if item.Distance < mergedTransitive[i].Distance {
+				mergedTransitive[i] = item
+			}
+			continue
+		}
+		closest[key] = len(mergedTransitive)
+		mergedTransitive = append(mergedTransitive, item)
+	}
+	return mergedDirect, mergedTransitive
 }
 
 // buildChangeConfidence computes a ChangeConfidence for AnalyzeChangeSet from

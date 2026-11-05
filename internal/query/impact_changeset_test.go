@@ -332,3 +332,38 @@ func TestDeletionNotResolvedIsRecommended(t *testing.T) {
 		t.Errorf("recommendations = %+v", recs)
 	}
 }
+
+// References outside any definition have no StableId. Deduping on the blank ID kept
+// the first of them across the whole change and lost every other consumer file.
+func TestMergeConsumers_FileLevelConsumersStaySeparate(t *testing.T) {
+	loc := func(file string) *LocationInfo { return &LocationInfo{FileId: file} }
+	direct, _ := mergeConsumers([]ImpactItem{
+		{Location: loc("a.ts"), Distance: 1},
+		{Location: loc("b.ts"), Distance: 1},
+		{Location: loc("b.ts"), Distance: 1}, // second reference in the same file
+		{StableId: "s", Name: "named", Location: loc("c.ts"), Distance: 1},
+		{Location: loc("c.ts"), Distance: 1}, // its import: c.ts already has a named consumer
+	}, nil)
+
+	var got []string
+	for _, item := range direct {
+		got = append(got, item.Location.FileId+"/"+item.Name)
+	}
+	want := []string{"a.ts/", "b.ts/", "c.ts/named"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("direct = %v, want %v", got, want)
+	}
+}
+
+func TestMergeConsumers_DirectBeatsTransitiveInAnyOrder(t *testing.T) {
+	_, transitive := mergeConsumers(
+		[]ImpactItem{{StableId: "both", Distance: 1}},
+		[]ImpactItem{
+			{StableId: "both", Distance: 2},
+			{StableId: "far", Distance: 3},
+			{StableId: "far", Distance: 2},
+		})
+	if len(transitive) != 1 || transitive[0].StableId != "far" || transitive[0].Distance != 2 {
+		t.Errorf("transitive = %+v, want only far at its closest distance", transitive)
+	}
+}
