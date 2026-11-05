@@ -23,10 +23,86 @@ All notable changes to CKB will be documented in this file.
   `ckb index`, `--watch` and MCP `reindex`.
 - **Nested projects always get a full index.** Incremental indexers run from the
   repo root, found no project there and reported an empty success over a stale
-  index. Not fixed yet: the daemon's refresh path (`internal/daemon/refresh.go`)
-  has its own incremental and full runs and does not handle nested projects.
+  index.
 - **The update box only goes to a terminal.** Agents and scripts capture stderr
   with the result and were filtering the box out of every call by hand.
+
+### Fixed — what CKB says about a change
+
+These change what `assessChange`, `prepareChange`, `analyzeImpact` and
+`searchSymbols` report, so expect different numbers than in 9.3.
+
+- **Changed symbols are the definitions you changed.** Every symbol merely
+  referenced on a changed line used to count as changed, so editing a line that
+  called `logger.Info` charged the change with `logger.Info`'s blast radius.
+  Locals and packages counted too. A changed symbol is now the innermost
+  definition around the changed line.
+- **Deletions are reported.** Only added lines were mapped, so a pure deletion
+  produced nothing. It now maps to its function, a deleted definition appears as
+  `deleted` with its callers, a deleted symbol still used elsewhere is at least
+  high risk (`deleted_with_consumers`), and a deletion the index can't resolve
+  is flagged instead of dropped.
+- **Callers count as callers.** SCIP has no "call" role, so every call arrived
+  as a read and was classified as a type dependency. `analyzeImpact` said "0
+  direct callers", low risk, for a function with real callers.
+- **SCIP symbol kinds use the protocol's enum.** Two hand-written tables had the
+  wrong numbers (a real `Function`, 17, mapped to `interface`).
+- **`not_assessed` everywhere it applies.** `prepareChange`, `analyzeImpact` and
+  `planRefactor` said low risk without a consumer graph too. The `ckb impact
+  diff` output no longer prints a checkmark over it.
+- **Comment and whitespace changes** get confidence 0.3 with a note.
+- **Module spread** counts direct and transitive callers; the more-than-5-modules
+  factor could never fire before.
+- **Members of unexported Go types** are no longer public API, in the SCIP and
+  the search path.
+
+### Fixed — search and navigation
+
+- **Search results have real locations.** The FTS path only set the file, so
+  `searchSymbols` returned `startLine: 0` for everything.
+- **Locals and files outside the repo are gone from results.** `ckb search y`
+  found a local variable, and scip-go's generated test mains showed up with paths
+  into the Go build cache.
+- **Name matches survive a result cap.** `Serve` could lose `ServeHTTP` behind
+  container-qualified aliases, `newserver` lost `NewServer` behind its members,
+  and exact-case matches now beat case-folded ones of the same kind.
+- **Rust is first class.** rust-analyzer `impl#[Foo]bar()` members are methods of
+  `Foo`, and raw symbol IDs work in `impact` and `callgraph` for every indexer,
+  not only those starting with `scip-`.
+- **Handler detection** no longer matches `serverConfig`. Python module symbols
+  (`__init__:`) and file-level pseudo-symbols are no longer callers.
+
+### Fixed — upgrades and setup
+
+- **Upgrading needs no fresh `.ckb`.** The derived symbol cache, FTS content and
+  cached answers are versioned and rebuilt automatically.
+- **`ckb init` keeps `.ckb/` and `index.scip` out of `git status`**, through
+  `.git/info/exclude`.
+- **The daemon handles nested projects** and uses the repo's language for
+  incremental refresh.
+
+### Changed
+
+- **`getCallGraph` has a response budget.** A widely used symbol returned 250
+  nodes and about 46k tokens. It now returns the 20 nodes closest to the symbol,
+  says in `truncation` how many were cut, and takes a `limit`. `ckb callgraph`
+  allows 200.
+
+### Added
+
+- **MCP `instructions`** tell agents when to reach for CKB
+  ([#246](https://github.com/SimplyLiz/ckb/pull/246)).
+
+### Output changes consumers will notice
+
+- `changedSymbols`: new `note`, fewer entries, `file:` entries for lines no
+  definition could be found for; deleted symbols list old-file lines.
+- `riskFactors` may include `deleted_with_consumers`.
+- Risk level `not_assessed` can appear in `prepareChange`, `analyzeImpact`,
+  `planRefactor`, `assessChange`.
+- `kind` values for symbols resolved through SCIP change where the old tables
+  were wrong; `startColumn` is 1-based on search results.
+- TypeScript call graphs change: parameters no longer count as functions.
 
 ### Changed — the automatic first index stays cheap
 
