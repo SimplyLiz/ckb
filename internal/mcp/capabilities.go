@@ -49,6 +49,7 @@ var instructionToolNames = []string{
 	"expandToolset",
 	"getStatus",
 	"reviewPR",
+	"recordDecision",
 }
 
 // instructionsCore is the "consumer contract v0" critical path: when to
@@ -93,11 +94,13 @@ const instructionsCore = `CKB is code intelligence for this repo: symbols, parse
 // covering tools not named in the core sentence.
 func instructionsText() string {
 	return instructionsCore +
-		"\n\nNew to the code, call explore or understand to get oriented. For just " +
-		"callers and impact (no test/risk detail), call analyzeImpact instead. " +
-		"Results come from the index, parsers, and git history; searchSymbols " +
-		"searches text first. Check getStatus if the index looks stale or missing. " +
-		"CKB never edits your source files."
+		"\n\nNew to the code, call explore or understand to get oriented. For " +
+		"callers and a risk score without the test list, call analyzeImpact " +
+		"instead. Results come from the index, parsers, and git history; " +
+		"searchSymbols searches text first. Check getStatus if the index looks " +
+		"stale or missing. CKB only reads your code and writes its own .ckb data; " +
+		"the one exception is recordDecision, which adds an ADR file under " +
+		"docs/decisions."
 }
 
 // handleInitialize handles the initialize request

@@ -68,15 +68,42 @@ func TestInstructionsCoreFitsIn512Bytes(t *testing.T) {
 	}
 }
 
-// TestInstructionsTextStateIndependent asserts instructionsText carries no
-// per-preset branching: it takes no arguments and its output does not
-// depend on which preset a session starts on or later expands into. This is
-// the fix for the bug where a core session's instructions went stale the
-// moment expandToolset ran (instructions are generated once, at
-// initialize, and never resent — see handleInitialize).
+// TestInstructionsTextStateIndependent asserts the instructions a client
+// receives do not depend on the session's preset: they are generated once at
+// initialize and never resent, so a text that varied with the starting preset
+// would be wrong the moment expandToolset ran. Every preset must produce the
+// same text, and so must a session that has expanded.
 func TestInstructionsTextStateIndependent(t *testing.T) {
-	if instructionsText() != instructionsText() {
-		t.Fatal("instructionsText must be a pure, state-independent function")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	want := instructionsText()
+
+	for preset := range Presets {
+		server := NewMCPServer("test", nil, logger)
+		if err := server.SetPreset(preset); err != nil {
+			t.Fatalf("SetPreset(%q): %v", preset, err)
+		}
+		got, err := server.handleInitialize(map[string]interface{}{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Instructions != want {
+			t.Errorf("preset %q produced different instructions:\n%s", preset, got.Instructions)
+		}
+	}
+
+	server := NewMCPServer("test", nil, logger)
+	if _, err := server.toolExpandToolset(map[string]interface{}{
+		"preset": PresetRefactor,
+		"reason": "state independence check",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := server.handleInitialize(map[string]interface{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Instructions != want {
+		t.Errorf("instructions changed after expandToolset:\n%s", got.Instructions)
 	}
 }
 
@@ -125,32 +152,57 @@ func TestInstructionsSurviveExpansion(t *testing.T) {
 	}
 }
 
-// TestInstructionsTextEveryToolResolvable asserts every tool name from
-// instructionToolNames that appears in the generated instructions text is
-// either (a) available in the default "core" preset every session starts
-// on, or (b) reached via expandToolset -- never named as directly callable
-// when it isn't actually in the starting toolset.
+// TestInstructionsTextEveryToolResolvable checks the instructions against the
+// real tool registry, in both directions:
+//   - every tool name found in the text is a registered tool and is listed in
+//     instructionToolNames (an unlisted mention would escape the drift check);
+//   - every tool the text names that is not in the starting "core" preset is
+//     reachable: the text routes through expandToolset, and one of the presets
+//     the text sends the agent to ("review" or "full") really contains it.
 func TestInstructionsTextEveryToolResolvable(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := NewMCPServer("test", nil, logger)
+	registered := registeredToolNames(server)
 	text := instructionsText()
-	coreTools := GetPresetTools(PresetCore)
-	inCore := make(map[string]bool, len(coreTools))
-	for _, name := range coreTools {
+
+	listed := make(map[string]bool, len(instructionToolNames))
+	for _, n := range instructionToolNames {
+		listed[n] = true
+	}
+	inCore := make(map[string]bool)
+	for _, name := range GetPresetTools(PresetCore) {
 		inCore[name] = true
 	}
+	inPreset := func(preset, tool string) bool {
+		for _, n := range GetPresetTools(preset) {
+			if n == tool || n == "*" { // "full" is the wildcard preset
+				return true
+			}
+		}
+		return false
+	}
 
-	for _, name := range instructionToolNames {
+	mentioned := 0
+	for name := range registered {
 		if !strings.Contains(text, name) {
-			continue // not mentioned, nothing to check
+			continue
+		}
+		mentioned++
+		if !listed[name] {
+			t.Errorf("instructions mention registered tool %q but instructionToolNames does not list it", name)
 		}
 		if inCore[name] {
-			continue // mentioned and genuinely available in the starting preset - fine
+			continue
 		}
-		// Mentioned but not in the starting preset: the text must route the
-		// agent through expandToolset rather than implying it's directly
-		// callable.
 		if !strings.Contains(text, "expandToolset") {
-			t.Errorf("instructions mention %q but it is not in the core preset and the text does not route through expandToolset: %s", name, text)
+			t.Errorf("%q is not in the core preset and the text does not route through expandToolset", name)
 		}
+		if !inPreset(PresetReview, name) && !inPreset(PresetFull, name) {
+			t.Errorf("%q is not in core, review or full: the instructions point at a tool the agent cannot reach", name)
+		}
+	}
+	if mentioned < len(instructionToolNames) {
+		t.Errorf("only %d of %d instructionToolNames are registered tools found in the text", mentioned, len(instructionToolNames))
 	}
 }
 
