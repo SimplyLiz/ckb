@@ -177,3 +177,49 @@ func TestFormatChangesHuman_NotAssessedRisk(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatChangeSet_NotAssessedRisk(t *testing.T) {
+	resp := &ChangeSetResponseCLI{
+		Summary:     &ChangeSummaryCLI{FilesChanged: 1, SymbolsChanged: 1, EstimatedRisk: query.RiskLevelNotAssessed},
+		RiskScore:   &RiskScoreCLI{Level: query.RiskLevelNotAssessed, Explanation: "no SCIP index"},
+		BlastRadius: &BlastRadiusCLI{RiskLevel: query.RiskLevelNotAssessed},
+	}
+
+	human := formatChangeSetHuman(resp)
+	for _, want := range []string{"Risk: NOT ASSESSED", "no SCIP index", "Downstream Impact: not assessed"} {
+		if !strings.Contains(human, want) {
+			t.Errorf("human output misses %q:\n%s", want, human)
+		}
+	}
+	for _, unwanted := range []string{"✓", "score:", "not_assessed", "Callers: 0", "Direct Impact:"} {
+		if strings.Contains(human, unwanted) {
+			t.Errorf("human output contains %q:\n%s", unwanted, human)
+		}
+	}
+
+	markdown := formatImpactMarkdown(resp)
+	for _, want := range []string{"**NOT ASSESSED**", "Downstream Impact | not assessed"} {
+		if !strings.Contains(markdown, want) {
+			t.Errorf("markdown misses %q:\n%s", want, markdown)
+		}
+	}
+	for _, unwanted := range []string{"NOT_ASSESSED", "unique callers", "Directly Affected", "🟢"} {
+		if strings.Contains(markdown, unwanted) {
+			t.Errorf("markdown contains %q:\n%s", unwanted, markdown)
+		}
+	}
+}
+
+func TestFormatChangeSetHuman_AssessedRiskUnchanged(t *testing.T) {
+	resp := &ChangeSetResponseCLI{
+		Summary:     &ChangeSummaryCLI{DirectlyAffected: 2, EstimatedRisk: "low"},
+		RiskScore:   &RiskScoreCLI{Level: "low", Score: 0.17},
+		BlastRadius: &BlastRadiusCLI{UniqueCallerCount: 2},
+	}
+	out := formatChangeSetHuman(resp)
+	for _, want := range []string{"✓ Risk Level: low (score: 0.17)", "Direct Impact:    2 symbols", "Callers: 2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output misses %q:\n%s", want, out)
+		}
+	}
+}

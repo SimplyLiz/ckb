@@ -1043,28 +1043,37 @@ func formatChangeSetHuman(resp *ChangeSetResponseCLI) string {
 		b.WriteString("Summary:\n")
 		b.WriteString(fmt.Sprintf("  Files Changed:    %d\n", resp.Summary.FilesChanged))
 		b.WriteString(fmt.Sprintf("  Symbols Changed:  %d\n", resp.Summary.SymbolsChanged))
-		b.WriteString(fmt.Sprintf("  Direct Impact:    %d symbols\n", resp.Summary.DirectlyAffected))
-		b.WriteString(fmt.Sprintf("  Transitive Impact: %d symbols\n", resp.Summary.TransitivelyAffected))
+		if resp.Summary.EstimatedRisk == query.RiskLevelNotAssessed {
+			b.WriteString("  Downstream Impact: not assessed\n")
+		} else {
+			b.WriteString(fmt.Sprintf("  Direct Impact:    %d symbols\n", resp.Summary.DirectlyAffected))
+			b.WriteString(fmt.Sprintf("  Transitive Impact: %d symbols\n", resp.Summary.TransitivelyAffected))
+		}
 		b.WriteString("\n")
 	}
 
 	// Risk Score
 	if resp.RiskScore != nil {
-		riskIcon := "✓"
-		if resp.RiskScore.Level == "high" {
-			riskIcon = "⚠"
-		} else if resp.RiskScore.Level == "critical" {
-			riskIcon = "✗"
+		if resp.RiskScore.Level == query.RiskLevelNotAssessed {
+			b.WriteString("Risk: NOT ASSESSED\n")
+		} else {
+			riskIcon := "✓"
+			if resp.RiskScore.Level == "high" {
+				riskIcon = "⚠"
+			} else if resp.RiskScore.Level == "critical" {
+				riskIcon = "✗"
+			}
+			b.WriteString(fmt.Sprintf("%s Risk Level: %s (score: %.2f)\n", riskIcon, resp.RiskScore.Level, resp.RiskScore.Score))
 		}
-		b.WriteString(fmt.Sprintf("%s Risk Level: %s (score: %.2f)\n", riskIcon, resp.RiskScore.Level, resp.RiskScore.Score))
 		if resp.RiskScore.Explanation != "" {
 			b.WriteString(fmt.Sprintf("  %s\n", resp.RiskScore.Explanation))
 		}
 		b.WriteString("\n")
 	}
 
-	// Blast Radius
-	if resp.BlastRadius != nil {
+	// Blast Radius: nobody looked for callers if the risk wasn't assessed, and
+	// "Callers: 0" would read as there being none.
+	if resp.BlastRadius != nil && (resp.RiskScore == nil || resp.RiskScore.Level != query.RiskLevelNotAssessed) {
 		b.WriteString("Blast Radius:\n")
 		b.WriteString(fmt.Sprintf("  Modules: %d, Files: %d, Callers: %d\n",
 			resp.BlastRadius.ModuleCount, resp.BlastRadius.FileCount, resp.BlastRadius.UniqueCallerCount))

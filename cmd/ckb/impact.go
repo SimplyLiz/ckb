@@ -847,6 +847,14 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 }
 
 // formatImpactMarkdown generates a markdown report for PR comments
+// riskLevelLabel is a risk level the way a heading prints it.
+func riskLevelLabel(level string) string {
+	if level == query.RiskLevelNotAssessed {
+		return "NOT ASSESSED"
+	}
+	return strings.ToUpper(level)
+}
+
 func formatImpactMarkdown(resp *ChangeSetResponseCLI) string {
 	var b strings.Builder
 
@@ -873,16 +881,20 @@ func formatImpactMarkdown(resp *ChangeSetResponseCLI) string {
 		s := resp.Summary
 		b.WriteString("| Metric | Value |\n")
 		b.WriteString("|:-------|------:|\n")
-		b.WriteString(fmt.Sprintf("| **Risk Level** | **%s** %s |\n", strings.ToUpper(risk), emoji))
+		b.WriteString(fmt.Sprintf("| **Risk Level** | **%s** %s |\n", riskLevelLabel(risk), emoji))
 		b.WriteString(fmt.Sprintf("| Files Changed | %d |\n", s.FilesChanged))
 		b.WriteString(fmt.Sprintf("| Symbols Changed | %d |\n", s.SymbolsChanged))
-		b.WriteString(fmt.Sprintf("| Directly Affected | %d |\n", s.DirectlyAffected))
-		b.WriteString(fmt.Sprintf("| Transitively Affected | %d |\n", s.TransitivelyAffected))
+		if risk == query.RiskLevelNotAssessed {
+			b.WriteString("| Downstream Impact | not assessed |\n")
+		} else {
+			b.WriteString(fmt.Sprintf("| Directly Affected | %d |\n", s.DirectlyAffected))
+			b.WriteString(fmt.Sprintf("| Transitively Affected | %d |\n", s.TransitivelyAffected))
+		}
 		b.WriteString("\n")
 	}
 
-	// Blast radius
-	if resp.BlastRadius != nil {
+	// Blast radius: nobody looked for callers if the risk wasn't assessed.
+	if resp.BlastRadius != nil && risk != query.RiskLevelNotAssessed {
 		br := resp.BlastRadius
 		b.WriteString(fmt.Sprintf("**Blast Radius:** %d modules, %d files, %d unique callers\n\n",
 			br.ModuleCount, br.FileCount, br.UniqueCallerCount))
