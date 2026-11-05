@@ -501,3 +501,26 @@ func TestGetGitDiff_NoCommitYet(t *testing.T) {
 		t.Errorf("a repo with no commits has an empty diff, not an error: %v", err)
 	}
 }
+
+// A comment changed: nothing downstream can have noticed.
+func TestAnalyzeChangeSet_CommentOnlyHasNoBlastRadius(t *testing.T) {
+	engine := changeSetEngine(t)
+	resp := runChangeSet(t, engine, AnalyzeChangeSetOptions{DiffContent: `diff --git a/lib/lib.go b/lib/lib.go
+--- a/lib/lib.go
++++ b/lib/lib.go
+@@ -3,3 +3,3 @@
+ func Target(a int) int {
+-	// old words
++	// new words
+ 	return a
+`})
+	if len(resp.ChangedSymbols) != 1 || resp.ChangedSymbols[0].Note == "" {
+		t.Fatalf("the change should still be listed, with its note: %+v", resp.ChangedSymbols)
+	}
+	if len(resp.AffectedSymbols) != 0 || resp.Summary.DirectlyAffected != 0 || resp.ConsumerFiles.Total != 0 {
+		t.Errorf("comment-only change has a blast radius: %+v, %+v", resp.Summary, resp.ConsumerFiles)
+	}
+	if resp.RiskScore.Level != "low" || !strings.Contains(resp.RiskScore.Explanation, "Only comments") {
+		t.Errorf("risk = %+v", resp.RiskScore)
+	}
+}

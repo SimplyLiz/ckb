@@ -103,6 +103,8 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
 - **`ckb changes` and `ckb impact diff` see staged edits.** Both promise the
   uncommitted working tree but ran a bare `git diff`, which compares against the
   index, so anything `git add`ed looked unchanged.
+- **A comment-only change has no blast radius.** It was listed with its note, then
+  analyzed like any other change anyway, consumers and all.
 
 ### Fixed — search and navigation
 

@@ -1463,13 +1463,14 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	var mappingConfidenceCount int
 
 	for _, sym := range changedSymbols {
-		if sym.Confidence > 0 {
+		if sym.Confidence > 0 && !sym.Trivial { // Trivial is low for another reason than mapping
 			totalMappingConfidence += sym.Confidence
 			mappingConfidenceCount++
 		}
 
-		// Skip file-level entries for transitive analysis
-		if strings.HasPrefix(sym.SymbolID, "file:") {
+		// Skip file-level entries for transitive analysis, and anything that only
+		// changed comments or whitespace: it has no blast radius to report.
+		if strings.HasPrefix(sym.SymbolID, "file:") || sym.Trivial {
 			continue
 		}
 
@@ -1602,7 +1603,16 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	}
 
 	// Calculate aggregated risk score
-	riskScore := e.calculateAggregatedRisk(changedSymbols, allDirectImpact, allTransitiveImpact, modulesAffected)
+	substantive := make([]impact.ChangedSymbol, 0, len(changedSymbols))
+	for _, sym := range changedSymbols {
+		if !sym.Trivial {
+			substantive = append(substantive, sym)
+		}
+	}
+	riskScore := e.calculateAggregatedRisk(substantive, allDirectImpact, allTransitiveImpact, modulesAffected)
+	if len(substantive) == 0 && len(changedSymbols) > 0 {
+		riskScore.Explanation = "Only comments or whitespace changed."
+	}
 	applyContractChangesToRisk(riskScore, brokenContracts, publicContractChanges)
 	for _, sym := range changedSymbols {
 		if sym.DeletionUnresolved {
