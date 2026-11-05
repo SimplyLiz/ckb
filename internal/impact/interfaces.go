@@ -21,6 +21,9 @@ type ChangedSymbol struct {
 	// Note says why this entry isn't a resolved symbol, on file-level ("file:...")
 	// entries: which changed lines could not be attributed to a definition.
 	Note string
+	// DeletionUnresolved marks a file-level entry for removed code whose
+	// definition isn't in the index, so what used it is unknown.
+	DeletionUnresolved bool
 }
 
 // ParsedDiff represents a parsed git diff with structured information

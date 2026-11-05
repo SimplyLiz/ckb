@@ -346,3 +346,113 @@ func TestContainsWord(t *testing.T) {
 		}
 	}
 }
+
+func TestMapToSymbols_PureDeletionInsideFunction(t *testing.T) {
+	// goDoc has the line deleted here, so the index predates the change.
+	oldSide := fileDiff("lib/lib.go", "@@ -8,3 +8,2 @@\n \ty := x + 1\n-\tfmt.Println(y)\n \treturn y\n")
+	if got := mapDoc(t, goDoc(), oldSide); names(got) != "Target" || got[0].ChangeType != impact.ChangeModified {
+		t.Errorf("index before the change: got %+v, want Target modified", got)
+	}
+	if got := mapDoc(t, goDoc(), oldSide); len(got) == 1 && (len(got[0].Lines) != 1 || got[0].Lines[0] != 9) {
+		t.Errorf("lines = %v, want the deletion's position in the new file, [9]", got[0].Lines)
+	}
+
+	// goDoc lacks the line deleted here, so the index already has the change: the
+	// hunk's position in the new file falls inside Target.
+	newSide := fileDiff("lib/lib.go", "@@ -8,4 +8,3 @@\n \ty := x + 1\n-\tlog.Print(z)\n \tfmt.Println(y)\n \treturn y\n")
+	if got := mapDoc(t, goDoc(), newSide); names(got) != "Target" || got[0].ChangeType != impact.ChangeModified {
+		t.Errorf("index with the change: got %+v, want Target modified", got)
+	}
+}
+
+// Deleting a whole definition, index from before the change: named, and marked
+// deleted, so that impact analysis finds its callers. The doc comment and blank
+// line around it don't add a file-level entry.
+func TestMapToSymbols_DeletedDefinition(t *testing.T) {
+	diffText := fileDiff("lib/lib.go", "@@ -5,8 +5,1 @@\n-const Limit = 10\n-\n-func Target(x int) int {\n-\ty := x + 1\n-\tfmt.Println(y)\n-\treturn y\n-}\n \n")
+	got := mapDoc(t, goDoc(), diffText)
+	if names(got) != "Limit Target" {
+		t.Fatalf("changed symbols = %q, want Limit Target", names(got))
+	}
+	for _, s := range got {
+		if s.ChangeType != impact.ChangeDeleted {
+			t.Errorf("%s: change type %s, want deleted", s.Name, s.ChangeType)
+		}
+		if s.Name == "Target" && (len(s.Lines) != 5 || s.Lines[0] != 7 || s.Lines[4] != 11) {
+			t.Errorf("Target lines = %v, want its old lines 7-11", s.Lines)
+		}
+	}
+}
+
+// All lines rewritten but the name still there is a modification, and a body kept
+// under a new name is too: what was renamed away isn't "deleted" code.
+func TestMapToSymbols_RewriteIsNotDeletion(t *testing.T) {
+	rewrite := fileDiff("lib/lib.go", "@@ -7,5 +7,3 @@\n-func Target(x int) int {\n-\ty := x + 1\n-\tfmt.Println(y)\n-\treturn y\n-}\n+func Target(x int) int {\n+\treturn x + 1\n+}\n")
+	if got := mapDoc(t, goDoc(), rewrite); names(got) != "Target" || got[0].ChangeType != impact.ChangeModified {
+		t.Errorf("rewrite: got %+v, want Target modified", got)
+	}
+	rename := fileDiff("lib/lib.go", "@@ -7,3 +7,3 @@\n-func Target(x int) int {\n+func Goal(x int) int {\n \ty := x + 1\n \tfmt.Println(y)\n")
+	if got := mapDoc(t, goDoc(), rename); names(got) != "Target" || got[0].ChangeType != impact.ChangeModified {
+		t.Errorf("rename: got %+v, want Target modified", got)
+	}
+}
+
+// Deleting a whole definition when the index already includes the deletion: the
+// tool can't name it from the index, and has to say that rather than nothing.
+func TestMapToSymbols_DeletedDefinitionNotInIndex(t *testing.T) {
+	diffText := fileDiff("lib/lib.go", "@@ -11,7 +11,3 @@\n }\n \n-func Doomed(a int) int {\n-\treturn a * 2\n-}\n-\n var Table = map[string]int{\n \t\"a\": 1,\n }\n")
+	got := mapDoc(t, goDoc(), diffText)
+	if len(got) != 1 || got[0].SymbolID != "file:lib/lib.go" {
+		t.Fatalf("got %+v, want one file-level entry", got)
+	}
+	if !got[0].DeletionUnresolved {
+		t.Errorf("DeletionUnresolved not set: %+v", got[0])
+	}
+	if !strings.Contains(got[0].Note, "func Doomed(a int) int {") {
+		t.Errorf("note %q should quote the removed line", got[0].Note)
+	}
+}
+
+// A deleted file with an index from before: every definition in it is reported.
+func TestMapToSymbols_DeletedFileInIndex(t *testing.T) {
+	diffText := "--- a/src/lib.ts\n+++ /dev/null\n@@ -1,8 +0,0 @@\n-export function target(x: number): number {\n-  const y = x + 1;\n-  return y;\n-}\n-\n-export const arrow = (a: number): number => {\n-  return a * 2;\n-};\n"
+	got := mapDoc(t, tsDoc(), diffText)
+	if names(got) != "arrow target" {
+		t.Fatalf("changed symbols = %q, want arrow target", names(got))
+	}
+	for _, s := range got {
+		if s.ChangeType != impact.ChangeDeleted {
+			t.Errorf("%s: change type %s, want deleted", s.Name, s.ChangeType)
+		}
+	}
+}
+
+func TestMapToSymbols_AddedDefinitionInIndex(t *testing.T) {
+	diffText := fileDiff("lib/lib.go", "@@ -19,2 +19,4 @@\n }\n \n+func Unused() {}\n+\n func After() {}\n")
+	doc := goDoc()
+	doc.Occurrences = append(doc.Occurrences, def(goPkg+"Unused().", 20, 20, 0, 20, 16))
+	// After moved down with the insertion, so the index has the new file's lines.
+	for _, occ := range doc.Occurrences {
+		if occ.Symbol == goPkg+"After()." {
+			occ.Range = []int32{22, 0, 1}
+			occ.EnclosingRange = []int32{22, 0, 22, 15}
+		}
+	}
+	got := mapDoc(t, doc, diffText)
+	if len(got) != 1 || got[0].ChangeType != impact.ChangeAdded || !strings.HasSuffix(got[0].SymbolID, "Unused().") {
+		t.Fatalf("got %+v, want Unused added", got)
+	}
+}
+
+// rust-analyzer references an operator's method on the line of the operator, and
+// its name isn't on that line. That must not count against the side it's on.
+func TestMapToSymbols_OperatorReferencesAreNotEvidence(t *testing.T) {
+	add := rsPkg + "ops/arith/impl#[i32][`Add<Self>`]add()."
+	doc := rustDoc()
+	doc.Occurrences = append(doc.Occurrences, ref(add, 8), ref(add, 8), ref(add, 8), ref(add, 9))
+	diffText := fileDiff("src/lib.rs", "@@ -7,6 +7,1 @@\n impl Point {\n-    pub fn sum(&self) -> i32 {\n-        let total = self.x;\n-        total\n-    }\n }\n")
+	got := mapDoc(t, doc, diffText)
+	if names(got) != "sum" || got[0].ChangeType != impact.ChangeDeleted {
+		t.Fatalf("got %+v, want sum deleted", got)
+	}
+}
