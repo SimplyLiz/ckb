@@ -313,6 +313,13 @@ func kindFromDescriptors(descriptors []*bindingscip.Descriptor) SymbolKind {
 	case bindingscip.Descriptor_Macro:
 		return KindFunction
 	case bindingscip.Descriptor_Meta:
+		// scip-python emits one "<module>/__init__:" symbol per module (the
+		// scope of top-level statements). That is a module, not a type;
+		// reading it as KindType let it through the namespace guards that
+		// keep file-scope pseudo-symbols out of caller lists.
+		if last.Name == "__init__" {
+			return KindNamespace
+		}
 		return KindType
 	default: // Descriptor_Term
 		if last.Name == strings.ToUpper(last.Name) && len(last.Name) > 1 {
@@ -438,4 +445,13 @@ func ExtractLocalSymbolPath(descriptor string) string {
 	}
 
 	return ""
+}
+
+// IsModuleScopeSymbol reports whether symbolID names a module/file scope
+// rather than a callable or type: a Namespace descriptor (scip-typescript's
+// whole-file symbol) or scip-python's "<module>/__init__:". Such a symbol can
+// enclose a reference but is not a meaningful caller.
+func IsModuleScopeSymbol(symbolID string) bool {
+	id, err := ParseSCIPIdentifier(symbolID)
+	return err == nil && id.ExtractSymbolKind() == KindNamespace
 }

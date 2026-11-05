@@ -149,6 +149,9 @@ func (idx *SCIPIndex) FindCallers(symbolId string) ([]*CallGraphNode, error) {
 	}
 	callers := make([]*CallGraphNode, 0, len(callerIDs))
 	for _, callerID := range callerIDs {
+		if IsModuleScopeSymbol(callerID) {
+			continue // file/module scope, not a function: same rule as convertToReference
+		}
 		symInfo := idx.GetSymbol(callerID)
 		kind := KindFunction
 		if symInfo != nil {
