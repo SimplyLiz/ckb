@@ -295,3 +295,23 @@ func TestProcessDirectReferences_OmitsUnresolvedEnclosingSymbol(t *testing.T) {
 		t.Errorf("Name = %q, want empty (not \"unknown\")", item.Name)
 	}
 }
+
+type locatingProvider struct{}
+
+func (locatingProvider) GetTransitiveCallers(string, int) (map[string]int, error) {
+	return map[string]int{"far": 2}, nil
+}
+func (locatingProvider) CallerLocation(id string) (string, *Location, bool) {
+	return "pkg/far", &Location{FileId: "pkg/far/x.go", StartLine: 7}, true
+}
+
+func TestTransitiveCallersGetModuleFromLocator(t *testing.T) {
+	a := NewImpactAnalyzerWithCallers(3, locatingProvider{})
+	items, err := a.processTransitiveCallers(&Symbol{StableId: "s"}, nil)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%v err=%v", items, err)
+	}
+	if items[0].ModuleId != "pkg/far" || items[0].Location == nil || items[0].Location.StartLine != 7 {
+		t.Errorf("transitive item not located: %+v", items[0])
+	}
+}

@@ -14,6 +14,17 @@ type TransitiveCallerProvider interface {
 	GetTransitiveCallers(symbolId string, maxDepth int) (map[string]int, error)
 }
 
+// CallerLocator is an optional extension of TransitiveCallerProvider. After
+// GetTransitiveCallers has run, it reports where a returned caller lives so
+// the analyzer can attribute the caller to a module. Providers that only know
+// symbol ids simply don't implement it and transitive items keep an empty
+// ModuleId.
+type CallerLocator interface {
+	// CallerLocation returns the module and source location of a caller, or
+	// ok=false when unknown.
+	CallerLocation(callerId string) (moduleId string, loc *Location, ok bool)
+}
+
 // ImpactAnalyzer performs impact analysis on symbols
 type ImpactAnalyzer struct {
 	maxDepth   int                      // Maximum depth for transitive analysis (default 2)
@@ -312,6 +323,13 @@ func (a *ImpactAnalyzer) processTransitiveCallers(symbol *Symbol, vis *Visibilit
 			Confidence: confidence,
 			Distance:   depth,
 			Visibility: vis,
+		}
+		if locator, ok := a.callerProv.(CallerLocator); ok {
+			if mod, loc, found := locator.CallerLocation(callerId); found {
+				item.ModuleId = mod
+				item.ModuleName = extractModuleNameFromId(mod)
+				item.Location = loc
+			}
 		}
 		items = append(items, item)
 	}
