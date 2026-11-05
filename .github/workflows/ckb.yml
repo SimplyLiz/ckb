@@ -27,8 +27,6 @@ name: CKB
 on:
   pull_request:
     branches: [develop, main, 'feature/**']
-  schedule:
-    - cron: '0 3 * * *'
   workflow_dispatch:
     inputs:
       force:
@@ -75,11 +73,11 @@ jobs:
       # ───────────────────────────────────────────────────────────────────────
       # Setup
       # ───────────────────────────────────────────────────────────────────────
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -95,7 +93,7 @@ jobs:
       # ───────────────────────────────────────────────────────────────────────
       - name: Cache
         id: cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: .ckb/
           key: ckb-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.base_ref }}
@@ -954,7 +952,7 @@ jobs:
       # ───────────────────────────────────────────────────────────────────────
       - name: Save Cache
         if: always()
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: .ckb/
           key: ckb-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.base_ref }}
@@ -968,19 +966,19 @@ jobs:
           retention-days: 7
 
   # ╔═════════════════════════════════════════════════════════════════════════╗
-  # ║ SCHEDULED REFRESH                                                        ║
+  # ║ MANUAL REFRESH                                                           ║
   # ╚═════════════════════════════════════════════════════════════════════════╝
   refresh:
     name: Refresh
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -992,7 +990,7 @@ jobs:
         run: go install github.com/scip-code/scip-go/cmd/scip-go@latest
 
       - name: Cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: .ckb/
           key: ckb-${{ runner.os }}-refresh-${{ github.run_id }}
