@@ -64,6 +64,10 @@ type Engine struct {
 	// parsing the index (see EnsureSCIPLoaded).
 	scipReloadMu sync.Mutex
 
+	// ftsPopMu serialises FTS rebuilds (background start-up task, SCIP reload,
+	// stale-content repair on first query).
+	ftsPopMu sync.Mutex
+
 	// Cached repo state
 	repoStateMu     sync.RWMutex
 	cachedState     *RepoState
@@ -595,9 +599,10 @@ func (e *Engine) GetDB() *storage.DB {
 // deterministic FTS state should call PopulateFTSFromSCIP synchronously instead.
 func (e *Engine) StartBgTasks() {
 	if e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
+		e.invalidateStaleCaches(context.Background())
 		go func() {
 			ctx := context.Background()
-			if err := e.PopulateFTSFromSCIP(ctx); err != nil {
+			if err := e.EnsureFTSCurrent(ctx); err != nil {
 				e.logger.Warn("Failed to populate FTS from SCIP", "error", err.Error())
 			}
 		}()

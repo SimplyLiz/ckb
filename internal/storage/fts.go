@@ -154,6 +154,39 @@ func (m *FTSManager) InitSchema() error {
 	return nil
 }
 
+// ftsContentVersion is bumped when the FTS table layout or the meaning of its
+// columns changes. It is part of the stamp the caller stores with SetStamp.
+const ftsContentVersion = 1
+
+// Stamp returns the stamp that content built for the given source identity
+// carries. Callers compare it with GetStamp to decide whether the FTS content
+// must be rebuilt.
+func (m *FTSManager) Stamp(source string) string {
+	return fmt.Sprintf("fts%d:%s", ftsContentVersion, source)
+}
+
+// GetStamp returns the stamp recorded by the last complete rebuild, or ""
+// when there is none (content from before stamps existed, or never built).
+func (m *FTSManager) GetStamp(ctx context.Context) string {
+	var v string
+	err := m.db.QueryRowContext(ctx, "SELECT value FROM symbols_fts_meta WHERE key = 'stamp'").Scan(&v)
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
+// SetStamp records the stamp for the current content.
+func (m *FTSManager) SetStamp(ctx context.Context, stamp string) error {
+	if _, err := m.db.ExecContext(ctx,
+		"CREATE TABLE IF NOT EXISTS symbols_fts_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {
+		return err
+	}
+	_, err := m.db.ExecContext(ctx,
+		"INSERT INTO symbols_fts_meta (key, value) VALUES ('stamp', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", stamp)
+	return err
+}
+
 // BulkInsert inserts multiple symbols into FTS in a single transaction
 func (m *FTSManager) BulkInsert(ctx context.Context, symbols []SymbolFTSRecord) error {
 	if len(symbols) == 0 {

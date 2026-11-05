@@ -143,6 +143,19 @@ func (s *SCIPAdapter) IndexFileChanged() bool {
 	return true
 }
 
+// IndexStamp identifies the exact index file version the loaded index was
+// read from, together with the derivation-logic version. Anything derived from
+// the index and persisted elsewhere (the FTS content) records it and is
+// rebuilt when it no longer matches. Empty when no index is loaded.
+func (s *SCIPAdapter) IndexStamp() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.index == nil || !s.loadedStamp.exists {
+		return ""
+	}
+	return fmt.Sprintf("d%d:%d:%d", DerivedCacheVersion, s.loadedStamp.size, s.loadedStamp.modTime.UnixNano())
+}
+
 // Capabilities returns the capabilities supported by SCIP
 func (s *SCIPAdapter) Capabilities() []string {
 	return []string{
