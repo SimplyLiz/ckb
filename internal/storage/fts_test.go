@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -392,5 +393,42 @@ func TestDefaultFTSConfig(t *testing.T) {
 	}
 	if !cfg.RebuildOnFullSync {
 		t.Error("expected RebuildOnFullSync=true")
+	}
+}
+
+func TestFTSManagerSearchExactNameBeatsOtherColumnHits(t *testing.T) {
+	db, cleanup := setupTestFTSDB(t)
+	defer cleanup()
+	manager := NewFTSManager(db, DefaultFTSConfig())
+	if err := manager.InitSchema(); err != nil {
+		t.Fatal(err)
+	}
+	var syms []SymbolFTSRecord
+	// Rows that match only through the container-qualified signature come first.
+	for i := 0; i < 8; i++ {
+		syms = append(syms, SymbolFTSRecord{ID: fmt.Sprintf("m%d", i), Name: fmt.Sprintf("other%d", i), Kind: "method", Signature: fmt.Sprintf("NewServer.other%d", i), FilePath: "a.go", Language: "go"})
+	}
+	syms = append(syms,
+		SymbolFTSRecord{ID: "fn", Name: "NewServer", Kind: "function", FilePath: "a.go", Language: "go"},
+		SymbolFTSRecord{ID: "prop", Name: "status", Kind: "property", FilePath: "a.go", Language: "go"},
+		SymbolFTSRecord{ID: "enum", Name: "Status", Kind: "enum", FilePath: "a.go", Language: "go"},
+	)
+	ctx := context.Background()
+	if err := manager.BulkInsert(ctx, syms); err != nil {
+		t.Fatal(err)
+	}
+	res, err := manager.Search(ctx, "newserver", 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) == 0 || res[0].ID != "fn" {
+		t.Errorf("newserver limit 6: top = %+v, want NewServer function", res)
+	}
+	res, err = manager.Search(ctx, "STATUS", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 1 || res[0].ID != "enum" {
+		t.Errorf("STATUS limit 1 = %+v, want enum Status over property status", res)
 	}
 }

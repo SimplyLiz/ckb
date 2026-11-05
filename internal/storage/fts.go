@@ -398,10 +398,14 @@ func (m *FTSManager) listAll(ctx context.Context, limit int) ([]FTSSearchResult,
 // happens not to). We break that tie explicitly, before bm25 and before
 // the caller's LIMIT ever gets applied, so the correct candidate isn't
 // truncated away by the time Go-side ranking (rankSearchResults) runs:
-//  1. case-sensitive exact name match sorts first,
-//  2. among remaining case-fold-only matches, type-like kinds
-//     (class/interface/struct/type) sort ahead of properties/parameters/etc,
-//  3. bm25 breaks any remaining ties.
+//  1. rows whose name equals the query (ignoring case) come before rows that
+//     only matched through another column (e.g. the container-qualified
+//     "NewServer.other" signature) — otherwise a limit filled by those rows
+//     drops the symbol that is literally named like the query,
+//  2. case-sensitive exact name match sorts first,
+//  3. among remaining case-fold-only matches, type-like kinds
+//     (class/interface/struct/type/enum) sort ahead of properties/parameters/etc,
+//  4. bm25 breaks any remaining ties.
 func (m *FTSManager) searchExact(ctx context.Context, query string, limit int) ([]FTSSearchResult, error) {
 	// Use FTS5 phrase query with MATCH
 	ftsQuery := fmt.Sprintf(`"%s"`, escapeFTS5Query(query))
@@ -414,11 +418,12 @@ func (m *FTSManager) searchExact(ctx context.Context, query string, limit int) (
 		JOIN symbols_fts_content c ON f.rowid = c.rowid
 		WHERE symbols_fts MATCH ?
 		ORDER BY
+			(lower(c.name) <> lower(?)),
 			(c.name <> ?),
-			CASE WHEN lower(c.name) = lower(?) AND c.kind NOT IN ('class','interface','struct','type') THEN 1 ELSE 0 END,
+			CASE WHEN lower(c.name) = lower(?) AND c.kind NOT IN ('class','interface','struct','type','enum') THEN 1 ELSE 0 END,
 			rank
 		LIMIT ?
-	`, ftsQuery, query, query, limit)
+	`, ftsQuery, query, query, query, limit)
 	if err != nil {
 		return nil, err
 	}
