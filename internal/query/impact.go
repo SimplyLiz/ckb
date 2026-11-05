@@ -30,6 +30,9 @@ type AnalyzeImpactOptions struct {
 	IncludeTests     bool
 	IncludeTelemetry bool   // Include observed telemetry data
 	TelemetryPeriod  string // Time period for telemetry ("7d", "30d", "90d")
+	// AllItems skips the item budget, for a caller aggregating several symbols that
+	// applies its own. ConsumerFiles is complete either way.
+	AllItems bool
 }
 
 // AnalyzeImpactResponse is the response for analyzeImpact.
@@ -52,11 +55,96 @@ type AnalyzeImpactResponse struct {
 	// TestImpact holds the test code using the symbol when IncludeTests is off. It
 	// is kept out of DirectImpact, TransitiveImpact and everything counted from
 	// them, so a well-tested symbol doesn't look like a widely used one.
-	TestImpact     []ImpactItem       `json:"-"`
+	TestImpact []ImpactItem `json:"-"`
+	// ConsumerFiles lists every file behind the item lists, which are budgeted.
+	ConsumerFiles  *ConsumerFiles     `json:"consumerFiles,omitempty"`
 	Truncated      bool               `json:"truncated,omitempty"`
 	TruncationInfo *TruncationInfo    `json:"truncationInfo,omitempty"`
 	Provenance     *Provenance        `json:"provenance"`
 	Drilldowns     []output.Drilldown `json:"drilldowns,omitempty"`
+}
+
+// MaxConsumerFiles bounds ConsumerFiles. A path is about 50 bytes, so this is at
+// most some 15 KB, or 3.7k tokens, against 20 items at 200 bytes each that say less.
+const MaxConsumerFiles = 300
+
+// ConsumerFiles is the list of files to look at when a symbol changes: unlike the
+// consumer items it is not budgeted down to a sample, because a path is cheap and a
+// missing one is a file nobody checks. Tests has every test file using or reaching
+// the symbol, whether or not test code counts as a consumer.
+type ConsumerFiles struct {
+	Direct     []string `json:"direct"`               // Reference a changed symbol themselves
+	Transitive []string `json:"transitive,omitempty"` // Reach one only through other code
+	Tests      []string `json:"tests,omitempty"`
+	Total      int      `json:"total"` // Files found, including any cut from these lists
+	// Truncated means the lists are not the whole answer, and Note says why.
+	Truncated bool   `json:"truncated,omitempty"`
+	Note      string `json:"note,omitempty"`
+}
+
+// BuildConsumerFiles lists the files of consumers. A file is listed once, at its
+// closest. If the list has to be cut, transitive files go first. incomplete says
+// what the lookup itself did not cover, if anything.
+func BuildConsumerFiles(direct, transitive, tests []ImpactItem, incomplete string) *ConsumerFiles {
+	seen := make(map[string]bool)
+	collect := func(groups ...[]ImpactItem) []string {
+		var paths []string
+		for _, items := range groups {
+			for i := range items {
+				if items[i].Location == nil || items[i].Location.FileId == "" || seen[items[i].Location.FileId] {
+					continue
+				}
+				seen[items[i].Location.FileId] = true
+				paths = append(paths, items[i].Location.FileId)
+			}
+		}
+		sort.Strings(paths)
+		return paths
+	}
+	splitTests := func(items []ImpactItem) (production, inTests []ImpactItem) {
+		for i := range items {
+			if isTestFile(items[i].Location) {
+				inTests = append(inTests, items[i])
+			} else {
+				production = append(production, items[i])
+			}
+		}
+		return production, inTests
+	}
+	directProd, directTests := splitTests(direct)
+	transitiveProd, transitiveTests := splitTests(transitive)
+
+	files := &ConsumerFiles{Direct: collect(directProd)}
+	files.Tests = collect(directTests, tests, transitiveTests)
+	files.Transitive = collect(transitiveProd)
+	if files.Direct == nil {
+		files.Direct = []string{}
+	}
+	files.Total = len(files.Direct) + len(files.Transitive) + len(files.Tests)
+
+	notes := make([]string, 0, 2)
+	if files.Total > MaxConsumerFiles {
+		room := MaxConsumerFiles
+		cut := func(paths []string) []string {
+			if len(paths) > room {
+				paths = paths[:room]
+			}
+			room -= len(paths)
+			return paths
+		}
+		files.Direct = cut(files.Direct)
+		files.Tests = cut(files.Tests)
+		files.Transitive = cut(files.Transitive)
+		notes = append(notes, fmt.Sprintf("showing %d of %d files", MaxConsumerFiles, files.Total))
+	}
+	if incomplete != "" {
+		notes = append(notes, incomplete)
+	}
+	if len(notes) > 0 {
+		files.Truncated = true
+		files.Note = strings.Join(notes, "; ")
+	}
+	return files
 }
 
 // DocToUpdate represents documentation that may need updating when a symbol changes.
@@ -152,7 +240,11 @@ type scipCallerProvider struct {
 	// separateTests moves callers in test files out of the result into testCallers.
 	separateTests bool
 	testCallers   map[string]int
+	nodeLimitHit  bool // The call graph stopped at transitiveCallerNodes
 }
+
+// transitiveCallerNodes bounds the call graph walked per symbol, for performance.
+const transitiveCallerNodes = 100
 
 // CallerLocation implements impact.CallerLocator. The module is the directory
 // of the caller's file, the same derivation used for direct references.
@@ -172,7 +264,7 @@ func (p *scipCallerProvider) GetTransitiveCallers(symbolId string, maxDepth int)
 	graph, err := p.adapter.BuildCallGraph(symbolId, scip.CallGraphOptions{
 		Direction: scip.DirectionCallers,
 		MaxDepth:  maxDepth,
-		MaxNodes:  100, // Bounded for performance
+		MaxNodes:  transitiveCallerNodes,
 	})
 	if err != nil {
 		return nil, err
@@ -183,6 +275,7 @@ func (p *scipCallerProvider) GetTransitiveCallers(symbolId string, maxDepth int)
 		return result, nil
 	}
 	p.nodes = graph.Nodes
+	p.nodeLimitHit = len(graph.Nodes) >= transitiveCallerNodes
 
 	// BFS to compute depths from root
 	visited := make(map[string]bool)
@@ -255,6 +348,10 @@ func (p *scipCallerProvider) testCallerItems() []ImpactItem {
 	}
 	return items
 }
+
+// maxImpactReferences bounds the references read per symbol; past it,
+// ConsumerFiles says the list is partial.
+const maxImpactReferences = 5000
 
 // AnalyzeImpact analyzes the impact of changing a symbol.
 func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (*AnalyzeImpactResponse, error) {
@@ -345,13 +442,18 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 
 	// Find references for impact analysis
 	var refs []impact.Reference
+	var incomplete []string
 	if e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
 		refOpts := backends.RefOptions{
-			MaxResults:   500,
+			MaxResults:   maxImpactReferences,
 			IncludeTests: true, // Set aside below if not wanted as consumers
 		}
 		refsResult, refsErr := e.scipAdapter.FindReferences(ctx, symbolIdForLookup, refOpts)
 		if refsErr == nil && refsResult != nil {
+			if refsResult.TotalReferences > len(refsResult.References) {
+				incomplete = append(incomplete, fmt.Sprintf("looked at the first %d of %d references",
+					len(refsResult.References), refsResult.TotalReferences))
+			}
 			for _, ref := range refsResult.References {
 				fromModule := ""
 				if ref.Location.Path != "" {
@@ -419,6 +521,9 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 	testImpact := testReferenceItems(testRefs, impactSymbol)
 	if callerProv != nil {
 		testImpact = append(testImpact, callerProv.testCallerItems()...)
+		if callerProv.nodeLimitHit {
+			incomplete = append(incomplete, fmt.Sprintf("stopped following callers after %d symbols", transitiveCallerNodes))
+		}
 	}
 
 	// Fetch LIP enrichment up-front so tier-1 static callers can be folded
@@ -445,11 +550,17 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 	transitiveImpact := convertImpactItems(result.TransitiveImpact)
 	modulesAffected := convertModuleImpacts(result.ModulesAffected)
 
+	consumerFiles := BuildConsumerFiles(directImpact, transitiveImpact, testImpact, strings.Join(incomplete, "; "))
+
+	// Sort by impact priority, so the budget below keeps the ones that matter most
+	sortImpactItems(directImpact)
+	sortImpactItems(transitiveImpact)
+
 	// Apply budget
 	budget := e.compressor.GetBudget()
 	var truncationInfo *TruncationInfo
 	totalItems := len(directImpact) + len(transitiveImpact)
-	if totalItems > budget.MaxImpactItems {
+	if !opts.AllItems && totalItems > budget.MaxImpactItems {
 		truncationInfo = &TruncationInfo{
 			Reason:        "max-items",
 			OriginalCount: totalItems,
@@ -466,10 +577,6 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 			}
 		}
 	}
-
-	// Sort by impact priority
-	sortImpactItems(directImpact)
-	sortImpactItems(transitiveImpact)
 
 	// Sort modules by impact count
 	sort.Slice(modulesAffected, func(i, j int) bool {
@@ -615,6 +722,7 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 		DocsToUpdate:      docsToUpdate,
 		BlendedConfidence: blendedConfidence,
 		TestImpact:        testImpact,
+		ConsumerFiles:     consumerFiles,
 		Truncated:         truncationInfo != nil,
 		TruncationInfo:    truncationInfo,
 		Provenance:        provenance,
@@ -1059,6 +1167,9 @@ type AnalyzeChangeSetResponse struct {
 	Decisions []RelatedDecision `json:"decisions,omitempty"`
 	// Reviewers are suggested reviewers for the changed files (ownership-based).
 	Reviewers []SuggestedReview `json:"reviewers,omitempty"`
+	// ConsumerFiles lists every file using or reaching a changed symbol, while
+	// AffectedSymbols is budgeted to a detailed sample of them.
+	ConsumerFiles *ConsumerFiles `json:"consumerFiles,omitempty"`
 	// Confidence summarizes result quality (SCIP availability/freshness,
 	// symbol-mapping confidence). Mirrors the shape of envelope.Confidence;
 	// see ChangeConfidence's doc comment for why it isn't that type directly.
@@ -1300,6 +1411,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	var allTransitiveImpact []ImpactItem
 	var allTestImpact []ImpactItem
 	moduleImpactMap := make(map[string]*ModuleImpact)
+	lookupNotes := make(map[string]bool)
 
 	// v1: decisions surfaced per changed symbol's module, deduped by ADR ID, capped at 10.
 	var changeDecisions []RelatedDecision
@@ -1345,6 +1457,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			SymbolId:     sym.SymbolID,
 			Depth:        opts.TransitiveDepth,
 			IncludeTests: opts.IncludeTests,
+			AllItems:     true, // This aggregate is budgeted below, once
 		})
 		if err != nil {
 			continue // Skip symbols that can't be analyzed
@@ -1359,6 +1472,9 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		allDirectImpact = append(allDirectImpact, impactResult.DirectImpact...)
 		allTransitiveImpact = append(allTransitiveImpact, impactResult.TransitiveImpact...)
 		allTestImpact = append(allTestImpact, impactResult.TestImpact...)
+		if impactResult.ConsumerFiles != nil && impactResult.ConsumerFiles.Note != "" {
+			lookupNotes[impactResult.ConsumerFiles.Note] = true
+		}
 
 		// Aggregate module impacts
 		for _, mod := range impactResult.ModulesAffected {
@@ -1493,10 +1609,15 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	recommendations := e.generateRecommendations(summary, riskScore, changedSymbols, modulesAffected, testGapsInfo, contracts)
 	recommendations = append(deletionRecommendations(brokenDeletions, changedSymbols), recommendations...)
 
-	// Before the budget: a cut in the consumer list must not lose a test.
+	// Before the budget: a cut in the consumer list must not lose a file or a test.
+	consumerFiles := BuildConsumerFiles(allDirectImpact, allTransitiveImpact, allTestImpact, joinNotes(lookupNotes))
 	testConsumers := make([]ImpactItem, 0, len(allDirectImpact)+len(allTransitiveImpact)+len(allTestImpact))
 	testConsumers = append(append(append(testConsumers, allDirectImpact...), allTransitiveImpact...), allTestImpact...)
 	affectedTests := e.deriveAffectedTests(changedSymbolInfos, testConsumers)
+
+	// Sort impact items, so the budget below keeps the ones that matter most
+	sortImpactItems(allDirectImpact)
+	sortImpactItems(allTransitiveImpact)
 
 	// Apply budget
 	budget := e.compressor.GetBudget()
@@ -1523,10 +1644,6 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	if len(modulesAffected) > budget.MaxModules {
 		modulesAffected = modulesAffected[:budget.MaxModules]
 	}
-
-	// Sort impact items
-	sortImpactItems(allDirectImpact)
-	sortImpactItems(allTransitiveImpact)
 
 	// Combine all affected for response
 	allAffected := append(allDirectImpact, allTransitiveImpact...)
@@ -1613,12 +1730,23 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		Provenance:      provenance,
 		Change:          changeInfo,
 		AffectedTests:   affectedTests,
+		ConsumerFiles:   consumerFiles,
 		TestGaps:        testGapsInfo,
 		Contracts:       contracts,
 		Decisions:       changeDecisions,
 		Reviewers:       reviewers,
 		Confidence:      confidence,
 	}, nil
+}
+
+// joinNotes joins distinct notes in a stable order.
+func joinNotes(notes map[string]bool) string {
+	list := make([]string, 0, len(notes))
+	for note := range notes {
+		list = append(list, note)
+	}
+	sort.Strings(list)
+	return strings.Join(list, "; ")
 }
 
 // consumerKey identifies a consumer across changed symbols. A reference outside

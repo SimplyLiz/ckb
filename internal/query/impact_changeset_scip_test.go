@@ -2,11 +2,13 @@ package query
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	scippb "github.com/sourcegraph/scip/bindings/go/scip"
@@ -224,5 +226,83 @@ func TestAnalyzeChangeSet_IncludeTestsCountsThem(t *testing.T) {
 	}
 	if testFor(resp.AffectedTests, "lib/lib_test.go") == nil {
 		t.Errorf("IncludeTests: lib/lib_test.go not in affectedTests")
+	}
+}
+
+// wideConsumers is one document per consumer of Target, in cmd-less package paths.
+func wideConsumers(n int) []*scippb.Document {
+	docs := make([]*scippb.Document, 0, n)
+	for i := 0; i < n; i++ {
+		fn := fmt.Sprintf("scip-go gomod example.com/m v1 `example.com/m/c%d`/Use%d().", i, i)
+		docs = append(docs, fixtureDoc(fmt.Sprintf("c%d/use.go", i),
+			[]fixtureFunc{{fn, 2, 6}}, []fixtureRef{{symTarget, 3}}))
+	}
+	return docs
+}
+
+// The item list is a budgeted sample, and only the budget's edge may differ: every
+// file is named, and the counts and the truncation say what was cut.
+func TestAnalyzeChangeSet_ConsumerFilesSurviveTheItemBudget(t *testing.T) {
+	engine := changeSetEngine(t, wideConsumers(40)...)
+	resp := runChangeSet(t, engine, AnalyzeChangeSetOptions{DiffContent: bodyEditOfTarget})
+
+	if len(resp.AffectedSymbols) != 20 || !resp.Truncated || resp.TruncationInfo == nil {
+		t.Fatalf("items = %d, truncated = %v: want the default budget of 20, reported", len(resp.AffectedSymbols), resp.Truncated)
+	}
+	// app/app.go and 40 others are direct; cmd/main.go only reaches it through Run.
+	if resp.TruncationInfo.OriginalCount != 42 || resp.Summary.DirectlyAffected != 41 {
+		t.Errorf("truncation %+v, summary %+v: the cut hid consumers from the counts", resp.TruncationInfo, resp.Summary)
+	}
+	files := resp.ConsumerFiles
+	if files == nil || len(files.Direct) != 41 || len(files.Transitive) != 1 || files.Transitive[0] != "cmd/main.go" {
+		t.Fatalf("consumerFiles = %+v, want 41 direct and cmd/main.go transitive", files)
+	}
+	if files.Total != 44 || files.Truncated {
+		t.Errorf("consumerFiles total %d truncated %v, want 44 (with 2 test files), complete", files.Total, files.Truncated)
+	}
+	if want := []string{"app/app_test.go", "lib/lib_test.go"}; strings.Join(files.Tests, ",") != strings.Join(want, ",") {
+		t.Errorf("consumerFiles.tests = %v, want %v", files.Tests, want)
+	}
+}
+
+func TestAnalyzeImpact_ConsumerFilesSurviveTheItemBudget(t *testing.T) {
+	engine := changeSetEngine(t, wideConsumers(40)...)
+	resp, err := engine.AnalyzeImpact(context.Background(), AnalyzeImpactOptions{SymbolId: symTarget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Truncated || len(resp.DirectImpact) != 20 {
+		t.Fatalf("direct = %d truncated = %v, want a budgeted list", len(resp.DirectImpact), resp.Truncated)
+	}
+	if resp.ConsumerFiles == nil || len(resp.ConsumerFiles.Direct) != 41 {
+		t.Errorf("consumerFiles = %+v, want all 41 direct files", resp.ConsumerFiles)
+	}
+}
+
+func TestBuildConsumerFiles_CutsTransitiveFirstAndSaysSo(t *testing.T) {
+	items := func(n int, format string) []ImpactItem {
+		out := make([]ImpactItem, n)
+		for i := range out {
+			out[i].Location = &LocationInfo{FileId: fmt.Sprintf(format, i)}
+		}
+		return out
+	}
+	files := BuildConsumerFiles(items(MaxConsumerFiles-5, "d/%04d.go"), items(50, "t/%04d.go"), items(3, "x/%04d_test.go"), "")
+	if len(files.Direct) != MaxConsumerFiles-5 || len(files.Tests) != 3 || len(files.Transitive) != 2 {
+		t.Errorf("direct %d tests %d transitive %d", len(files.Direct), len(files.Tests), len(files.Transitive))
+	}
+	if !files.Truncated || files.Total != MaxConsumerFiles+48 || !strings.Contains(files.Note, "showing") {
+		t.Errorf("a cut must be visible: %+v", files)
+	}
+
+	partial := BuildConsumerFiles(items(1, "d/%d.go"), nil, nil, "stopped following callers after 100 symbols")
+	if !partial.Truncated || !strings.Contains(partial.Note, "stopped following") {
+		t.Errorf("an incomplete lookup must be visible: %+v", partial)
+	}
+
+	// A file reached both ways is direct, once.
+	both := BuildConsumerFiles(items(1, "d/%d.go"), items(1, "d/%d.go"), nil, "")
+	if both.Total != 1 || len(both.Transitive) != 0 {
+		t.Errorf("listed twice: %+v", both)
 	}
 }

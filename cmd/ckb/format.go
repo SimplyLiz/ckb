@@ -510,7 +510,11 @@ func formatImpactHuman(resp *ImpactResponseCLI) (string, error) {
 
 	b.WriteString(fmt.Sprintf("Direct Impact: %d symbols\n", len(resp.DirectImpact)))
 	b.WriteString(fmt.Sprintf("Transitive Impact: %d symbols\n", len(resp.TransitiveImpact)))
+	if line := truncationLine(resp.TruncationInfo); line != "" {
+		b.WriteString(line + "\n")
+	}
 	b.WriteString(fmt.Sprintf("Modules Affected: %d\n\n", len(resp.ModulesAffected)))
+	writeConsumerFiles(&b, resp.ConsumerFiles, false)
 
 	if len(resp.ModulesAffected) > 0 {
 		b.WriteString("Affected Modules:\n")
@@ -1118,6 +1122,11 @@ func formatChangeSetHuman(resp *ChangeSetResponseCLI) string {
 		b.WriteString("\n")
 	}
 
+	if line := truncationLine(resp.TruncationInfo); line != "" {
+		b.WriteString(line + "\n\n")
+	}
+	writeConsumerFiles(&b, resp.ConsumerFiles, false)
+
 	// Likely reviewers (ownership-based)
 	if len(resp.Reviewers) > 0 {
 		b.WriteString("Likely reviewers:\n")
@@ -1167,6 +1176,46 @@ func countNoun(n int, singular, plural string) string {
 		return "1 " + singular
 	}
 	return fmt.Sprintf("%d %s", n, plural)
+}
+
+// truncationLine says a list of consumers was cut, so it can't read as complete.
+func truncationLine(info *TruncationInfoCLI) string {
+	if info == nil {
+		return ""
+	}
+	return fmt.Sprintf("Consumer details cut to %d of %d (%s); consumer files below are not.",
+		info.ReturnedCount, info.OriginalCount, info.Reason)
+}
+
+// writeConsumerFiles lists the files behind the consumer items. Lists stop at 10
+// unless all is set; the rest stay in the JSON output.
+func writeConsumerFiles(b *strings.Builder, files *query.ConsumerFiles, all bool) {
+	if files == nil || files.Total == 0 {
+		return
+	}
+	section := func(title string, paths []string) {
+		if len(paths) == 0 {
+			return
+		}
+		b.WriteString(fmt.Sprintf("%s (%d)\n", title, len(paths)))
+		shown := len(paths)
+		if !all && shown > 10 {
+			shown = 10
+		}
+		for _, p := range paths[:shown] {
+			b.WriteString("  " + p + "\n")
+		}
+		if len(paths) > shown {
+			b.WriteString(fmt.Sprintf("  … and %d more (all of them with --format=json)\n", len(paths)-shown))
+		}
+		b.WriteString("\n")
+	}
+	section("Consumer files, direct", files.Direct)
+	section("Consumer files, transitive", files.Transitive)
+	section("Test files", files.Tests)
+	if files.Truncated {
+		b.WriteString(fmt.Sprintf("Consumer files are incomplete: %s.\n\n", files.Note))
+	}
 }
 
 func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
@@ -1234,6 +1283,15 @@ func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 			countNoun(symbolsChanged, "changed symbol", "changed symbols"),
 			countNoun(downstream, "downstream consumer", "downstream consumers"),
 			countNoun(modules, "affected module", "affected modules")))
+	}
+
+	if line := truncationLine(resp.TruncationInfo); line != "" {
+		b.WriteString(line + "\n\n")
+	}
+	if resp.ConsumerFiles != nil {
+		production := *resp.ConsumerFiles
+		production.Tests = nil // Listed with their reasons right below
+		writeConsumerFiles(&b, &production, verbose)
 	}
 
 	// Affected tests

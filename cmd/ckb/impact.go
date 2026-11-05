@@ -337,6 +337,25 @@ type ImpactResponseCLI struct {
 	TransitiveImpact []ImpactItemCLI   `json:"transitiveImpact,omitempty"`
 	ModulesAffected  []ModuleImpactCLI `json:"modulesAffected"`
 	Provenance       *ProvenanceCLI    `json:"provenance,omitempty"`
+	// ConsumerFiles is every file behind the item lists, which can be cut. Truncated
+	// says they were.
+	ConsumerFiles  *query.ConsumerFiles `json:"consumerFiles,omitempty"`
+	Truncated      bool                 `json:"truncated,omitempty"`
+	TruncationInfo *TruncationInfoCLI   `json:"truncationInfo,omitempty"`
+}
+
+// TruncationInfoCLI says how much of a list was cut.
+type TruncationInfoCLI struct {
+	Reason        string `json:"reason"`
+	OriginalCount int    `json:"originalCount"`
+	ReturnedCount int    `json:"returnedCount"`
+}
+
+func convertTruncation(info *query.TruncationInfo) *TruncationInfoCLI {
+	if info == nil {
+		return nil
+	}
+	return &TruncationInfoCLI{Reason: info.Reason, OriginalCount: info.OriginalCount, ReturnedCount: info.ReturnedCount}
 }
 
 // RiskScoreCLI describes risk assessment
@@ -432,6 +451,9 @@ func convertImpactResponse(symbolID string, resp *query.AnalyzeImpactResponse) *
 		DirectImpact:     directImpact,
 		TransitiveImpact: transitiveImpact,
 		ModulesAffected:  modulesAffected,
+		ConsumerFiles:    resp.ConsumerFiles,
+		Truncated:        resp.Truncated,
+		TruncationInfo:   convertTruncation(resp.TruncationInfo),
 	}
 
 	if resp.Symbol != nil {
@@ -553,6 +575,12 @@ type ChangeSetResponseCLI struct {
 	Decisions     []RelatedDecisionCLI `json:"decisions,omitempty"`
 	Reviewers     []SuggestedReviewCLI `json:"reviewers,omitempty"`
 	Confidence    *ChangeConfidenceCLI `json:"confidence,omitempty"`
+
+	// ConsumerFiles is every file behind AffectedSymbols, which can be cut. Truncated
+	// says it was.
+	ConsumerFiles  *query.ConsumerFiles `json:"consumerFiles,omitempty"`
+	Truncated      bool                 `json:"truncated,omitempty"`
+	TruncationInfo *TruncationInfoCLI   `json:"truncationInfo,omitempty"`
 }
 
 // ChangeInfoCLI describes the diff that was analyzed.
@@ -704,6 +732,9 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 		AffectedSymbols: affectedSymbols,
 		ModulesAffected: modulesAffected,
 		Recommendations: recommendations,
+		ConsumerFiles:   resp.ConsumerFiles,
+		Truncated:       resp.Truncated,
+		TruncationInfo:  convertTruncation(resp.TruncationInfo),
 	}
 
 	// Convert summary
@@ -925,6 +956,9 @@ func formatImpactMarkdown(resp *ChangeSetResponseCLI) string {
 	if len(resp.AffectedSymbols) > 0 {
 		b.WriteString("<details>\n")
 		b.WriteString(fmt.Sprintf("<summary>🎯 Affected Downstream (%d)</summary>\n\n", len(resp.AffectedSymbols)))
+		if line := truncationLine(resp.TruncationInfo); line != "" {
+			b.WriteString(line + "\n\n")
+		}
 		b.WriteString("| Symbol | Module | Distance | Kind |\n")
 		b.WriteString("|:-------|:-------|:--------:|:-----|\n")
 		for i, sym := range resp.AffectedSymbols {
@@ -935,6 +969,15 @@ func formatImpactMarkdown(resp *ChangeSetResponseCLI) string {
 			b.WriteString(fmt.Sprintf("| `%s` | `%s` | %d | %s |\n",
 				sym.Name, sym.ModuleID, sym.Distance, sym.Kind))
 		}
+		b.WriteString("\n</details>\n\n")
+	}
+
+	if files := resp.ConsumerFiles; files != nil && files.Total > 0 {
+		b.WriteString("<details>\n")
+		b.WriteString(fmt.Sprintf("<summary>📄 Consumer Files (%d)</summary>\n\n", files.Total))
+		var list strings.Builder
+		writeConsumerFiles(&list, files, true)
+		b.WriteString("```\n" + strings.TrimSpace(list.String()) + "\n```\n")
 		b.WriteString("\n</details>\n\n")
 	}
 

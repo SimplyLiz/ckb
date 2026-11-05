@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -237,5 +238,53 @@ func TestLooksLikeSCIPID(t *testing.T) {
 		if got := looksLikeSCIPID(id); got != want {
 			t.Errorf("looksLikeSCIPID(%q) = %v, want %v", id, got, want)
 		}
+	}
+}
+
+// A cut consumer list must not look complete, in either output.
+func TestChangeSetTruncationIsVisible(t *testing.T) {
+	resp := convertChangeSetResponse(&query.AnalyzeChangeSetResponse{
+		Truncated:      true,
+		TruncationInfo: &query.TruncationInfo{Reason: "max-items", OriginalCount: 36, ReturnedCount: 20},
+		ConsumerFiles: &query.ConsumerFiles{
+			Direct: []string{"cmd/ckb/serve.go"}, Transitive: []string{"cmd/ckb/main.go"}, Tests: []string{"internal/api/api_test.go"}, Total: 3,
+		},
+		AffectedTests: []query.AffectedTest{{FilePath: "internal/api/api_test.go", Reason: "direct", TestNames: []string{"TestServer"}}},
+	})
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"truncated":true`, `"originalCount":36`, `"consumerFiles":`, `"direct":["cmd/ckb/serve.go"]`, `"testNames":["TestServer"]`} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("JSON lacks %s: %s", want, data)
+		}
+	}
+
+	for name, out := range map[string]string{
+		"changes": formatChangesHuman(resp, false),
+		"diff":    formatChangeSetHuman(resp),
+	} {
+		for _, want := range []string{"cut to 20 of 36", "cmd/ckb/serve.go", "cmd/ckb/main.go"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s output lacks %q:\n%s", name, want, out)
+			}
+		}
+	}
+}
+
+func TestImpactTruncationIsVisible(t *testing.T) {
+	resp := convertImpactResponse("sym", &query.AnalyzeImpactResponse{
+		Truncated:      true,
+		TruncationInfo: &query.TruncationInfo{Reason: "max-items", OriginalCount: 41, ReturnedCount: 20},
+		ConsumerFiles:  &query.ConsumerFiles{Direct: []string{"a/a.go"}, Total: 1},
+	})
+	out, err := formatImpactHuman(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "cut to 20 of 41") || !strings.Contains(out, "a/a.go") {
+		t.Errorf("output hides the cut:\n%s", out)
 	}
 }

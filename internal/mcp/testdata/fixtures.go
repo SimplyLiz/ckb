@@ -804,11 +804,33 @@ func (f *FixtureSet) ToAnalyzeChangeJSON() string {
 		))
 	}
 
-	sb.WriteString(`],"riskScore":{"level":"`)
+	// consumerFiles: one file per affected symbol, up to the same bound the engine uses.
+	files := len(f.ChangeSet.AffectedSymbols)
+	truncated := files > maxConsumerFilesFixture
+	if truncated {
+		files = maxConsumerFilesFixture
+	}
+	sb.WriteString(`],"consumerFiles":{"direct":[`)
+	for i := 0; i < files; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString(fmt.Sprintf(`"internal/module%d/consumer_%d.go"`, i%10, i))
+	}
+	sb.WriteString(fmt.Sprintf(`],"total":%d,"truncated":%t}`, len(f.ChangeSet.AffectedSymbols), truncated))
+
+	sb.WriteString(`,"riskScore":{"level":"`)
 	sb.WriteString(f.ChangeSet.RiskLevel)
 	sb.WriteString(fmt.Sprintf(`","score":%.2f}}}`, f.ChangeSet.RiskScore))
 	return sb.String()
 }
+
+// maxConsumerFilesFixture mirrors query.MaxConsumerFiles; a test in package mcp
+// keeps the two equal.
+const maxConsumerFilesFixture = 300
+
+// MaxConsumerFilesFixture exposes the bound the fixtures use.
+func MaxConsumerFilesFixture() int { return maxConsumerFilesFixture }
 
 // ToExploreJSON converts fixtures to an explore compound response JSON.
 // Aggregates: explainFile + searchSymbols + getCallGraph + getHotspots

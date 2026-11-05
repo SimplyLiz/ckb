@@ -73,6 +73,16 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   after the changed file now says `naming-convention`. Entries list `testNames`, and
   test detection covers `.spec.*`, `__tests__/`, root `tests/`, `e2e/` and Rust's
   `tests.rs`.
+- **A cut consumer list no longer looks complete, and no consumer file is lost to
+  it.** `budget.maxImpactItems` (20) was applied per symbol and again per change, and
+  the CLI JSON had no field saying so. `consumerFiles` (`direct`, `transitive`,
+  `tests`, `total`) now lists every file using a changed symbol in `ckb changes`,
+  `ckb impact`, `assessChange` and `analyzeImpact`, up to 300 paths, with `truncated`
+  and a `note` if even that was cut or the lookup itself stopped short. The detailed
+  items stay budgeted, once per change, and `truncated` and `truncationInfo` are in
+  the CLI JSON and the human output. `summary` counts are now the real ones rather
+  than counts of the per-symbol samples, so a wide change reports more consumers,
+  and can score higher, than before.
 
 ### Fixed — search and navigation
 

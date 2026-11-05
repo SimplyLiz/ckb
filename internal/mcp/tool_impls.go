@@ -1104,6 +1104,13 @@ func (s *MCPServer) toolAnalyzeImpact(params map[string]interface{}) (*envelope.
 		"transitiveImpact":  transitiveImpact,
 		"blendedConfidence": impactResp.BlendedConfidence,
 	}
+	if impactResp.ConsumerFiles != nil {
+		data["consumerFiles"] = impactResp.ConsumerFiles
+	}
+	if impactResp.Truncated {
+		data["truncated"] = true
+		data["truncationInfo"] = impactResp.TruncationInfo
+	}
 
 	if impactResp.RiskScore != nil {
 		factors := make([]map[string]interface{}, 0, len(impactResp.RiskScore.Factors))
