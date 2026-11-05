@@ -1527,10 +1527,15 @@ func (s *MCPServer) toolGetCallGraph(params map[string]interface{}) (*envelope.R
 	)
 
 	ctx := context.Background()
+	limit := 0
+	if limitVal, ok := params["limit"].(float64); ok {
+		limit = int(limitVal)
+	}
 	resp, err := s.engine().GetCallGraph(ctx, query.CallGraphOptions{
 		SymbolId:  symbolId,
 		Direction: direction,
 		Depth:     depth,
+		Limit:     limit,
 	})
 	if err != nil {
 		return nil, errors.NewOperationError("get call graph", err)
@@ -1540,9 +1545,9 @@ func (s *MCPServer) toolGetCallGraph(params map[string]interface{}) (*envelope.R
 	responseBytes := MeasureJSONSize(resp)
 	RecordWideResult(WideResultMetrics{
 		ToolName:        "getCallGraph",
-		TotalResults:    len(resp.Nodes),
+		TotalResults:    callGraphTotal(resp),
 		ReturnedResults: len(resp.Nodes),
-		TruncatedCount:  0, // getCallGraph doesn't truncate currently
+		TruncatedCount:  callGraphTotal(resp) - len(resp.Nodes),
 		ResponseBytes:   responseBytes,
 		EstimatedTokens: EstimateTokens(responseBytes),
 		ExecutionMs:     timer.ElapsedMs(),
@@ -2577,4 +2582,12 @@ func (s *MCPServer) toolGetWideResultMetrics(params map[string]interface{}) (*en
 		"tools":       tools,
 		"description": "Wide-result tool metrics for Frontier mode decision. High avgTruncationRate indicates tools that would benefit from frontierMode.",
 	}), nil
+}
+
+// callGraphTotal is how many nodes the graph had before any cap.
+func callGraphTotal(resp *query.CallGraphResponse) int {
+	if resp.Truncation != nil {
+		return resp.Truncation.OriginalCount
+	}
+	return len(resp.Nodes)
 }

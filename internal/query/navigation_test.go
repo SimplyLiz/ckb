@@ -1069,3 +1069,27 @@ func TestLooksLikeAPIHandlerName(t *testing.T) {
 		}
 	}
 }
+
+func TestCapCallGraph(t *testing.T) {
+	root := "root"
+	nodes := []CallGraphNode{{ID: "deep", Depth: 2}, {ID: "b", Depth: 1}, {ID: root}, {ID: "a", Depth: 1}}
+	edges := []CallGraphEdge{{From: "a", To: root}, {From: "b", To: root}, {From: "deep", To: "a"}}
+
+	got, gotEdges, trunc := capCallGraph(root, append([]CallGraphNode(nil), nodes...), edges, 3)
+	if len(got) != 3 || got[0].ID != root || got[1].ID != "a" || got[2].ID != "b" {
+		t.Errorf("nodes = %+v, want root and the two at depth 1", got)
+	}
+	if len(gotEdges) != 2 {
+		t.Errorf("edges = %+v, want the edge to the dropped node gone", gotEdges)
+	}
+	if trunc == nil || trunc.OriginalCount != 4 || trunc.ReturnedCount != 3 {
+		t.Errorf("truncation = %+v", trunc)
+	}
+
+	if _, _, trunc := capCallGraph(root, nodes, edges, 10); trunc != nil {
+		t.Errorf("truncation reported when nothing was cut: %+v", trunc)
+	}
+	if got, _, _ := capCallGraph(root, append(nodes, make([]CallGraphNode, 40)...), edges, 0); len(got) != defaultCallGraphNodes {
+		t.Errorf("default cap kept %d nodes", len(got))
+	}
+}

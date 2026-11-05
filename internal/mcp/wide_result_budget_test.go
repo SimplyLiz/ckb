@@ -102,7 +102,7 @@ var nfrTokenBaselines = map[string]map[string]int{
 // These are per-response limits used when testing with real SCIP index.
 const (
 	maxCallGraphBytes      = 20000 // ~5000 tokens
-	maxFindReferencesBytes = 12000 // ~3000 tokens
+	maxFindReferencesBytes = 30000 // ~7500 tokens: the test asks for 100 references at ~250 bytes each
 	maxAnalyzeImpactBytes  = 16000 // ~4000 tokens
 	maxGetHotspotsBytes    = 13000 // ~3250 tokens — accommodates cartographer-tagged builds where each hotspot is enriched with up to 3 co-change partners
 )

@@ -41,6 +41,8 @@ func init() {
 	rootCmd.AddCommand(callgraphCmd)
 }
 
+const cliCallGraphNodes = 200
+
 func runCallgraph(cmd *cobra.Command, args []string) {
 	start := time.Now()
 	logger := newLogger(callgraphFormat)
@@ -55,6 +57,8 @@ func runCallgraph(cmd *cobra.Command, args []string) {
 		Direction: callgraphDirection,
 		Depth:     callgraphDepth,
 	}
+	// A person reading a terminal can take more than the LLM default.
+	opts.Limit = cliCallGraphNodes
 	response, err := engine.GetCallGraph(ctx, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error getting call graph: %v\n", err)

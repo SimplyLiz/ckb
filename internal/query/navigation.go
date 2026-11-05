@@ -137,6 +137,47 @@ type CallGraphOptions struct {
 	SymbolId  string
 	Direction string // "callers", "callees", or "both"
 	Depth     int
+	Limit     int // Maximum nodes returned, root included; 0 means defaultCallGraphNodes
+}
+
+// defaultCallGraphNodes keeps a call graph for an LLM consumer near 5k tokens: a
+// node plus its edge cost about 700 bytes, mostly the full SCIP IDs. Without a
+// cap a widely used symbol returned 250 nodes and 46k tokens.
+const defaultCallGraphNodes = 20
+
+// capCallGraph keeps the root and the nodes closest to it, and drops edges to
+// anything dropped. Order is by depth, then ID, so the same graph always keeps
+// the same nodes. It reports what was cut, or nil if nothing was.
+func capCallGraph(root string, nodes []CallGraphNode, edges []CallGraphEdge, limit int) ([]CallGraphNode, []CallGraphEdge, *TruncationInfo) {
+	if limit <= 0 {
+		limit = defaultCallGraphNodes
+	}
+	if len(nodes) <= limit {
+		return nodes, edges, nil
+	}
+	sort.SliceStable(nodes, func(i, j int) bool {
+		ri, rj := nodes[i].ID == root, nodes[j].ID == root
+		if ri != rj {
+			return ri
+		}
+		if nodes[i].Depth != nodes[j].Depth {
+			return nodes[i].Depth < nodes[j].Depth
+		}
+		return nodes[i].ID < nodes[j].ID
+	})
+	original := len(nodes)
+	nodes = nodes[:limit]
+	kept := make(map[string]bool, limit)
+	for _, n := range nodes {
+		kept[n.ID] = true
+	}
+	keptEdges := make([]CallGraphEdge, 0, len(edges))
+	for _, e := range edges {
+		if kept[e.From] && kept[e.To] {
+			keptEdges = append(keptEdges, e)
+		}
+	}
+	return nodes, keptEdges, &TruncationInfo{Reason: "max-nodes", OriginalCount: original, ReturnedCount: limit}
 }
 
 // CallGraphResponse contains a lightweight call graph.
@@ -627,14 +668,7 @@ func (e *Engine) GetCallGraph(ctx context.Context, opts CallGraphOptions) (*Call
 		prov.Warnings = append(prov.Warnings, warnings...)
 	}
 
-	var truncation *TruncationInfo
-	if len(nodes) >= 100 {
-		truncation = &TruncationInfo{
-			Reason:        "max-nodes",
-			OriginalCount: len(nodes),
-			ReturnedCount: len(nodes),
-		}
-	}
+	nodes, edges, truncation := capCallGraph(rootId, nodes, edges, opts.Limit)
 
 	return &CallGraphResponse{
 		AINavigationMeta: AINavigationMeta{

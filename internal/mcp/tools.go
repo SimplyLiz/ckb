@@ -511,6 +511,11 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 						"default":     1,
 						"description": "Maximum depth to traverse (1-4)",
 					},
+					"limit": map[string]interface{}{
+						"type":        "number",
+						"default":     20,
+						"description": "Maximum nodes returned; the closest to the symbol are kept and truncation says how many were cut",
+					},
 				},
 				"required": []string{"symbolId"},
 			},
