@@ -21,7 +21,7 @@ func main() {
 	if !isMCPCommand() {
 		checker := update.NewChecker()
 		// Show cached update notification (instant, no HTTP)
-		if info := checker.CheckCached(); info != nil {
+		if info := checker.CheckCached(); info != nil && isTerminal(os.Stderr) {
 			_, _ = os.Stderr.WriteString(info.FormatUpdateMessage())
 		}
 		// Refresh cache in background for next run
@@ -60,6 +60,14 @@ func waitWithTimeout(wg *sync.WaitGroup, timeout time.Duration) {
 
 // isMCPCommand checks if the current command is 'mcp' or 'serve'
 // These commands should not show update notifications as it would break protocols
+// isTerminal reports whether f is a character device. The update box is for a
+// person at a terminal: agents and scripts capture stderr together with the
+// result and otherwise have to filter the box out of every call.
+func isTerminal(f *os.File) bool {
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
 func isMCPCommand() bool {
 	if len(os.Args) < 2 {
 		return false
