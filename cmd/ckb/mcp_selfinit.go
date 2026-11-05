@@ -83,7 +83,7 @@ func excludeFromGit(repoRoot string, patterns []string) error {
 	if len(current) > 0 && current[len(current)-1] != '\n' {
 		b.WriteString("\n")
 	}
-	b.WriteString("# added by ckb mcp (local CKB index, safe to delete)\n")
+	b.WriteString("# added by ckb (local CKB index, safe to delete)\n")
 	for _, p := range missing {
 		b.WriteString(p + "\n")
 	}
