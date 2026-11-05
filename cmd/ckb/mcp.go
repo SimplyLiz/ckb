@@ -141,7 +141,10 @@ func runMCP(cmd *cobra.Command, args []string) error {
 			case repos.ResolvedFromCWDGit:
 				// Auto-detected unregistered git repo
 				if resolved.State == repos.RepoStateUninitialized {
-					if err := selfInitRepo(repoRoot); err != nil {
+					if isLinkedWorktree(repoRoot) {
+						// Worktrees come and go; registering each one only fills ~/.ckb.
+						fmt.Fprintf(os.Stderr, "Repository: %s (%s) [linked worktree, not initialized]\n", repoName, repoRoot)
+					} else if err := selfInitRepo(repoRoot); err != nil {
 						fmt.Fprintf(os.Stderr, "Repository: %s (%s) [auto-detected, uninitialized]\n", repoName, repoRoot)
 						fmt.Fprintf(os.Stderr, "  ⚠️  Automatic init failed (%v) — run 'ckb init' to set up\n", err)
 					} else {

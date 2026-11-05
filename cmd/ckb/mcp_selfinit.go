@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/SimplyLiz/CodeMCP/internal/index"
+	"github.com/SimplyLiz/CodeMCP/internal/paths"
 )
 
 // selfInitExcludes are the paths a self-initialized repo gets written into:
@@ -103,13 +106,56 @@ func hasCkbDir(repoRoot string) bool {
 // (errRepoTooLarge, errIndexerUnavailable, the index lock) and reloads the
 // result into the running engine. An existing index, stale or not, is left
 // alone: keeping it current is what --watch opts into.
+//
+// Nobody asked for this build, so it has to stay cheap for the machine: a linked
+// worktree gets none (agents open them by the dozen, and each would index the
+// whole tree), and only one first index runs per machine. The index lock is per
+// repo, so without the machine-wide one every session opened in a different
+// repo would start an indexer at once. A session that finds the lock taken skips
+// its build; the next session in that repo tries again.
 func startFirstIndex(repoRoot string, logger *slog.Logger) {
 	if _, err := os.Stat(resolveIndexPath(repoRoot)); err == nil {
 		return
 	}
-	logger.Info("No SCIP index yet, building one in the background")
+	if isLinkedWorktree(repoRoot) {
+		logger.Info("Linked git worktree: skipping the automatic first index", "hint", "run 'ckb index' here if you want one")
+		return
+	}
 	go func() {
+		lockDir, err := firstIndexLockDir()
+		if err != nil {
+			logger.Warn("Skipping the automatic first index", "error", err.Error())
+			return
+		}
+		machineLock, err := index.AcquireLock(lockDir)
+		if err != nil {
+			logger.Info("Another first index is running on this machine; skipping it for this session")
+			return
+		}
+		defer machineLock.Release()
+
+		logger.Info("No SCIP index yet, building one in the background")
 		permanentLogged := false
 		watchTick(repoRoot, filepath.Join(repoRoot, ".ckb"), time.Minute, &watchState{}, &permanentLogged, logger)
 	}()
+}
+
+// firstIndexLockDir is where the machine-wide first-index lock lives.
+func firstIndexLockDir() (string, error) {
+	home, err := paths.GetCKBHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "first-index"), nil
+}
+
+// isLinkedWorktree reports whether dir is a linked git worktree rather than the
+// main checkout: there, git's own directory differs from the common directory.
+func isLinkedWorktree(dir string) bool {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir").Output() // #nosec G204 //nolint:gosec // fixed git subcommand; dir is the detected git root
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(out))
+	return len(fields) == 2 && fields[0] != fields[1]
 }

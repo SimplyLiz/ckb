@@ -147,3 +147,44 @@ func TestStartFirstIndex_LeavesExistingIndexAlone(t *testing.T) {
 		t.Errorf("startFirstIndex acted on a repo that already has an index: %s", logs.String())
 	}
 }
+
+func TestIsLinkedWorktree(t *testing.T) {
+	repo := gitInitTemp(t)
+	if isLinkedWorktree(repo) {
+		t.Error("main checkout reported as a linked worktree")
+	}
+	if isLinkedWorktree(t.TempDir()) {
+		t.Error("directory outside git reported as a linked worktree")
+	}
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("commit", "--allow-empty", "-m", "init")
+	worktree := filepath.Join(t.TempDir(), "wt")
+	run("worktree", "add", "-q", worktree)
+	if !isLinkedWorktree(worktree) {
+		t.Error("linked worktree not detected")
+	}
+}
+
+func TestStartFirstIndex_SkipsLinkedWorktree(t *testing.T) {
+	repo := gitInitTemp(t)
+	if out, err := exec.Command("git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--allow-empty", "-m", "init").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+	worktree := filepath.Join(t.TempDir(), "wt")
+	if out, err := exec.Command("git", "-C", repo, "worktree", "add", "-q", worktree).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree: %v\n%s", err, out)
+	}
+
+	var logs bytes.Buffer
+	startFirstIndex(worktree, slog.New(slog.NewTextHandler(&logs, nil)))
+	if !strings.Contains(logs.String(), "worktree") {
+		t.Errorf("expected the worktree skip to be logged, got: %s", logs.String())
+	}
+}
