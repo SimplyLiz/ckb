@@ -112,8 +112,8 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   which returns the same ID. It can't analyze those without an index, so it now
   says that and how to get one.
 - **A widely used consumer no longer looks untested.** `testGaps` read a budgeted
-  consumer list in which tests sort last, so past 20 consumers its test was the first
-  thing cut.
+  consumer list, which cuts transitive items first, so past 20 direct callers a test
+  reaching it through one of them was gone.
 
 ### Fixed — search and navigation
 

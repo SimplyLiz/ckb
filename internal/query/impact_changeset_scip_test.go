@@ -556,12 +556,23 @@ func TestAnalyzeImpact_TreesitterIDSaysAnIndexIsNeeded(t *testing.T) {
 	}
 }
 
-// Tests sort last among consumers, so a budgeted list was the first to lose them:
-// a widely used function looked untested because of how widely it is used.
+// A budget cuts transitive items first, so past 20 direct callers a test reaching the
+// consumer through one of them was gone: widely used read as untested.
 func TestHasReachingTest_WideConsumerKeepsItsTest(t *testing.T) {
-	engine := changeSetEngine(t, wideConsumersOf(symRun, 40)...)
-	consumer := ImpactItem{StableId: symRun, Location: &LocationInfo{FileId: "app/app.go"}}
+	const (
+		symBy    = "scip-go gomod example.com/m v1 `example.com/m/by`/By()."
+		symTestB = "scip-go gomod example.com/m v1 `example.com/m/by`/TestBy()."
+		symLone  = "scip-go gomod example.com/m v1 `example.com/m/lone`/Lone()."
+	)
+	docs := wideConsumersOf(symLone, 40)
+	docs = append(docs,
+		fixtureDoc("lone/lone.go", []fixtureFunc{{symLone, 2, 5}}, nil),
+		fixtureDoc("by/by.go", []fixtureFunc{{symBy, 2, 5}}, []fixtureRef{{symLone, 3}}),
+		fixtureDoc("by/by_test.go", []fixtureFunc{{symTestB, 2, 5}}, []fixtureRef{{symBy, 3}}),
+	)
+	engine := changeSetEngine(t, docs...)
+	consumer := ImpactItem{StableId: symLone, Location: &LocationInfo{FileId: "lone/lone.go"}}
 	if !engine.hasReachingTest(context.Background(), consumer) {
-		t.Error("app/app_test.go calls Run")
+		t.Error("by/by_test.go reaches Lone through By")
 	}
 }
