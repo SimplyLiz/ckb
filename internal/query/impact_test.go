@@ -175,7 +175,7 @@ func TestFilterTestReferences(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := filterTestReferences(tt.refs)
+			result, _ := splitTestReferences(tt.refs)
 			if len(result) != tt.expected {
 				t.Errorf("got %d refs, want %d", len(result), tt.expected)
 			}
@@ -531,9 +531,9 @@ func TestIsTestFilePathEnhanced(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			result := isTestFilePathEnhanced(tt.path)
+			result := isTestFilePath(tt.path)
 			if result != tt.isTest {
-				t.Errorf("isTestFilePathEnhanced(%q) = %v, want %v", tt.path, result, tt.isTest)
+				t.Errorf("isTestFilePath(%q) = %v, want %v", tt.path, result, tt.isTest)
 			}
 		})
 	}

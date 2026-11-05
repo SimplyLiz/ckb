@@ -414,7 +414,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 					"includeTests": map[string]interface{}{
 						"type":        "boolean",
 						"default":     false,
-						"description": "Include test files in the analysis",
+						"description": "Count test code as consumers and as changed symbols. Tests using a changed symbol are in affectedTests either way",
 					},
 					"strict": map[string]interface{}{
 						"type":        "boolean",
@@ -452,7 +452,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 					"includeTests": map[string]interface{}{
 						"type":        "boolean",
 						"default":     false,
-						"description": "Include test files in the analysis",
+						"description": "Count test code as consumers and as changed symbols. Tests using a changed symbol are in affectedTests either way",
 					},
 					"strict": map[string]interface{}{
 						"type":        "boolean",

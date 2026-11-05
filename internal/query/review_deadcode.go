@@ -156,7 +156,7 @@ func (e *Engine) findDeadConstants(ctx context.Context, changedFiles []string, a
 		if ctx.Err() != nil {
 			break
 		}
-		if !strings.HasSuffix(file, ".go") || isTestFilePathEnhanced(file) {
+		if !strings.HasSuffix(file, ".go") || isTestFilePath(file) {
 			continue
 		}
 

@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/SimplyLiz/CodeMCP/internal/query"
@@ -1242,8 +1241,10 @@ func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 		b.WriteString(fmt.Sprintf("Affected tests (%d)\n", len(resp.AffectedTests)))
 		shown := cap10(len(resp.AffectedTests))
 		for _, t := range resp.AffectedTests[:shown] {
-			name := strings.TrimSuffix(filepath.Base(t.FilePath), filepath.Ext(t.FilePath))
-			b.WriteString(fmt.Sprintf("  %-30s%s\n", name, t.Reason))
+			b.WriteString(fmt.Sprintf("  %s  (%s)\n", t.FilePath, t.Reason))
+			if verbose && len(t.TestNames) > 0 {
+				b.WriteString(fmt.Sprintf("    %s\n", strings.Join(t.TestNames, ", ")))
+			}
 		}
 		if len(resp.AffectedTests) > shown {
 			b.WriteString(fmt.Sprintf("  … and %d more\n", len(resp.AffectedTests)-shown))

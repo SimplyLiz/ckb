@@ -49,10 +49,14 @@ type AnalyzeImpactResponse struct {
 	// Only populated when the binary is built with -tags cartographer.
 	ArchImpact        *cartographer.ImpactAnalysis `json:"archImpact,omitempty"`
 	BlendedConfidence float64                      `json:"blendedConfidence,omitempty"`
-	Truncated         bool                         `json:"truncated,omitempty"`
-	TruncationInfo    *TruncationInfo              `json:"truncationInfo,omitempty"`
-	Provenance        *Provenance                  `json:"provenance"`
-	Drilldowns        []output.Drilldown           `json:"drilldowns,omitempty"`
+	// TestImpact holds the test code using the symbol when IncludeTests is off. It
+	// is kept out of DirectImpact, TransitiveImpact and everything counted from
+	// them, so a well-tested symbol doesn't look like a widely used one.
+	TestImpact     []ImpactItem       `json:"-"`
+	Truncated      bool               `json:"truncated,omitempty"`
+	TruncationInfo *TruncationInfo    `json:"truncationInfo,omitempty"`
+	Provenance     *Provenance        `json:"provenance"`
+	Drilldowns     []output.Drilldown `json:"drilldowns,omitempty"`
 }
 
 // DocToUpdate represents documentation that may need updating when a symbol changes.
@@ -145,6 +149,9 @@ type SemanticCallerInfo struct {
 type scipCallerProvider struct {
 	adapter *scip.SCIPAdapter
 	nodes   map[string]*scip.CallGraphNode // callers seen by the last GetTransitiveCallers
+	// separateTests moves callers in test files out of the result into testCallers.
+	separateTests bool
+	testCallers   map[string]int
 }
 
 // CallerLocation implements impact.CallerLocator. The module is the directory
@@ -214,7 +221,39 @@ func (p *scipCallerProvider) GetTransitiveCallers(symbolId string, maxDepth int)
 		}
 	}
 
+	if p.separateTests {
+		p.testCallers = make(map[string]int)
+		for id, depth := range result {
+			if n := graph.Nodes[id]; n != nil && n.Location != nil && isTestFilePath(n.Location.FileId) {
+				p.testCallers[id] = depth
+				delete(result, id)
+			}
+		}
+	}
+
 	return result, nil
+}
+
+// testCallerItems describes the transitive callers GetTransitiveCallers set aside.
+// Direct ones come from the references, which also know the file-level uses.
+func (p *scipCallerProvider) testCallerItems() []ImpactItem {
+	items := make([]ImpactItem, 0, len(p.testCallers))
+	for id, depth := range p.testCallers {
+		if depth <= 1 {
+			continue
+		}
+		n := p.nodes[id]
+		items = append(items, ImpactItem{
+			StableId:   id,
+			Name:       n.Name,
+			Kind:       string(impact.TestDependency),
+			Distance:   depth,
+			ModuleId:   filepath.Dir(n.Location.FileId),
+			Location:   &LocationInfo{FileId: n.Location.FileId, StartLine: n.Location.StartLine + 1},
+			Confidence: 0.85,
+		})
+	}
+	return items
 }
 
 // AnalyzeImpact analyzes the impact of changing a symbol.
@@ -309,7 +348,7 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 	if e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
 		refOpts := backends.RefOptions{
 			MaxResults:   500,
-			IncludeTests: opts.IncludeTests,
+			IncludeTests: true, // Set aside below if not wanted as consumers
 		}
 		refsResult, refsErr := e.scipAdapter.FindReferences(ctx, symbolIdForLookup, refOpts)
 		if refsErr == nil && refsResult != nil {
@@ -324,7 +363,7 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 						FileId:    ref.Location.Path,
 						StartLine: ref.Location.Line,
 					},
-					IsTest: isTestFilePath(ref.Location.Path), // Set IsTest based on file path
+					IsTest: isTestFilePath(ref.Location.Path),
 					// FromSymbol/FromName resolve the enclosing symbol (e.g. the
 					// caller function containing this reference) when the backend
 					// found one. Left empty (not "unknown") when genuinely
@@ -345,15 +384,18 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 		}
 	}
 
-	// Filter test references if not included
+	// Without IncludeTests, test code isn't counted as a consumer, but it still uses
+	// the symbol and is reported as such.
+	var testRefs []impact.Reference
 	if !opts.IncludeTests {
-		refs = filterTestReferences(refs)
+		refs, testRefs = splitTestReferences(refs)
 	}
 
 	// Create impact analyzer with transitive caller support if SCIP available
 	var analyzer *impact.ImpactAnalyzer
+	var callerProv *scipCallerProvider
 	if e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
-		callerProv := &scipCallerProvider{adapter: e.scipAdapter}
+		callerProv = &scipCallerProvider{adapter: e.scipAdapter, separateTests: !opts.IncludeTests}
 		analyzer = impact.NewImpactAnalyzerWithCallers(opts.Depth, callerProv)
 	} else {
 		analyzer = impact.NewImpactAnalyzer(opts.Depth)
@@ -372,6 +414,11 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 	result, err := analyzer.Analyze(impactSymbol, refs)
 	if err != nil {
 		return nil, e.wrapError(err, errors.InternalError)
+	}
+
+	testImpact := testReferenceItems(testRefs, impactSymbol)
+	if callerProv != nil {
+		testImpact = append(testImpact, callerProv.testCallerItems()...)
 	}
 
 	// Fetch LIP enrichment up-front so tier-1 static callers can be folded
@@ -567,6 +614,7 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 		RelatedDecisions:  relatedDecisions,
 		DocsToUpdate:      docsToUpdate,
 		BlendedConfidence: blendedConfidence,
+		TestImpact:        testImpact,
 		Truncated:         truncationInfo != nil,
 		TruncationInfo:    truncationInfo,
 		Provenance:        provenance,
@@ -807,15 +855,36 @@ func computeBlendedConfidenceScore(staticConfidence, observedConfidence float64)
 	return result
 }
 
-// filterTestReferences removes test references.
-func filterTestReferences(refs []impact.Reference) []impact.Reference {
-	filtered := make([]impact.Reference, 0, len(refs))
+// splitTestReferences separates references from test code.
+func splitTestReferences(refs []impact.Reference) (production, tests []impact.Reference) {
+	production = make([]impact.Reference, 0, len(refs))
 	for _, ref := range refs {
-		if !ref.IsTest {
-			filtered = append(filtered, ref)
+		if ref.IsTest {
+			tests = append(tests, ref)
+		} else {
+			production = append(production, ref)
 		}
 	}
-	return filtered
+	return production, tests
+}
+
+// testReferenceItems describes direct references from test code.
+func testReferenceItems(refs []impact.Reference, symbol *impact.Symbol) []ImpactItem {
+	items := make([]impact.ImpactItem, 0, len(refs))
+	for i := range refs {
+		ref := &refs[i]
+		kind, confidence := impact.ClassifyImpactWithConfidence(ref, symbol)
+		items = append(items, impact.ImpactItem{
+			StableId:   ref.FromSymbol,
+			Name:       ref.FromName,
+			Kind:       kind,
+			Confidence: confidence,
+			ModuleId:   ref.FromModule,
+			Location:   ref.Location,
+			Distance:   1,
+		})
+	}
+	return convertImpactItems(items)
 }
 
 // convertImpactItems converts impact items to response format.
@@ -1229,6 +1298,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	// Analyze impact for each changed symbol
 	var allDirectImpact []ImpactItem
 	var allTransitiveImpact []ImpactItem
+	var allTestImpact []ImpactItem
 	moduleImpactMap := make(map[string]*ModuleImpact)
 
 	// v1: decisions surfaced per changed symbol's module, deduped by ADR ID, capped at 10.
@@ -1288,6 +1358,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 
 		allDirectImpact = append(allDirectImpact, impactResult.DirectImpact...)
 		allTransitiveImpact = append(allTransitiveImpact, impactResult.TransitiveImpact...)
+		allTestImpact = append(allTestImpact, impactResult.TestImpact...)
 
 		// Aggregate module impacts
 		for _, mod := range impactResult.ModulesAffected {
@@ -1422,6 +1493,11 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	recommendations := e.generateRecommendations(summary, riskScore, changedSymbols, modulesAffected, testGapsInfo, contracts)
 	recommendations = append(deletionRecommendations(brokenDeletions, changedSymbols), recommendations...)
 
+	// Before the budget: a cut in the consumer list must not lose a test.
+	testConsumers := make([]ImpactItem, 0, len(allDirectImpact)+len(allTransitiveImpact)+len(allTestImpact))
+	testConsumers = append(append(append(testConsumers, allDirectImpact...), allTransitiveImpact...), allTestImpact...)
+	affectedTests := e.deriveAffectedTests(changedSymbolInfos, testConsumers)
+
 	// Apply budget
 	budget := e.compressor.GetBudget()
 	var truncationInfo *TruncationInfo
@@ -1519,11 +1595,6 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	} else if len(reviewerFiles) > 0 {
 		provenance.Warnings = append(provenance.Warnings, "reviewers unavailable: git ownership data not available")
 	}
-
-	// Affected tests: reuse the same traversal GetAffectedTests uses (see
-	// deriveAffectedTests), fed with this call's own changed/affected symbols
-	// so we don't recursively call AnalyzeChangeSet.
-	affectedTests := e.deriveAffectedTests(changedSymbolInfos, allAffected)
 
 	// Confidence: SCIP availability + freshness + average symbol-mapping confidence.
 	confidence := e.buildChangeConfidence(completeness, indexStaleness, totalMappingConfidence, mappingConfidenceCount)
@@ -2007,7 +2078,7 @@ type AffectedTestsResponse struct {
 type AffectedTest struct {
 	FilePath   string   `json:"filePath"`
 	TestNames  []string `json:"testNames,omitempty"`  // Specific test functions if known
-	Reason     string   `json:"reason"`               // "direct", "transitive", "coverage"
+	Reason     string   `json:"reason"`               // "direct", "transitive", "coverage", "naming-convention", "semantic-proximity"
 	AffectedBy []string `json:"affectedBy,omitempty"` // Symbol IDs that caused this test to be selected
 	Confidence float64  `json:"confidence"`
 }
@@ -2050,8 +2121,7 @@ func (e *Engine) GetAffectedTests(ctx context.Context, opts GetAffectedTestsOpti
 
 	var coverageUsed bool
 
-	// Shared with AnalyzeChangeSet's AffectedTests field -- see deriveAffectedTests.
-	tests := e.deriveAffectedTests(changeSet.ChangedSymbols, changeSet.AffectedSymbols)
+	tests := changeSet.AffectedTests
 
 	// Build summary
 	summary := &TestSummary{TotalFiles: len(tests)}
@@ -2093,10 +2163,9 @@ func (e *Engine) GetAffectedTests(ctx context.Context, opts GetAffectedTestsOpti
 	}, nil
 }
 
-// deriveAffectedTests computes the tests that reach a set of changed/affected
-// symbols. Shared by GetAffectedTests and AnalyzeChangeSet so the traversal
-// lives in one place -- AnalyzeChangeSet cannot call GetAffectedTests
-// directly since GetAffectedTests itself calls AnalyzeChangeSet.
+// deriveAffectedTests computes the tests that use or reach a set of changed
+// symbols, given every consumer of them including those in test files. Other
+// consumers are ignored.
 func (e *Engine) deriveAffectedTests(changedSymbols []ChangedSymbolInfo, affectedSymbols []ImpactItem) []AffectedTest {
 	testFileMap := make(map[string]*AffectedTest)
 
@@ -2112,24 +2181,28 @@ func (e *Engine) deriveAffectedTests(changedSymbols []ChangedSymbolInfo, affecte
 			continue
 		}
 
-		if existing, ok := testFileMap[path]; ok {
+		existing, ok := testFileMap[path]
+		if !ok {
+			existing = &AffectedTest{FilePath: path, Reason: categorizeTestReason(sym.Distance), Confidence: sym.Confidence}
+			testFileMap[path] = existing
+		}
+		if categorizeTestReason(sym.Distance) == "direct" {
+			existing.Reason = "direct"
+		}
+		if sym.Confidence > existing.Confidence {
+			existing.Confidence = sym.Confidence
+		}
+		if sym.StableId != "" {
 			existing.AffectedBy = append(existing.AffectedBy, sym.StableId)
-			if sym.Confidence > existing.Confidence {
-				existing.Confidence = sym.Confidence
-			}
-		} else {
-			testFileMap[path] = &AffectedTest{
-				FilePath:   path,
-				Reason:     categorizeTestReason(sym.Distance),
-				AffectedBy: []string{sym.StableId},
-				Confidence: sym.Confidence,
-			}
+		}
+		if sym.Name != "" {
+			existing.TestNames = appendUnique(existing.TestNames, sym.Name)
 		}
 	}
 
 	// 2. Test files for changed production code (heuristic: find corresponding test files)
 	for _, sym := range changedSymbols {
-		if isTestFilePathEnhanced(sym.File) {
+		if isTestFilePath(sym.File) {
 			continue // Already a test file
 		}
 
@@ -2139,9 +2212,9 @@ func (e *Engine) deriveAffectedTests(changedSymbols []ChangedSymbolInfo, affecte
 			if _, ok := testFileMap[testFile]; !ok {
 				testFileMap[testFile] = &AffectedTest{
 					FilePath:   testFile,
-					Reason:     "direct",
+					Reason:     "naming-convention", // Named after the file, whether it uses the symbol or not
 					AffectedBy: []string{sym.SymbolID},
-					Confidence: 0.8, // High confidence for corresponding test
+					Confidence: 0.8,
 				}
 			}
 		}
@@ -2153,7 +2226,7 @@ func (e *Engine) deriveAffectedTests(changedSymbols []ChangedSymbolInfo, affecte
 	// similar test files. This catches tests that cover the changed code but don't
 	// follow naming conventions (e.g. integration tests, table-driven suites).
 	for _, sym := range changedSymbols {
-		if isTestFilePathEnhanced(sym.File) {
+		if isTestFilePath(sym.File) {
 			continue
 		}
 		fileURI := "file://" + filepath.Join(e.repoRoot, sym.File)
@@ -2179,9 +2252,12 @@ func (e *Engine) deriveAffectedTests(changedSymbols []ChangedSymbolInfo, affecte
 	// Convert map to slice
 	tests := make([]AffectedTest, 0, len(testFileMap))
 	for _, test := range testFileMap {
-		// Cap affected-by list
+		// Cap the per-file lists; the file is what has to be looked at.
 		if len(test.AffectedBy) > 5 {
 			test.AffectedBy = test.AffectedBy[:5]
+		}
+		if len(test.TestNames) > 5 {
+			test.TestNames = test.TestNames[:5]
 		}
 		tests = append(tests, *test)
 	}
@@ -2195,6 +2271,15 @@ func (e *Engine) deriveAffectedTests(changedSymbols []ChangedSymbolInfo, affecte
 	})
 
 	return tests
+}
+
+func appendUnique(list []string, value string) []string {
+	for _, have := range list {
+		if have == value {
+			return list
+		}
+	}
+	return append(list, value)
 }
 
 // appendDedupedDecision appends d to decisions if its ID hasn't been seen
@@ -2281,38 +2366,7 @@ func isTestFile(loc *LocationInfo) bool {
 	if loc == nil {
 		return false
 	}
-	return isTestFilePathEnhanced(loc.FileId)
-}
-
-// isTestFilePathEnhanced checks if a file path is a test file (more comprehensive than isTestFilePath).
-func isTestFilePathEnhanced(path string) bool {
-	pathLower := strings.ToLower(path)
-
-	// Go tests
-	if strings.HasSuffix(pathLower, "_test.go") {
-		return true
-	}
-	// TypeScript/JavaScript tests
-	if strings.HasSuffix(pathLower, ".test.ts") || strings.HasSuffix(pathLower, ".test.js") ||
-		strings.HasSuffix(pathLower, ".spec.ts") || strings.HasSuffix(pathLower, ".spec.js") ||
-		strings.HasSuffix(pathLower, ".test.tsx") || strings.HasSuffix(pathLower, ".spec.tsx") {
-		return true
-	}
-	// Python tests
-	if strings.HasSuffix(pathLower, "_test.py") || strings.HasPrefix(filepath.Base(pathLower), "test_") {
-		return true
-	}
-	// Dart tests
-	if strings.HasSuffix(pathLower, "_test.dart") {
-		return true
-	}
-	// Test directory patterns
-	if strings.Contains(pathLower, "/test/") || strings.Contains(pathLower, "/tests/") ||
-		strings.Contains(pathLower, "/__tests__/") || strings.Contains(pathLower, "/spec/") {
-		return true
-	}
-
-	return false
+	return isTestFilePath(loc.FileId)
 }
 
 // categorizeTestReason determines if a test is direct or transitive based on distance.

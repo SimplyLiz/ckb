@@ -782,6 +782,7 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 		for _, t := range resp.AffectedTests {
 			result.AffectedTests = append(result.AffectedTests, AffectedTestCLI{
 				FilePath:   t.FilePath,
+				TestNames:  t.TestNames,
 				Reason:     t.Reason,
 				AffectedBy: t.AffectedBy,
 				Confidence: t.Confidence,

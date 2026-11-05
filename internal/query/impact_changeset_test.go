@@ -1,6 +1,8 @@
 package query
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -365,5 +367,41 @@ func TestMergeConsumers_DirectBeatsTransitiveInAnyOrder(t *testing.T) {
 		})
 	if len(transitive) != 1 || transitive[0].StableId != "far" || transitive[0].Distance != 2 {
 		t.Errorf("transitive = %+v, want only far at its closest distance", transitive)
+	}
+}
+
+func TestIsTestFilePath_AcrossLanguages(t *testing.T) {
+	for path, want := range map[string]bool{
+		"internal/a_test.go":          true,
+		"web/src/a.test.tsx":          true,
+		"web/src/a.spec.ts":           true,
+		"web/src/__tests__/a.ts":      true,
+		"tests/smoke.rs":              true,
+		"crates/x/tests/smoke.rs":     true,
+		"crates/x/src/tests.rs":       true,
+		"e2e/login.ts":                true,
+		"benches/speed.rs":            true,
+		"internal/latest.go":          false,
+		"internal/contest/entry.go":   false,
+		"src/attest.ts":               false,
+		"src/testimony/deposition.ts": false,
+	} {
+		if got := isTestFilePath(path); got != want {
+			t.Errorf("isTestFilePath(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
+// A test file named after the changed file is a guess. It must not read as a test
+// that was seen using the symbol.
+func TestDeriveAffectedTests_NamingConventionIsNotDirect(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "lib_test.go"), []byte("package lib\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{repoRoot: dir}
+	tests := e.deriveAffectedTests([]ChangedSymbolInfo{{SymbolID: "s", File: "lib.go"}}, nil)
+	if len(tests) != 1 || tests[0].Reason != "naming-convention" {
+		t.Errorf("tests = %+v, want lib_test.go by naming-convention", tests)
 	}
 }

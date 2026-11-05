@@ -1929,11 +1929,22 @@ func computePathScore(pathType string, pathLength int, confidence float64) float
 
 // isTestFilePath checks if a path is a test file.
 func isTestFilePath(path string) bool {
-	pathLower := strings.ToLower(path)
-	return strings.Contains(pathLower, "_test.") ||
-		strings.Contains(pathLower, ".test.") ||
-		strings.Contains(pathLower, "/test/") ||
-		strings.Contains(pathLower, "/tests/")
+	lower := "/" + strings.ToLower(path)
+	base := filepath.Base(lower)
+	for _, marker := range []string{"_test.", "_tests.", ".test.", ".spec."} {
+		if strings.Contains(base, marker) {
+			return true
+		}
+	}
+	if strings.HasPrefix(base, "test_") || base == "tests.rs" {
+		return true
+	}
+	for _, dir := range []string{"/test/", "/tests/", "/__tests__/", "/spec/", "/e2e/", "/benches/"} {
+		if strings.Contains(lower, dir) {
+			return true
+		}
+	}
+	return false
 }
 
 // SummarizeDiffOptions controls summarizeDiff behavior.

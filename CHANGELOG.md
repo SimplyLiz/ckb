@@ -55,7 +55,6 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   factor could never fire before.
 - **Members of unexported Go types** are no longer public API, in the SCIP and
   the search path.
-
 - **A caller is no longer lost to a local variable in it, or to another blank
   consumer.** rust-analyzer gives `let id = save(x)` an enclosing range, so the
   local counted as the reference's container and the caller came back blank.
@@ -64,6 +63,16 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   those lost callers) vanished without a trace. Locals and parameters are no longer
   containers, blank consumers dedupe per file, and a consumer that is direct for one
   changed symbol stays direct when another changed symbol reaches it first.
+- **Tests that use a changed symbol are in `affectedTests`, always.** `ckb changes`
+  and `assessChange` dropped test references unless asked, and only saw a test file
+  when it sat in the first 20 consumers. `includeTests` now only decides whether test
+  code also counts as a consumer: by default it no longer inflates `affectedSymbols`,
+  the consumer counts or the risk, including transitive callers in test files, which
+  were counted before. `ckb impact` keeps tests out of its consumer lists the same
+  way. `reason` is `direct` only for a test seen using the symbol; a test merely named
+  after the changed file now says `naming-convention`. Entries list `testNames`, and
+  test detection covers `.spec.*`, `__tests__/`, root `tests/`, `e2e/` and Rust's
+  `tests.rs`.
 
 ### Fixed — search and navigation
 
