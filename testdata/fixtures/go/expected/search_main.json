@@ -24,7 +24,7 @@
     {
       "file": "main.go",
       "kind": "namespace",
-      "line": 0,
+      "line": 3,
       "moduleId": ".",
       "name": "fixture"
     }

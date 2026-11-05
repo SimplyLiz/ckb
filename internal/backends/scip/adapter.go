@@ -394,6 +394,28 @@ func (s *SCIPAdapter) FindReferences(ctx context.Context, symbolID string, opts 
 	}, nil
 }
 
+// DefinitionLocation returns where a symbol is defined, 1-indexed like every
+// location this adapter returns, or nil if the index has no definition for it.
+func (s *SCIPAdapter) DefinitionLocation(symbolID string) *backends.Location {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.index == nil {
+		return nil
+	}
+	loc := findSymbolLocationFast(symbolID, s.index)
+	if loc == nil {
+		return nil
+	}
+	return &backends.Location{
+		Path:      loc.FileId,
+		Line:      loc.StartLine + 1, // Convert to 1-indexed
+		Column:    loc.StartColumn + 1,
+		EndLine:   loc.EndLine + 1,
+		EndColumn: loc.EndColumn + 1,
+	}
+}
+
 // convertToSymbolResult converts a SCIPSymbol to a SymbolResult
 func (s *SCIPAdapter) convertToSymbolResult(scipSym *SCIPSymbol) *backends.SymbolResult {
 	var location backends.Location

@@ -59,21 +59,21 @@
     {
       "file": "pkg/model.go",
       "kind": "property",
-      "line": 13,
+      "line": 9,
       "moduleId": "pkg",
       "name": "Config"
     },
     {
       "file": "pkg/model.go",
       "kind": "property",
-      "line": 0,
+      "line": 8,
       "moduleId": "pkg",
       "name": "Name"
     },
     {
       "file": "pkg/service.go",
       "kind": "property",
-      "line": 0,
+      "line": 14,
       "moduleId": "pkg",
       "name": "model"
     }

@@ -394,7 +394,12 @@ func formatSearchHuman(resp *SearchResponseCLI) (string, error) {
 		b.WriteString(fmt.Sprintf("   ID: %s\n", sym.StableID))
 		b.WriteString(fmt.Sprintf("   Module: %s\n", sym.ModuleID))
 		if sym.Location != nil {
-			b.WriteString(fmt.Sprintf("   Location: %s:%d\n", sym.Location.FileID, sym.Location.StartLine))
+			if sym.Location.StartLine > 0 {
+				b.WriteString(fmt.Sprintf("   Location: %s:%d\n", sym.Location.FileID, sym.Location.StartLine))
+			} else {
+				// Found without a SCIP index: the file is all that is known.
+				b.WriteString(fmt.Sprintf("   Location: %s\n", sym.Location.FileID))
+			}
 		}
 		b.WriteString(fmt.Sprintf("   Relevance: %.2f\n\n", sym.RelevanceScore))
 	}

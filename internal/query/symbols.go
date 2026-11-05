@@ -73,6 +73,26 @@ type LocationInfo struct {
 	EndColumn   int    `json:"endColumn,omitempty"`
 }
 
+// ftsResultLocation locates a symbol found through the FTS table, which only
+// stores its file. The rest comes from its SCIP definition, in the same 1-based
+// lines as every other location; without an index only the file is known, and
+// the lines stay 0.
+func (e *Engine) ftsResultLocation(symbolID, filePath string) *LocationInfo {
+	loc := &LocationInfo{FileId: filePath}
+	if e.scipAdapter == nil || !e.scipAdapter.IsAvailable() {
+		return loc
+	}
+	def := e.scipAdapter.DefinitionLocation(symbolID)
+	if def == nil {
+		return loc
+	}
+	loc.StartLine = def.Line
+	loc.StartColumn = def.Column
+	loc.EndLine = def.EndLine
+	loc.EndColumn = def.EndColumn
+	return loc
+}
+
 // TruncationInfo describes why results were truncated.
 type TruncationInfo struct {
 	Reason        string `json:"reason"`
@@ -341,7 +361,9 @@ type SemanticEvidenceChunk struct {
 func generateSearchCacheKey(opts SearchSymbolsOptions) string {
 	// Build a deterministic key from the options
 	keyParts := []string{
-		"search",
+		// Bump when the shape of a cached result changes: entries live until the
+		// next commit, across an upgrade of the binary.
+		"search-v2",
 		opts.Query,
 		opts.Scope,
 		fmt.Sprintf("%d", opts.Limit),
@@ -448,9 +470,7 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 				Name:     r.Name,
 				Kind:     r.Kind,
 				ModuleId: filepath.Dir(r.FilePath),
-				Location: &LocationInfo{
-					FileId: r.FilePath,
-				},
+				Location: e.ftsResultLocation(r.ID, r.FilePath),
 				Visibility: &VisibilityInfo{
 					Visibility: inferVisibility(r.Name, r.Kind),
 					Confidence: 0.7,
@@ -573,7 +593,7 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 						Name:     s.Name,
 						Kind:     s.Kind,
 						ModuleId: filepath.Dir(s.FilePath),
-						Location: &LocationInfo{FileId: s.FilePath},
+						Location: e.ftsResultLocation(s.ID, s.FilePath),
 						Visibility: &VisibilityInfo{
 							Visibility: inferVisibility(s.Name, s.Kind),
 							Confidence: 0.6,

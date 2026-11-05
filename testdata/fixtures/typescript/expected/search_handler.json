@@ -45,14 +45,14 @@
     {
       "file": "src/pkg/handler.ts",
       "kind": "method",
-      "line": 0,
+      "line": 14,
       "moduleId": "src/pkg",
       "name": "\u003cconstructor\u003e"
     },
     {
       "file": "src/pkg/server.ts",
       "kind": "method",
-      "line": 0,
+      "line": 13,
       "moduleId": "src/pkg",
       "name": "\u003cconstructor\u003e"
     },
@@ -80,56 +80,56 @@
     {
       "file": "src/pkg/handler.ts",
       "kind": "namespace",
-      "line": 0,
+      "line": 1,
       "moduleId": "src/pkg",
       "name": "handler.ts"
     },
     {
       "file": "src/pkg/server.ts",
       "kind": "parameter",
-      "line": 0,
+      "line": 13,
       "moduleId": "src/pkg",
       "name": "handler"
     },
     {
       "file": "src/pkg/server.ts",
       "kind": "parameter",
-      "line": 0,
+      "line": 43,
       "moduleId": "src/pkg",
       "name": "handler"
     },
     {
       "file": "src/pkg/handler.ts",
       "kind": "parameter",
-      "line": 0,
+      "line": 23,
       "moduleId": "src/pkg",
       "name": "input"
     },
     {
       "file": "src/pkg/handler.ts",
       "kind": "parameter",
-      "line": 0,
+      "line": 33,
       "moduleId": "src/pkg",
       "name": "inputs"
     },
     {
       "file": "src/pkg/handler.ts",
       "kind": "parameter",
-      "line": 0,
+      "line": 14,
       "moduleId": "src/pkg",
       "name": "service"
     },
     {
       "file": "src/pkg/server.ts",
       "kind": "property",
-      "line": 0,
+      "line": 11,
       "moduleId": "src/pkg",
       "name": "handler"
     },
     {
       "file": "src/pkg/handler.ts",
       "kind": "property",
-      "line": 0,
+      "line": 12,
       "moduleId": "src/pkg",
       "name": "service"
     }
