@@ -84,12 +84,30 @@ func TestClassifyImpact(t *testing.T) {
 			expected: DirectCaller,
 		},
 		{
-			name: "read on non-property",
+			name: "read of a function is a caller: SCIP has no call role",
 			ref: &Reference{
 				Kind:   RefRead,
 				IsTest: false,
 			},
 			symbol:   &Symbol{Kind: KindFunction},
+			expected: DirectCaller,
+		},
+		{
+			name: "read of a method is a caller",
+			ref: &Reference{
+				Kind:   RefRead,
+				IsTest: false,
+			},
+			symbol:   &Symbol{Kind: KindMethod},
+			expected: DirectCaller,
+		},
+		{
+			name: "read of a type is a type dependency",
+			ref: &Reference{
+				Kind:   RefRead,
+				IsTest: false,
+			},
+			symbol:   &Symbol{Kind: KindClass},
 			expected: TypeDependency,
 		},
 	}

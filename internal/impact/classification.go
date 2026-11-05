@@ -53,6 +53,11 @@ func ClassifyImpact(ref *Reference, symbol *Symbol) ImpactKind {
 		return TypeDependency
 
 	case RefRead, RefWrite:
+		// SCIP has no "call" role: a call to a function is a read occurrence, and
+		// so is passing it as a value. Both break when its contract changes.
+		if symbol.Kind == KindFunction || symbol.Kind == KindMethod {
+			return DirectCaller
+		}
 		// Property or variable access
 		if symbol.Kind == KindProperty || symbol.Kind == KindVariable || symbol.Kind == KindConstant {
 			return DirectCaller

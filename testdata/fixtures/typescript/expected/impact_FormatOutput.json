@@ -1,6 +1,6 @@
 {
   "blastRadius": {
-    "fileCount": 2,
+    "fileCount": 3,
     "moduleCount": 2,
     "riskLevel": "low",
     "uniqueCallerCount": 2
@@ -34,7 +34,7 @@
       "name": "src"
     },
     {
-      "impactCount": 2,
+      "impactCount": 4,
       "moduleId": "src/pkg",
       "name": "src/pkg"
     }

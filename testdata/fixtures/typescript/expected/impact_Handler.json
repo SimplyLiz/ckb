@@ -1,7 +1,7 @@
 {
   "blastRadius": {
-    "fileCount": 2,
-    "moduleCount": 1,
+    "fileCount": 3,
+    "moduleCount": 2,
     "riskLevel": "low",
     "uniqueCallerCount": 2
   },
@@ -39,15 +39,20 @@
   ],
   "modulesAffected": [
     {
+      "impactCount": 2,
+      "moduleId": "src",
+      "name": "src"
+    },
+    {
       "impactCount": 6,
       "moduleId": "src/pkg",
       "name": "src/pkg"
     }
   ],
   "riskScore": {
-    "explanation": "Low risk: 0 direct caller(s) across 1 module(s). Changes have limited impact.",
+    "explanation": "Low risk: 0 direct caller(s) across 2 module(s). Changes have limited impact.",
     "level": "low",
-    "score": 0.36
+    "score": 0.39
   },
   "symbol": {
     "file": "src/pkg/handler.ts",

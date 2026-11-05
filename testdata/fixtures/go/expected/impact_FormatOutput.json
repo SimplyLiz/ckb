@@ -3,22 +3,22 @@
     "fileCount": 4,
     "moduleCount": 2,
     "riskLevel": "low",
-    "uniqueCallerCount": 2
+    "uniqueCallerCount": 5
   },
   "directImpact": [
     {
       "file": "main.go",
-      "kind": "type-dependency",
+      "kind": "direct-caller",
       "name": ""
     },
     {
       "file": "pkg/handler.go",
-      "kind": "type-dependency",
+      "kind": "direct-caller",
       "name": ""
     },
     {
       "file": "pkg/service.go",
-      "kind": "type-dependency",
+      "kind": "direct-caller",
       "name": ""
     }
   ],
@@ -35,9 +35,9 @@
     }
   ],
   "riskScore": {
-    "explanation": "Low risk: 0 direct caller(s) across 2 module(s). Changes have limited impact.",
-    "level": "low",
-    "score": 0.39
+    "explanation": "Medium risk: 3 direct caller(s) across 2 module(s). Changes require careful testing.",
+    "level": "medium",
+    "score": 0.57
   },
   "symbol": {
     "file": "internal/util.go",
