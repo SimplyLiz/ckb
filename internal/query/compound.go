@@ -1479,7 +1479,7 @@ type PrepareCoChange struct {
 
 // PrepareRisk assesses the risk of the change.
 type PrepareRisk struct {
-	Level       string   `json:"level"` // low, medium, high, critical
+	Level       string   `json:"level"` // low, medium, high, critical, or RiskLevelNotAssessed
 	Score       float64  `json:"score"`
 	Factors     []string `json:"factors"`
 	Suggestions []string `json:"suggestions"`
@@ -1638,6 +1638,9 @@ func (e *Engine) PrepareChange(ctx context.Context, opts PrepareChangeOptions) (
 
 	// Calculate risk assessment
 	risk := e.calculatePrepareRisk(target, directDependents, transitiveImpact, relatedTests, coChangeFiles, riskFactors, opts.ChangeType)
+	if !e.hasConsumerGraph() {
+		markConsumersNotAssessed(risk, len(directDependents))
+	}
 
 	// Build provenance
 	var backendContribs []BackendContribution
@@ -1946,6 +1949,24 @@ func (e *Engine) getPrepareCoChanges(ctx context.Context, path string) ([]Prepar
 		})
 	}
 	return coChanges, nil
+}
+
+// markConsumersNotAssessed qualifies a prepareChange risk computed without a
+// consumer graph, where "no dependents" means nobody looked. A "low" built on that
+// is a clean bill of health nobody earned, so it becomes not assessed. Whatever
+// doesn't need SCIP (co-change, visibility, change type, tests) stays in the
+// factors. If that evidence alone reaches medium or above, the level stands as
+// what it is, a lower bound.
+func markConsumersNotAssessed(risk *PrepareRisk, knownDependents int) {
+	if knownDependents > 0 {
+		return // Found some other way: a real lower bound on the graph's answer
+	}
+	risk.Factors = append([]string{"Downstream consumers not assessed: no SCIP index"}, risk.Factors...)
+	risk.Suggestions = append(risk.Suggestions, "Run 'ckb index' to see what depends on this")
+	if risk.Level == "low" {
+		risk.Level = RiskLevelNotAssessed
+		risk.Score = 0
+	}
 }
 
 // calculatePrepareRisk calculates the risk assessment.

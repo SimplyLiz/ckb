@@ -34,7 +34,7 @@ type PlanRefactorResponse struct {
 
 // PlanRefactorRisk combines file-level risk with per-function complexity breakdown.
 type PlanRefactorRisk struct {
-	RiskLevel          string               `json:"riskLevel"` // critical, high, medium, low
+	RiskLevel          string               `json:"riskLevel"` // critical, high, medium, low, or RiskLevelNotAssessed
 	RiskScore          float64              `json:"riskScore"` // 0-100
 	Factors            []audit.RiskFactor   `json:"factors,omitempty"`
 	FunctionComplexity []audit.FunctionRisk `json:"functionComplexity,omitempty"`
@@ -244,7 +244,7 @@ func (e *Engine) PlanRefactor(ctx context.Context, opts PlanRefactorOptions) (*P
 
 	// Risk assessment
 	resp.RiskAssessment = &PlanRefactorRisk{
-		RiskLevel: "low",
+		RiskLevel: RiskLevelNotAssessed, // Until one of the two analyses below says otherwise
 		RiskScore: 0,
 	}
 	if riskItem != nil {

@@ -423,6 +423,13 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 	visibility := symbolInfo.Visibility
 	riskScore := convertRiskScore(result.RiskScore)
 
+	// Reached on identity data alone: the symbol is known, but no references were
+	// looked up, so a low score here would be a statement about nothing.
+	consumersNotAssessed := !e.hasConsumerGraph() && len(refs) == 0
+	if consumersNotAssessed {
+		riskScore = notAssessedRisk(1)
+	}
+
 	// Build provenance
 	provenance := e.buildProvenance(repoState, "full", startTime, backendContribs, completeness)
 	if result.AnalysisLimits != nil && result.AnalysisLimits.HasLimitations() {
@@ -527,6 +534,10 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 				Similarity: sc.Similarity,
 			})
 		}
+	}
+
+	if blastRadius != nil && consumersNotAssessed {
+		blastRadius.RiskLevel = riskScore.Level
 	}
 
 	resp := &AnalyzeImpactResponse{
@@ -1392,8 +1403,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	// Without SCIP there is no consumer graph, so "0 consumers" means nobody
 	// looked, and a score built on it would read as a clean bill of health.
 	// Consumers found some other way still count as a lower bound.
-	hasSCIPIndex := e.scipAdapter != nil && e.scipAdapter.IsAvailable()
-	if !hasSCIPIndex && len(allDirectImpact)+len(allTransitiveImpact) == 0 && len(changedSymbols) > 0 {
+	if !e.hasConsumerGraph() && len(allDirectImpact)+len(allTransitiveImpact) == 0 && len(changedSymbols) > 0 {
 		riskScore = notAssessedRisk(len(changedSymbols))
 		summary.EstimatedRisk = riskScore.Level
 		blastRadius.RiskLevel = riskScore.Level
@@ -1755,6 +1765,12 @@ func deletionRecommendations(broken []brokenDeletion, changedSymbols []impact.Ch
 // RiskLevelNotAssessed is the risk level of a change whose consumers could not
 // be looked up. It is deliberately not on the low..critical scale.
 const RiskLevelNotAssessed = "not_assessed"
+
+// hasConsumerGraph reports whether anything can answer who uses a symbol. Without
+// it, "0 consumers" means nobody looked.
+func (e *Engine) hasConsumerGraph() bool {
+	return e.scipAdapter != nil && e.scipAdapter.IsAvailable()
+}
 
 // notAssessedRisk is the risk of a change analyzed without a consumer graph.
 func notAssessedRisk(changedSymbols int) *RiskScore {

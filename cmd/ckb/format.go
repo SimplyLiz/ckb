@@ -501,7 +501,11 @@ func formatImpactHuman(resp *ImpactResponseCLI) (string, error) {
 	b.WriteString(strings.Repeat("=", 60) + "\n\n")
 
 	if resp.RiskScore != nil {
-		b.WriteString(fmt.Sprintf("Risk Level: %s (score: %.2f)\n", resp.RiskScore.Level, resp.RiskScore.Score))
+		if resp.RiskScore.Level == query.RiskLevelNotAssessed {
+			b.WriteString("Risk: NOT ASSESSED\n")
+		} else {
+			b.WriteString(fmt.Sprintf("Risk Level: %s (score: %.2f)\n", resp.RiskScore.Level, resp.RiskScore.Score))
+		}
 		b.WriteString(fmt.Sprintf("Explanation: %s\n\n", resp.RiskScore.Explanation))
 	}
 
