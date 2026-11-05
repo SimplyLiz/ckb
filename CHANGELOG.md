@@ -151,6 +151,10 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
 
 - **MCP `instructions`** tell agents when to reach for CKB
   ([#246](https://github.com/SimplyLiz/ckb/pull/246)).
+- **Change prediction is measured.** `scripts/eval-change` hides a commit's callers and
+  scores `ckb changes` and `git grep` against the compiler, on Go, TypeScript and Rust.
+  `docs/eval/change-prediction.md` has the method, before and after, and where CKB is
+  still worse than grep.
 
 ### Output changes consumers will notice
 

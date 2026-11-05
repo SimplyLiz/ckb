@@ -3,29 +3,74 @@
 "Before your agent changes code, CKB tells it what can break." This measures that
 claim on real commits, against what `git grep` gives an agent for free.
 
-**Result on this repo (Go, n=8, CKB at b550825):** CKB named the changed symbol in 8/8
-commits and found every non-test file the compiler says broke (9/9). So did grep (9/9),
-with far fewer wrong files: precision 31% against 82% (69% for CKB's direct callers
-alone). Test files are where CKB is worse: 1 of the 2 broken test files, against 2/2.
-Risk was `low` on 7 of 8 commits, all of which broke the build.
+**Result (CKB at 046f946; Go is this repo, TS and Rust are aggregates from two private
+repos):** CKB now names every file the compiler says broke, in all three languages, and
+every test edited with the change. Its new `contractChanged` list is more precise than
+grep on Go and TS and ties on Rust. Its other lists are still mostly noise next to grep.
+Risk now catches every breaking commit, but 7 of the 12 non-breaking ones are `high` too.
 
-n=8 is small, and the sample's breakage is narrow: at most 2 non-test files per commit.
-This says little about the wide changes where a call graph should beat grep.
+| Non-test files the compiler says broke | Go, n=8 | TS, n=5 | Rust, n=1 |
+|---|---|---|---|
+| Recall, CKB before | 9/9 | 6/6 | 1/1 |
+| Recall, CKB after, every list below | 9/9 | 6/6 | 1/1 |
+| Recall, grep | 9/9 | 5/6 | 1/1 |
+| Precision, `ckb` (`affectedSymbols`), before | 31% | 35% | 33% |
+| Precision, `ckb`, after | 31% | 40% | 33% |
+| Precision, `ckb_files` (`consumerFiles`, new) | 30% | 19% | 25% |
+| Precision, `ckb_direct_only`, before | 69% | 67% | n/a (found 0/1) |
+| Precision, `ckb_direct_only`, after | 64% | 67% | 33% |
+| Precision, `ckb_contract` (`contractChanged`, new) | 90% | 75% | 100% |
+| Precision, grep | 82% | 31% | 100% |
 
-Tool, sample and raw results: `scripts/eval-change/` (`samples/ckb.json`,
-`results/ckb.jsonl`). A rerun reproduced every number below.
+| All 26 commits (Go 8, TS 15, Rust 3) | Broke something | Broke nothing |
+|---|---|---|
+| Before: `low` | 10 | 10 |
+| Before: `medium` | 2 | 2 |
+| Before: `high` | 2 | 0 |
+| After: `low` | 0 | 3 |
+| After: `medium` | 0 | 2 |
+| After: `high` | 14 | 7 |
+
+| Test files edited with the change, naming the symbol | Before | After | grep |
+|---|---|---|---|
+| Found, all languages | 2/7 | 7/7 | 6/7 |
+| Predicted test files, for that | 6 | 15 | 10 |
+
+How far to trust it:
+
+- **All numbers are small, and precision is pooled over few files.** At most 2 non-test
+  files broke per commit, so this says little about wide changes.
+- **Risk is partly separated, not solved.** No breaking commit is below `high` now, which
+  was the defect. But high is 14 right and 7 wrong, and Go can't show separation at all,
+  since all 8 of its commits broke. The compiler let those 7 through for reasons a text
+  comparison can't see. The rule was chosen before any of these numbers and not changed
+  after them.
+- **"A body edit isn't alarmist" isn't measured here.** The sample selects signature
+  changes, so it holds almost no body-only change. That claim rests on the rule and on
+  unit tests.
+- **`ckb_contract` isn't the list the eval started with.** It was added because of the
+  first result. Its rule is the risk rule, also fixed before any number on it existed.
+- **Where CKB is still worse than grep,** all in precision: `consumerFiles` on all three
+  languages, `affectedSymbols` and the direct lists on Go and Rust, and test files on Go
+  (67% against 100%, though `contractChangedTests` is 2/2 at 100%). Its recall is at least
+  grep's everywhere here. grep is also handed the right name, which CKB has to work out.
+
+Tool, sample and raw results for this repo: `scripts/eval-change/` (`samples/ckb.json`,
+`results/ckb.jsonl`, and `results/ckb-b550825.jsonl` for the first measurement).
 
 ## Method
 
 For each sampled commit, in a throwaway clone at its parent:
 
-1. Build the SCIP index with a CKB built from the commit under test (b550825 here).
+1. Build the SCIP index with a CKB built from the commit under test (046f946 here).
 2. Write only the file(s) defining the changed symbol from the commit.
-3. Run `ckb changes --format json`. Predicted = files of `affectedSymbols`.
+3. Run `ckb changes --format json`. Predicted = files of `affectedSymbols`, and for
+   binaries that have it also the lists in `consumerFiles`.
 4. Run `git grep -l -w <symbol>` at the parent. Same filter, same metrics.
 
 Scored against three kinds of truth. Non-test and test files are scored separately,
-because the CLI leaves test references out of `affectedSymbols` by default.
+because the CLI leaves test references out of `affectedSymbols` and puts them in
+`affectedTests`.
 
 | Truth | What it is | Weakness |
 |---|---|---|
@@ -52,6 +97,22 @@ The plan was recall against the commit's other files, with a rule on declaration
   cap from the analysis.
 - **The rule asks for a mention on a changed line,** which is stricter than "references
   the name and changed", so a caller really was updated.
+
+### Changes since the first measurement
+
+Same sample, same rule, same commands: the regenerated private samples came out in the
+same order, from the same heads. What changed is what gets scored.
+
+- **`ckb` still means the files of `affectedSymbols`,** so it compares directly with the
+  first run in `results/ckb-b550825.jsonl`. The CLI moved tests out of that list, which is
+  part of why TS precision there rose from 35% to 40%: non-test files fill the budget.
+- **New rows, same scoring:** `ckb_files` (`consumerFiles.direct` and `.transitive`),
+  `ckb_files_direct`, and `ckb_contract` (`consumerFiles.contractChanged`: direct users,
+  outside the change, of a symbol whose declaration changed or went away).
+- **The report classifies direct files against the compiler:** broke, uses the target but
+  didn't break, or only uses another symbol in the applied file.
+- **Test files count `affectedTests` as before.** A test named after the changed file is
+  now labelled `naming-convention`; `ckb_seen_using` leaves those out.
 
 ## Sample rule
 
@@ -81,59 +142,72 @@ qualify, so this is all of them, not a sample.** All 8 were measured.
 
 ## Results
 
+This repo only. The TS and Rust numbers are in the first table above.
+
 Attempted 8, measured 8; status counts: {'ok': 8}.
-Target symbol named in changedSymbols: 8/8 (named but zero consumers predicted: 0; flagged as possible contract change: 5). CKB found fewer truth files than grep in 0 commits, more in 3. affectedSymbols cut by the item cap in 1 commits, which hid 1 truth files in 1 commits and 1 compiler-broken files in 1.
+Target symbol named in changedSymbols: 8/8 (named but zero consumers predicted: 0; flagged as possible contract change: 8). CKB found fewer truth files than grep in 0 commits, more in 3. affectedSymbols cut by the item cap in 1 commits, which hid 1 truth files in 1 commits and 0 compiler-broken files in 0.
 
 ### Truth = all other non-test source files modified in the commit
 
 | Tool | n | recall (mean) | recall (pooled) | precision (mean) | precision (pooled) | hit/truth | predicted files | empty | full recall | zero recall |
 |---|---|---|---|---|---|---|---|---|---|---|
 | ckb | 8 | 59% | 46% | 59% | 45% | 13/28 | 29 | 0 | 2 | 0 |
-| ckb_direct_only | 8 | 47% | 32% | 86% | 69% | 9/28 | 13 | 0 | 2 | 0 |
+| ckb_direct_only | 8 | 47% | 32% | 80% | 64% | 9/28 | 14 | 0 | 2 | 0 |
 | ckb_uncapped | 8 | 65% | 50% | 61% | 47% | 14/28 | 30 | 0 | 3 | 0 |
 | grep | 8 | 47% | 32% | 90% | 82% | 9/28 | 11 | 0 | 2 | 0 |
+| ckb_files | 8 | 65% | 50% | 61% | 47% | 14/28 | 30 | 0 | 3 | 0 |
+| ckb_files_direct | 8 | 53% | 36% | 82% | 67% | 10/28 | 15 | 0 | 3 | 0 |
+| ckb_contract | 8 | 47% | 32% | 96% | 90% | 9/28 | 10 | 0 | 2 | 0 |
 
 ### Truth = those whose changed lines mention the symbol
 
 | Tool | n | recall (mean) | recall (pooled) | precision (mean) | precision (pooled) | hit/truth | predicted files | empty | full recall | zero recall |
 |---|---|---|---|---|---|---|---|---|---|---|
 | ckb | 8 | 100% | 100% | 40% | 28% | 8/8 | 29 | 0 | 8 | 0 |
-| ckb_direct_only | 8 | 100% | 100% | 82% | 62% | 8/8 | 13 | 0 | 8 | 0 |
+| ckb_direct_only | 8 | 100% | 100% | 76% | 57% | 8/8 | 14 | 0 | 8 | 0 |
 | ckb_uncapped | 8 | 100% | 100% | 40% | 27% | 8/8 | 30 | 0 | 8 | 0 |
 | grep | 8 | 100% | 100% | 85% | 73% | 8/8 | 11 | 0 | 8 | 0 |
+| ckb_files | 8 | 100% | 100% | 40% | 27% | 8/8 | 30 | 0 | 8 | 0 |
+| ckb_files_direct | 8 | 100% | 100% | 75% | 53% | 8/8 | 15 | 0 | 8 | 0 |
+| ckb_contract | 8 | 100% | 100% | 92% | 80% | 8/8 | 10 | 0 | 8 | 0 |
 
 ### Truth = files the compiler says broke (8 commits checked, 0 with no breakage)
 
 | Tool | n | recall (mean) | recall (pooled) | precision (mean) | precision (pooled) | hit/truth | predicted files | zero recall |
 |---|---|---|---|---|---|---|---|---|
 | ckb | 8 | 100% | 100% | 42% | 31% | 9/9 | 29 | 0 |
-| ckb_direct_only | 8 | 100% | 100% | 86% | 69% | 9/9 | 13 | 0 |
+| ckb_direct_only | 8 | 100% | 100% | 80% | 64% | 9/9 | 14 | 0 |
 | ckb_uncapped | 8 | 100% | 100% | 41% | 30% | 9/9 | 30 | 0 |
 | grep | 8 | 100% | 100% | 90% | 82% | 9/9 | 11 | 0 |
-| test files: ckb | 2 | 50% | 50% | 50% | 50% | 1/2 | 2 | 1 |
+| ckb_files | 8 | 100% | 100% | 41% | 30% | 9/9 | 30 | 0 |
+| ckb_files_direct | 8 | 100% | 100% | 80% | 60% | 9/9 | 15 | 0 |
+| ckb_contract | 8 | 100% | 100% | 96% | 90% | 9/9 | 10 | 0 |
+| test files: ckb | 2 | 100% | 100% | 75% | 67% | 2/2 | 3 | 0 |
 | test files: grep | 2 | 100% | 100% | 100% | 100% | 2/2 | 2 | 0 |
+| test files: ckb_contract | 2 | 100% | 100% | 100% | 100% | 2/2 | 2 | 0 |
+
+Direct files against the compiler (of commits checked): 9 broke, 1 use the target but didn't break, 4 only use another symbol in the applied file.
 
 Compiler-broken files missed by CKB, by class (test files included):
 
 | Class | commits | files |
 |---|---|---|
-| item-cap | 1 | 1 |
 
 ### Test files edited in the commit and mentioning the symbol (2 commits)
 
 | Tool | recall (mean) | hit/truth | predicted test files |
 |---|---|---|---|
-| ckb | 50% | 1/2 | 2 |
+| ckb | 100% | 2/2 | 3 |
 | grep | 100% | 2/2 | 2 |
+| ckb_seen_using | 100% | 2/2 | 3 |
 
-Of 1 missed, 1 are references the index has (`ckb refs --include-tests`).
+Of 0 missed, 0 are references the index has (`ckb refs --include-tests`).
 
 ### Risk level against what the commit had to touch
 
 | Risk | commits | median truth files | median mentioning files | median compile-broken files | max | commits with none broken |
 |---|---|---|---|---|---|---|
-| low | 7 | 3 | 1 | 1 | 2 | 0 |
-| medium | 1 | 2 | 1 | 2 | 2 | 0 |
+| high | 8 | 3.0 | 1.0 | 1.0 | 2 | 0 |
 
 ### Why truth files were missed (default output)
 
@@ -143,54 +217,53 @@ Of 1 missed, 1 are references the index has (`ckb refs --include-tests`).
 
 ### Per commit
 
-Columns after the symbol: truth is all other non-test source files modified; hit/pred is truth files found over files predicted; "broken" is non-test files the compiler says broke.
+Columns after the symbol: Declaration is what `ckb changes` says happened to the target; truth is all other non-test source files modified; hit/pred is truth files found over files predicted; "broken" is non-test files the compiler says broke.
 
-| Commit | Symbol | Status | Named | Risk | truth | CKB hit/pred | uncapped hit/pred | grep hit/pred | mention truth | CKB hit | grep hit | broken | CKB hit | grep hit | broken tests | CKB hit | grep hit | Miss classes |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| c87117060 | `SuppressEdge` | ok | yes | low | 3 | 1/3 | 1/3 | 1/1 | 1 | 1 | 1 | 1 | 1 | 1 | 0 | 0 | 0 | coedit-no-mention 2 |
-| 42ee47555 | `NewServer` | ok | yes | medium | 2 | 1/4 | 2/5 | 1/2 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 0 | 1 | coedit-no-mention 1 |
-| 73fe60256 | `getPrepareExtractDetail` | ok | yes | low | 4 | 3/3 | 3/3 | 1/1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | coedit-no-mention 1 |
-| 9bf57e14d | `NewSCIPExtractor` | ok | yes | low | 3 | 2/2 | 2/2 | 1/1 | 1 | 1 | 1 | 1 | 1 | 1 | 0 | 0 | 0 | coedit-no-mention 1 |
-| e90ac683a | `populateIncrementalTracking` | ok | yes | low | 1 | 1/2 | 1/2 | 1/1 | 1 | 1 | 1 | 1 | 1 | 1 | 0 | 0 | 0 | - |
-| 22b3a8e80 | `checkCouplingGaps` | ok | yes | low | 6 | 2/5 | 2/5 | 1/1 | 1 | 1 | 1 | 1 | 1 | 1 | 0 | 0 | 0 | coedit-no-mention 4 |
-| c3929ab7c | `QueryBlastRadiusBatch` | ok | yes | low | 2 | 2/9 | 2/9 | 2/3 | 1 | 1 | 1 | 2 | 2 | 2 | 0 | 0 | 0 | - |
-| 0fec67c43 | `CORSMiddleware` | ok | yes | low | 7 | 1/1 | 1/1 | 1/1 | 1 | 1 | 1 | 1 | 1 | 1 | 0 | 0 | 0 | coedit-no-mention 6 |
+| Commit | Symbol | Status | Named | Declaration | Risk | truth | CKB hit/pred | uncapped hit/pred | grep hit/pred | mention truth | CKB hit | grep hit | broken | CKB hit | direct hit/pred | contract hit/pred | grep hit/pred | broken tests | CKB hit | grep hit | Miss classes |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| c87117060 | `SuppressEdge` | ok | yes | changed | high | 3 | 1/3 | 1/3 | 1/1 | 1 | 1 | 1 | 1 | 1 | 1/1 | 1/1 | 1/1 | 0 | 0 | 0 | coedit-no-mention 2 |
+| 42ee47555 | `NewServer` | ok | yes | changed | high | 2 | 1/4 | 2/5 | 1/2 | 1 | 1 | 1 | 1 | 1 | 1/4 | 1/1 | 1/2 | 1 | 1 | 1 | coedit-no-mention 1 |
+| 73fe60256 | `getPrepareExtractDetail` | ok | yes | changed | high | 4 | 3/3 | 3/3 | 1/1 | 1 | 1 | 1 | 1 | 1 | 1/1 | 1/1 | 1/1 | 1 | 1 | 1 | coedit-no-mention 1 |
+| 9bf57e14d | `NewSCIPExtractor` | ok | yes | changed | high | 3 | 2/2 | 2/2 | 1/1 | 1 | 1 | 1 | 1 | 1 | 1/1 | 1/1 | 1/1 | 0 | 0 | 0 | coedit-no-mention 1 |
+| e90ac683a | `populateIncrementalTracking` | ok | yes | changed | high | 1 | 1/2 | 1/2 | 1/1 | 1 | 1 | 1 | 1 | 1 | 1/2 | 1/1 | 1/1 | 0 | 0 | 0 | - |
+| 22b3a8e80 | `checkCouplingGaps` | ok | yes | changed | high | 6 | 2/5 | 2/5 | 1/1 | 1 | 1 | 1 | 1 | 1 | 1/1 | 1/1 | 1/1 | 0 | 0 | 0 | coedit-no-mention 4 |
+| c3929ab7c | `QueryBlastRadiusBatch` | ok | yes | changed | high | 2 | 2/9 | 2/9 | 2/3 | 1 | 1 | 1 | 2 | 2 | 2/3 | 2/3 | 2/3 | 0 | 0 | 0 | - |
+| 0fec67c43 | `CORSMiddleware` | ok | yes | changed | high | 7 | 1/1 | 1/1 | 1/1 | 1 | 1 | 1 | 1 | 1 | 1/1 | 1/1 | 1/1 | 0 | 0 | 0 | coedit-no-mention 6 |
 
 ## Findings
 
-Certainty is from reading the code and the per-commit output.
+Certainty is from reading the code and the per-commit output. Each first says what the
+first measurement found, then what it is now.
 
-**Test files are missing from the default output (certain).** `cmd/ckb/changes.go:61`
-passes no `IncludeTests` and the command has no flag for it, so
-`internal/query/impact.go:349` drops every test reference. The MCP tool defaults to the
-same (`internal/mcp/tools.go:414`). `affectedTests` then only sees test files reached
-transitively or matched by name. In `42ee47555`, `internal/api/api_test.go` calls
-`NewServer` directly and breaks. `ckb refs --include-tests` lists it; `ckb changes`
-doesn't. Grep finds it. Explains 1 commit here.
+**Test files were missing from the default output (certain; fixed).**
+`AnalyzeImpact` dropped test references unless asked, which explained 4 commits across the
+languages. They are now always looked up and reported in `affectedTests`, and kept out of
+the production lists, counts and risk.
 
-**The 20-item cap hides results, and the CLI doesn't say so (certain).** The cap is
-`budget.maxImpactItems` (`internal/config/config.go:438`), applied per symbol
-(`internal/query/impact.go:405`) and again for the whole change (`:1440`).
-`ChangeSetResponseCLI` (`cmd/ckb/impact.go:538`) has no truncation field, so only
-`summary` versus the list length gives it away. It cut 1 of 8 commits here (36 items to
-20), hiding one file edited in that commit and, in the lifted run, the broken test file
-above. Lifting the cap alone would only reach that test file through a transitive caller;
-the direct reference is still dropped by the finding above.
+**The 20-item cap hid results without saying so (certain; fixed for files).** It applied
+per symbol and again per change. `consumerFiles` now lists every file, up to 300 paths, and
+says if it was cut or the lookup stopped short. The CLI reports `truncated`. The transitive
+walk is still bounded at 100 symbols per changed symbol, which sets `truncated`.
 
-**Risk doesn't track breakage (certain for the cause, n=8 for the effect).**
-`calculateAggregatedRisk` (`internal/query/impact.go:1799`) scores counts of symbols,
-consumers and modules. It never asks whether a signature changed, so a compile-breaking
-change with one caller scores `low`. That reading of risk as blast radius is defensible,
-but `low` next to a broken build is what an agent will act on.
+**Consumers vanished into a blank ID (certain; fixed).** rust-analyzer gives a `let`
+statement's local an enclosing range, so a call assigned to a local had "local 12" as its
+container, which the adapter blanks. Top-level uses and imports have no container at all.
+All of them then deduped on `""` across the change, leaving one. That is why Rust found 0/1
+directly before, and 1/1 now.
 
-**No output says a signature changed (certain).** `contracts` is a visibility heuristic
-(`internal/query/impact.go:2178`): it flagged 5 of 8 here, and the other 3 are unexported
-functions, whose callers broke just the same. The call site is never named as broken;
-the agent gets a list of consumers to judge.
+**Risk didn't track breakage (certain for the cause; partly fixed).** It now compares each
+changed symbol's old and new declaration as text, in Go, TS and Rust. Changed or removed
+with production consumers outside the diff is at least `high`, exported without any at
+least `medium`, a compatible change or a body edit gets no floor. It is a labelled
+heuristic: nothing is compiled. See the first section for what it does and doesn't separate.
 
-**Precision is mostly transitive callers (certain).** The list mixes direct and
-transitive consumers, and a signature change only breaks direct ones: 69% direct against
-31% overall. `distance` is in the output, so an agent can filter, if it knows to.
+**Direct precision is not mostly a defect (certain for these commits).** Against the
+compiler, this repo's direct files are 9 broke, 1 uses the target without breaking, 4 only
+use another symbol in the applied file. On TS it is 6, 16 and 3, on Rust 1, 2 and 3. These
+are real consumers: the harness applies a whole file, and many declaration changes don't
+break callers. Fixing the blank IDs made this number slightly worse on Go (69% to 64%)
+because more real consumers are now found. Telling them apart is what `contractChanged`
+is for.
 
 ## What this can't tell us
 
@@ -202,7 +275,11 @@ transitive consumers, and a signature change only breaks direct ones: 69% direct
   through an interface is not exercised.
 - Behaviour changes with an unchanged signature. A compiler sees none of that.
 - Whether agents read or act on the output.
-- Generality. One repo, one author, 8 commits; all history from a repo CKB was developed
-  in.
+- Generality. Three repos, one author, 26 commits. n is 8, 5 and 1 for the commits that
+  broke a non-test file, and this repo's history is one CKB was developed in.
+- Rust inline test modules (`#[cfg(test)] mod tests`): they sit in production files, so
+  they count as production consumers.
+- A function moved to another file reads as removed. In the same Go package that breaks
+  nobody, and it still scores `high` if it has consumers.
 
-The tool also ran on private repos. Those results aren't published here.
+The TS and Rust rows are from two private repos, as aggregates only.
