@@ -138,6 +138,11 @@ func TestGetSymbol_RawIDFromAnyIndexer(t *testing.T) {
 		defer cleanup()
 
 		index := engine.scipAdapter.GetIndex()
+		// Loading builds the caller index in the background, reading Documents, which
+		// this test is about to write. Asking for callers waits for it.
+		if _, err := index.FindCallers("none"); err != nil {
+			t.Fatal(err)
+		}
 		for _, id := range []string{
 			"rust-analyzer cargo demo 0.1.0 util/helper().",
 			"semanticdb maven maven/com.example/demo 1.0 com/example/Main#run().",
