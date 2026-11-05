@@ -115,7 +115,7 @@ func TestFindCallers(t *testing.T) {
 			break
 		}
 		for _, sym := range doc.Symbols {
-			if mapSCIPKind(sym.Kind) == KindFunction {
+			if MapSCIPKind(sym.Kind) == KindFunction {
 				for _, occ := range doc.Occurrences {
 					if occ.Symbol == sym.Symbol && occ.SymbolRoles&SymbolRoleDefinition != 0 {
 						t.Logf("Function %s: range=%v, enclosing=%v",
@@ -140,7 +140,7 @@ func TestFindCallers(t *testing.T) {
 			}
 			// Also show symbol kinds and raw data
 			for _, sym := range doc.Symbols {
-				kind := mapSCIPKind(sym.Kind)
+				kind := MapSCIPKind(sym.Kind)
 				t.Logf("  Symbol %s: rawKind=%d mapped=%s displayName=%q",
 					sym.Symbol, sym.Kind, kind, sym.DisplayName)
 			}
@@ -262,49 +262,35 @@ func TestMapSCIPKind(t *testing.T) {
 		kind     int32
 		expected SymbolKind
 	}{
-		{0, KindUnknown},    // Default case
-		{1, KindUnknown},    // UnspecifiedSymbol
-		{2, KindUnknown},    // Comment
-		{3, KindPackage},    // Package
-		{4, KindModule},     // PackageObject
-		{5, KindClass},      // Class
-		{6, KindClass},      // Object
-		{7, KindInterface},  // Trait
-		{8, KindMethod},     // TraitMethod
-		{9, KindMethod},     // Method
-		{10, KindFunction},  // Macro
-		{11, KindType},      // Type
-		{12, KindParameter}, // Parameter
-		{13, KindParameter}, // SelfParameter
-		{14, KindType},      // TypeParameter
-		{15, KindVariable},  // Local
-		{16, KindField},     // Field
-		{17, KindInterface}, // Interface
-		{18, KindFunction},  // Function
-		{19, KindVariable},  // Variable
-		{20, KindConstant},  // Constant
-		{21, KindConstant},  // String
-		{22, KindConstant},  // Number
-		{23, KindConstant},  // Boolean
-		{24, KindVariable},  // Array
-		{25, KindNamespace}, // Namespace
-		{26, KindConstant},  // Null
-		{27, KindProperty},  // Property
-		{28, KindEnum},      // Enum
-		{29, KindConstant},  // EnumMember
-		{30, KindClass},     // Struct
-		{31, KindFunction},  // Event
-		{32, KindFunction},  // Operator
-		{33, KindMethod},    // Constructor
-		{34, KindMethod},    // Destructor
-		{99, KindUnknown},   // Unknown kind
+		{0, KindUnknown},    // UnspecifiedKind
+		{17, KindFunction},  // Function
+		{26, KindMethod},    // Method
+		{66, KindMethod},    // AbstractMethod
+		{80, KindMethod},    // StaticMethod
+		{9, KindMethod},     // Constructor
+		{7, KindClass},      // Class
+		{49, KindClass},     // Struct
+		{21, KindInterface}, // Interface
+		{53, KindInterface}, // Trait
+		{11, KindEnum},      // Enum
+		{54, KindType},      // Type
+		{55, KindType},      // TypeAlias
+		{15, KindField},     // Field
+		{41, KindProperty},  // Property
+		{61, KindVariable},  // Variable
+		{8, KindConstant},   // Constant
+		{37, KindParameter}, // Parameter
+		{35, KindPackage},   // Package
+		{29, KindModule},    // Module
+		{30, KindNamespace}, // Namespace
+		{9999, KindUnknown}, // Unknown kind
 	}
 
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("kind_%d", tt.kind), func(t *testing.T) {
-			result := mapSCIPKind(tt.kind)
+			result := MapSCIPKind(tt.kind)
 			if result != tt.expected {
-				t.Errorf("mapSCIPKind(%d) = %s, want %s", tt.kind, result, tt.expected)
+				t.Errorf("MapSCIPKind(%d) = %s, want %s", tt.kind, result, tt.expected)
 			}
 		})
 	}

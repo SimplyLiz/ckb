@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	bindingscip "github.com/sourcegraph/scip/bindings/go/scip"
+
+	scippb "github.com/sourcegraph/scip/bindings/go/scip"
 )
 
 // DefaultMaxFunctionLines is the default maximum function length (in lines) used
@@ -121,7 +123,7 @@ func (idx *SCIPIndex) FindCallees(symbolId string) ([]*CallGraphNode, error) {
 
 			kind := KindFunction
 			if symInfo := idx.GetSymbol(occ.Symbol); symInfo != nil {
-				if k := mapSCIPKind(symInfo.Kind); k != KindUnknown {
+				if k := MapSCIPKind(symInfo.Kind); k != KindUnknown {
 					kind = k
 				}
 			}
@@ -157,7 +159,7 @@ func (idx *SCIPIndex) FindCallers(symbolId string) ([]*CallGraphNode, error) {
 		symInfo := idx.GetSymbol(callerID)
 		kind := KindFunction
 		if symInfo != nil {
-			if k := mapSCIPKind(symInfo.Kind); k != KindUnknown {
+			if k := MapSCIPKind(symInfo.Kind); k != KindUnknown {
 				kind = k
 			}
 		}
@@ -489,7 +491,7 @@ func (idx *SCIPIndex) BuildCallGraph(symbolId string, opts CallGraphOptions) (*C
 	rootLocation := findSymbolLocation(symbolId, idx)
 	rootKind := KindFunction
 	if rootInfo != nil {
-		rootKind = mapSCIPKind(rootInfo.Kind)
+		rootKind = MapSCIPKind(rootInfo.Kind)
 	}
 
 	graph.Root = &CallGraphNode{
@@ -644,78 +646,42 @@ func (idx *SCIPIndex) GetReferenceCount(symbolId string) int {
 	return len(refs)
 }
 
-// mapSCIPKind maps SCIP kind codes to SymbolKind
-func mapSCIPKind(kind int32) SymbolKind {
-	// SCIP SymbolInformation.Kind values
-	switch kind {
-	case 1: // UnspecifiedSymbol
-		return KindUnknown
-	case 2: // Comment
-		return KindUnknown
-	case 3: // Package
-		return KindPackage
-	case 4: // PackageObject
-		return KindModule
-	case 5: // Class
-		return KindClass
-	case 6: // Object
-		return KindClass
-	case 7: // Trait
-		return KindInterface
-	case 8: // TraitMethod
-		return KindMethod
-	case 9: // Method
-		return KindMethod
-	case 10: // Macro
+// MapSCIPKind maps a SCIP SymbolInformation.Kind to a SymbolKind, using the
+// protocol's own enum: its numbers are not contiguous or in any obvious order.
+func MapSCIPKind(kind int32) SymbolKind {
+	switch scippb.SymbolInformation_Kind(kind) {
+	case scippb.SymbolInformation_Function, scippb.SymbolInformation_Macro, scippb.SymbolInformation_Operator, scippb.SymbolInformation_Event:
 		return KindFunction
-	case 11: // Type
-		return KindType
-	case 12: // Parameter
-		return KindParameter
-	case 13: // SelfParameter
-		return KindParameter
-	case 14: // TypeParameter
-		return KindType
-	case 15: // Local
-		return KindVariable
-	case 16: // Field
-		return KindField
-	case 17: // Interface
+	case scippb.SymbolInformation_Method, scippb.SymbolInformation_AbstractMethod, scippb.SymbolInformation_StaticMethod,
+		scippb.SymbolInformation_TraitMethod, scippb.SymbolInformation_TypeClassMethod, scippb.SymbolInformation_ProtocolMethod,
+		scippb.SymbolInformation_PureVirtualMethod, scippb.SymbolInformation_SingletonMethod,
+		scippb.SymbolInformation_MethodSpecification, scippb.SymbolInformation_Constructor, scippb.SymbolInformation_Accessor,
+		scippb.SymbolInformation_Getter, scippb.SymbolInformation_Setter:
+		return KindMethod
+	case scippb.SymbolInformation_Class, scippb.SymbolInformation_Struct, scippb.SymbolInformation_Object, scippb.SymbolInformation_SingletonClass:
+		return KindClass
+	case scippb.SymbolInformation_Interface, scippb.SymbolInformation_Trait, scippb.SymbolInformation_Protocol, scippb.SymbolInformation_TypeClass:
 		return KindInterface
-	case 18: // Function
-		return KindFunction
-	case 19: // Variable
-		return KindVariable
-	case 20: // Constant
-		return KindConstant
-	case 21: // String
-		return KindConstant
-	case 22: // Number
-		return KindConstant
-	case 23: // Boolean
-		return KindConstant
-	case 24: // Array
-		return KindVariable
-	case 25: // Namespace
-		return KindNamespace
-	case 26: // Null
-		return KindConstant
-	case 27: // Property
-		return KindProperty
-	case 28: // Enum
+	case scippb.SymbolInformation_Enum:
 		return KindEnum
-	case 29: // EnumMember
+	case scippb.SymbolInformation_Type, scippb.SymbolInformation_TypeAlias, scippb.SymbolInformation_TypeParameter, scippb.SymbolInformation_AssociatedType, scippb.SymbolInformation_TypeFamily:
+		return KindType
+	case scippb.SymbolInformation_Property, scippb.SymbolInformation_StaticProperty:
+		return KindProperty
+	case scippb.SymbolInformation_Field, scippb.SymbolInformation_StaticField, scippb.SymbolInformation_EnumMember, scippb.SymbolInformation_Key:
+		return KindField
+	case scippb.SymbolInformation_Variable, scippb.SymbolInformation_StaticVariable, scippb.SymbolInformation_Value:
+		return KindVariable
+	case scippb.SymbolInformation_Constant:
 		return KindConstant
-	case 30: // Struct
-		return KindClass
-	case 31: // Event
-		return KindFunction
-	case 32: // Operator
-		return KindFunction
-	case 33: // Constructor
-		return KindMethod
-	case 34: // Destructor
-		return KindMethod
+	case scippb.SymbolInformation_Parameter, scippb.SymbolInformation_SelfParameter, scippb.SymbolInformation_ThisParameter:
+		return KindParameter
+	case scippb.SymbolInformation_Package, scippb.SymbolInformation_PackageObject:
+		return KindPackage
+	case scippb.SymbolInformation_Module:
+		return KindModule
+	case scippb.SymbolInformation_Namespace:
+		return KindNamespace
 	default:
 		return KindUnknown
 	}

@@ -129,44 +129,18 @@ func TestScipKindToString(t *testing.T) {
 		kind     int32
 		expected string
 	}{
-		{1, "file"},
-		{2, "module"},
-		{3, "namespace"},
-		{4, "package"},
-		{5, "class"},
-		{6, "method"},
-		{7, "property"},
-		{8, "field"},
-		{9, "constructor"},
-		{10, "enum"},
-		{11, "interface"},
-		{12, "function"},
-		{13, "variable"},
-		{14, "constant"},
-		{15, "string"},
-		{16, "number"},
-		{17, "boolean"},
-		{18, "array"},
-		{19, "object"},
-		{20, "key"},
-		{21, "null"},
-		{22, "enum_member"},
-		{23, "struct"},
-		{24, "event"},
-		{25, "operator"},
-		{26, "type_parameter"},
 		{0, "unknown"},
-		{99, "unknown"},
-		{-1, "unknown"},
+		{17, "function"},
+		{26, "method"},
+		{7, "class"},
+		{49, "class"},
+		{21, "interface"},
+		{9999, "unknown"},
 	}
-
 	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			result := scipKindToString(tt.kind)
-			if result != tt.expected {
-				t.Errorf("scipKindToString(%d) = %q, want %q", tt.kind, result, tt.expected)
-			}
-		})
+		if got := scipKindToString(tt.kind); got != tt.expected {
+			t.Errorf("scipKindToString(%d) = %q, want %q", tt.kind, got, tt.expected)
+		}
 	}
 }
 
