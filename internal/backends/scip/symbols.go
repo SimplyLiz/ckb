@@ -292,7 +292,12 @@ func inferVisibility(symInfo *SymbolInformation, scipId *SCIPIdentifier, name st
 	language := scipId.GetLanguage()
 	switch language {
 	case "go":
-		// In Go, uppercase first letter means exported
+		// In Go, uppercase first letter means exported, but a member of an
+		// unexported type (engine#Build) is not reachable by name outside the
+		// package, so it is not part of the public API either.
+		if container := scipId.GetContainerName(); container != "" && !(container[0] >= 'A' && container[0] <= 'Z') {
+			return "private"
+		}
 		if len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z' {
 			return "public"
 		}

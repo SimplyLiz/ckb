@@ -236,3 +236,22 @@ func TestGetSimpleName_LegacyFallback(t *testing.T) {
 		t.Errorf("GetSimpleName() = %q, want %q", got, "Engine#Close")
 	}
 }
+
+// An exported method name on an unexported Go type (engine#Build) is not
+// public API: it must not trigger the "Public API change" risk factor.
+func TestInferVisibility_GoExportedMethodOnUnexportedType(t *testing.T) {
+	cases := map[string]string{
+		"scip-go gomod demo v0 `demo/pkg`/engine#Build().": "private",
+		"scip-go gomod demo v0 `demo/pkg`/Engine#Build().": "public",
+		"scip-go gomod demo v0 `demo/pkg`/Build().":        "public",
+	}
+	for sym, want := range cases {
+		id, err := ParseSCIPIdentifier(sym)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := inferVisibility(&SymbolInformation{}, id, id.GetSimpleName()); got != want {
+			t.Errorf("%s: visibility = %q, want %q", sym, got, want)
+		}
+	}
+}
