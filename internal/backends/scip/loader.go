@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -200,6 +201,12 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 			defer wg.Done()
 			for msg := range jobs {
 				pbDoc := msg.doc
+				// Indexers also record generated files outside the project, such
+				// as scip-go's test mains in the Go build cache. They are not this
+				// repo's code, and their paths would leak into every answer.
+				if pbDoc.RelativePath == ".." || strings.HasPrefix(pbDoc.RelativePath, "../") {
+					continue
+				}
 				doc := convertDocument(pbDoc)
 
 				r := docResult{

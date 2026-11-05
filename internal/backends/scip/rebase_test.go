@@ -90,3 +90,27 @@ func TestRebaseDocumentPaths_CorruptIndexLeavesFileAlone(t *testing.T) {
 		t.Errorf("temp file left behind: %v", entries)
 	}
 }
+
+func TestLoadSCIPIndex_SkipsDocumentsOutsideTheProject(t *testing.T) {
+	data, err := proto.Marshal(&scippb.Index{
+		Metadata: &scippb.Metadata{ProjectRoot: "file:///repo"},
+		Documents: []*scippb.Document{
+			{RelativePath: "a.go"},
+			{RelativePath: "../../Library/Caches/go-build/03/testmain.go"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "index.scip")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := LoadSCIPIndex(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.Documents) != 1 || idx.Documents[0].RelativePath != "a.go" {
+		t.Errorf("documents = %d, want only a.go", len(idx.Documents))
+	}
+}
