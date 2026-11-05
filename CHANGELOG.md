@@ -4,7 +4,7 @@ All notable changes to CKB will be documented in this file.
 
 ## [Unreleased]
 
-## [9.4.0] - 2026-11-05
+## [9.4.0] - 2026-11-06
 
 ### Fixed — first contact with a repo
 
