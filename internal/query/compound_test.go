@@ -775,3 +775,23 @@ func (e *Engine) Search(query string) []string {
 		t.Error("expected risk assessment in workflow")
 	}
 }
+
+func TestSummarizeTransitive_CountsDirectAndTransitiveModules(t *testing.T) {
+	resp := &AnalyzeImpactResponse{
+		DirectImpact: []ImpactItem{
+			{ModuleId: "a", Distance: 1}, {ModuleId: "b", Distance: 1}, {ModuleId: "a", Distance: 1},
+		},
+		TransitiveImpact: []ImpactItem{{ModuleId: "c", Distance: 2}, {Distance: 2}},
+	}
+	got := summarizeTransitive(resp)
+	if got.ModuleSpread != 3 {
+		t.Errorf("ModuleSpread = %d, want 3 (a, b, c)", got.ModuleSpread)
+	}
+	if got.TotalCallers != 5 || got.MaxDepth != 2 {
+		t.Errorf("got %+v", got)
+	}
+	// depth-1 only: previously 0
+	if got := summarizeTransitive(&AnalyzeImpactResponse{DirectImpact: resp.DirectImpact}); got.ModuleSpread != 2 {
+		t.Errorf("direct-only spread = %d, want 2", got.ModuleSpread)
+	}
+}

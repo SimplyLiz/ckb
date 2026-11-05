@@ -112,12 +112,45 @@ func TestParseSCIPIdentifier_DescriptorAware(t *testing.T) {
 			wantKind:      KindMethod,
 			wantContainer: "Response",
 		},
+		// The rust cases below are verbatim symbols from a real
+		// `rust-analyzer scip` run over a crate with `struct Foo`,
+		// `impl Foo { fn bar, fn new }`, `trait Greet` and
+		// `impl Greet for Foo { fn hi }`. rust-analyzer does not emit
+		// "Foo#bar()." for impl members; it emits "impl#[Foo]bar().".
 		{
-			name:          "rust: method on a struct via a nested module path",
-			symbol:        "scip-rust cargo tokio 1.0.0 tokio/runtime/Runtime#block_on().",
-			wantName:      "block_on",
+			name:          "rust-analyzer: inherent impl method",
+			symbol:        "rust-analyzer cargo demo 0.1.0 impl#[Foo]bar().",
+			wantName:      "bar",
 			wantKind:      KindMethod,
-			wantContainer: "Runtime",
+			wantContainer: "Foo",
+		},
+		{
+			name:          "rust-analyzer: inherent impl associated fn",
+			symbol:        "rust-analyzer cargo demo 0.1.0 impl#[Foo]new().",
+			wantName:      "new",
+			wantKind:      KindMethod,
+			wantContainer: "Foo",
+		},
+		{
+			name:          "rust-analyzer: trait impl method (self type, then trait)",
+			symbol:        "rust-analyzer cargo demo 0.1.0 impl#[Foo][Greet]hi().",
+			wantName:      "hi",
+			wantKind:      KindMethod,
+			wantContainer: "Foo",
+		},
+		{
+			name:          "rust-analyzer: trait declaration method",
+			symbol:        "rust-analyzer cargo demo 0.1.0 Greet#hi().",
+			wantName:      "hi",
+			wantKind:      KindMethod,
+			wantContainer: "Greet",
+		},
+		{
+			name:          "rust-analyzer: free function",
+			symbol:        "rust-analyzer cargo demo 0.1.0 free().",
+			wantName:      "free",
+			wantKind:      KindFunction,
+			wantContainer: "",
 		},
 	}
 
@@ -201,5 +234,73 @@ func TestGetSimpleName_LegacyFallback(t *testing.T) {
 	// real index data always carries a package version.
 	if got := id.GetSimpleName(); got != "Engine#Close" {
 		t.Errorf("GetSimpleName() = %q, want %q", got, "Engine#Close")
+	}
+}
+
+// An exported method name on an unexported Go type (engine#Build) is not
+// public API: it must not trigger the "Public API change" risk factor.
+func TestInferVisibility_GoExportedMethodOnUnexportedType(t *testing.T) {
+	cases := map[string]string{
+		"scip-go gomod demo v0 `demo/pkg`/engine#Build().": "private",
+		"scip-go gomod demo v0 `demo/pkg`/Engine#Build().": "public",
+		"scip-go gomod demo v0 `demo/pkg`/Build().":        "public",
+	}
+	for sym, want := range cases {
+		id, err := ParseSCIPIdentifier(sym)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := inferVisibility(&SymbolInformation{}, id, id.GetSimpleName()); got != want {
+			t.Errorf("%s: visibility = %q, want %q", sym, got, want)
+		}
+	}
+}
+
+// scip-python emits one "<module>/__init__:" symbol per module for top-level
+// statements. It is a Meta descriptor, which used to read as a type and so
+// passed the namespace guard that keeps file-scope pseudo-symbols out of
+// caller lists. (Symbol shapes follow scip-python's output format.)
+func TestModuleScopeSymbols(t *testing.T) {
+	scope := []string{
+		"scip-python python myapp 0.1.0 `app.main`/__init__:",
+		"scip-python python myapp 0.1.0 `app`/__init__:",
+		"scip-typescript npm fixture 1.0.0 src/`handler.ts`/",
+	}
+	for _, s := range scope {
+		id, err := ParseSCIPIdentifier(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if k := id.ExtractSymbolKind(); k != KindNamespace {
+			t.Errorf("%s: kind = %q, want namespace", s, k)
+		}
+		if !IsModuleScopeSymbol(s) {
+			t.Errorf("%s should be module scope", s)
+		}
+	}
+	for _, s := range []string{
+		"scip-python python myapp 0.1.0 `app.main`/handler().",
+		"scip-python python myapp 0.1.0 `app.main`/Server#serve().",
+		"scip-python python myapp 0.1.0 `app.main`/Server#",
+		"local 3",
+	} {
+		if IsModuleScopeSymbol(s) {
+			t.Errorf("%s must not be module scope", s)
+		}
+	}
+}
+
+func TestFindCallers_SkipsModuleScope(t *testing.T) {
+	const callee = "scip-python python myapp 0.1.0 `app.util`/helper()."
+	const fn = "scip-python python myapp 0.1.0 `app.main`/run()."
+	const mod = "scip-python python myapp 0.1.0 `app.main`/__init__:"
+	idx := &SCIPIndex{CallerIndex: map[string][]string{callee: {mod, fn}}}
+	idx.callerIndexOnce.Do(func() {})
+	callers, err := idx.FindCallers(callee)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(callers) != 1 || callers[0].SymbolID != fn {
+		t.Errorf("callers = %+v, want only run()", callers)
 	}
 }

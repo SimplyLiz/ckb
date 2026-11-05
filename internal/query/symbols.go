@@ -797,8 +797,15 @@ func rankSearchResults(results []SearchResultItem, query string) {
 			// Among case-fold-only matches, prefer the type over a member
 			// (field/property/parameter) with the same name: a user typing
 			// "Model" almost always means the type, not a `model` field.
+			//
+			// The bonus is deliberately 12, not 15: with 15 a fold-matched
+			// class (80+15+25) tied exactly with an exact-case function
+			// (100+20), and was able to beat an exact-case property. 12 keeps
+			// the invariant that an exact-case match beats a fold match of the
+			// same kind (by 20 points) and puts the fold-type total off the
+			// multiples of 5 every other component sums to, so it never ties.
 			if isTypeLikeKind(results[i].Kind) {
-				score += 15
+				score += 12
 			}
 		case strings.HasPrefix(nameLower, queryLower):
 			matchType = "partial"

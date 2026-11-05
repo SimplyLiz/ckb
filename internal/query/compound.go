@@ -1783,23 +1783,7 @@ func (e *Engine) getPrepareImpact(ctx context.Context, symbolId string) ([]Prepa
 		})
 	}
 
-	// Build transitive summary
-	moduleSet := make(map[string]bool)
-	maxDepth := 0
-	for _, imp := range impactResp.TransitiveImpact {
-		if imp.ModuleId != "" {
-			moduleSet[imp.ModuleId] = true
-		}
-		if imp.Distance > maxDepth {
-			maxDepth = imp.Distance
-		}
-	}
-
-	transitive := &PrepareTransitive{
-		TotalCallers: len(impactResp.TransitiveImpact) + len(impactResp.DirectImpact),
-		ModuleSpread: len(moduleSet),
-		MaxDepth:     maxDepth,
-	}
+	transitive := summarizeTransitive(impactResp)
 
 	// Extract risk factors
 	var factors []string
@@ -2270,4 +2254,27 @@ func (e *Engine) BatchSearch(ctx context.Context, opts BatchSearchOptions) (*Bat
 		},
 		Results: results,
 	}, nil
+}
+
+// summarizeTransitive builds the caller summary for prepareChange. Spread
+// covers the modules of direct AND transitive callers; counting only the
+// transitive list left it at 0 for the common depth-1 case.
+func summarizeTransitive(resp *AnalyzeImpactResponse) *PrepareTransitive {
+	moduleSet := make(map[string]bool)
+	maxDepth := 0
+	for _, list := range [][]ImpactItem{resp.DirectImpact, resp.TransitiveImpact} {
+		for _, imp := range list {
+			if imp.ModuleId != "" {
+				moduleSet[imp.ModuleId] = true
+			}
+			if imp.Distance > maxDepth {
+				maxDepth = imp.Distance
+			}
+		}
+	}
+	return &PrepareTransitive{
+		TotalCallers: len(resp.TransitiveImpact) + len(resp.DirectImpact),
+		ModuleSpread: len(moduleSet),
+		MaxDepth:     maxDepth,
+	}
 }

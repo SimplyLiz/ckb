@@ -144,6 +144,20 @@ type SemanticCallerInfo struct {
 // scipCallerProvider adapts SCIPAdapter to the TransitiveCallerProvider interface
 type scipCallerProvider struct {
 	adapter *scip.SCIPAdapter
+	nodes   map[string]*scip.CallGraphNode // callers seen by the last GetTransitiveCallers
+}
+
+// CallerLocation implements impact.CallerLocator. The module is the directory
+// of the caller's file, the same derivation used for direct references.
+func (p *scipCallerProvider) CallerLocation(callerId string) (string, *impact.Location, bool) {
+	n := p.nodes[callerId]
+	if n == nil || n.Location == nil || n.Location.FileId == "" {
+		return "", nil, false
+	}
+	return filepath.Dir(n.Location.FileId), &impact.Location{
+		FileId:    n.Location.FileId,
+		StartLine: n.Location.StartLine + 1,
+	}, true
 }
 
 // GetTransitiveCallers implements impact.TransitiveCallerProvider
@@ -161,6 +175,7 @@ func (p *scipCallerProvider) GetTransitiveCallers(symbolId string, maxDepth int)
 	if graph == nil {
 		return result, nil
 	}
+	p.nodes = graph.Nodes
 
 	// BFS to compute depths from root
 	visited := make(map[string]bool)

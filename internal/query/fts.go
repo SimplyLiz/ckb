@@ -12,6 +12,60 @@ import (
 // PopulateFTSFromSCIP populates the FTS5 symbol index from the loaded SCIP index.
 // This should be called after the SCIP adapter loads its index.
 func (e *Engine) PopulateFTSFromSCIP(ctx context.Context) error {
+	e.ftsPopMu.Lock()
+	defer e.ftsPopMu.Unlock()
+	return e.populateFTSLocked(ctx)
+}
+
+// EnsureFTSCurrent rebuilds the FTS content when it was not built from the
+// SCIP index and derivation logic currently in use, and does nothing
+// otherwise. This is what makes an in-place upgrade work: content written by
+// an older release (no stamp, or an older one) is rebuilt on first use,
+// synchronously, so the very first query already sees correct kinds. Without
+// it the CLI served stale rows until the .ckb directory was deleted, because
+// 'ckb index' reports "nothing to do" for an unchanged commit and the
+// background rebuild is cut off when a one-shot command exits.
+func (e *Engine) EnsureFTSCurrent(ctx context.Context) error {
+	if e.db == nil || e.scipAdapter == nil || !e.scipAdapter.IsAvailable() {
+		return nil
+	}
+	e.ftsPopMu.Lock()
+	defer e.ftsPopMu.Unlock()
+	fts := storage.NewFTSManager(e.db.Conn(), storage.DefaultFTSConfig())
+	if !e.ftsStaleLocked(ctx, fts) {
+		return nil
+	}
+	// Cached answers were built from the old content (the query cache is
+	// persisted in the database and keyed by query text only), so they go too.
+	if err := e.ClearAllCache(); err != nil {
+		e.logger.Warn("Failed to clear caches after FTS rebuild", "error", err.Error())
+	}
+	return e.populateFTSLocked(ctx)
+}
+
+func (e *Engine) ftsStaleLocked(ctx context.Context, fts *storage.FTSManager) bool {
+	return fts.GetStamp(ctx) != fts.Stamp(e.scipAdapter.IndexStamp())
+}
+
+// invalidateStaleCaches is the cheap, synchronous half of EnsureFTSCurrent
+// (one SELECT): when the FTS content is from another release or index it
+// drops the persisted query/view caches immediately, so nothing computed by
+// the older release is served while the rebuild is still running.
+func (e *Engine) invalidateStaleCaches(ctx context.Context) {
+	if e.db == nil || e.scipAdapter == nil || !e.scipAdapter.IsAvailable() {
+		return
+	}
+	e.ftsPopMu.Lock()
+	stale := e.ftsStaleLocked(ctx, storage.NewFTSManager(e.db.Conn(), storage.DefaultFTSConfig()))
+	e.ftsPopMu.Unlock()
+	if stale {
+		if err := e.ClearAllCache(); err != nil {
+			e.logger.Warn("Failed to clear stale caches", "error", err.Error())
+		}
+	}
+}
+
+func (e *Engine) populateFTSLocked(ctx context.Context) error {
 	if e.scipAdapter == nil || !e.scipAdapter.IsAvailable() {
 		e.logger.Debug("Skipping FTS population - SCIP adapter not available")
 		return nil
@@ -69,6 +123,10 @@ func (e *Engine) PopulateFTSFromSCIP(ctx context.Context) error {
 			"symbol_count", symbolCount,
 		)
 		return err
+	}
+
+	if err := ftsManager.SetStamp(ctx, ftsManager.Stamp(e.scipAdapter.IndexStamp())); err != nil {
+		e.logger.Warn("Failed to record FTS stamp", "error", err.Error())
 	}
 
 	e.logger.Info("FTS index populated from SCIP",
@@ -197,6 +255,10 @@ func inferKindString(kind int32, scipId *scip.SCIPIdentifier) string {
 // SearchSymbolsFTS performs FTS5-accelerated symbol search.
 // Returns results from FTS if available, falls back to nil if not.
 func (e *Engine) SearchSymbolsFTS(ctx context.Context, query string, limit int) ([]storage.FTSSearchResult, error) {
+	if err := e.EnsureFTSCurrent(ctx); err != nil {
+		e.logger.Warn("Failed to refresh stale FTS content", "error", err.Error())
+	}
+
 	// Get FTS manager
 	ftsManager := storage.NewFTSManager(e.db.Conn(), storage.DefaultFTSConfig())
 

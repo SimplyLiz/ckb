@@ -1054,3 +1054,18 @@ func TestGenerateConceptDescription(t *testing.T) {
 		})
 	}
 }
+
+func TestLooksLikeAPIHandlerName(t *testing.T) {
+	yes := []string{"Handle", "HandleFoo", "handleFoo", "ServeHTTP", "serve", "serve_http", "UserHandler", "handler", "http_handler"}
+	no := []string{"serverConfig", "ServerConfig", "handled", "served", "Handlers", "reserve", "Observe", "", "unhandledError"}
+	for _, n := range yes {
+		if !looksLikeAPIHandlerName(n) {
+			t.Errorf("%q should look like a handler", n)
+		}
+	}
+	for _, n := range no {
+		if looksLikeAPIHandlerName(n) {
+			t.Errorf("%q should not look like a handler", n)
+		}
+	}
+}

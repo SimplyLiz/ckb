@@ -154,6 +154,39 @@ func (m *FTSManager) InitSchema() error {
 	return nil
 }
 
+// ftsContentVersion is bumped when the FTS table layout or the meaning of its
+// columns changes. It is part of the stamp the caller stores with SetStamp.
+const ftsContentVersion = 1
+
+// Stamp returns the stamp that content built for the given source identity
+// carries. Callers compare it with GetStamp to decide whether the FTS content
+// must be rebuilt.
+func (m *FTSManager) Stamp(source string) string {
+	return fmt.Sprintf("fts%d:%s", ftsContentVersion, source)
+}
+
+// GetStamp returns the stamp recorded by the last complete rebuild, or ""
+// when there is none (content from before stamps existed, or never built).
+func (m *FTSManager) GetStamp(ctx context.Context) string {
+	var v string
+	err := m.db.QueryRowContext(ctx, "SELECT value FROM symbols_fts_meta WHERE key = 'stamp'").Scan(&v)
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
+// SetStamp records the stamp for the current content.
+func (m *FTSManager) SetStamp(ctx context.Context, stamp string) error {
+	if _, err := m.db.ExecContext(ctx,
+		"CREATE TABLE IF NOT EXISTS symbols_fts_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {
+		return err
+	}
+	_, err := m.db.ExecContext(ctx,
+		"INSERT INTO symbols_fts_meta (key, value) VALUES ('stamp', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", stamp)
+	return err
+}
+
 // BulkInsert inserts multiple symbols into FTS in a single transaction
 func (m *FTSManager) BulkInsert(ctx context.Context, symbols []SymbolFTSRecord) error {
 	if len(symbols) == 0 {
@@ -398,10 +431,14 @@ func (m *FTSManager) listAll(ctx context.Context, limit int) ([]FTSSearchResult,
 // happens not to). We break that tie explicitly, before bm25 and before
 // the caller's LIMIT ever gets applied, so the correct candidate isn't
 // truncated away by the time Go-side ranking (rankSearchResults) runs:
-//  1. case-sensitive exact name match sorts first,
-//  2. among remaining case-fold-only matches, type-like kinds
-//     (class/interface/struct/type) sort ahead of properties/parameters/etc,
-//  3. bm25 breaks any remaining ties.
+//  1. rows whose name equals the query (ignoring case) come before rows that
+//     only matched through another column (e.g. the container-qualified
+//     "NewServer.other" signature) — otherwise a limit filled by those rows
+//     drops the symbol that is literally named like the query,
+//  2. case-sensitive exact name match sorts first,
+//  3. among remaining case-fold-only matches, type-like kinds
+//     (class/interface/struct/type/enum) sort ahead of properties/parameters/etc,
+//  4. bm25 breaks any remaining ties.
 func (m *FTSManager) searchExact(ctx context.Context, query string, limit int) ([]FTSSearchResult, error) {
 	// Use FTS5 phrase query with MATCH
 	ftsQuery := fmt.Sprintf(`"%s"`, escapeFTS5Query(query))
@@ -414,11 +451,12 @@ func (m *FTSManager) searchExact(ctx context.Context, query string, limit int) (
 		JOIN symbols_fts_content c ON f.rowid = c.rowid
 		WHERE symbols_fts MATCH ?
 		ORDER BY
+			(lower(c.name) <> lower(?)),
 			(c.name <> ?),
-			CASE WHEN lower(c.name) = lower(?) AND c.kind NOT IN ('class','interface','struct','type') THEN 1 ELSE 0 END,
+			CASE WHEN lower(c.name) = lower(?) AND c.kind NOT IN ('class','interface','struct','type','enum') THEN 1 ELSE 0 END,
 			rank
 		LIMIT ?
-	`, ftsQuery, query, query, limit)
+	`, ftsQuery, query, query, query, limit)
 	if err != nil {
 		return nil, err
 	}

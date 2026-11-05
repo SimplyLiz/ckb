@@ -39,7 +39,7 @@
   ],
   "modulesAffected": [
     {
-      "impactCount": 6,
+      "impactCount": 8,
       "moduleId": "pkg",
       "name": "pkg"
     }

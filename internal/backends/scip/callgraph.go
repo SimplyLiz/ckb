@@ -149,6 +149,9 @@ func (idx *SCIPIndex) FindCallers(symbolId string) ([]*CallGraphNode, error) {
 	}
 	callers := make([]*CallGraphNode, 0, len(callerIDs))
 	for _, callerID := range callerIDs {
+		if IsModuleScopeSymbol(callerID) {
+			continue // file/module scope, not a function: same rule as convertToReference
+		}
 		symInfo := idx.GetSymbol(callerID)
 		kind := KindFunction
 		if symInfo != nil {
@@ -601,6 +604,7 @@ func extractSymbolName(symbolId string) string {
 // with the sole exception of a type descriptor's '#', which is part of how
 // a bare type's own symbol ID naturally ends (e.g. "Engine#").
 func callgraphNameFromDescriptors(descriptors []*bindingscip.Descriptor) string {
+	descriptors = normalizeImplDescriptors(descriptors)
 	var b strings.Builder
 	for i, d := range descriptors {
 		isLast := i == len(descriptors)-1

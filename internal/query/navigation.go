@@ -1306,10 +1306,7 @@ func (e *Engine) ListEntrypoints(ctx context.Context, opts ListEntrypointsOption
 					// "Handler"), but TS/JS methods are typically lowercase
 					// ("handle") — the naming convention this is meant to
 					// detect isn't specific to Go's export casing.
-					nameLower := strings.ToLower(sym.Name)
-					if strings.HasPrefix(nameLower, "handle") ||
-						strings.HasSuffix(nameLower, "handler") ||
-						strings.HasPrefix(nameLower, "serve") {
+					if looksLikeAPIHandlerName(sym.Name) {
 						fanOut := e.scipAdapter.GetCalleeCount(sym.StableID)
 						entrypoints = append(entrypoints, EntrypointV52{
 							SymbolId: sym.StableID,
@@ -3902,4 +3899,49 @@ func (e *Engine) getRelatedDocs(symbolID string, limit int) []RelatedDoc {
 	}
 
 	return result
+}
+
+// looksLikeAPIHandlerName reports whether name follows the handler naming
+// convention: first word "handle" or "serve" (handleFoo, HandleFoo, serve_http,
+// ServeHTTP) or last word "handler" (UserHandler). Words are split on
+// camelCase and underscore boundaries, so "serverConfig" and "handled" do not
+// match just because they begin with the letters "serve"/"handle".
+func looksLikeAPIHandlerName(name string) bool {
+	words := splitNameWords(name)
+	if len(words) == 0 {
+		return false
+	}
+	switch words[0] {
+	case "handle", "serve":
+		return true
+	}
+	return words[len(words)-1] == "handler"
+}
+
+// splitNameWords splits an identifier into lowercase words at underscores and
+// lower-to-upper camelCase transitions ("ServeHTTP" -> serve, http).
+func splitNameWords(name string) []string {
+	var words []string
+	var cur []rune
+	flush := func() {
+		if len(cur) > 0 {
+			words = append(words, strings.ToLower(string(cur)))
+			cur = cur[:0]
+		}
+	}
+	runes := []rune(name)
+	for i, r := range runes {
+		switch {
+		case r == '_' || r == '-' || r == '.':
+			flush()
+		case unicode.IsUpper(r) && i > 0 && (unicode.IsLower(runes[i-1]) ||
+			(unicode.IsUpper(runes[i-1]) && i+1 < len(runes) && unicode.IsLower(runes[i+1]))):
+			flush()
+			cur = append(cur, r)
+		default:
+			cur = append(cur, r)
+		}
+	}
+	flush()
+	return words
 }
