@@ -1904,17 +1904,33 @@ func (e *Engine) getGitDiff(staged bool, baseBranch string) (string, error) {
 	if staged {
 		args = append(args, "--cached")
 	}
-	if baseBranch != "" && baseBranch != "HEAD" {
-		args = append(args, baseBranch)
+	// A bare `git diff` compares the working tree with the index, so anything staged
+	// would look unchanged. HEAD covers both, unless there is no commit yet.
+	base := baseBranch
+	if base == "" && !staged {
+		base = "HEAD"
 	}
-
-	cmd := exec.Command("git", args...)
-	cmd.Dir = e.repoRoot
-	out, err := cmd.Output()
+	if staged && base == "HEAD" {
+		base = ""
+	}
+	run := func(args []string) (string, error) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = e.repoRoot
+		out, err := cmd.Output()
+		return string(out), err
+	}
+	withBase := args
+	if base != "" {
+		withBase = append(append([]string{}, args...), base)
+	}
+	out, err := run(withBase)
+	if err != nil && base == "HEAD" {
+		out, err = run(args)
+	}
 	if err != nil {
 		return "", fmt.Errorf("git diff failed: %w", err)
 	}
-	return string(out), nil
+	return out, nil
 }
 
 // bridgeMultiplierFromGraph computes a risk multiplier from Cartographer's

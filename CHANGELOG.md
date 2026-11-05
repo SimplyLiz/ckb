@@ -100,6 +100,9 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   visibility for code that can't be read. `consumerFiles.contractChanged` and
   `contractChangedTests` name the files using such a symbol: the ones to look at
   first. This compares text and compiles nothing, so it stays labelled a heuristic.
+- **`ckb changes` and `ckb impact diff` see staged edits.** Both promise the
+  uncommitted working tree but ran a bare `git diff`, which compares against the
+  index, so anything `git add`ed looked unchanged.
 
 ### Fixed — search and navigation
 

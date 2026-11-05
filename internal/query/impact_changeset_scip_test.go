@@ -448,3 +448,56 @@ func TestAnalyzeChangeSet_ConsumersInTheDiffDontCount(t *testing.T) {
 		t.Errorf("exported Target: risk %s, factors %+v, want medium from public_contract_changed", resp.RiskScore.Level, resp.RiskScore.Factors)
 	}
 }
+
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// `ckb changes` promises the uncommitted working tree. A staged edit is uncommitted.
+func TestGetGitDiff_WorkingTreeIncludesStaged(t *testing.T) {
+	dir := t.TempDir()
+	for name, text := range map[string]string{"staged.go": "package a\n", "unstaged.go": "package a\n", "other.go": "package a\n"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitInit(t, dir)
+	for _, name := range []string{"staged.go", "unstaged.go"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("package b\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitRun(t, dir, "add", "staged.go")
+
+	e := &Engine{repoRoot: dir}
+	contains := func(diff, name string) bool { return strings.Contains(diff, "a/"+name) }
+
+	working, err := e.getGitDiff(false, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(working, "staged.go") || !contains(working, "unstaged.go") {
+		t.Errorf("working tree diff misses a change:\n%s", working)
+	}
+
+	staged, err := e.getGitDiff(true, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(staged, "staged.go") || contains(staged, "unstaged.go") {
+		t.Errorf("staged diff is wrong:\n%s", staged)
+	}
+}
+
+func TestGetGitDiff_NoCommitYet(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-q")
+	if _, err := (&Engine{repoRoot: dir}).getGitDiff(false, "HEAD"); err != nil {
+		t.Errorf("a repo with no commits has an empty diff, not an error: %v", err)
+	}
+}
