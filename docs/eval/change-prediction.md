@@ -114,6 +114,30 @@ same order, from the same heads. What changed is what gets scored.
 - **Test files count `affectedTests` as before.** A test named after the changed file is
   now labelled `naming-convention`; `ckb_seen_using` leaves those out.
 
+## Done check: rules fixed before measuring
+
+Written and committed before the first run, on the same sample with the same commands.
+
+- **Only the defining file applied.** `ckb_open` is the non-test files of
+  `doneCheck.openSites`, minus the defining files, scored against the compiler truth per
+  file, like every other list here. Test files score apart, against the broken tests.
+- **Whole commit applied.** Every file of the commit goes on top of its parent, with the
+  index still at the parent. A commit counts as complete, so each open use is a candidate
+  false alarm. The new number is how many commits still report one, and how many open
+  uses that is.
+- **A candidate is decided by the compiler.** It is a false alarm if the checker reports
+  no more diagnostics for that file than at the parent, and otherwise not, since a commit
+  can be incomplete. Rust's truth is a lower bound here too, so a Rust "false alarm" may
+  sit behind a crate that stopped the check.
+- **Kinds are read from the changed symbol's SCIP suffix:** `#` is a type, `().` a function
+  or method, the rest other.
+- **Types get a decision, not a tweak after the fact.** If types account for more than a
+  third of the open uses with the whole commit applied, the check gets narrowed for them
+  or labelled, and the same sample is measured again. Both numbers are then reported, not
+  only the second.
+- **`clear` is not scored as a success on its own.** Status counts are reported as they
+  come, `not_assessed` included.
+
 ## Sample rule
 
 Fixed in `samples/ckb.json` before anything was measured. A commit qualifies if:

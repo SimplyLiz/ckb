@@ -415,6 +415,16 @@ def changes_view(data, target, definers, lang):
             "contract_changed_tests": sorted(cf.get("contractChangedTests") or []),
             "files_truncated": bool(cf.get("truncated")),
         }
+    done = data.get("doneCheck")
+    if done is not None:
+        sites = done.get("openSites") or []
+        consumer.update({
+            "done_status": done.get("status"),
+            "open_files": sorted({x["file"] for x in sites if not x.get("isTest")} - set(definers)),
+            "open_tests": sorted({x["file"] for x in sites if x.get("isTest")}),
+            "open_count": done.get("openCount", 0),
+            "updated_count": done.get("updatedCount", 0),
+        })
     return {
         **consumer,
         "tests_seen_using": sorted({t["filePath"] for t in (data.get("affectedTests") or [])
@@ -522,6 +532,67 @@ def configured_index_path(clone):
         return "index.scip"
 
 
+def symbol_kind(symbol_id):
+    """What a SCIP symbol is, from its descriptor suffix."""
+    if symbol_id.endswith("#"):
+        return "type"
+    if symbol_id.endswith(")."):
+        return "function"
+    return "other"
+
+
+def apply_whole_commit(entry, clone):
+    """Put the commit's every file in the working tree, on top of its parent."""
+    out = git(clone, "diff", "--no-renames", "--name-status", entry["parent"], entry["sha"])
+    for line in out.splitlines():
+        status, path = line.split("\t", 1)
+        target = Path(clone) / path
+        if status == "D":
+            if target.exists():
+                target.unlink()
+            continue
+        blob = subprocess.run(["git", "-C", str(clone), "show", f"{entry['sha']}:{path}"],
+                              capture_output=True, check=True).stdout
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(blob)
+        if status == "A":
+            git(clone, "add", "-N", path)
+
+
+def whole_commit_view(entry, clone, ckb, env, log, check_cmd, check_prefix, baseline, lang):
+    """The done check once the commit is complete: each open use is a candidate false alarm."""
+    time.sleep(1.1)
+    apply_whole_commit(entry, clone)
+    broken = None
+    if check_cmd and baseline is not None:
+        after = run_check(check_cmd, check_prefix, str(clone), env, lang, log)
+        if after is not None:
+            broken = sorted(p for p, n in after.items() if n > baseline.get(p, 0))
+    rc, out, _ = sh([ckb, "changes", "--format", "json"], clone, env, 1200, log)
+    if rc != 0:
+        return {"status": "changes-failed", "broken": broken}
+    data = parse_json(out)
+    done = data.get("doneCheck") or {}
+    kinds = {}
+    for sym in data.get("changedSymbols") or []:
+        kinds.setdefault(sym.get("name"), symbol_kind(sym.get("symbolId") or ""))
+    sites = [{
+        "file": x["file"], "line": x.get("line"), "code": x.get("code"), "symbol": x.get("symbol"),
+        "change": x.get("change"), "is_test": bool(x.get("isTest")), "unverified": bool(x.get("unverified")),
+        "kind": kinds.get(x.get("symbol"), "other"),
+        "compiler_broke": None if broken is None else x["file"] in broken,
+    } for x in done.get("openSites") or []]
+    return {
+        "status": done.get("status"),
+        "note": done.get("note"),
+        "open_count": done.get("openCount", 0),
+        "updated_count": done.get("updatedCount", 0),
+        "truncated": bool(done.get("truncated")),
+        "open_sites": sites,
+        "broken": broken,
+    }
+
+
 def measure_one(entry, sample, clone, ckb, env, min_gb, log, check_cmd, check_prefix):
     lang = sample["lang"]
     rec = {"sha": entry["sha"], "lang": lang, "repo": sample["name"], "entry": entry}
@@ -613,6 +684,9 @@ def measure_one(entry, sample, clone, ckb, env, min_gb, log, check_cmd, check_pr
                                     set(rec["grep"]["predicted"]))
     rec["compile_misses"] = classify_compile_misses(rec, uncapped, set(rec["ref_files"]), index_bytes)
     rec["missed_in_grep"] = sorted(set(entry["truth_all"]) - set(rec["grep"]["predicted"]))
+    if "done_status" in rec["ckb"]:
+        rec["whole_commit"] = whole_commit_view(entry, clone, ckb, env, log, check_cmd, check_prefix,
+                                                baseline_diags, lang)
     rec["status"] = "ok"
     return rec
 
@@ -719,6 +793,8 @@ def analyse(records):
             "ckb_files_direct": lambda r: r["ckb"]["files_direct"],
             "ckb_contract": lambda r: r["ckb"]["contract_changed"],
         })
+    if ok and "open_files" in ok[0]["ckb"]:
+        tools["ckb_open"] = lambda r: r["ckb"]["open_files"]
     result_tools = list(tools)
     def non_test(r, files):
         return [p for p in files if not is_test(p, r["lang"])]
@@ -771,6 +847,38 @@ def analyse(records):
     if ok and "files" in ok[0]["ckb"]:
         result["compile"]["tests"]["ckb_contract"] = aggregate(
             [score(r["ckb"]["contract_changed_tests"], r["compile"]["broken_tests"]) for r in broke_t])
+    if ok and "open_files" in ok[0]["ckb"]:
+        result["compile"]["tests"]["ckb_open"] = aggregate(
+            [score(r["ckb"]["open_tests"], r["compile"]["broken_tests"]) for r in broke_t])
+        result["done_status_defining_file"] = {}
+        for r in ok:
+            status = r["ckb"]["done_status"]
+            result["done_status_defining_file"][status] = result["done_status_defining_file"].get(status, 0) + 1
+    whole = [r["whole_commit"] for r in ok if r.get("whole_commit")]
+    if whole:
+        sites = [x for w in whole for x in w.get("open_sites") or []]
+        tally = {}
+        for x in sites:
+            tally[x["kind"]] = tally.get(x["kind"], 0) + 1
+        statuses = {}
+        for w in whole:
+            statuses[w["status"]] = statuses.get(w["status"], 0) + 1
+        per_commit = [w.get("open_count", 0) for w in whole]
+        result["whole_commit"] = {
+            "commits": len(whole),
+            "status": statuses,
+            "commits_with_open": sum(1 for n in per_commit if n),
+            "open_sites": sum(per_commit),
+            "open_median": statistics.median(per_commit),
+            "open_max": max(per_commit),
+            "by_kind": tally,
+            "tests": sum(1 for x in sites if x["is_test"]),
+            "unverified": sum(1 for x in sites if x["unverified"]),
+            "compiler_broke": sum(1 for x in sites if x["compiler_broke"] is True),
+            "false_alarm": sum(1 for x in sites if x["compiler_broke"] is False),
+            "no_compiler": sum(1 for x in sites if x["compiler_broke"] is None),
+            "commits_broken": sum(1 for w in whole if w.get("broken")),
+        }
     # What the direct list got wrong: uses of the target that the compiler let through,
     # or uses of another symbol in the applied file.
     wrong = {"target_not_broken": 0, "other_symbol": 0, "right": 0}
@@ -927,6 +1035,21 @@ def report_markdown(records, redact):
     w.append("")
     w.append(f"Of {t['missed']} missed, {t['missed_but_in_refs']} are references the index has (`ckb refs --include-tests`).")
     w.append("")
+    if "whole_commit" in res:
+        h = res["whole_commit"]
+        w.append(f"### Done check with the whole commit applied ({h['commits']} commits)")
+        w.append("")
+        w.append(f"Status: {h['status']}. With only the defining file applied: {res.get('done_status_defining_file')}.")
+        w.append("")
+        w.append(f"{h['commits_with_open']} of {h['commits']} complete commits still report an open use: "
+                 f"{h['open_sites']} open uses, median {h['open_median']} per commit, max {h['open_max']}; "
+                 f"{h['tests']} listed in test files, {h['unverified']} unverified. "
+                 f"By kind of changed symbol: {h['by_kind']}.")
+        w.append("")
+        w.append(f"Listed uses against the compiler: {h['false_alarm']} in a file that didn't break (false alarm), "
+                 f"{h['compiler_broke']} in a file with more diagnostics than at the parent, "
+                 f"{h['no_compiler']} without a compiler answer. {h['commits_broken']} commits add diagnostics somewhere.")
+        w.append("")
     w.append("### Risk level against what the commit had to touch")
     w.append("")
     w.append("| Risk | commits | median truth files | median mentioning files | median compile-broken files | max | commits with none broken |")
@@ -979,6 +1102,21 @@ def report_markdown(records, redact):
                      f"{len(comp['broken'])} | {bc} | {bd['hit']}/{bd['pred']} | {contract} | {bgs['hit']}/{bgs['pred']} | "
                      f"{len(comp['broken_tests'])} | {tc} | {tg} | {cl} |")
         w.append("")
+        if "whole_commit" in res:
+            w.append("### Open uses with the whole commit applied, per commit")
+            w.append("")
+            w.append("| Commit | Status | Touched | Open | Open use | Kind | Compiler broke the file |")
+            w.append("|---|---|---|---|---|---|---|")
+            for r in records:
+                h = r.get("whole_commit")
+                if not h:
+                    continue
+                sites = h.get("open_sites") or [None]
+                for x in sites[:10]:
+                    use = f"`{x['file']}:{x['line']}` `{x['symbol']}`" if x else "-"
+                    w.append(f"| {r['sha'][:9]} | {h['status']} | {h.get('updated_count')} | {h.get('open_count')} | {use} | "
+                             f"{x['kind'] if x else '-'} | {x['compiler_broke'] if x else '-'} |")
+            w.append("")
     return "\n".join(w)
 
 

@@ -52,6 +52,10 @@ symbol from the commit, run `ckb changes --format json`.
 | truth (compiler) | files with more diagnostics once only the defining file is applied: `gopls check`, `tsc`, `cargo check` |
 | baseline | `git grep -l -w <symbol>` at the parent, same filter |
 
+A last step puts the whole commit on the parent, over the same index, and runs it
+again: the commit counts as complete, so each `doneCheck` open use is a candidate false
+alarm, and a new compiler run decides it.
+
 Also: whether `changedSymbols` named the symbol, the risk level, test files via
 `affectedTests`, a second run with `budget.maxImpactItems` lifted, and a class for
 every missed file, from the index's own `ckb refs`.
@@ -65,7 +69,8 @@ Tools in the report, all scored the same way:
 | `ckb_uncapped` | `ckb` with the item budget lifted |
 | `ckb_files` | `consumerFiles.direct` and `.transitive`, from a binary that has them |
 | `ckb_files_direct` | `consumerFiles.direct` |
-| `ckb_contract` | `consumerFiles.contractChanged`: direct users, outside the change, of a symbol whose declaration changed or went away |
+| `ckb_contract` | `consumerFiles.contractChanged`: direct users of a symbol whose declaration changed or went away, at a use the change left as it was (older results: files outside the change) |
+| `ckb_open` | non-test files of `doneCheck.openSites`, the check of each use |
 | `grep` | `git grep -l -w <symbol>` |
 
 Results from an older binary still report, without the `consumerFiles` rows.
