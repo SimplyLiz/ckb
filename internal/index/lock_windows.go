@@ -56,3 +56,9 @@ func (l *Lock) Release() {
 	l.file.Close()
 	os.Remove(l.path)
 }
+
+// BuildRunning can't tell on Windows: nothing locks the file there, and one left by a
+// crash looks the same as one in use, so it doesn't claim a build it can't see.
+func BuildRunning(ckbDir string) bool {
+	return false
+}

@@ -6,11 +6,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends"
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
+	"github.com/SimplyLiz/CodeMCP/internal/index"
 )
 
 // doneCheckFiles are the fixture's files as changeSetEngine's index describes them.
@@ -250,6 +252,26 @@ func TestDoneResult(t *testing.T) {
 	cut := many.result("diff", true, false, "")
 	if len(cut.OpenSites) != MaxOpenSites || !cut.Truncated || cut.OpenCount != MaxOpenSites+5 {
 		t.Errorf("listed %d of %d, truncated %v", len(cut.OpenSites), cut.OpenCount, cut.Truncated)
+	}
+}
+
+func TestDoneResult_SaysWhenAnIndexIsBeingBuilt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("nothing locks the index file on Windows")
+	}
+	root := t.TempDir()
+	lock, err := index.AcquireLock(filepath.Join(root, ".ckb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	during := (&doneChecker{repoRoot: root}).result("diff", false, false, "")
+	lock.Release()
+	if during.Status != DoneCheckNotAssessed || !strings.Contains(during.Note, "being built") {
+		t.Errorf("during a build: %+v", during)
+	}
+	after := (&doneChecker{repoRoot: root}).result("diff", false, false, "")
+	if !strings.Contains(after.Note, "Run 'ckb index'") {
+		t.Errorf("after the build: %+v", after)
 	}
 }
 

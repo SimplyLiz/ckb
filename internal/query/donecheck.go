@@ -16,6 +16,7 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/diff"
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
+	"github.com/SimplyLiz/CodeMCP/internal/index"
 )
 
 // Done check statuses. "clear" is deliberately not "safe": it covers one question.
@@ -351,6 +352,9 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 	case !hasGraph:
 		check.Status = DoneCheckNotAssessed
 		check.Note = "No SCIP index, so the uses of what changed are unknown. Run 'ckb index'."
+		if index.BuildRunning(filepath.Join(c.repoRoot, ".ckb")) {
+			check.Note = "No SCIP index yet, so the uses of what changed are unknown. One is being built: ask again when it is done."
+		}
 	case doubt != "":
 		check.Status = DoneCheckNotAssessed
 		check.Note = "No open use found, but " + doubt + "."
