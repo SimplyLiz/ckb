@@ -258,6 +258,39 @@ def candidate(repo, lang, sha, parent, status, diffs):
     }
 
 
+def toolchain(lang):
+    if lang != "rust":
+        return None
+    return subprocess.run(["rustc", "--version"], capture_output=True, text=True).stdout.strip()
+
+
+def compiling_parents(repo, lang, cands, wanted, max_tries):
+    """Keep candidates, in sampling order, whose parent passes the compiler untouched.
+
+    A commit whose parent doesn't compile has no compiler truth, and on old Rust history
+    that can be most of a sample. This reads nothing from CKB, so it can't favour it.
+    Runs the repo's build scripts.
+    """
+    kept, tried = [], 0
+    with tempfile.TemporaryDirectory(prefix="eval-select-") as tmp:
+        clone = Path(tmp) / "clone"
+        subprocess.run(["git", "clone", "--quiet", str(Path(repo).resolve()), str(clone)], check=True)
+        for c in cands:
+            if len(kept) >= wanted or tried >= max_tries:
+                break
+            tried += 1
+            git(clone, "checkout", "--quiet", "--force", c["parent"])
+            git(clone, "clean", "-fdq", "-e", "target")
+            try:
+                rc = subprocess.run(CHECKS[lang], shell=True, cwd=clone, capture_output=True, timeout=900).returncode
+            except subprocess.TimeoutExpired:
+                rc = -1
+            print(f"{c['sha'][:10]} parent rc {rc}, kept {len(kept) + (rc == 0)}/{wanted}, tried {tried}", flush=True)
+            if rc == 0:
+                kept.append(c)
+    return kept, tried
+
+
 def cmd_select(a):
     head = git(a.repo, "rev-parse", a.head).strip()
     pool = 0
@@ -276,6 +309,14 @@ def cmd_select(a):
         c["rank"] = hashlib.sha256(f"{SEED}:{sha}".encode()).hexdigest()
         cands.append(c)
     cands.sort(key=lambda c: c["rank"])
+    used = set()
+    for sample in a.exclude or []:
+        used |= {e["sha"] for e in json.loads(Path(sample).read_text())["sample"]}
+    cands = [c for c in cands if c["sha"] not in used]
+    wanted = a.count + a.spare
+    tried = 0
+    if a.must_compile:
+        cands, tried = compiling_parents(a.repo, a.lang, cands, wanted, a.max_tries)
     out = {
         "lang": a.lang,
         "name": a.name or Path(a.repo).resolve().name,
@@ -289,8 +330,12 @@ def cmd_select(a):
         "target": a.count,
         # Order is the sampling order. `run` stops at `target` measured commits,
         # so an entry whose index cannot be built is logged and the next one used.
-        "sample": cands[: a.count + a.spare],
+        "sample": cands[:wanted],
     }
+    if a.exclude:
+        out["excluded"] = len(used)
+    if a.must_compile:
+        out["must_compile"] = {"tried": tried, "kept": len(out["sample"]), "toolchain": toolchain(a.lang)}
     Path(a.out).write_text(json.dumps(out, indent=1) + "\n")
     print(f"{out['name']}: {pool} non-merge commits, {len(cands)} candidates, "
           f"kept {len(out['sample'])} (target {a.count}) -> {a.out}")
@@ -1277,6 +1322,9 @@ def main():
     s.add_argument("--name", help="label for the repo in results")
     s.add_argument("--index-lang", default=None, help="value for `ckb index --lang`; default --lang")
     s.add_argument("--prep", default=None, help="shell command run in the clone before indexing, e.g. a dependency install")
+    s.add_argument("--exclude", action="append", help="sample file whose commits can't be picked again; repeatable")
+    s.add_argument("--must-compile", action="store_true", help="only commits whose parent passes the compiler; runs the repo's build scripts")
+    s.add_argument("--max-tries", type=int, default=50, help="with --must-compile, how many parents to try")
     s.add_argument("--out", required=True)
     s.set_defaults(fn=cmd_select)
 

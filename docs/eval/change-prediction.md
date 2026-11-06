@@ -520,3 +520,24 @@ How far to trust it:
   the same for both binaries.
 
 A corrected fix needs a new sample, by the rule above: this one has now been looked at.
+
+## Rust gaps, second holdout: rules fixed before measuring
+
+Written and committed before this sample was picked and before the corrected fix is run on
+it.
+
+- **Why another one:** the first holdout has been looked at, its results led to the bug fix,
+  and it has compiler truth for only 3 commits.
+- **Sample:** `samples/rust-holdout-2/`, 8 commits each from axum, helix and ripgrep, with
+  up to 2 spares each, from the same pinned heads. `select`'s seed and order are unchanged.
+  Commits in the first holdout's samples, spares included, can't be picked again.
+- **Only commits with a working compiler:** the parent has to pass `CHECKS["rust"]` on today's
+  stable, unmodified, with at most 50 parents tried per repo. A repo with too few is reported
+  with what it has, and no other repo takes its place. This reads nothing from CKB. It does
+  tilt the sample to recent history, which also favours whichever code the indexer handles.
+- **Same repos as the first holdout,** so this is a new sample, not a new population. Other
+  repos would need a separate OK to run their build scripts.
+- **Both binaries, same commits:** db89a5b and the corrected fix. Neither runs on it until the
+  sample is committed, nothing is tuned against it, and a further fix needs another sample.
+- **Compiler truth:** `broken` and `broken_deep`, reported separately if they differ.
+- **A bad result is reported as it comes.**

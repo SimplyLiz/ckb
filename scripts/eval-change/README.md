@@ -26,6 +26,11 @@ python3 scripts/eval-change/eval.py run --sample scripts/eval-change/samples/ckb
 python3 scripts/eval-change/eval.py report --results /tmp/ckb.results.jsonl
 ```
 
+`select --exclude <sample>` skips commits an earlier sample already used, and
+`--must-compile` keeps only commits whose parent passes the compiler, in sampling order,
+because a commit without a working compiler has no compiler truth. It runs the repo's
+build scripts.
+
 To judge a fix: build the fixed binary, `run` the same sample into a new results
 file, `report`, compare. `run` resumes an existing results file, so start a new one.
 
