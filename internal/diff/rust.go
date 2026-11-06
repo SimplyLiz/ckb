@@ -80,7 +80,11 @@ func bracedBody(lines []string, start int) (string, bool) {
 	return "", false
 }
 
-var rustPathTailRe = regexp.MustCompile(`(?:[A-Za-z_]\w*::)+$`)
+var (
+	rustPathTailRe = regexp.MustCompile(`(?:[A-Za-z_]\w*::)+$`)
+	// rustReturnArrowRe is a return arrow, with the reference or pointer it may return.
+	rustReturnArrowRe = regexp.MustCompile(`->(?:\s*(?:&(?:'\w+\s*)?(?:mut\s*)?|\*(?:const|mut)\s*))*$`)
+)
 
 // IsRustLiteralUse says whether the name on a line builds or destructures a struct by its
 // fields, in a way a changed field set breaks: without `..` to cover the rest.
@@ -90,8 +94,8 @@ func IsRustLiteralUse(lines []string, line, column int, name string) bool {
 }
 
 // rustLiteral finds the literal or pattern starting at the name, and returns its last
-// line and whether it has `..`. `impl Foo {` and `-> Foo {` have a brace after the name
-// too, but what follows them is a body.
+// line and whether it has `..`. `impl Foo {`, `-> Foo {` and `-> &mut Foo {` have a brace
+// after the name too, but what follows them is a body.
 func rustLiteral(lines []string, line, column int, name string) (end int, hasRest, ok bool) {
 	text := rawLine(lines, line)
 	start := nameIndex(text, column, name)
@@ -99,7 +103,7 @@ func rustLiteral(lines []string, line, column int, name string) (end int, hasRes
 		return 0, false, false
 	}
 	before := strings.TrimSpace(rustPathTailRe.ReplaceAllString(strings.TrimRight(text[:start], " "), ""))
-	if strings.HasPrefix(strings.TrimSpace(text), "impl") || strings.HasSuffix(before, "->") ||
+	if strings.HasPrefix(strings.TrimSpace(text), "impl") || rustReturnArrowRe.MatchString(before) ||
 		strings.HasSuffix(before, " for") || before == "for" {
 		return 0, false, false
 	}

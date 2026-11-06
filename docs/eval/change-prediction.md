@@ -500,7 +500,7 @@ How far to trust it:
 - **Recall isn't tested.** All 9 compiler-truth files come from 3 axum commits, and the old
   binary already found 8. The one miss, `examples/static_file_server.rs`, stays missed. So
   this doesn't show the fix works outside its sample, and it doesn't show the opposite.
-- **The fix has a bug, left unfixed so the measurement stays valid.** All 17 sites it added
+- **The fix had a bug, fixed only after this measurement, which it doesn't cover.** All 17 sites it added
   have the form `-> &mut Foo {`. `rustLiteral` rejects `-> Foo {` but not a reference return,
   so it reads the function body as a struct literal. That is what cost ripgrep's `e65ca21a6`
   its `clear`, with 14 such sites. The compiler judged those 14 as not broken; it gave no

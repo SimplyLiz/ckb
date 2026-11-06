@@ -57,12 +57,23 @@ func TestIsRustLiteralUse(t *testing.T) {
 		{"trait impl", "impl Trait for Foo {", false},
 		{"return type", "fn f() -> Foo {", false},
 		{"return path", "fn f() -> m::Foo {", false},
+		{"return reference", "fn f(&self) -> &Foo {", false},
+		{"return mutable reference", "pub fn f(&mut self) -> &mut Foo {", false},
+		{"return reference, own line", ") -> &mut Foo {", false},
+		{"return reference with a lifetime", "fn f<'a>(a: &'a B) -> &'a mut Foo {", false},
+		{"return reference to a path", "fn f(&self) -> &m::Foo {", false},
+		{"return raw pointer", "fn f() -> *mut Foo {", false},
+		{"literal behind a reference", "g(&Foo { x: 1 })", true},
+		{"literal behind a mutable reference", "let a = &mut Foo { x: 1 };", true},
 		{"call", "Foo::new(1)", false},
 		{"type", "let a: Foo = b;", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := IsRustLiteralUse([]string{tc.text}, 1, 0, "Foo"); got != tc.want {
+			// A body follows, as in a real file: without its closing brace, a signature
+			// reads as an unterminated literal and every case below it passes for free.
+			lines := []string{tc.text, "    body", "}"}
+			if got := IsRustLiteralUse(lines, 1, 0, "Foo"); got != tc.want {
 				t.Errorf("%q: %v, want %v", tc.text, got, tc.want)
 			}
 		})

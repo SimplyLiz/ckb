@@ -28,8 +28,8 @@ All notable changes to CKB will be documented in this file.
   8/17 is from before it. Since measured on a holdout of 12 axum, helix and ripgrep
   commits: no new file found (8/9 of what the compiler says broke, before and after, all
   from 3 axum commits, so recall is barely tested), and false alarms went up, from 343 to
-  358 open uses, with one commit losing `clear`. Known bug, not fixed yet: `-> &mut Foo {`
-  is read as a struct literal, which accounts for all 17 sites the fix added.
+  358 open uses, with one commit losing `clear`. All 17 sites it added were `-> &mut Foo {`
+  read as a struct literal. That bug is fixed, and the corrected version isn't measured.
 - **`assessChange` is in the default preset,** and in every preset built on core,
   so core goes from 25 tools to 26. The first 512 bytes of the MCP instructions now
   end on it.
