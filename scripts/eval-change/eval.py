@@ -309,6 +309,7 @@ def cmd_select(a):
         c["rank"] = hashlib.sha256(f"{SEED}:{sha}".encode()).hexdigest()
         cands.append(c)
     cands.sort(key=lambda c: c["rank"])
+    total = len(cands)
     used = set()
     for sample in a.exclude or []:
         used |= {e["sha"] for e in json.loads(Path(sample).read_text())["sample"]}
@@ -324,7 +325,7 @@ def cmd_select(a):
         "head": head,
         "seed": SEED,
         "commits_in_pool": pool,
-        "candidates": len(cands),
+        "candidates": total,
         "index_lang": a.index_lang or a.lang,
         "prep": a.prep,
         "target": a.count,
