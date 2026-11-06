@@ -61,3 +61,6 @@ codecartographer_map.xml
 **/.cartographer_cache.json
 **/.codecartographer_cache.json
 **/.codecartographer_history.json
+
+# Python
+__pycache__/
