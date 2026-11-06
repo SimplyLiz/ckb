@@ -376,7 +376,7 @@ Binary at db89a5b, on 2026-11-06. Stripped per-instance data: `results/promax.js
 `results/promax-outcomes.json`.
 
 **The short version: on Go and TS the check finds what breaks and lists little else. On
-Rust it misses half. And a third of complete commits still report open uses, none of which
+Rust it misses half. And 12 of 30 complete commits still report open uses, none of which
 the compiler confirmed, so `open` can't be read as "broken".**
 
 | Outcome | Go | TS | Rust |
@@ -413,12 +413,12 @@ How far to trust it:
   all. Of those the compiler could judge, 82 of 82 didn't break. Only 10 commits reach
   `clear`. An agent stopping on `--check` would be told to look at something on 12 of 30
   finished changes, and this eval doesn't say whether looking costs more than it saves.
-- **A long tail.** One Rust commit accounts for 84 of the open uses and one TS commit for 38
-  (a helper whose signature changed in a way its 38 callers didn't need to follow).
+- **A long tail.** One Rust commit accounts for 84 of the open uses and one TS commit for 38,
+  and the compiler has no answer for either.
 - **Rust is weak, and the compiler truth is a lower bound there.** Recall is 8/17. In the
-  same runs `consumerFiles` reached 16/17 at 18% precision, so the index knew most of those
-  files and the per-use check lost them. That comparison is the first thing to look into.
-  The target symbol was named in 6 of 8.
+  same runs `consumerFiles` reached 16/17 at 18% precision, so most of those files are
+  within reach of the graph but not found as direct uses. Why isn't analysed yet, and it is
+  the first thing to look into. The target symbol was named in 6 of 8.
 - **The Go misses are one commit:** an interface method, which is the documented limit.
 - **TS is nearly all one repo, and its compiler truth is noisy.** 8 of 9 are angular, where
   `tsc` at the root reports thousands of diagnostics before any change, up to about 64,000,
