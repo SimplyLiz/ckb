@@ -554,3 +554,48 @@ that can't be measured:
 ripgrep falls 4 short, and all 4 it has are from 2017. By the rule above, no other repo fills
 in, so at most 20 commits get measured. Few helix or ripgrep parents pass, so the sample
 leans on whatever history still builds.
+
+### Rust gaps, second holdout: results
+
+db89a5b and 458e94e on the same 20 commits, on 2026-11-06, under the rules above. Raw data:
+`results/rust-holdout-2-db89a5b.jsonl` and `results/rust-holdout-2-458e94e.jsonl`.
+
+**The short version: this sample shows no recall gain, because the old binary missed nothing.
+There are 38 fewer open uses, almost all from one commit and from better import recognition,
+not from the three new Rust rules. Those add 5 false alarms.**
+
+| Non-test files | Commits scored | `ckb_open`, both binaries | Precision | Files listed | grep | Precision | Files listed |
+|---|---|---|---|---|---|---|---|
+| The compiler says broke | 10 | 13/13 | 81% | 16 | 12/13 | 18% | 65 |
+| The same, `broken_deep` | 10 | 14/14 | 88% | 16 | 13/14 | 20% | 65 |
+| Changed lines mention the symbol | 20 | 21/34 | 81% | 26 | 31/34 | 13% | 239 |
+| All modified in the commit | 20 | 22/67 | 85% | 26 | 40/67 | 17% | 239 |
+
+| Whole commit applied | `clear` | `not_assessed` | `open` | Open uses | Commits with an open use |
+|---|---|---|---|---|---|
+| db89a5b | 4 | 6 | 10 | 290 | 10 of 20 |
+| 458e94e | 4 | 5 | 11 | 252 | 11 of 20 |
+
+How far to trust it:
+
+- **Recall isn't tested again.** Nothing in this sample needed the three new rules to be found.
+  Across both holdouts, 32 commits, they found no file the old binary missed.
+- **The net of -38 is -43 and +5.** The 43 are on axum's `e43bdf0ec`, which has 230 open uses
+  before and 187 after. The fix's reading of multi-line `use` trees is the likely reason: a
+  dropped site like `examples/chat/src/main.rs:15` is a line of a use tree. Only 100 sites per
+  commit are listed, so the 43 weren't checked one by one.
+- **The 5 added are all false alarms by the compiler.** 3 are on helix's `5a3ff7422`, where the
+  alias `GutterFn` went from `Fn` to `FnMut` and callers of functions returning it needed no
+  edit. 2 are on axum's `6777dc1e5`, where removing a function named `sse` flagged paths through
+  the module of the same name, one of them in a doc comment. That moved the commit from
+  `not_assessed` to `open`.
+- **The `-> &mut Foo {` form is gone from what the fix adds here.** 458e94e wasn't re-run on the
+  first holdout.
+- **The compiler ran this time.** Every parent passes before the change, and all 20 got an
+  answer. So 10 of 20 finished commits still reporting open uses is a real result, and it holds
+  for the old binary too: `open` doesn't mean broken. One commit holds 187 of the 252.
+- **Limits of the sample:** the three repos of the first holdout, ripgrep's 4 commits from 2017,
+  and what still builds today.
+
+Decision, by the rule set before this ran: no new kind of false alarm in large numbers, so the
+fix stays. Its three rules remain unproven outside the commits they came from.

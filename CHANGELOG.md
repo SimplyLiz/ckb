@@ -29,7 +29,10 @@ All notable changes to CKB will be documented in this file.
   commits: no new file found (8/9 of what the compiler says broke, before and after, all
   from 3 axum commits, so recall is barely tested), and false alarms went up, from 343 to
   358 open uses, with one commit losing `clear`. All 17 sites it added were `-> &mut Foo {`
-  read as a struct literal. That bug is fixed, and the corrected version isn't measured.
+  read as a struct literal. That bug is fixed. A second holdout of 20 commits whose parents
+  compile finds the same files with both binaries (13/13), with 38 fewer open uses: 43 fewer
+  on one commit, 5 more from these rules, all false alarms. So they stay unproven outside the
+  commits they came from.
 - **`assessChange` is in the default preset,** and in every preset built on core,
   so core goes from 25 tools to 26. The first 512 bytes of the MCP instructions now
   end on it.
