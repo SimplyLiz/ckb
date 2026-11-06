@@ -451,8 +451,8 @@ out of sample there. Written and committed before the fix, along with the sample
 
 ### Rust gaps: what the fix has shown so far
 
-The fix is written. **It has not been measured on the holdout or re-run on ProMax yet**, so
-there is no new recall or precision number here, and the db89a5b table stands.
+This part was written before the holdout ran; its result is in the next section. This
+document has no re-run on ProMax, so the db89a5b table stands.
 
 The first-run truth's 9 missed files come from three commits, read from their patches and
 indexes:
@@ -473,3 +473,50 @@ On those three, using the indexes built at the parents, with `ckb changes` only:
 
 This is the sample the fix was written from, so it only says the fix does what it was written
 to do. Whether the other ProMax commits move isn't checked.
+
+### Rust gaps: holdout results
+
+db89a5b and d4c7197 on the same 12 commits, on 2026-11-06, under the rules above. Raw data:
+`results/rust-holdout-db89a5b.jsonl` and `results/rust-holdout-d4c7197.jsonl`.
+
+**The short version: the fix found nothing new here and added false alarms. The sample can
+hardly test its recall either, because the compiler truth is 9 files from one repo.**
+
+| Non-test files | Commits scored | `ckb_open`, both binaries | Precision | Files listed | grep | Precision | Files listed |
+|---|---|---|---|---|---|---|---|
+| The compiler says broke | 3 | 8/9 | 80% | 10 | 9/9 | 10% | 87 |
+| Changed lines mention the symbol | 12 | 15/34 | 88% | 17 | 33/34 | 24% | 135 |
+| All modified in the commit | 12 | 17/59 | 100% | 17 | 45/59 | 33% | 135 |
+
+`broken_deep` adds nothing here: the report is identical with `--deep-truth`.
+
+| Whole commit applied | `clear` | `not_assessed` | `open` | Open uses | Commits with an open use |
+|---|---|---|---|---|---|
+| db89a5b | 1 | 2 | 9 | 343 | 9 of 12 |
+| d4c7197 | 0 | 2 | 10 | 358 | 10 of 12 |
+
+How far to trust it:
+
+- **Recall isn't tested.** All 9 compiler-truth files come from 3 axum commits, and the old
+  binary already found 8. The one miss, `examples/static_file_server.rs`, stays missed. So
+  this doesn't show the fix works outside its sample, and it doesn't show the opposite.
+- **The fix has a bug, left unfixed so the measurement stays valid.** All 17 sites it added
+  have the form `-> &mut Foo {`. `rustLiteral` rejects `-> Foo {` but not a reference return,
+  so it reads the function body as a struct literal. That is what cost ripgrep's `e65ca21a6`
+  its `clear`, with 14 such sites. The compiler judged those 14 as not broken; it gave no
+  answer on the other 3.
+- **Net 15 more open uses:** 17 added, and 2 fewer on axum's `f10508db0`, which isn't
+  analysed. That commit lists only 100 of its 198.
+- **Commits in the report are not all judged.** It says 10 commits were checked and 7 had no
+  breakage, but `cargo check` failed at the parent of all 8 helix and ripgrep commits. Run
+  again at those parents with today's stable: helix never gets past `helix-syntax`'s build
+  script, and old `ropey` or `time` crates fail on 3 of its 4 commits. ripgrep's `7a149c20f`
+  needs a path dependency on its author's machine. The other 3 ripgrep commits do type-check
+  most of the workspace, though `e65ca21a6` already fails in the `rg` binary. So "no breakage"
+  isn't a finding for helix.
+- **The false-alarm count is limited the same way.** The report's 224 (210 before) counts
+  listed uses only, 260 of the 358, and includes files the compiler may never have reached.
+- **What this doesn't change:** on `ckb_open` against grep, the mention and all-files rows are
+  the same for both binaries.
+
+A corrected fix needs a new sample, by the rule above: this one has now been looked at.

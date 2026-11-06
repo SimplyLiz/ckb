@@ -25,7 +25,11 @@ All notable changes to CKB will be documented in this file.
   `new`. A retargeted type alias lists the uses of functions whose signature names it.
   A removed `pub use` lists the imports still going through it. Such a site has `via`,
   saying why it is listed. Written from the Rust misses above and not yet measured: the
-  8/17 is from before it.
+  8/17 is from before it. Since measured on a holdout of 12 axum, helix and ripgrep
+  commits: no new file found (8/9 of what the compiler says broke, before and after, all
+  from 3 axum commits, so recall is barely tested), and false alarms went up, from 343 to
+  358 open uses, with one commit losing `clear`. Known bug, not fixed yet: `-> &mut Foo {`
+  is read as a struct literal, which accounts for all 17 sites the fix added.
 - **`assessChange` is in the default preset,** and in every preset built on core,
   so core goes from 25 tools to 26. The first 512 bytes of the MCP instructions now
   end on it.
