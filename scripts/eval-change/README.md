@@ -39,6 +39,14 @@ set, and never touches the source repo beyond cloning it. Run it from the repo r
 `samples/ckb.json` names the repo as `.`. Indexes run one at a time, each waiting for
 `--min-free-gb` of reclaimable memory. The temp dir goes away at the end unless `--keep`.
 
+SWE-Bench ProMax has no license on its card or in its repository, so it isn't vendored.
+With a local copy of `swe-bench-promax.json`, `promax` applies the same selection rule to
+each Go, TS and Rust instance and writes one sample per repo, plus `outcomes.json`:
+
+```bash
+python3 scripts/eval-change/eval.py promax --data /path/to/swe-bench-promax.json --work /tmp/promax
+```
+
 ## What it measures
 
 For each sampled commit: index at the parent, write only the file(s) defining the

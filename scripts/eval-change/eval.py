@@ -82,10 +82,11 @@ def decl_name(line, lang):
     return None
 
 
-def parse_commits(repo, head):
+def parse_commits(repo, head, limit=None):
     """Yield (sha, parent, {path: status}, {path: (removed, added)}) per non-merge commit."""
+    count = [f"-n{limit}"] if limit else []
     proc = subprocess.Popen(
-        ["git", "-C", str(repo), "log", "--no-merges", "--no-renames", "-U0", "--no-color",
+        ["git", "-C", str(repo), "log", *count, "--no-merges", "--no-renames", "-U0", "--no-color",
          "--format=%x00%H %P", "--raw", "-p", head],
         stdout=subprocess.PIPE,
     )
@@ -293,6 +294,91 @@ def cmd_select(a):
     Path(a.out).write_text(json.dumps(out, indent=1) + "\n")
     print(f"{out['name']}: {pool} non-merge commits, {len(cands)} candidates, "
           f"kept {len(out['sample'])} (target {a.count}) -> {a.out}")
+
+
+# --- SWE-Bench ProMax --------------------------------------------------------
+
+PROMAX_LANGS = {"go": "go", "typescript": "ts", "rust": "rust"}
+
+
+def promax_commit(repo_dir, inst):
+    """Commit an instance's patches on its base commit. Returns (parent, sha).
+
+    Works on the index only, in a blobless clone: deciding whether an instance qualifies
+    needs the files it touches, and some of these repos don't fit on a laptop's disk
+    once per base commit.
+    """
+    base = inst["base_commit"]
+    git(repo_dir, "fetch", "--quiet", "--depth", "1", "--filter=blob:none", "origin", base)
+    git(repo_dir, "read-tree", base)
+    for patch in (inst["patch"], inst.get("test_patch") or ""):
+        if not patch.strip():
+            continue
+        r = subprocess.run(["git", "-C", str(repo_dir), "apply", "--whitespace=nowarn", "--cached", "-"],
+                           input=patch.encode(), capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"patch does not apply: {r.stderr.decode(errors='replace')[:200]}")
+    tree = git(repo_dir, "write-tree").strip()
+    sha = git(repo_dir, "-c", "user.name=eval", "-c", "user.email=eval@invalid", "commit-tree", tree,
+              "-p", base, "-m", inst["instance_id"]).strip()
+    git(repo_dir, "update-ref", "refs/heads/promax/" + inst["instance_id"], sha)
+    return base, sha
+
+
+def cmd_promax(a):
+    """Turn ProMax instances into samples, one per repo, under the same selection rule.
+
+    The dataset has no license on its card or in its repository, so it stays outside this
+    checkout: --data points at a copy, and samples and clones go to --work.
+    """
+    instances = [i for i in json.loads(Path(a.data).read_text()) if i["language"] in PROMAX_LANGS]
+    if a.only:
+        instances = [i for i in instances if i["repo"] in a.only.split(",")]
+    work = Path(a.work)
+    work.mkdir(parents=True, exist_ok=True)
+    samples, outcomes = {}, []
+    for inst in sorted(instances, key=lambda i: i["instance_id"]):
+        lang = PROMAX_LANGS[inst["language"]]
+        name = inst["repo"].replace("/", "__")
+        repo_dir = work / "repos" / name
+        if not repo_dir.exists():
+            repo_dir.mkdir(parents=True)
+            git(repo_dir, "init", "-q")
+            git(repo_dir, "remote", "add", "origin", f"https://github.com/{inst['repo']}.git")
+            git(repo_dir, "config", "remote.origin.promisor", "true")
+            git(repo_dir, "config", "remote.origin.partialclonefilter", "blob:none")
+        outcome = {"instance_id": inst["instance_id"], "repo": inst["repo"], "lang": lang}
+        try:
+            parent, sha = promax_commit(repo_dir, inst)
+            _, _, status, diffs = next(iter(parse_commits(repo_dir, sha, limit=1)))
+            outcome["files"] = len(status)
+            entry = candidate(repo_dir, lang, sha, parent, status, diffs)
+            if entry is None:
+                outcome["outcome"] = "over-30-files" if len(status) > MAX_FILES else "no-signature-change-with-caller"
+            else:
+                entry["instance_id"] = inst["instance_id"]
+                outcome["outcome"] = "qualifies"
+                sample = samples.setdefault(name, {
+                    "lang": lang, "name": name, "repo": str(repo_dir.resolve()), "seed": SEED,
+                    "index_lang": lang, "prep": a.prep_ts if lang == "ts" else None,
+                    "target": 0, "sample": [],
+                })
+                sample["sample"].append(entry)
+                sample["target"] += 1
+        except (RuntimeError, subprocess.SubprocessError, StopIteration) as e:
+            outcome["outcome"] = "could-not-prepare"
+            outcome["error"] = repr(e)[:300]
+        outcomes.append(outcome)
+        print(f"{inst['instance_id']} {outcome['outcome']} {outcome.get('files', '')}", flush=True)
+    for name, sample in samples.items():
+        (work / f"{name}.sample.json").write_text(json.dumps(sample, indent=1) + "\n")
+    (work / "outcomes.json").write_text(json.dumps(outcomes, indent=1) + "\n")
+    tally = {}
+    for o in outcomes:
+        key = (o["lang"], o["outcome"])
+        tally[key] = tally.get(key, 0) + 1
+    for key in sorted(tally):
+        print(key, tally[key])
 
 
 # --- run ---------------------------------------------------------------------
@@ -1157,6 +1243,13 @@ def main():
     r.add_argument("--no-check", action="store_true", help="skip the compiler truth")
     r.add_argument("--keep", action="store_true", help="keep the clone and CKB_HOME")
     r.set_defaults(fn=cmd_run)
+
+    m = sub.add_parser("promax", help="turn SWE-Bench ProMax instances into samples")
+    m.add_argument("--data", required=True, help="a local copy of swe-bench-promax.json")
+    m.add_argument("--work", required=True, help="clones, samples and outcomes go here")
+    m.add_argument("--only", default=None, help="comma-separated repos, e.g. cli/cli")
+    m.add_argument("--prep-ts", default=None, help="prep command for TS samples")
+    m.set_defaults(fn=cmd_promax)
 
     o = sub.add_parser("report", help="aggregate a results file")
     o.add_argument("--results", required=True)

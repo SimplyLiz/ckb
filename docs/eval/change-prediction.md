@@ -307,3 +307,28 @@ is for.
   nobody, and it still scores `high` if it has consumers.
 
 The TS and Rust rows are from two private repos, as aggregates only.
+
+## Public eval on SWE-Bench ProMax: rules fixed before measuring
+
+Written and committed before qualifying a single instance. The private TS and Rust repos
+above can't be checked by anyone else; these can.
+
+- **Dataset:** SWE-Bench ProMax ([arXiv 2608.09802](https://arxiv.org/abs/2608.09802)), the
+  73 Go (23), TypeScript (28) and Rust (22) instances. All of them, no sampling. No LLM is
+  involved: the gold patch is the change, and CKB only predicts.
+- **License:** neither the dataset card nor its repository names one; CC BY 4.0 on arXiv
+  covers the paper. So no instance text or patch goes into this repo: the tool takes
+  `--data` pointing at a local copy, and only instance ids, public file names and numbers
+  are reported.
+- **The commit is `patch` plus `test_patch` on `base_commit`.** Nothing else changes: same
+  selection rule as above, 30-file limit included, same commands, same scoring, grep as
+  the baseline.
+- **Every instance gets an outcome,** and the counts are reported: qualifies, no signature
+  change with a caller, over 30 files, could not be prepared, could not be indexed. The
+  rule doesn't see Go interface methods or TS class methods, so an instance can be a real
+  propagation task and still fall out. That is a limit of this eval, and the report says
+  how many it was.
+- **Instances aren't independent.** 25 of the 28 TS instances are one repo and 12 of the
+  22 Rust ones another, so results are also given per repo.
+- **A bad result is reported as it comes.** Nothing gets tuned against this sample in
+  9.4.0. If a fix follows from it, the run before the fix stays in this document.
