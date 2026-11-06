@@ -6,6 +6,19 @@ All notable changes to CKB will be documented in this file.
 
 ## [9.4.0] - 2026-11-06
 
+### Added — the done check
+
+- **`doneCheck` in `assessChange` and `ckb changes`, and `ckb changes --check`.**
+  It lists each use of a changed declaration that the diff left as it was, with
+  file, line and code, under the status `open`, `clear` or `not_assessed`.
+  `--check` sets the exit code: 0 clear, 2 open, 3 not assessed, 1 still an error.
+  It compares text and compiles nothing, and `clear` has to be earned: an index
+  behind HEAD, a cut reference list, a failed lookup or a changed file outside the
+  index all make it `not_assessed`. See `docs/features/done-check.md`.
+- **`assessChange` is in the default preset,** and in every preset built on core,
+  so core goes from 25 tools to 26. The first 512 bytes of the MCP instructions now
+  end on it.
+
 ### Fixed — first contact with a repo
 
 - **`ckb changes` and `assessChange` no longer call a change low risk when they
@@ -32,6 +45,17 @@ All notable changes to CKB will be documented in this file.
 These change what `assessChange`, `prepareChange`, `analyzeImpact` and
 `searchSymbols` report, so expect different numbers than in 9.3.
 
+- **`contractChanged` checks the use, not the file.** A file counted as handled as
+  soon as the diff touched it, so a comment edit hid a call the compiler still
+  rejects, and took the risk floor with it. A consumer inside the diff now counts
+  only if its use was changed. The wording said "outside this diff"; it now says
+  "left as it was".
+- **`findReferences` returns the source line.** Every `context` read
+  `// Context at file:line:col`, from a stub that was never filled in. A line that
+  no longer holds the symbol's name comes back empty, because the index can be older
+  than the file.
+- **The preset counts in the READMEs and in `ckb setup` are right again.** Some were
+  off by sixty tools.
 - **Changed symbols are the definitions you changed.** Every symbol merely
   referenced on a changed line used to count as changed, so editing a line that
   called `logger.Info` charged the change with `logger.Info`'s blast radius.
