@@ -338,3 +338,11 @@ is for.
   nobody, and it still scores `high` if it has consumers.
 
 The TS and Rust rows are from two private repos, as aggregates only.
+
+## Rust gaps: rules fixed before the fix
+
+- **Both binaries, same commits:** db89a5b (before) and the fixed one. The holdout is measured
+  before any fix is written. It isn't tuned against: whatever it shows after the fix is
+  reported, and a further fix needs another sample.
+- **Compiler truth:** both the first run (`broken`) and the deeper one (`broken_deep`, see the
+  tool's README), reported separately.
