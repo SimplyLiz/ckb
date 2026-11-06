@@ -15,6 +15,11 @@ All notable changes to CKB will be documented in this file.
   It compares text and compiles nothing, and `clear` has to be earned: an index
   behind HEAD, a cut reference list, a failed lookup or a changed file outside the
   index all make it `not_assessed`. See `docs/features/done-check.md`.
+- **Measured, including where it falls short.** On 30 SWE-Bench ProMax instances, the
+  open uses found 25/28 of what the compiler says broke on Go, 23/23 on TS (nearly all
+  one repo) and 8/17 on Rust. With the whole commit applied, 12 of 30 still report open
+  uses, and none the compiler could judge had broken, so `open` doesn't mean broken.
+  `docs/eval/change-prediction.md` has the numbers and the limits.
 - **`assessChange` is in the default preset,** and in every preset built on core,
   so core goes from 25 tools to 26. The first 512 bytes of the MCP instructions now
   end on it.

@@ -36,6 +36,9 @@ Risk now catches every breaking commit, but 7 of the 12 non-breaking ones are `h
 | Found, all languages | 2/7 | 7/7 | 6/7 |
 | Predicted test files, for that | 6 | 15 | 10 |
 
+The done check and a public run on SWE-Bench ProMax are further down, under "Done check:
+results" and "ProMax: results".
+
 How far to trust it:
 
 - **All numbers are small, and precision is pooled over few files.** At most 2 non-test
@@ -366,3 +369,67 @@ above can't be checked by anyone else; these can.
   22 Rust ones another, so results are also given per repo.
 - **A bad result is reported as it comes.** Nothing gets tuned against this sample in
   9.4.0. If a fix follows from it, the run before the fix stays in this document.
+
+### ProMax: results
+
+Binary at db89a5b, on 2026-11-06. Stripped per-instance data: `results/promax.jsonl` and
+`results/promax-outcomes.json`.
+
+**The short version: on Go and TS the check finds what breaks and lists little else. On
+Rust it misses half. And a third of complete commits still report open uses, none of which
+the compiler confirmed, so `open` can't be read as "broken".**
+
+| Outcome | Go | TS | Rust |
+|---|---|---|---|
+| qualifies | 13 | 9 | 8 |
+| no-signature-change-with-caller | 6 | 16 | 10 |
+| over-30-files | 4 | 3 | 4 |
+
+43 of the 73 fall outside this eval. All 30 that qualify were measured.
+
+| Non-test files the compiler says broke | Commits | Recall, `ckb_open` | Precision | Recall, grep | Precision | Files listed, `ckb_open` / grep |
+|---|---|---|---|---|---|---|
+| Go | 13 | 25/28 | 100% | 21/28 | 88% | 25 / 24 |
+| TS | 8 | 23/23 | 88% | 18/23 | 4% | 26 / 460 |
+| of which angular | 8 | 23/23 | 88% | 18/23 | 4% | 26 / 460 |
+| Rust | 7 | 8/17 | 40% | 8/17 | 7% | 20 / 122 |
+| of which ruff | 6 | 8/16 | 80% | 8/16 | 7% | 10 / 114 |
+| All | 28 | 56/68 | 79% | 47/68 | 8% | 71 / 606 |
+
+Test files, all languages: `ckb_open` 14/24 with 15 listed, grep 11/24 with 180 listed.
+
+| Whole commit applied | Commits | `clear` | `not_assessed` | `open` | Open uses | Compiler: no break | No compiler answer | Types / functions / other |
+|---|---|---|---|---|---|---|---|---|
+| Go | 13 | 9 | 1 | 3 | 27 | 27 | 0 | 0 / 9 / 18 |
+| TS | 9 | 1 | 4 | 4 | 61 | 23 | 38 | 3 / 55 / 3 |
+| of which angular | 8 | 1 | 4 | 3 | 23 | 23 | 0 | 3 / 17 / 3 |
+| Rust | 8 | 0 | 3 | 5 | 116 | 32 | 84 | 43 / 22 / 51 |
+| of which ruff | 6 | 0 | 3 | 3 | 30 | 30 | 0 | 3 / 7 / 20 |
+| All | 30 | 10 | 8 | 12 | 204 | 82 | 122 | 46 / 86 / 72 |
+
+How far to trust it:
+
+- **False alarms are the weak point.** 12 of 30 complete commits report an open use, 204 in
+  all. Of those the compiler could judge, 82 of 82 didn't break. Only 10 commits reach
+  `clear`. An agent stopping on `--check` would be told to look at something on 12 of 30
+  finished changes, and this eval doesn't say whether looking costs more than it saves.
+- **A long tail.** One Rust commit accounts for 84 of the open uses and one TS commit for 38
+  (a helper whose signature changed in a way its 38 callers didn't need to follow).
+- **Rust is weak, and the compiler truth is a lower bound there.** Recall is 8/17. In the
+  same runs `consumerFiles` reached 16/17 at 18% precision, so the index knew most of those
+  files and the per-use check lost them. That comparison is the first thing to look into.
+  The target symbol was named in 6 of 8.
+- **The Go misses are one commit:** an interface method, which is the documented limit.
+- **TS is nearly all one repo, and its compiler truth is noisy.** 8 of 9 are angular, where
+  `tsc` at the root reports thousands of diagnostics before any change, up to about 64,000,
+  so "more than at the parent" is all it can say. grep's 4% comes from short common names
+  there, so don't read it as grep's general precision.
+- **No compiler answer for two commits** (ant-design and qdrant: the checker didn't run), and
+  those hold 122 of the 204 open uses. So they are candidates, not known false alarms.
+- **Environment.** ruff pins toolchains without `rust-analyzer`, so its 6 ran with
+  `RUSTUP_TOOLCHAIN=stable`, compiler included. TS dependencies were installed with
+  `--ignore-scripts`.
+- **Types didn't fire the rule:** 46 of 204 open uses overall, under the third set above,
+  though 43 of 116 on Rust alone. Nothing was tuned against this sample.
+- **It measures output, not agents.** Whether any of this helps an agent is what the
+  benchmark after this release is for.
