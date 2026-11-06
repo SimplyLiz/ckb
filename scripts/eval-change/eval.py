@@ -82,10 +82,11 @@ def decl_name(line, lang):
     return None
 
 
-def parse_commits(repo, head):
+def parse_commits(repo, head, limit=None):
     """Yield (sha, parent, {path: status}, {path: (removed, added)}) per non-merge commit."""
+    count = [f"-n{limit}"] if limit else []
     proc = subprocess.Popen(
-        ["git", "-C", str(repo), "log", "--no-merges", "--no-renames", "-U0", "--no-color",
+        ["git", "-C", str(repo), "log", *count, "--no-merges", "--no-renames", "-U0", "--no-color",
          "--format=%x00%H %P", "--raw", "-p", head],
         stdout=subprocess.PIPE,
     )
