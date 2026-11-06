@@ -1,0 +1,201 @@
+{
+ "lang": "rust",
+ "name": "helix",
+ "repo": "/tmp/ckb940/holdout/helix",
+ "head": "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc",
+ "seed": "ckb-eval-change-v1",
+ "commits_in_pool": 7621,
+ "candidates": 497,
+ "index_lang": "rust",
+ "prep": null,
+ "target": 4,
+ "sample": [
+  {
+   "sha": "9c419fe05cd51c96df29ac02e3dc5c73cae4ef97",
+   "parent": "5eb69183926ab2f781aa08abf587ba338027854b",
+   "symbol": "default_line_ending",
+   "kind": "removed",
+   "definers": [
+    "helix-core/src/line_ending.rs"
+   ],
+   "decl_before": [
+    "pubfndefault_line_ending()->Option<LineEnding>"
+   ],
+   "decl_after": [],
+   "truth_all": [
+    "helix-core/src/lib.rs",
+    "helix-view/src/document.rs",
+    "helix-view/src/editor.rs"
+   ],
+   "truth_ref": [
+    "helix-core/src/lib.rs",
+    "helix-view/src/document.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 4,
+   "rank": "012dba5b86f451ebe18651d2a822a7f2380b13f36fc4ce34ede2fd4240657a36"
+  },
+  {
+   "sha": "c638b6b60e69697b7e7957ed1af1ac071c41974b",
+   "parent": "cccc1949ebabcbc1b336f370847626c9d6774fbb",
+   "symbol": "close",
+   "kind": "signature",
+   "definers": [
+    "helix-view/src/editor.rs"
+   ],
+   "decl_before": [
+    "pubfnclose(&mutself,id:ViewId,close_buffer:bool)"
+   ],
+   "decl_after": [
+    "pubfnclose(&mutself,id:ViewId)"
+   ],
+   "truth_all": [
+    "helix-term/src/commands.rs",
+    "helix-view/src/tree.rs",
+    "helix-view/src/view.rs"
+   ],
+   "truth_ref": [
+    "helix-term/src/commands.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 4,
+   "rank": "015182f6fa38d7e08e4f5d9a4f531f63f40c0a05b70861447f29dc4a2715c0ae"
+  },
+  {
+   "sha": "a6cadddef4b43659ad3faedac455f32f6019025d",
+   "parent": "2dba228c766e5e9e4b0fe0c12d30909f51faa28e",
+   "symbol": "ensure_grapheme_boundary_byte",
+   "kind": "removed",
+   "definers": [
+    "helix-core/src/graphemes.rs"
+   ],
+   "decl_before": [
+    "pubfnensure_grapheme_boundary_byte(slice:RopeSlice,byte_idx:usize)->usize"
+   ],
+   "decl_after": [],
+   "truth_all": [
+    "helix-term/src/ui/editor.rs"
+   ],
+   "truth_ref": [
+    "helix-term/src/ui/editor.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 2,
+   "rank": "01a6c4408b60e4c057f993bde302ed802135084eb144fa63ca00e59147a445d7"
+  },
+  {
+   "sha": "4555a6b4332b48384d4bccfef527d26060c34037",
+   "parent": "2d838d729cca26a718e3536e8d75c60396420dbd",
+   "symbol": "paste",
+   "kind": "signature",
+   "definers": [
+    "helix-term/src/commands.rs"
+   ],
+   "decl_before": [
+    "fnpaste(cx:&mutContext,pos:Paste)"
+   ],
+   "decl_after": [
+    "fnpaste(editor:&mutEditor,register:char,pos:Paste,count:usize)"
+   ],
+   "truth_all": [
+    "helix-term/src/commands/typed.rs",
+    "helix-view/src/editor.rs",
+    "helix-view/src/register.rs"
+   ],
+   "truth_ref": [
+    "helix-term/src/commands/typed.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 4,
+   "rank": "01c685b96130229e8eb8c5c29534c8376d065204fa03d0638d12cfece2abb3b9"
+  },
+  {
+   "sha": "f03830b047f0db9d9bb4576f771b5988329be46f",
+   "parent": "8adcf5083ffc12532ecca7594a2192acd954dd3a",
+   "symbol": "start",
+   "kind": "signature",
+   "definers": [
+    "helix-lsp/src/lib.rs"
+   ],
+   "decl_before": [
+    "fnstart(cmd:&str,args:&[String])->Self"
+   ],
+   "decl_after": [
+    "pubfnstart(ex:&Executor,cmd:&str,args:&[String])->Self",
+    "pubfnstart(ex:&Executor,reader:BufReader<ChildStdout>,writer:BufWriter<ChildStdin>)->(Receiver<Message>,Sender<Payload>)"
+   ],
+   "truth_all": [
+    "helix-term/src/main.rs"
+   ],
+   "truth_ref": [
+    "helix-term/src/main.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 5,
+   "rank": "020cac7e9ba7610f3b12ca0ad3c06b86f306e643de57ded52ecf9714bf4c486f"
+  },
+  {
+   "sha": "8555248b012ddfc4578c5d82f9c7b31495b03ca0",
+   "parent": "3906f6605fd1ba1ed72ada9f4bbd8b88facc51ce",
+   "symbol": "new",
+   "kind": "signature",
+   "definers": [
+    "helix-term/src/ui/picker.rs"
+   ],
+   "decl_before": [
+    "pubfnnew(columns:Vec<Column<T,D>>,primary_column:usize,options:Vec<T>,editor_data:D,callback_fn:implFn(&mutContext,&T,Action)+'static)->Self",
+    "pubfnnew(name:implInto<Arc<str>>,format:ColumnFormatFn<T,D>)->Self"
+   ],
+   "decl_after": [
+    "pubfnnew(columns:Vec<Column<T,D>>,primary_column:usize,options:implIntoIterator<Item=T>,editor_data:D,callback_fn:implFn(&mutContext,&T,Action)+'static)->Self",
+    "pubfnnew(name:implInto<Arc<str>>,format:ColumnFormatFn<T,D>)->Self"
+   ],
+   "truth_all": [
+    "helix-term/src/commands.rs",
+    "helix-term/src/commands/lsp.rs",
+    "helix-term/src/ui/mod.rs"
+   ],
+   "truth_ref": [
+    "helix-term/src/commands.rs",
+    "helix-term/src/ui/mod.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 4,
+   "rank": "023a29de5f046e7ce9ec7605e9701b54a064ee8c7ca944210762ef3e8a07acb1"
+  },
+  {
+   "sha": "8a019b423f5d51bcfc107da9cb50aa90eacff19d",
+   "parent": "8fda87af2bb0625c502a23ddbd78a7447ada7bcb",
+   "symbol": "find_root",
+   "kind": "signature",
+   "definers": [
+    "helix-core/src/lib.rs"
+   ],
+   "decl_before": [
+    "pubfnfind_root(root:Option<&str>)->Option<std::path::PathBuf>"
+   ],
+   "decl_after": [
+    "pubfnfind_root(root:Option<&str>,root_markers:&[String])->Option<std::path::PathBuf>"
+   ],
+   "truth_all": [
+    "helix-lsp/src/client.rs",
+    "helix-lsp/src/lib.rs",
+    "helix-term/src/commands.rs"
+   ],
+   "truth_ref": [
+    "helix-lsp/src/client.rs",
+    "helix-term/src/commands.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 5,
+   "rank": "029b54d2e702de07142dcdff2aea22e0925ca3b533e9d6f19b778767c0d93215"
+  }
+ ]
+}

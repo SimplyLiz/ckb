@@ -433,3 +433,18 @@ How far to trust it:
   though 43 of 116 on Rust alone. Nothing was tuned against this sample.
 - **It measures output, not agents.** Whether any of this helps an agent is what the
   benchmark after this release is for.
+
+## Rust gaps: rules fixed before the fix
+
+ProMax found the Rust misses, so ProMax can't also judge the fix: nothing below can count as
+out of sample there. Written and committed before the fix, along with the sample:
+
+- **Holdout:** `samples/rust-holdout/`, 4 commits each from axum, helix and ripgrep, none of
+  them in ProMax, picked by `select` with the seed and pinned heads as committed. Rust only,
+  because the fix is Rust only.
+- **Both binaries, same commits:** db89a5b (before) and the fixed one. The holdout is measured
+  before any fix is written. It isn't tuned against: whatever it shows after the fix is
+  reported, and a further fix needs another sample.
+- **ProMax is re-run too, marked as in-sample.** The db89a5b table above stays as it is.
+- **Compiler truth:** both the first run (`broken`) and the deeper one (`broken_deep`, see the
+  tool's README), reported separately.

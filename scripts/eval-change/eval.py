@@ -645,6 +645,43 @@ def apply_whole_commit(entry, clone):
             git(clone, "add", "-N", path)
 
 
+def deep_compile_truth(entry, clone, broken, baseline, check_cmd, check_prefix, env, lang, log, rounds=3):
+    """What the compiler blames once what it already blamed is fixed.
+
+    cargo doesn't build the dependents of a crate with errors, and rustc stops at
+    resolution errors before it type-checks, so one run is a lower bound. Each round puts
+    the commit's version of the blamed files in, the way a developer works through
+    errors, and runs again. Only files the commit edits can be fixed, and only they
+    count: anything else broken at this point comes from the half-applied commit.
+    """
+    in_commit = set(git(clone, "diff", "--no-renames", "--name-only", entry["parent"], entry["sha"]).split())
+    deep = set(broken)
+    applied = set()
+    for _ in range(rounds):
+        todo = (deep & in_commit) - applied
+        if not todo:
+            break
+        time.sleep(1.1)
+        for path in todo:
+            blob = subprocess.run(["git", "-C", str(clone), "show", f"{entry['sha']}:{path}"],
+                                  capture_output=True)
+            if blob.returncode == 0:
+                (Path(clone) / path).write_bytes(blob.stdout)
+        applied |= todo
+        after = run_check(check_cmd, check_prefix, str(clone), env, lang, log)
+        if after is None:
+            break
+        found = {p for p, n in after.items() if n > baseline.get(p, 0) and is_source(p, lang)}
+        deep |= (found & in_commit) - set(entry["definers"])
+    time.sleep(1.1)
+    for path in applied:
+        if git(clone, "ls-tree", entry["parent"], "--", path).strip():
+            git(clone, "checkout", "-q", entry["parent"], "--", path)
+        else:
+            (Path(clone) / path).unlink(missing_ok=True)
+    return deep
+
+
 def whole_commit_view(entry, clone, ckb, env, log, check_cmd, check_prefix, baseline, lang):
     """The done check once the commit is complete: each open use is a candidate false alarm."""
     time.sleep(1.1)
@@ -740,6 +777,10 @@ def measure_one(entry, sample, clone, ckb, env, min_gb, log, check_cmd, check_pr
                 "broken_tests": sorted(p for p in broken if is_test(p, lang)),
                 "baseline_diagnostics": sum(baseline_diags.values()),
             }
+            if lang == "rust":
+                deep = deep_compile_truth(entry, clone, broken, baseline_diags, check_cmd, check_prefix, env, lang, log)
+                rec["compile"]["broken_deep"] = sorted(p for p in deep if not is_test(p, lang))
+                rec["compile"]["broken_tests_deep"] = sorted(p for p in deep if is_test(p, lang))
 
     rc, out, secs = sh([ckb, "changes", "--format", "json"], clone, env, 1200, log)
     rec["changes_seconds"] = round(secs)
@@ -1212,6 +1253,11 @@ def report_markdown(records, redact):
 
 def cmd_report(a):
     records = [json.loads(l) for l in Path(a.results).read_text().splitlines() if l.strip()]
+    if a.deep_truth:
+        for r in records:
+            comp = r.get("compile")
+            if comp and "broken_deep" in comp:
+                comp["broken"], comp["broken_tests"] = comp["broken_deep"], comp["broken_tests_deep"]
     if a.json:
         print(json.dumps(analyse(records), indent=1))
     else:
@@ -1259,6 +1305,7 @@ def main():
     o.add_argument("--results", required=True)
     o.add_argument("--redact", action="store_true", help="aggregates only: no commit, symbol or file names")
     o.add_argument("--json", action="store_true")
+    o.add_argument("--deep-truth", action="store_true", help="score Rust against broken_deep, the compiler truth after fixing what it blamed")
     o.set_defaults(fn=cmd_report)
 
     a = p.parse_args()

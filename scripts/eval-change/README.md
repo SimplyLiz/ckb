@@ -86,9 +86,12 @@ Results from an older binary still report, without the `consumerFiles` rows.
 ## What it can't tell you
 
 - **Rust compiler truth is a lower bound.** `cargo check` stops at a crate with errors,
-  so if the defining crate no longer builds alone, its dependents report nothing. Pass
-  `--check` and `--check-prefix` for a nested manifest. `gopls` and `tsc` don't have this
-  problem.
+  so if the defining crate no longer builds alone, its dependents report nothing, and rustc
+  stops at resolution errors before type-checking. Each Rust record therefore also has
+  `broken_deep`: the commit's version of each blamed file goes in and the compiler runs
+  again, up to three rounds, counting only files the commit edits. `report --deep-truth`
+  scores against it. Pass `--check` and `--check-prefix` for a nested manifest. `gopls` and
+  `tsc` don't have this problem.
 - **Truth (mention) favors grep by construction.** The sample requires a changed line
   naming the symbol, and a file with that line almost always contains the word, so
   grep recall there is about 100% before anything runs. Consumers that break without
