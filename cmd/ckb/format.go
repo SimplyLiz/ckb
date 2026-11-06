@@ -1205,7 +1205,7 @@ func truncationLine(info *TruncationInfoCLI) string {
 // unless all is set; the rest stay in the JSON output.
 func writeConsumerFiles(b *strings.Builder, files *query.ConsumerFiles, all bool) {
 	if files != nil && len(files.ContractChanged)+len(files.ContractChangedTests) > 0 {
-		b.WriteString(fmt.Sprintf("Look at these first: they use a symbol whose declaration changed (%d, heuristic)\n",
+		b.WriteString(fmt.Sprintf("Look at these first: they use a symbol whose declaration changed, at a use this diff left as it was (%d, heuristic)\n",
 			len(files.ContractChanged)+len(files.ContractChangedTests)))
 		for _, p := range append(append([]string{}, files.ContractChanged...), files.ContractChangedTests...) {
 			b.WriteString("  " + p + "\n")
@@ -1238,6 +1238,42 @@ func writeConsumerFiles(b *strings.Builder, files *query.ConsumerFiles, all bool
 	if files.Truncated {
 		b.WriteString(fmt.Sprintf("Consumer files are incomplete: %s.\n\n", files.Note))
 	}
+}
+
+// writeDoneCheck lists the uses a change left as they were. It says "open", never
+// "safe": the comparison is of text, and nothing was compiled.
+func writeDoneCheck(b *strings.Builder, check *query.DoneCheck, verbose bool) {
+	if check == nil {
+		return
+	}
+	switch check.Status {
+	case query.DoneCheckOpen:
+		b.WriteString(fmt.Sprintf("Done check: OPEN  %s left as they were, %d touched\n",
+			countNoun(check.OpenCount, "use", "uses"), check.UpdatedCount))
+	case query.DoneCheckClear:
+		b.WriteString(fmt.Sprintf("Done check: clear  %d touched\n", check.UpdatedCount))
+	default:
+		b.WriteString("Done check: NOT ASSESSED\n")
+	}
+	shown := len(check.OpenSites)
+	if !verbose && shown > 20 {
+		shown = 20
+	}
+	for i := range check.OpenSites[:shown] {
+		site := &check.OpenSites[i]
+		b.WriteString(fmt.Sprintf("  %s:%d  %s", site.File, site.Line, site.Code))
+		if site.Unverified {
+			b.WriteString("  (index out of date here, line may be off)")
+		}
+		b.WriteString(fmt.Sprintf("  [%s %s]\n", site.Symbol, site.Change))
+	}
+	if more := check.OpenCount - shown; more > 0 {
+		b.WriteString(fmt.Sprintf("  … and %d more (--verbose, or --format=json up to %d)\n", more, query.MaxOpenSites))
+	}
+	if check.Note != "" {
+		b.WriteString("  " + check.Note + "\n")
+	}
+	b.WriteString("\n")
 }
 
 func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
@@ -1294,6 +1330,8 @@ func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 		}
 		b.WriteString("\n")
 	}
+
+	writeDoneCheck(&b, resp.DoneCheck, verbose)
 
 	// Counts line
 	symbolsChanged, downstream, modules := 0, 0, 0
@@ -1352,7 +1390,7 @@ func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 			if c.Kind != "possible-contract-change" {
 				line := "    " + c.Kind
 				if c.ConsumerCount > 0 {
-					line += fmt.Sprintf(", %s outside this change", countNoun(c.ConsumerCount, "consumer file", "consumer files"))
+					line += fmt.Sprintf(", %s with a use this change left as it was", countNoun(c.ConsumerCount, "consumer file", "consumer files"))
 				}
 				b.WriteString(line + "\n")
 			}

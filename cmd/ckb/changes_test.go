@@ -308,3 +308,50 @@ func TestNoChangesSaysSoInsteadOfARiskLevel(t *testing.T) {
 		}
 	}
 }
+
+func TestDoneCheckExitCode(t *testing.T) {
+	tests := []struct {
+		check *query.DoneCheck
+		want  int
+	}{
+		{&query.DoneCheck{Status: query.DoneCheckClear}, 0},
+		{&query.DoneCheck{Status: query.DoneCheckOpen}, 2},
+		{&query.DoneCheck{Status: query.DoneCheckNotAssessed}, 3},
+		{&query.DoneCheck{Status: "something new"}, 3},
+		{nil, 3},
+	}
+	for _, tt := range tests {
+		if got := doneCheckExitCode(tt.check); got != tt.want {
+			t.Errorf("doneCheckExitCode(%+v) = %d, want %d", tt.check, got, tt.want)
+		}
+	}
+}
+
+func TestWriteDoneCheck(t *testing.T) {
+	var b strings.Builder
+	writeDoneCheck(&b, &query.DoneCheck{
+		Status:       query.DoneCheckOpen,
+		OpenCount:    2,
+		UpdatedCount: 1,
+		OpenSites: []query.OpenSite{
+			{Symbol: "Save", Change: "changed", File: "b/b.go", Line: 6, Code: "lib.Save(1)"},
+			{Symbol: "Save", Change: "changed", File: "c/c.go", Line: 9, Code: "other()", Unverified: true},
+		},
+		Note: "Text comparison.",
+	}, false)
+	out := b.String()
+	for _, want := range []string{"Done check: OPEN", "2 uses left as they were", "b/b.go:6  lib.Save(1)", "c/c.go:9", "line may be off", "Text comparison."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(strings.ToLower(out), "safe") {
+		t.Errorf("the check must not call anything safe:\n%s", out)
+	}
+
+	b.Reset()
+	writeDoneCheck(&b, nil, false)
+	if b.Len() != 0 {
+		t.Errorf("no check should print nothing, got %q", b.String())
+	}
+}
