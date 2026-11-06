@@ -458,13 +458,13 @@ type presetInfo struct {
 }
 
 var presets = []presetInfo{
-	{id: "core", name: "Core", description: "Essential tools for navigation and analysis (14 tools, recommended)"},
-	{id: "review", name: "Review", description: "Code review focused: PR summary, hotspots, ownership (19 tools)"},
-	{id: "refactor", name: "Refactor", description: "Refactoring focused: impact analysis, coupling, complexity (19 tools)"},
-	{id: "docs", name: "Docs", description: "Documentation focused: doc coverage, staleness checks (20 tools)"},
-	{id: "ops", name: "Ops", description: "Operations: jobs, webhooks, scheduling, metrics (25 tools)"},
-	{id: "federation", name: "Federation", description: "Multi-repo analysis and cross-repo search (28 tools)"},
-	{id: "full", name: "Full", description: "All available tools (76 tools)"},
+	{id: "core", name: "Core", description: "Essential tools for navigation and analysis (26 tools, recommended)"},
+	{id: "review", name: "Review", description: "Code review focused: PR summary, hotspots, ownership (44 tools)"},
+	{id: "refactor", name: "Refactor", description: "Refactoring focused: impact analysis, coupling, complexity (44 tools)"},
+	{id: "docs", name: "Docs", description: "Documentation focused: doc coverage, staleness checks (35 tools)"},
+	{id: "ops", name: "Ops", description: "Operations: jobs, webhooks, scheduling, metrics (44 tools)"},
+	{id: "federation", name: "Federation", description: "Multi-repo analysis and cross-repo search (47 tools)"},
+	{id: "full", name: "Full", description: "All available tools (111 tools)"},
 }
 
 func selectPreset() (string, error) {

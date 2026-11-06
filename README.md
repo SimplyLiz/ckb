@@ -626,16 +626,16 @@ CKB exposes 111+ tools, but most sessions only need a subset. Use presets to red
 # List all available presets with tool counts and token estimates
 ckb mcp --list-presets
 
-# Default: core preset (25 essential tools)
+# Default: core preset (26 essential tools)
 ckb mcp
 
 # Workflow-specific presets
-ckb mcp --preset=core        # 25 tools - search, explain, impact (default)
-ckb mcp --preset=review      # 43 tools - core + diff, ownership, PR review
-ckb mcp --preset=refactor    # 42 tools - core + coupling, dead code
-ckb mcp --preset=federation  # 46 tools - core + cross-repo
-ckb mcp --preset=docs        # 34 tools - core + doc-symbol linking
-ckb mcp --preset=ops         # 43 tools - core + jobs, webhooks, metrics
+ckb mcp --preset=core        # 26 tools - search, explain, impact (default)
+ckb mcp --preset=review      # 44 tools - core + diff, ownership, PR review
+ckb mcp --preset=refactor    # 44 tools - core + coupling, dead code
+ckb mcp --preset=federation  # 47 tools - core + cross-repo
+ckb mcp --preset=docs        # 35 tools - core + doc-symbol linking
+ckb mcp --preset=ops         # 44 tools - core + jobs, webhooks, metrics
 ckb mcp --preset=full        # 111 tools - complete feature set
 ```
 

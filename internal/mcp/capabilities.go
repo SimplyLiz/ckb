@@ -41,6 +41,7 @@ type InitializeResult struct {
 // without updating instructionsText, the test catches the drift.
 var instructionToolNames = []string{
 	"prepareChange",
+	"assessChange",
 	"analyzeImpact",
 	"explore",
 	"understand",
@@ -83,7 +84,8 @@ const instructionsCore = `CKB is code intelligence for this repo: symbols, parse
 	`Find symbols via searchSymbols, then findReferences with the symbolId. ` +
 	`Reviewing a PR: call reviewPR if you have it; otherwise, if not yet expanded, ` +
 	`call expandToolset once with preset "review" or "full" and a reason (it replaces ` +
-	`your preset); already expanded without reviewPR? Restart CKB with --preset=review.`
+	`your preset); already expanded without reviewPR? Restart CKB with --preset=review. ` +
+	`Done editing? Call assessChange, resolve openSites.`
 
 // instructionsText builds the InitializeResult.Instructions string.
 //

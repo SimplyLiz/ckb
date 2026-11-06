@@ -26,7 +26,7 @@ const DefaultPreset = PresetCore
 // Core must enable one complete workflow without expansion.
 // Default workflow: "Investigate & Assess Impact"
 var Presets = map[string][]string{
-	// Core: 24 tools - enables "Investigate & Assess Impact" workflow completely
+	// Core: 26 tools - enables "Investigate & Assess Impact" workflow completely
 	// v8.0: Added compound tools (explore, understand, prepareChange, batchGet, batchSearch)
 	// to reduce tool calls by 60-70% for common workflows
 	PresetCore: {
@@ -34,6 +34,7 @@ var Presets = map[string][]string{
 		"explore",       // Replaces: explainFile → searchSymbols → getCallGraph → getHotspots
 		"understand",    // Replaces: searchSymbols → getSymbol → explainSymbol → findReferences → getCallGraph
 		"prepareChange", // Replaces: analyzeImpact + getAffectedTests + analyzeCoupling + risk
+		"assessChange",  // The other end of prepareChange: what the change left open
 		"batchGet",      // Multiple symbols in one call
 		"batchSearch",   // Multiple searches in one call
 
@@ -108,7 +109,7 @@ var Presets = map[string][]string{
 	// Refactor: core + refactoring analysis tools
 	PresetRefactor: {
 		// Core tools
-		"explore", "understand", "prepareChange", "batchGet", "batchSearch",
+		"explore", "understand", "prepareChange", "assessChange", "batchGet", "batchSearch",
 		"searchSymbols", "symbolExists", "getSymbol", "explainSymbol", "explainFile", "explainPath",
 		"findReferences", "getCallGraph", "traceUsage",
 		"getArchitecture", "getModuleOverview", "getModuleResponsibilities", "listKeyConcepts",
@@ -139,7 +140,7 @@ var Presets = map[string][]string{
 	// Federation: core + federation + contract tools
 	PresetFederation: {
 		// Core tools
-		"explore", "understand", "prepareChange", "batchGet", "batchSearch",
+		"explore", "understand", "prepareChange", "assessChange", "batchGet", "batchSearch",
 		"searchSymbols", "symbolExists", "getSymbol", "explainSymbol", "explainFile", "explainPath",
 		"findReferences", "getCallGraph", "traceUsage",
 		"getArchitecture", "getModuleOverview", "getModuleResponsibilities", "listKeyConcepts",
@@ -173,7 +174,7 @@ var Presets = map[string][]string{
 	// Docs: core + doc-symbol linking + decision tools
 	PresetDocs: {
 		// Core tools
-		"explore", "understand", "prepareChange", "batchGet", "batchSearch",
+		"explore", "understand", "prepareChange", "assessChange", "batchGet", "batchSearch",
 		"searchSymbols", "symbolExists", "getSymbol", "explainSymbol", "explainFile", "explainPath",
 		"findReferences", "getCallGraph", "traceUsage",
 		"getArchitecture", "getModuleOverview", "getModuleResponsibilities", "listKeyConcepts",
@@ -195,7 +196,7 @@ var Presets = map[string][]string{
 	// Ops: core + operational + telemetry tools
 	PresetOps: {
 		// Core tools
-		"explore", "understand", "prepareChange", "batchGet", "batchSearch",
+		"explore", "understand", "prepareChange", "assessChange", "batchGet", "batchSearch",
 		"searchSymbols", "symbolExists", "getSymbol", "explainSymbol", "explainFile", "explainPath",
 		"findReferences", "getCallGraph", "traceUsage",
 		"getArchitecture", "getModuleOverview", "getModuleResponsibilities", "listKeyConcepts",

@@ -50,8 +50,8 @@ func TestHandleInitializeIncludesInstructions(t *testing.T) {
 // reach a truncating client has to be inside this window: prepareChange for
 // pre-edit checks, searchSymbols + findReferences for symbol lookup, the
 // expandToolset expansion rule (including that it's a one-time,
-// session-scoped operation that can expand to "full"), and how to get to
-// reviewPR for PR review.
+// session-scoped operation that can expand to "full"), how to get to reviewPR
+// for PR review, and assessChange as the last step of a change.
 func TestInstructionsCoreFitsIn512Bytes(t *testing.T) {
 	text := instructionsText()
 	full := []byte(text)
@@ -61,7 +61,7 @@ func TestInstructionsCoreFitsIn512Bytes(t *testing.T) {
 	}
 	first512 := string(full[:cut])
 
-	for _, want := range []string{"prepareChange", "searchSymbols", "findReferences", "expandToolset", "reviewPR", "once", "full"} {
+	for _, want := range []string{"prepareChange", "searchSymbols", "findReferences", "expandToolset", "reviewPR", "once", "full", "assessChange", "openSites"} {
 		if !strings.Contains(first512, want) {
 			t.Errorf("first 512 chars of instructions must contain %q (Codex truncates here), got: %s", want, first512)
 		}

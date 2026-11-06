@@ -14,8 +14,8 @@ func TestPresetFiltering(t *testing.T) {
 	// Test core preset (default)
 	// v8.3: Core now includes explainPath, getModuleResponsibilities, exportForLLM
 	coreTools := server.GetFilteredTools()
-	if len(coreTools) != 25 {
-		t.Errorf("expected 25 core tools, got %d", len(coreTools))
+	if len(coreTools) != 26 {
+		t.Errorf("expected 26 core tools, got %d", len(coreTools))
 	}
 
 	// Verify compound tools come first (preferred for AI workflows)
