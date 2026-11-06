@@ -4,8 +4,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends"
 )
@@ -101,5 +105,55 @@ func TestCountReferences_UnknownSymbolIsZero(t *testing.T) {
 	idx, _ := buildRefCountIndex(3, true)
 	if got := idx.CountReferences("scip-go gomod nope `x`/Missing().", ReferenceOptions{IncludeDefinition: true}); got != 0 {
 		t.Errorf("CountReferences(unknown) = %d, want 0", got)
+	}
+}
+
+func TestFindReferences_ContextIsTheSourceLine(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	const sym = "scip-go gomod example.com/m v1 `example.com/m/lib`/Save()."
+	write := func(path, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, path), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a.go", "package a\n\n\tlib.Save(1)  \nlib.Saved(2)\n")
+	long := strings.Repeat("é", 150) + " Save"
+	write("long.go", long+"\n")
+
+	occ := func(line int32) *Occurrence { return &Occurrence{Symbol: sym, Range: []int32{line, 5, 9}} }
+	doc := func(path string, occs ...*Occurrence) *Document {
+		return &Document{RelativePath: path, Occurrences: occs}
+	}
+	idx := &SCIPIndex{Documents: []*Document{
+		doc("a.go", occ(2), occ(3), occ(99)), // The source line, a line lacking the name, past the end
+		doc("gone.go", occ(0)),               // No such file
+		doc("../outside.go", occ(0)),         // Not in the repo
+		doc("long.go", occ(0)),
+	}}
+	adapter := &SCIPAdapter{
+		index:        idx,
+		repoRoot:     root,
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		queryTimeout: time.Second,
+	}
+
+	res, err := adapter.FindReferences(t.Context(), sym, backends.RefOptions{IncludeTests: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"lib.Save(1)", "", "", "", ""}
+	if len(res.References) != len(want)+1 {
+		t.Fatalf("got %d references", len(res.References))
+	}
+	for i, context := range want {
+		if got := res.References[i].Context; got != context {
+			t.Errorf("reference %d at %+v: context %q, want %q", i, res.References[i].Location, got, context)
+		}
+	}
+	got := res.References[len(want)].Context
+	if !strings.HasSuffix(got, "…") || !utf8.ValidString(got) || len(got) > maxContextLength+len("…") {
+		t.Errorf("long line: %q, want it cut on a character boundary", got)
 	}
 }

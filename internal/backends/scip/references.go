@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -65,12 +66,6 @@ func (idx *SCIPIndex) processOccurrence(symbolId string, doc *Document, occ *Occ
 		return nil
 	}
 
-	// Get context if file path is available
-	context := ""
-	if options.IncludeContext {
-		context = extractContext(doc.RelativePath, location, idx)
-	}
-
 	// Determine the containing symbol (O(1) with ContainerIndex)
 	fromSymbol := findContainingSymbolFast(doc, occ, idx)
 
@@ -79,7 +74,6 @@ func (idx *SCIPIndex) processOccurrence(symbolId string, doc *Document, occ *Occ
 		Location:   location,
 		Kind:       kind,
 		FromSymbol: fromSymbol,
-		Context:    context,
 	}
 }
 
@@ -88,7 +82,6 @@ type ReferenceOptions struct {
 	MaxResults          int
 	IncludeDefinition   bool
 	IncludeTests        bool
-	IncludeContext      bool
 	Scope               []string
 	ReferenceKindFilter []ReferenceKind
 }
@@ -186,15 +179,76 @@ func isWithinRange(inner, outer []int32) bool {
 	return innerStart >= outerStart && innerEnd <= outerEnd
 }
 
-// extractContext extracts code context around a location
-func extractContext(relativePath string, location *Location, idx *SCIPIndex) string {
-	// This is a simplified version - in production, you'd want to:
-	// 1. Read the actual file from disk (relativePath relative to repo root)
-	// 2. Extract the line(s) around the location
-	// 3. Handle edge cases (file not found, etc.)
+// maxContextFileSize keeps a generated or minified file from being read for one line.
+const maxContextFileSize = 2 << 20
 
-	// For now, return a placeholder
-	return fmt.Sprintf("// Context at %s:%d:%d", relativePath, location.StartLine, location.StartColumn)
+// maxContextLength bounds the line returned for one reference.
+const maxContextLength = 200
+
+// contextReader reads the source lines of references, each file once per call.
+type contextReader struct {
+	repoRoot string
+	files    map[string][]string
+}
+
+func newContextReader(repoRoot string) *contextReader {
+	return &contextReader{repoRoot: repoRoot, files: make(map[string][]string)}
+}
+
+// line returns a reference's source line, 0-indexed like an occurrence's location, or
+// nothing if the file can't be read or no longer has the name on that line. The index
+// can be older than the file, and a wrong line is worse than none.
+func (c *contextReader) line(relativePath string, line int, name string) string {
+	if c.repoRoot == "" || !filepath.IsLocal(relativePath) {
+		return ""
+	}
+	lines, read := c.files[relativePath]
+	if !read {
+		lines = readContextLines(filepath.Join(c.repoRoot, relativePath))
+		c.files[relativePath] = lines
+	}
+	if line < 0 || line >= len(lines) {
+		return ""
+	}
+	text := lines[line]
+	if name != "" && !containsWord(text, name) {
+		return ""
+	}
+	text = strings.TrimSpace(text)
+	if len(text) > maxContextLength {
+		text = strings.ToValidUTF8(text[:maxContextLength], "") + "…"
+	}
+	return text
+}
+
+func readContextLines(path string) []string {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Size() > maxContextFileSize {
+		return nil
+	}
+	content, err := os.ReadFile(path) // #nosec G304 //nolint:gosec // repo-relative path, checked by the caller
+	if err != nil {
+		return nil
+	}
+	return strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
+}
+
+func containsWord(text, word string) bool {
+	isWord := func(b byte) bool {
+		return b == '_' || b == '$' || b >= 0x80 || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+	}
+	for offset := 0; offset+len(word) <= len(text); {
+		i := strings.Index(text[offset:], word)
+		if i < 0 {
+			return false
+		}
+		start, end := offset+i, offset+i+len(word)
+		if (start == 0 || !isWord(text[start-1])) && (end == len(text) || !isWord(text[end])) {
+			return true
+		}
+		offset = start + 1
+	}
+	return false
 }
 
 // ExtractContextFromFile extracts code context from a file
@@ -257,7 +311,6 @@ func (idx *SCIPIndex) FindReferencesByLocation(filePath string, line, column int
 	return idx.FindReferences(targetOcc.Symbol, ReferenceOptions{
 		IncludeDefinition: true,
 		IncludeTests:      true,
-		IncludeContext:    false,
 	})
 }
 

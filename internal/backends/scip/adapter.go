@@ -372,7 +372,6 @@ func (s *SCIPAdapter) FindReferences(ctx context.Context, symbolID string, opts 
 		MaxResults:        opts.MaxResults,
 		IncludeDefinition: opts.IncludeDeclaration,
 		IncludeTests:      opts.IncludeTests,
-		IncludeContext:    true,
 		Scope:             opts.Scope,
 	}
 
@@ -390,8 +389,13 @@ func (s *SCIPAdapter) FindReferences(ctx context.Context, symbolID string, opts 
 
 	// Convert results
 	references := make([]backends.Reference, len(scipRefs))
+	contexts := newContextReader(s.repoRoot)
+	name := SymbolSimpleName(symbolID)
 	for i, scipRef := range scipRefs {
 		references[i] = s.convertToReference(scipRef)
+		if scipRef.Location != nil {
+			references[i].Context = contexts.line(scipRef.Location.FileId, scipRef.Location.StartLine, name)
+		}
 	}
 
 	// Real total, uncapped by MaxResults, so callers can report truncation honestly.
