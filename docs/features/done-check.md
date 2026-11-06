@@ -59,5 +59,9 @@ It compares text and compiles nothing, so it says "open", never "safe".
   nothing here.
 - **Other repositories aren't visible.** An exported symbol keeps its medium-risk floor for
   that reason, even when the check is clear.
+- **Types are uneven.** A changed struct field lists the uses of that field, which is what
+  you want. A retargeted type (`type ID int` to `type ID string`) lists every use of the type,
+  and many of those may still compile. An added field lists nothing, though a positional
+  struct literal breaks on it.
 - **Test-only symbols.** Unless `includeTests` is set, a changed helper in a test file isn't
   checked.

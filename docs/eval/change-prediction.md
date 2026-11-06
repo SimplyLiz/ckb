@@ -168,7 +168,8 @@ measured lead over grep.
   and a changed symbol whose declaration can't be compared. Both say so in the note.
 - **Types can't be judged from this.** The open uses are all functions, so the types rule
   above didn't fire. The sample selects function signature changes, though, so a type
-  rarely gets the chance. Whether a changed struct marks every use open is still unmeasured.
+  rarely gets the chance. Tried by hand on a small Go repo: a changed struct field lists only
+  that field's uses, an added field lists nothing, and a retargeted type lists every use.
 - **8 commits are too few for a rate.** This repo's history holds no more that qualify.
 
 ## Sample rule
