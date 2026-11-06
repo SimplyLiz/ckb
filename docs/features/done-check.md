@@ -45,6 +45,21 @@ index. Uncommitted edits don't count against it, since they are what the check l
 An import of a changed name doesn't count as open, as the import stays valid. An import of
 a removed name does.
 
+## Rust: what the changed symbol's references don't reach
+
+Three kinds of change break code that never names the changed symbol, so a site can carry
+`via`, saying why it is listed:
+
+| Change | What is listed | `via` |
+|---|---|---|
+| A struct's fields differ | Literals and patterns without `..`, and calls of a `new` a macro generates from the fields, which the index knows only by its calls (Salsa's `Foo::new(db, a, b)`) | `fields of Foo changed` |
+| A type alias changed or went away | Uses of each function whose signature names it. Their callers hold the new type without spelling the alias. One level, aliases only | `signature names R, which changed` |
+| A `pub use` went away | Imports through that module, named or by glob, found by text on the new side | `prelude no longer re-exports it` |
+
+These come from reading what commits did to the uses the compiler rejected, and were checked
+against three of them. See `docs/eval/change-prediction.md` for what has and hasn't been
+measured.
+
 ## What it can't tell you
 
 It compares text and compiles nothing, so it says "open", never "safe".
@@ -61,7 +76,11 @@ It compares text and compiles nothing, so it says "open", never "safe".
   that reason, even when the check is clear.
 - **Types are uneven.** A changed struct field lists the uses of that field, which is what
   you want. A retargeted type (`type ID int` to `type ID string`) lists every use of the type,
-  and many of those may still compile. An added field lists nothing, though a positional
-  struct literal breaks on it.
+  and many of those may still compile. Outside Rust, an added field lists nothing, though a
+  positional struct literal breaks on it, and a retargeted type isn't followed through the
+  functions naming it.
+- **Rust, still not seen:** an added enum variant, which breaks a `match` without a wildcard;
+  `Self { .. }` literals, which don't spell the struct's name; a `.method()` on a later line
+  counts as untouched even when the commit changed that line.
 - **Test-only symbols.** Unless `includeTests` is set, a changed helper in a test file isn't
   checked.

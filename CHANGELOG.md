@@ -20,6 +20,12 @@ All notable changes to CKB will be documented in this file.
   one repo) and 8/17 on Rust. With the whole commit applied, 12 of 30 still report open
   uses, and none the compiler could judge had broken, so `open` doesn't mean broken.
   `docs/eval/change-prediction.md` has the numbers and the limits.
+- **Rust: uses the changed symbol's references don't reach.** A struct whose fields
+  changed lists its literals, its patterns without `..` and calls of a macro-generated
+  `new`. A retargeted type alias lists the uses of functions whose signature names it.
+  A removed `pub use` lists the imports still going through it. Such a site has `via`,
+  saying why it is listed. Written from the Rust misses above and not yet measured: the
+  8/17 is from before it.
 - **`assessChange` is in the default preset,** and in every preset built on core,
   so core goes from 25 tools to 26. The first 512 bytes of the MCP instructions now
   end on it.

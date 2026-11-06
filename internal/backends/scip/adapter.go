@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -349,6 +351,53 @@ func (s *SCIPAdapter) SearchSymbols(ctx context.Context, query string, opts back
 }
 
 // FindReferences finds all references to a symbol
+// TypeSymbolIn returns the symbol of the type a file defines under a name, or "".
+func (s *SCIPAdapter) TypeSymbolIn(path, name string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.index == nil {
+		return ""
+	}
+	doc := s.index.DocumentsByPath[path]
+	if doc == nil {
+		return ""
+	}
+	suffix := "/" + name + "#"
+	for _, occ := range doc.Occurrences {
+		if occ.SymbolRoles&SymbolRoleDefinition != 0 && strings.HasSuffix(occ.Symbol, suffix) {
+			return occ.Symbol
+		}
+	}
+	return ""
+}
+
+// GeneratedMethods returns the given method of a type where the index has calls but no
+// definition: a macro wrote it, so nothing in the source declares it. Rust-analyzer's
+// symbols name the impl, as in `mod/impl#[`Foo<'a>`]new().`.
+func (s *SCIPAdapter) GeneratedMethods(typeSymbol, method string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.index == nil {
+		return nil
+	}
+	name := SymbolSimpleName(typeSymbol)
+	module := strings.TrimSuffix(typeSymbol, name+"#")
+	if name == "" || module == typeSymbol {
+		return nil
+	}
+	exact := module + "impl#[" + name + "]" + method + "()."
+	generic := module + "impl#[`" + name + "<"
+	tail := "]" + method + "()."
+	var ids []string
+	for id := range s.index.RefIndex {
+		if (id == exact || strings.HasPrefix(id, generic) && strings.HasSuffix(id, tail)) && s.index.DefinitionIndex[id] == nil {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 func (s *SCIPAdapter) FindReferences(ctx context.Context, symbolID string, opts backends.RefOptions) (*backends.ReferencesResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

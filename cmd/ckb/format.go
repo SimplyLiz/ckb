@@ -1262,6 +1262,9 @@ func writeDoneCheck(b *strings.Builder, check *query.DoneCheck, verbose bool) {
 	for i := range check.OpenSites[:shown] {
 		site := &check.OpenSites[i]
 		b.WriteString(fmt.Sprintf("  %s:%d  %s", site.File, site.Line, site.Code))
+		if site.Via != "" {
+			b.WriteString(fmt.Sprintf("  (%s)", site.Via))
+		}
 		if site.Unverified {
 			b.WriteString("  (index out of date here, line may be off)")
 		}

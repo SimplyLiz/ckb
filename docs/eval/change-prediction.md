@@ -442,9 +442,34 @@ out of sample there. Written and committed before the fix, along with the sample
 - **Holdout:** `samples/rust-holdout/`, 4 commits each from axum, helix and ripgrep, none of
   them in ProMax, picked by `select` with the seed and pinned heads as committed. Rust only,
   because the fix is Rust only.
-- **Both binaries, same commits:** db89a5b (before) and the fixed one. The holdout is measured
-  before any fix is written. It isn't tuned against: whatever it shows after the fix is
-  reported, and a further fix needs another sample.
+- **Both binaries, same commits:** db89a5b (before) and the fixed one. Neither is run on it
+  until the fix is finished, so it isn't tuned against: whatever it shows is reported, and a
+  further fix needs another sample.
 - **ProMax is re-run too, marked as in-sample.** The db89a5b table above stays as it is.
 - **Compiler truth:** both the first run (`broken`) and the deeper one (`broken_deep`, see the
   tool's README), reported separately.
+
+### Rust gaps: what the fix has shown so far
+
+The fix is written. **It has not been measured on the holdout or re-run on ProMax yet**, so
+there is no new recall or precision number here, and the db89a5b table stands.
+
+The first-run truth's 9 missed files come from three commits, read from their patches and
+indexes:
+
+| Commit | Missed | Why |
+|---|---|---|
+| ruff-21445 | 4 | Fields of a `#[salsa::interned]` struct changed. Callers use the macro's `new`, and the comparison stopped at the struct's `{` |
+| ruff-19884 | 4 | `type PlaceFromDeclarationsResult = Result<..>` became a struct. Callers of `place_from_declarations` never name it |
+| cargo-2bab011 | 1 | `pub use ...::CompileMode` was removed from a prelude. A re-export has no symbol of its own |
+
+On those three, using the indexes built at the parents, with `ckb changes` only:
+
+| Commit | Missed files found | Open uses on the whole commit, before / after |
+|---|---|---|
+| ruff-21445 | 4 of 4 | 19 / 19 |
+| ruff-19884 | 4 of 4 | 5 / 7 |
+| cargo-2bab011 | 1 of 1 | 2 / 2 |
+
+This is the sample the fix was written from, so it only says the fix does what it was written
+to do. Whether the other ProMax commits move isn't checked.
