@@ -770,6 +770,19 @@ func fileLevelEntry(file *impact.ChangedFile, filePath string, lines []int, note
 	}
 }
 
+// nonCodeExtensions are files that can't hold a use of a symbol. It lists what isn't
+// code rather than what is, so a language nobody thought of stays a doubt.
+var nonCodeExtensions = map[string]bool{
+	".md": true, ".mdx": true, ".txt": true, ".rst": true, ".adoc": true,
+	".json": true, ".yaml": true, ".yml": true, ".toml": true, ".ini": true, ".env": true,
+	".csv": true, ".tsv": true, ".svg": true, ".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
+	".ico": true, ".pdf": true, ".snap": true, ".golden": true, ".css": true,
+}
+
+func isCodeFile(path string) bool {
+	return !nonCodeExtensions[strings.ToLower(filepath.Ext(path))]
+}
+
 // mapFileWithoutIndex creates low-confidence entries for files not in the index
 func (m *DiffSymbolMapper) mapFileWithoutIndex(file *impact.ChangedFile) ([]impact.ChangedSymbol, error) {
 	filePath := file.NewPath
@@ -801,7 +814,8 @@ func (m *DiffSymbolMapper) mapFileWithoutIndex(file *impact.ChangedFile) ([]impa
 		return []impact.ChangedSymbol{entry}, nil
 	}
 	entry := fileLevelEntry(file, filePath, allLines, "file is not in the index")
-	entry.NotInIndex = !file.IsNew // A new file has no uses yet to leave behind
+	// A new file has no uses yet to leave behind, and text and config files have none.
+	entry.NotInIndex = !file.IsNew && isCodeFile(filePath)
 	return []impact.ChangedSymbol{entry}, nil
 }
 

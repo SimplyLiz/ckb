@@ -1496,7 +1496,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			done.unreadable++
 		}
 		if sym.NotInIndex {
-			done.unindexed++
+			done.unindexed = append(done.unindexed, sym.File)
 		}
 
 		// Skip file-level entries for transitive analysis, and anything that only
