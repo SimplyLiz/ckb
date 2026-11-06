@@ -361,7 +361,7 @@ def cmd_promax(a):
                 sample = samples.setdefault(name, {
                     "lang": lang, "name": name, "repo": str(repo_dir.resolve()), "seed": SEED,
                     "index_lang": lang, "prep": a.prep_ts if lang == "ts" else None,
-                    "target": 0, "sample": [],
+                    "partial": True, "target": 0, "sample": [],
                 })
                 sample["sample"].append(entry)
                 sample["target"] += 1
@@ -794,7 +794,11 @@ def cmd_run(a):
     log = a.log or str(work / "run.log")
     print(f"workdir {work}  log {log}", flush=True)
     try:
-        subprocess.run(["git", "clone", "--quiet", "--no-hardlinks", sample["repo"], str(clone)], check=True)
+        if sample.get("partial"):
+            # A blobless clone can't serve its own clones; a copy fetches what it checks out.
+            shutil.copytree(sample["repo"], clone, symlinks=True)
+        else:
+            subprocess.run(["git", "clone", "--quiet", "--no-hardlinks", sample["repo"], str(clone)], check=True)
         target = a.limit or sample["target"]
         measured = sum(1 for r in done.values() if r.get("status") == "ok")
         for entry in sample["sample"]:
