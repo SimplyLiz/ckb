@@ -61,6 +61,9 @@ type OpenSite struct {
 	Code     string `json:"code,omitempty"`
 	Consumer string `json:"consumer,omitempty"`
 	IsTest   bool   `json:"isTest,omitempty"`
+	// Via says why a use counts when the symbol itself isn't what changed: its signature
+	// names a changed type, say, or a macro builds it from changed fields.
+	Via string `json:"via,omitempty"`
 	// Unverified means the index no longer matches the file, so the line may be off.
 	Unverified bool `json:"unverified,omitempty"`
 }
@@ -120,10 +123,25 @@ func leafName(name string) string {
 // checkSymbol classifies every use of a symbol whose declaration changed or went away.
 // It returns the files with an open use, and false if the uses couldn't be looked up.
 func (c *doneChecker) checkSymbol(ctx context.Context, adapter referenceFinder, sym impact.ChangedSymbol, change impact.DeclarationChange) (map[string]bool, bool) {
-	name := leafName(sym.Name)
-	if adapter == nil || name == "" {
+	openFiles := make(map[string]bool)
+	ok := c.checkUses(ctx, adapter, sym, useQuery{name: leafName(sym.Name), change: change}, openFiles)
+	return openFiles, ok
+}
+
+// useQuery says how to read the uses of a symbol. name is what a use spells out.
+type useQuery struct {
+	name    string
+	change  impact.DeclarationChange
+	via     string
+	literal bool // Only struct literals and patterns without `..` count
+}
+
+// checkUses classifies a symbol's references into openFiles. False means they couldn't
+// be looked up.
+func (c *doneChecker) checkUses(ctx context.Context, adapter referenceFinder, sym impact.ChangedSymbol, query useQuery, openFiles map[string]bool) bool {
+	if adapter == nil || query.name == "" {
 		c.failed++
-		return nil, false
+		return false
 	}
 	refs, err := adapter.FindReferences(ctx, sym.SymbolID, backends.RefOptions{
 		MaxResults:   maxImpactReferences,
@@ -131,18 +149,15 @@ func (c *doneChecker) checkSymbol(ctx context.Context, adapter referenceFinder, 
 	})
 	if err != nil || refs == nil {
 		c.failed++
-		return nil, false
+		return false
 	}
 	if refs.TotalReferences > len(refs.References) {
 		c.cut = true
 	}
-
-	openFiles := make(map[string]bool)
 	for i := range refs.References {
-		ref := &refs.References[i]
-		c.checkReference(ref, sym, name, change, openFiles)
+		c.checkReference(&refs.References[i], sym, query, openFiles)
 	}
-	return openFiles, true
+	return true
 }
 
 // referenceFinder is the part of the SCIP adapter the check uses.
@@ -150,7 +165,7 @@ type referenceFinder interface {
 	FindReferences(ctx context.Context, symbolID string, opts backends.RefOptions) (*backends.ReferencesResult, error)
 }
 
-func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.ChangedSymbol, name string, change impact.DeclarationChange, openFiles map[string]bool) {
+func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.ChangedSymbol, query useQuery, openFiles map[string]bool) {
 	path := ref.Location.Path
 	if path == "" {
 		return
@@ -166,10 +181,21 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 		oldLines = c.readOld(file, path)
 	}
 
+	if query.literal {
+		lines := newLines
+		if oldLines != nil {
+			lines = oldLines
+		}
+		if !diff.IsRustLiteralUse(lines, ref.Location.Line, ref.Location.Column, query.name) {
+			return
+		}
+	}
+
 	result := diff.ClassifyUse(file, oldLines, newLines, diff.UseSite{
-		Line:   ref.Location.Line,
-		Column: ref.Location.Column,
-		Name:   name,
+		Line:    ref.Location.Line,
+		Column:  ref.Location.Column,
+		Name:    query.name,
+		Literal: query.literal,
 	})
 	switch result.State {
 	case diff.UseGone:
@@ -180,7 +206,7 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 	}
 	// An import of a name whose signature changed is still valid. Of a name that went
 	// away, it is exactly what has to go too.
-	if (result.Import || ref.Kind == "import") && change != impact.DeclRemoved {
+	if (result.Import || ref.Kind == "import") && query.change != impact.DeclRemoved {
 		return
 	}
 
@@ -195,13 +221,14 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 	c.seen[key] = true
 	c.sites = append(c.sites, OpenSite{
 		Symbol:     sym.Name,
-		Change:     string(change),
+		Change:     string(query.change),
 		File:       path,
 		Line:       result.Line,
 		Code:       result.Code,
 		Consumer:   ref.FromSymbolName,
 		IsTest:     isTestFilePath(path),
 		Unverified: result.Unverified,
+		Via:        query.via,
 	})
 }
 

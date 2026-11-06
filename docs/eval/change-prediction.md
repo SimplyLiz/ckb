@@ -341,8 +341,28 @@ The TS and Rust rows are from two private repos, as aggregates only.
 
 ## Rust gaps: rules fixed before the fix
 
-- **Both binaries, same commits:** db89a5b (before) and the fixed one. The holdout is measured
-  before any fix is written. It isn't tuned against: whatever it shows after the fix is
-  reported, and a further fix needs another sample.
+- **Both binaries, same commits:** db89a5b (before) and the fixed one. Neither is run on it
+  until the fix is finished, so it isn't tuned against: whatever it shows is reported, and a
+  further fix needs another sample.
 - **Compiler truth:** both the first run (`broken`) and the deeper one (`broken_deep`, see the
   tool's README), reported separately.
+
+### Rust gaps: what the fix has shown so far
+
+The first-run truth's 9 missed files come from three commits, read from their patches and
+indexes:
+
+| Commit | Missed | Why |
+|---|---|---|
+| ruff-21445 | 4 | Fields of a `#[salsa::interned]` struct changed. Callers use the macro's `new`, and the comparison stopped at the struct's `{` |
+| ruff-19884 | 4 | `type PlaceFromDeclarationsResult = Result<..>` became a struct. Callers of `place_from_declarations` never name it |
+| cargo-2bab011 | 1 | `pub use ...::CompileMode` was removed from a prelude. A re-export has no symbol of its own |
+
+On those three, using the indexes built at the parents, with `ckb changes` only:
+
+| Commit | Missed files found | Open uses on the whole commit, before / after |
+|---|---|---|
+| ruff-21445 | 4 of 4 | 19 / 19 |
+| ruff-19884 | 4 of 4 | 5 / 7 |
+| cargo-2bab011 | 1 of 1 | 2 / 2 |
+

@@ -388,7 +388,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		},
 		{
 			Name:        "assessChange",
-			Description: "The post-change counterpart to prepareChange: use this AFTER changes are made to assess what you actually changed and what to verify before finishing. Defaults to the uncommitted working tree; also supports staged changes or a base-branch range. Answers: what might break? which tests should run? who needs to review? are there possible contract changes? `doneCheck` lists each use of a changed declaration that the diff left as it was (`openSites`: file, line, code), with status open, clear or not_assessed. It compares text and compiles nothing, so clear is not proof. For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
+			Description: "The post-change counterpart to prepareChange: use this AFTER changes are made to assess what you actually changed and what to verify before finishing. Defaults to the uncommitted working tree; also supports staged changes or a base-branch range. Answers: what might break? which tests should run? who needs to review? are there possible contract changes? `doneCheck` lists each use of a changed declaration that the diff left as it was (`openSites`: file, line, code, and `via` when the symbol itself isn't what changed), with status open, clear or not_assessed. It compares text and compiles nothing, so clear is not proof. For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{

@@ -29,6 +29,8 @@ type UseSite struct {
 	Line   int // 1-indexed, on whichever side of the diff the index covers
 	Column int // 1-indexed, 0 if unknown
 	Name   string
+	// Literal means the use is a struct literal or pattern, which ends at its brace.
+	Literal bool
 }
 
 // UseResult is the classification of a UseSite.
@@ -87,11 +89,11 @@ func classifyOldSide(blocks []impact.ChangeBlock, oldLines, newLines []string, s
 		return UseResult{State: UseUpdated, Line: newLine}
 	}
 	// A new argument on a line of its own updates this call without touching the name.
-	oldEnd := callEnd(oldLines, site.Line, site.Column, site.Name)
+	oldEnd := siteEnd(oldLines, site.Line, site)
 	if anyOldLineChanged(blocks, site.Line, oldEnd) {
 		return UseResult{State: UseUpdated, Line: newLine}
 	}
-	newEnd := callEnd(newLines, newLine, site.Column, site.Name)
+	newEnd := siteEnd(newLines, newLine, site)
 	if anyNewLineChanged(blocks, newLine, newEnd) {
 		return UseResult{State: UseUpdated, Line: newLine}
 	}
@@ -100,12 +102,12 @@ func classifyOldSide(blocks []impact.ChangeBlock, oldLines, newLines []string, s
 
 // classifyNewSide handles an index built after the diff, as a watcher does.
 func classifyNewSide(blocks []impact.ChangeBlock, oldLines, newLines []string, site UseSite) UseResult {
-	end := callEnd(newLines, site.Line, site.Column, site.Name)
+	end := siteEnd(newLines, site.Line, site)
 	if anyNewLineChanged(blocks, site.Line, end) {
 		return UseResult{State: UseUpdated, Line: site.Line}
 	}
 	if oldLine, ok := newToOldLine(blocks, site.Line); ok {
-		oldEnd := callEnd(oldLines, oldLine, site.Column, site.Name)
+		oldEnd := siteEnd(oldLines, oldLine, site)
 		if anyOldLineChanged(blocks, oldLine, oldEnd) {
 			return UseResult{State: UseUpdated, Line: site.Line}
 		}
@@ -177,6 +179,17 @@ func anyNewLineChanged(blocks []impact.ChangeBlock, from, to int) bool {
 		}
 	}
 	return false
+}
+
+// siteEnd returns the last line of a use, which is on line.
+func siteEnd(lines []string, line int, site UseSite) int {
+	if site.Literal {
+		if end, _, ok := rustLiteral(lines, line, site.Column, site.Name); ok {
+			return end
+		}
+		return line
+	}
+	return callEnd(lines, line, site.Column, site.Name)
 }
 
 // callEnd returns the last line of the call starting at the name on line, or line
@@ -261,7 +274,11 @@ func callParen(rest string) int {
 
 var importPrefixes = []string{"import ", "import{", "use ", "pub use ", "from ", "export {", "export{", "export *", "#include"}
 
-var bareListEntry = regexp.MustCompile(`^[A-Za-z_$][\w$]*(\s+as\s+[A-Za-z_$][\w$]*)?,?$`)
+var (
+	bareListEntry = regexp.MustCompile(`^[A-Za-z_$][\w$]*(\s+as\s+[A-Za-z_$][\w$]*)?,?$`)
+	// A line of a Rust use tree: `a, b::{c, d as e},` or `place::{`.
+	useTreeLine = regexp.MustCompile(`^[\w$:{}\s,*]+$`)
+)
 
 // isImportLine says whether a line only brings a name into scope, including an entry
 // of a multi-line import list. A changed signature leaves those valid.
@@ -270,15 +287,15 @@ func isImportLine(lines []string, line int) bool {
 	if hasImportPrefix(text) {
 		return true
 	}
-	if !bareListEntry.MatchString(text) {
+	if !bareListEntry.MatchString(text) && !useTreeLine.MatchString(text) {
 		return false
 	}
 	for current := line - 1; current >= 1 && current >= line-maxCallSpan; current-- {
 		previous := strings.TrimSpace(rawLine(lines, current))
-		if strings.Contains(previous, "{") || strings.Contains(previous, "(") {
-			return hasImportPrefix(previous)
+		if hasImportPrefix(previous) {
+			return strings.Contains(previous, "{") || strings.Contains(previous, "(")
 		}
-		if !bareListEntry.MatchString(previous) && previous != "" {
+		if previous != "" && !useTreeLine.MatchString(previous) {
 			return false
 		}
 	}

@@ -1481,6 +1481,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		usesFinder = e.scipAdapter
 	}
 	publicContractChanges := 0
+	var rustOpens []rustOpen
 
 	// Confidence input: average symbol-mapping confidence across changed symbols.
 	var totalMappingConfidence float64
@@ -1526,6 +1527,9 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			handled := changedFilePaths
 			if openFiles, ok := done.checkSymbol(ctx, usesFinder, sym, declaration); ok {
 				handled = withoutFiles(changedFilePaths, openFiles)
+			}
+			if viaAlias := done.checkRustAlias(ctx, usesFinder, sym); len(viaAlias) > 0 {
+				rustOpens = append(rustOpens, rustOpen{name: sym.Name, change: declaration, files: viaAlias})
 			}
 			broken := findBrokenContract(sym.Name, declaration, impactResult.DirectImpact, handled)
 			if broken != nil {
@@ -1605,6 +1609,25 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 
 			hasTest := e.hasReachingTest(ctx, consumer)
 			untestedConsumers, untestedExamples = recordTestGap(untestedConsumers, untestedExamples, consumer.Name, sym.Name, hasTest)
+		}
+	}
+
+	// What the changed symbols' own references can't reach. Risk and consumerFiles follow
+	// the same answer as the check does for those.
+	rustOpens = append(rustOpens, done.checkRustFiles(ctx, usesFinder)...)
+	for _, open := range rustOpens {
+		var files []string
+		for path := range open.files {
+			if isTestFilePath(path) {
+				contractChangedTests = append(contractChangedTests, path)
+			} else {
+				files = append(files, path)
+			}
+		}
+		if len(files) > 0 {
+			sort.Strings(files)
+			contractChangedFiles = append(contractChangedFiles, files...)
+			brokenContracts = append(brokenContracts, brokenContract{name: open.name, change: open.change, consumers: files, files: files})
 		}
 	}
 

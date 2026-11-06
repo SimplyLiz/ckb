@@ -15,6 +15,12 @@ All notable changes to CKB will be documented in this file.
   It compares text and compiles nothing, and `clear` has to be earned: an index
   behind HEAD, a cut reference list, a failed lookup or a changed file outside the
   index all make it `not_assessed`. See `docs/features/done-check.md`.
+- **Rust: uses the changed symbol's references don't reach.** A struct whose fields
+  changed lists its literals, its patterns without `..` and calls of a macro-generated
+  `new`. A retargeted type alias lists the uses of functions whose signature names it.
+  A removed `pub use` lists the imports still going through it. Such a site has `via`,
+  saying why it is listed. Written from the Rust misses above and not yet measured: the
+  8/17 is from before it.
 - **`assessChange` is in the default preset,** and in every preset built on core,
   so core goes from 25 tools to 26. The first 512 bytes of the MCP instructions now
   end on it.
