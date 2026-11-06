@@ -1,0 +1,121 @@
+{
+ "lang": "rust",
+ "name": "ripgrep",
+ "repo": "/tmp/ckb940/holdout/ripgrep",
+ "head": "91f5d22ef48bde459d90a8c7dbeab416e97d0f2b",
+ "seed": "ckb-eval-change-v1",
+ "commits_in_pool": 2241,
+ "candidates": 76,
+ "index_lang": "rust",
+ "prep": null,
+ "target": 8,
+ "sample": [
+  {
+   "sha": "79d40d0e20a5710476b43c58c42db5124c2010a1",
+   "parent": "525b27804949d9362d4e1890a0cfa18a2eb272bd",
+   "symbol": "is_binary",
+   "kind": "signature",
+   "definers": [
+    "src/search_stream.rs"
+   ],
+   "decl_before": [
+    "pubfnis_binary(buf:&[u8])->bool"
+   ],
+   "decl_after": [
+    "pubfnis_binary(buf:&[u8],first:bool)->bool"
+   ],
+   "truth_all": [
+    "src/search_buffer.rs"
+   ],
+   "truth_ref": [
+    "src/search_buffer.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 2,
+   "rank": "578560a96fcd1f9cfd22e647aa93718685488481f6f4665d1cb6ddff8affe9e6"
+  },
+  {
+   "sha": "5714dbde09ace2080fbea2ef063956a3c2602222",
+   "parent": "311ccb1f6b5a2bfe83ec0ceafd357c51501158fc",
+   "symbol": "handle",
+   "kind": "removed",
+   "definers": [
+    "ignore/src/dir.rs"
+   ],
+   "decl_before": [
+    "pubfnhandle(&self)->Option<&Handle>"
+   ],
+   "decl_after": [],
+   "truth_all": [
+    "ignore/src/walk.rs"
+   ],
+   "truth_ref": [
+    "ignore/src/walk.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 2,
+   "rank": "9ac6e4ef6ee3674b35dffc3359586fb61ad48cbd280f3f7c6dedacce63c3fc88"
+  },
+  {
+   "sha": "0c298f60a68ed9c98192adaa23f1f517366ce336",
+   "parent": "79271fcb33a7fa1a13df4e9aa3b268e0e8bb3605",
+   "symbol": "app",
+   "kind": "signature",
+   "definers": [
+    "src/app.rs"
+   ],
+   "decl_before": [
+    "fnapp<F>(next_line_help:bool,doc:F)->App<'static,'static>whereF:Fn(&'staticstr)->&'staticstr"
+   ],
+   "decl_after": [
+    "pubfnapp()->App<'static,'static>"
+   ],
+   "truth_all": [
+    "build.rs",
+    "src/args.rs"
+   ],
+   "truth_ref": [
+    "build.rs",
+    "src/args.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 5,
+   "rank": "a39f91ece9f193d525504d43e1c3c87d8310a474f4f2d98038358e4efeea44dc"
+  },
+  {
+   "sha": "e9df420d2f653519e266969f8a91a6c64aaa0b41",
+   "parent": "201b4fc757ea3d99458adbe635fbd2c77a3a06f4",
+   "symbol": "column",
+   "kind": "signature",
+   "definers": [
+    "src/printer.rs"
+   ],
+   "decl_before": [
+    "pubfncolumn(mutself,yes:bool)->Printer<W>"
+   ],
+   "decl_after": [
+    "fncolumn(&self)->&ColorSpec",
+    "pubfncolumn(mutself,yes:bool)->Printer<W>"
+   ],
+   "truth_all": [
+    "src/app.rs"
+   ],
+   "truth_ref": [
+    "src/app.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 4,
+   "rank": "b1d732535eeec61639d5fe6c41f79be79cc0bcc947c04fdb10caad3b806b9a7d"
+  }
+ ],
+ "excluded": 7,
+ "must_compile": {
+  "tried": 50,
+  "kept": 4,
+  "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)"
+ }
+}
