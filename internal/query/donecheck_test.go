@@ -181,7 +181,7 @@ func TestDoneCheck_NotAssessed(t *testing.T) {
 				engine.scipAdapter.GetIndex().IndexedCommit = headCommit(t, root)
 				editRepoFile(t, root, "tools/gen.go", "package tools", "package tools // edited")
 			},
-			want: "aren't in the index",
+			want: "aren't in the index (tools/gen.go)",
 		},
 	}
 	for _, tt := range tests {
@@ -193,6 +193,20 @@ func TestDoneCheck_NotAssessed(t *testing.T) {
 				t.Errorf("check = %+v, want not_assessed saying %q", check, tt.want)
 			}
 		})
+	}
+}
+
+// Text next to the code can't hold a use, so it can't cost the check its clear.
+func TestDoneCheck_DocsDontCostTheClear(t *testing.T) {
+	engine, root := doneCheckRepo(t)
+	writeRepoFile(t, root, "README.md", "# one\n")
+	gitRun(t, root, "add", "-A")
+	gitRun(t, root, "commit", "-q", "-m", "docs")
+	engine.scipAdapter.GetIndex().IndexedCommit = headCommit(t, root)
+	editRepoFile(t, root, "README.md", "one", "two")
+	editRepoFile(t, root, "lib/lib.go", "return a", "return a + 1")
+	if check := runChangeSet(t, engine, AnalyzeChangeSetOptions{}).DoneCheck; check.Status != DoneCheckClear {
+		t.Errorf("check = %+v, want clear", check)
 	}
 }
 

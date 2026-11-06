@@ -78,10 +78,10 @@ type doneChecker struct {
 	sites      []OpenSite
 	updated    int
 	filesRead  int
-	cut        bool // A reference list or the file limit stopped the check short
-	failed     int  // Changed declarations whose uses couldn't be looked up
-	unreadable int  // Changed symbols whose declaration couldn't be compared
-	unindexed  int  // Changed files the index doesn't cover, so nothing in them was checked
+	cut        bool     // A reference list or the file limit stopped the check short
+	failed     int      // Changed declarations whose uses couldn't be looked up
+	unreadable int      // Changed symbols whose declaration couldn't be compared
+	unindexed  []string // Changed code files the index doesn't cover, so nothing in them was checked
 }
 
 func newDoneChecker(repoRoot string, opts AnalyzeChangeSetOptions, parsed *impact.ParsedDiff) *doneChecker {
@@ -269,6 +269,16 @@ func splitFileLines(content string) []string {
 	return strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
 }
 
+// namedFiles lists the first few files, so a note can be acted on.
+func namedFiles(files []string) string {
+	sorted := append([]string{}, files...)
+	sort.Strings(sorted)
+	if len(sorted) > 3 {
+		return fmt.Sprintf("%s and %d more", strings.Join(sorted[:3], ", "), len(sorted)-3)
+	}
+	return strings.Join(sorted, ", ")
+}
+
 // indexDoubt says why the index can't vouch for the uses at HEAD, if it can't. Only
 // commits count: uncommitted edits are what the check is there to look at, and the
 // index not having them is how it tells them apart. HEAD is read here rather than taken
@@ -325,8 +335,8 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 	if indexDoubt != "" {
 		doubts = append(doubts, indexDoubt)
 	}
-	if c.unindexed > 0 {
-		doubts = append(doubts, fmt.Sprintf("%d changed file(s) aren't in the index", c.unindexed))
+	if len(c.unindexed) > 0 {
+		doubts = append(doubts, fmt.Sprintf("%d changed file(s) aren't in the index (%s)", len(c.unindexed), namedFiles(c.unindexed)))
 	}
 	if c.cut {
 		doubts = append(doubts, "not every use could be looked at")
