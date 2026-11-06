@@ -77,9 +77,10 @@ type ConsumerFiles struct {
 	Direct     []string `json:"direct"`               // Reference a changed symbol themselves
 	Transitive []string `json:"transitive,omitempty"` // Reach one only through other code
 	Tests      []string `json:"tests,omitempty"`
-	// ContractChanged is the part of Direct to look at first: files outside the change
-	// that reference a symbol whose declaration it changed or removed. They are likely
-	// to break. Heuristic: declarations are compared as text, not types.
+	// ContractChanged is the part of Direct to look at first: files with a use the change
+	// left as it was of a symbol whose declaration it changed or removed, whether or not
+	// the change touched the file elsewhere. They are likely to break. Heuristic:
+	// declarations are compared as text, not types.
 	ContractChanged      []string `json:"contractChanged,omitempty"`
 	ContractChangedTests []string `json:"contractChangedTests,omitempty"`
 	Total                int      `json:"total"` // Files found, including any cut from these lists
@@ -1177,6 +1178,8 @@ type AnalyzeChangeSetResponse struct {
 	// TestGaps summarizes direct consumers of changed symbols that no test
 	// appears to reach within a depth-2 call graph traversal.
 	TestGaps *TestGapsInfo `json:"testGaps,omitempty"`
+	// DoneCheck says which uses of a changed declaration the diff left untouched.
+	DoneCheck *DoneCheck `json:"doneCheck,omitempty"`
 	// Contracts flags changed symbols that are public/exported, as a
 	// "possible contract change" heuristic. This is deliberately not called
 	// a "breaking change" -- it is a line-level, visibility-only signal.
@@ -1217,7 +1220,7 @@ type ContractSignal struct {
 	// Before and After are the declarations compared, where known.
 	Before string `json:"before,omitempty"`
 	After  string `json:"after,omitempty"`
-	// ConsumerCount counts the production files outside the diff using it, and
+	// ConsumerCount counts the production files with a use the diff left as it was, and
 	// Consumers names the first of them.
 	ConsumerCount int      `json:"consumerCount,omitempty"`
 	Consumers     []string `json:"consumers,omitempty"`
@@ -1466,9 +1469,17 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	changedFilePaths := make(map[string]bool, len(parsedDiff.Files))
 	for i := range parsedDiff.Files {
 		changedFilePaths[diff.GetEffectivePath(&parsedDiff.Files[i])] = true
+		if parsedDiff.Files[i].Renamed {
+			changedFilePaths[parsedDiff.Files[i].OldPath] = true // Where an older index has it
+		}
 	}
 	var brokenContracts []brokenContract
 	var contractChangedFiles, contractChangedTests []string
+	done := newDoneChecker(e.repoRoot, opts, parsedDiff)
+	var usesFinder referenceFinder
+	if e.hasConsumerGraph() {
+		usesFinder = e.scipAdapter
+	}
 	publicContractChanges := 0
 
 	// Confidence input: average symbol-mapping confidence across changed symbols.
@@ -1479,6 +1490,13 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		if sym.Confidence > 0 && !sym.Trivial { // Trivial is low for another reason than mapping
 			totalMappingConfidence += sym.Confidence
 			mappingConfidenceCount++
+		}
+
+		if sym.DeletionUnresolved {
+			done.unreadable++
+		}
+		if sym.NotInIndex {
+			done.unindexed++
 		}
 
 		// Skip file-level entries for transitive analysis, and anything that only
@@ -1494,13 +1512,22 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			AllItems:     true, // This aggregate is budgeted below, once
 		})
 		if err != nil {
+			done.failed++
 			continue // Skip symbols that can't be analyzed
 		}
 
 		declaration := symbolDeclarationChange(sym)
+		if declaration == "" && sym.ChangeType != impact.ChangeAdded {
+			done.unreadable++
+		}
 		var contractConsumers []string
 		if declaration == impact.DeclChanged || declaration == impact.DeclRemoved {
-			broken := findBrokenContract(sym.Name, declaration, impactResult.DirectImpact, changedFilePaths)
+			// A file in the diff only counts as handled if the diff touched its uses.
+			handled := changedFilePaths
+			if openFiles, ok := done.checkSymbol(ctx, usesFinder, sym, declaration); ok {
+				handled = withoutFiles(changedFilePaths, openFiles)
+			}
+			broken := findBrokenContract(sym.Name, declaration, impactResult.DirectImpact, handled)
 			if broken != nil {
 				brokenContracts = append(brokenContracts, *broken)
 				contractConsumers = broken.files
@@ -1508,13 +1535,13 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			}
 			for i := range impactResult.TestImpact {
 				item := &impactResult.TestImpact[i]
-				if item.Distance == 1 && item.Location != nil && !changedFilePaths[item.Location.FileId] {
+				if item.Distance == 1 && item.Location != nil && !handled[item.Location.FileId] {
 					contractChangedTests = append(contractChangedTests, item.Location.FileId)
 				}
 			}
 			for i := range impactResult.DirectImpact {
 				item := &impactResult.DirectImpact[i]
-				if isTestFile(item.Location) && !changedFilePaths[item.Location.FileId] {
+				if isTestFile(item.Location) && !handled[item.Location.FileId] {
 					contractChangedTests = append(contractChangedTests, item.Location.FileId)
 				}
 			}
@@ -1747,6 +1774,11 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		}
 	}
 
+	var staleIndex string
+	if e.hasConsumerGraph() {
+		staleIndex = indexDoubt(e.repoRoot, e.scipAdapter.GetIndexInfo().IndexedCommit)
+	}
+
 	// Change: what was diffed (branch, base, mode).
 	mode := "working-tree"
 	base := ""
@@ -1805,6 +1837,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		AffectedTests:   affectedTests,
 		ConsumerFiles:   consumerFiles,
 		TestGaps:        testGapsInfo,
+		DoneCheck:       done.result(diffContent, e.hasConsumerGraph(), len(parsedDiff.Files) == 0, staleIndex),
 		Contracts:       contracts,
 		Decisions:       changeDecisions,
 		Reviewers:       reviewers,
@@ -2062,15 +2095,26 @@ type brokenContract struct {
 	files     []string
 }
 
-// findBrokenContract returns the changed symbol's production consumers outside the
-// diff, or nil if there are none. A consumer in a file the diff also changes may well
-// have been updated, and the index can't tell. A test using it breaks too, but the
+// withoutFiles returns files minus the ones in remove.
+func withoutFiles(files, remove map[string]bool) map[string]bool {
+	kept := make(map[string]bool, len(files))
+	for path := range files {
+		if !remove[path] {
+			kept[path] = true
+		}
+	}
+	return kept
+}
+
+// findBrokenContract returns the changed symbol's production consumers in files the
+// diff didn't handle, or nil if there are none. handled normally holds the changed
+// files whose uses of this symbol were all touched. A test using it breaks too, but the
 // tests are reported apart and don't add to the risk of the change.
-func findBrokenContract(name string, change impact.DeclarationChange, direct []ImpactItem, changedFiles map[string]bool) *brokenContract {
+func findBrokenContract(name string, change impact.DeclarationChange, direct []ImpactItem, handled map[string]bool) *brokenContract {
 	var consumers, files []string
 	for i := range direct {
 		item := &direct[i]
-		if isTestFile(item.Location) || (item.Location != nil && changedFiles[item.Location.FileId]) {
+		if isTestFile(item.Location) || (item.Location != nil && handled[item.Location.FileId]) {
 			continue
 		}
 		consumer := item.Name
@@ -2124,17 +2168,17 @@ func applyContractChangesToRisk(risk *RiskScore, broken []brokenContract, public
 		risk.Factors = append(risk.Factors, RiskFactor{
 			Name:     "deleted_with_consumers",
 			Value:    1,
-			Evidence: fmt.Sprintf("%d deleted symbol(s) still used outside this diff", removed),
+			Evidence: fmt.Sprintf("%d deleted symbol(s) still used by code this diff left as it was", removed),
 		})
-		risk.Explanation += fmt.Sprintf(" %d deleted symbol(s) are still used outside this diff.", removed)
+		risk.Explanation += fmt.Sprintf(" %d deleted symbol(s) are still used by code this diff left as it was.", removed)
 	}
 	if changed > 0 {
 		risk.Factors = append(risk.Factors, RiskFactor{
 			Name:     "signature_changed_with_consumers",
 			Value:    1,
-			Evidence: fmt.Sprintf("%d symbol(s) changed declaration, still used outside this diff (heuristic: text comparison)", changed),
+			Evidence: fmt.Sprintf("%d symbol(s) changed declaration, still used by code this diff left as it was (heuristic: text comparison)", changed),
 		})
-		risk.Explanation += fmt.Sprintf(" %d symbol(s) changed their declaration and are still used outside this diff (heuristic: compared as text).", changed)
+		risk.Explanation += fmt.Sprintf(" %d symbol(s) changed their declaration and are still used by code this diff left as it was (heuristic: compared as text).", changed)
 	}
 	if publicChanges > 0 {
 		if risk.Score < mediumRiskFloor {
@@ -2163,13 +2207,13 @@ func contractRecommendations(broken []brokenContract, changedSymbols []impact.Ch
 		rec := Recommendation{
 			Type:     "review",
 			Severity: "error",
-			Message:  fmt.Sprintf("Deleted %s is still used by %s%s, outside this diff.", b.name, strings.Join(shown, ", "), more),
+			Message:  fmt.Sprintf("Deleted %s is still used by %s%s, at uses this diff left as they were.", b.name, strings.Join(shown, ", "), more),
 			Action:   "Update those consumers, or keep the symbol",
 			Source:   "deleted-symbols",
 		}
 		if b.change == impact.DeclChanged {
 			rec.Severity = "warning"
-			rec.Message = fmt.Sprintf("%s changed its declaration and is still used by %s%s, outside this diff (heuristic).", b.name, strings.Join(shown, ", "), more)
+			rec.Message = fmt.Sprintf("%s changed its declaration and is still used by %s%s, at uses this diff left as they were (heuristic).", b.name, strings.Join(shown, ", "), more)
 			rec.Action = "Update those consumers, or keep the old signature"
 			rec.Source = "contracts"
 		}

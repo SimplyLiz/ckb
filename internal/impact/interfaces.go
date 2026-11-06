@@ -28,6 +28,9 @@ type ChangedSymbol struct {
 	// DeletionUnresolved marks a file-level entry for removed code whose
 	// definition isn't in the index, so what used it is unknown.
 	DeletionUnresolved bool
+	// NotInIndex marks a file-level entry for an existing file the index has no usable
+	// document for, so nothing is known about what its changes affect.
+	NotInIndex bool
 	// Declaration says what the diff did to the definition's declaration, as far as
 	// its text shows. Empty means it can't tell: another language, or too little text.
 	Declaration DeclarationChange

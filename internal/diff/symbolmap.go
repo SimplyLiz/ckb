@@ -157,8 +157,10 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 
 	side := resolveIndexSide(file, doc, docPath)
 	if side == indexMatchesNeither {
-		return []impact.ChangedSymbol{fileLevelEntry(file, filePath, changedNewLines(file),
-			"index does not match this file on either side of the diff; run 'ckb index' to attribute these lines")}, nil
+		entry := fileLevelEntry(file, filePath, changedNewLines(file),
+			"index does not match this file on either side of the diff; run 'ckb index' to attribute these lines")
+		entry.NotInIndex = true
+		return []impact.ChangedSymbol{entry}, nil
 	}
 
 	defs := changeableDefinitions(doc)
@@ -798,7 +800,9 @@ func (m *DiffSymbolMapper) mapFileWithoutIndex(file *impact.ChangedFile) ([]impa
 		entry.DeletionUnresolved = true
 		return []impact.ChangedSymbol{entry}, nil
 	}
-	return []impact.ChangedSymbol{fileLevelEntry(file, filePath, allLines, "file is not in the index")}, nil
+	entry := fileLevelEntry(file, filePath, allLines, "file is not in the index")
+	entry.NotInIndex = !file.IsNew // A new file has no uses yet to leave behind
+	return []impact.ChangedSymbol{entry}, nil
 }
 
 // extractSymbolName extracts a readable name from a SCIP symbol ID
