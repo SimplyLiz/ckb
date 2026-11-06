@@ -138,6 +138,39 @@ Written and committed before the first run, on the same sample with the same com
 - **`clear` is not scored as a success on its own.** Status counts are reported as they
   come, `not_assessed` included.
 
+### Done check: results, Go, this repo only
+
+The 8 commits of this repo. The private TS and Rust repos weren't rerun, as their samples
+aren't in this checkout; the ProMax run below is what covers those languages.
+
+| Only the defining file applied, against the compiler | Recall | Precision |
+|---|---|---|
+| `ckb_open`, non-test files | 9/9 | 90% (9 of 10) |
+| `ckb_open`, test files | 2/2 | 100% (2 of 2) |
+| grep, non-test files | 9/9 | 82% (9 of 11) |
+
+`ckb_contract` scores the same as `ckb_open` here, as it now follows the same check. One
+right file per commit in most of these, so read it as "doesn't lose anything", not as a
+measured lead over grep.
+
+| Whole commit applied, 8 commits | `clear` | `not_assessed` | `open` |
+|---|---|---|---|
+| First run (98dffff) | 3 | 4 | 1 |
+| After the fix below (6a9ca38) | 5 | 2 | 1 |
+
+- **The first run found a bug in the check.** `CHANGELOG.md` and `README.md` counted as
+  changed files outside the index, which took the `clear` from commits that had earned it.
+  Files that can't hold a use no longer count. Both runs stay in `results/`.
+- **Two false alarms, both in one commit.** `QueryBlastRadiusBatch` went from returning a
+  map to a pointer, and two callers only do `raw, _ := ...; raw != nil`. It compiles, and
+  no text comparison can tell. That is 2 open uses over 8 complete commits.
+- **The two `not_assessed` left:** a changed file with no usable document in the index,
+  and a changed symbol whose declaration can't be compared. Both say so in the note.
+- **Types can't be judged from this.** The open uses are all functions, so the types rule
+  above didn't fire. The sample selects function signature changes, though, so a type
+  rarely gets the chance. Whether a changed struct marks every use open is still unmeasured.
+- **8 commits are too few for a rate.** This repo's history holds no more that qualify.
+
 ## Sample rule
 
 Fixed in `samples/ckb.json` before anything was measured. A commit qualifies if:
