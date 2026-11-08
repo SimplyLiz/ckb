@@ -11,13 +11,19 @@ import (
 // FindReferences finds all references to a symbol
 // Uses RefIndex for O(1) lookup when available, falls back to O(n*m) scan otherwise
 func (idx *SCIPIndex) FindReferences(symbolId string, options ReferenceOptions) ([]*SCIPReference, error) {
+	references := idx.occurrenceReferences(symbolId, options)
+	return idx.appendConstructorCalls(references, symbolId, options), nil
+}
+
+// occurrenceReferences returns the occurrences of exactly this symbol.
+func (idx *SCIPIndex) occurrenceReferences(symbolId string, options ReferenceOptions) []*SCIPReference {
 	references := make([]*SCIPReference, 0)
 
 	// Use inverted index for O(1) lookup if available
 	if idx.RefIndex != nil {
 		occRefs, ok := idx.RefIndex[symbolId]
 		if !ok {
-			return references, nil // No references found
+			return references // No references found
 		}
 
 		for _, occRef := range occRefs {
@@ -25,11 +31,11 @@ func (idx *SCIPIndex) FindReferences(symbolId string, options ReferenceOptions) 
 			if ref != nil {
 				references = append(references, ref)
 				if options.MaxResults > 0 && len(references) >= options.MaxResults {
-					return references, nil
+					return references
 				}
 			}
 		}
-		return references, nil
+		return references
 	}
 
 	// Fallback: O(n*m) scan through all documents (for backwards compatibility)
@@ -40,14 +46,80 @@ func (idx *SCIPIndex) FindReferences(symbolId string, options ReferenceOptions) 
 				if ref != nil {
 					references = append(references, ref)
 					if options.MaxResults > 0 && len(references) >= options.MaxResults {
-						return references, nil
+						return references
 					}
 				}
 			}
 		}
 	}
 
-	return references, nil
+	return references
+}
+
+// compilerNamedConstructors are the names indexers give a constructor that has
+// no name in the source: `Foo(x)` then resolves to that member and leaves no
+// occurrence of the class itself (scip-dart "`<constructor>`", scip-java
+// "`<init>`"). A named one (`Foo.parse(x)`) mentions the class and needs no help.
+var compilerNamedConstructors = []string{"`<constructor>`", "`<init>`"}
+
+// appendConstructorCalls adds the calls of a type's unnamed constructors to the
+// references of that type: asked who uses a class, the places that instantiate
+// it are the first answer.
+func (idx *SCIPIndex) appendConstructorCalls(references []*SCIPReference, typeId string, options ReferenceOptions) []*SCIPReference {
+	calls := idx.constructorCalls(typeId)
+	if len(calls) == 0 {
+		return references
+	}
+	type position struct {
+		file         string
+		line, column int
+	}
+	seen := make(map[position]bool, len(references))
+	for _, ref := range references {
+		seen[position{ref.Location.FileId, ref.Location.StartLine, ref.Location.StartColumn}] = true
+	}
+	for _, occRef := range calls {
+		if options.MaxResults > 0 && len(references) >= options.MaxResults {
+			break
+		}
+		ref := idx.processOccurrence(typeId, occRef.Doc, occRef.Occ, options)
+		if ref == nil {
+			continue
+		}
+		pos := position{ref.Location.FileId, ref.Location.StartLine, ref.Location.StartColumn}
+		if !seen[pos] {
+			seen[pos] = true
+			references = append(references, ref)
+		}
+	}
+	return references
+}
+
+// constructorCalls returns the occurrences of a type's unnamed constructors,
+// without their definitions: those are not usages.
+func (idx *SCIPIndex) constructorCalls(typeId string) []*OccurrenceRef {
+	if idx.RefIndex == nil || !strings.HasSuffix(typeId, "#") {
+		return nil
+	}
+	var calls []*OccurrenceRef
+	for _, name := range compilerNamedConstructors {
+		for overload := 0; ; overload++ {
+			disambiguator := ""
+			if overload > 0 {
+				disambiguator = fmt.Sprintf("+%d", overload)
+			}
+			occRefs, ok := idx.RefIndex[typeId+name+"("+disambiguator+")."]
+			if !ok {
+				break
+			}
+			for _, occRef := range occRefs {
+				if occRef.Occ.SymbolRoles&SymbolRoleDefinition == 0 {
+					calls = append(calls, occRef)
+				}
+			}
+		}
+	}
+	return calls
 }
 
 // processOccurrence converts an occurrence to a reference, applying filters
@@ -493,6 +565,9 @@ func (idx *SCIPIndex) CountReferences(symbolId string, options ReferenceOptions)
 
 	if idx.RefIndex != nil {
 		for _, occRef := range idx.RefIndex[symbolId] {
+			visit(occRef.Doc, occRef.Occ)
+		}
+		for _, occRef := range idx.constructorCalls(symbolId) {
 			visit(occRef.Doc, occRef.Occ)
 		}
 	} else {

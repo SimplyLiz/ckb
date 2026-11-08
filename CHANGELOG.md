@@ -4,6 +4,27 @@ All notable changes to CKB will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`analyzeImpact` counted no callers for indexers without access roles.**
+  scip-dart and scip-typescript mark an occurrence with no read or write role,
+  so every call was `unknown`: the report said "0 direct caller(s)" and scored
+  the risk on that. A reference inside a function is now a caller; one outside
+  any function stays `unknown`, since it is as likely an import.
+- **Blast radius inflated by SCIP locals.** A local function's `local N` ID is
+  unique per document only, and was treated as global: on a Flutter app, 41 of
+  108 impacts landed in generated localization code. Locals no longer enter the
+  call graph; what a local function calls is attributed to the function around it.
+- **Callers for indexers without `EnclosingRange`.** References in scip-dart
+  output had no enclosing symbol. Function extents are now inferred, as the
+  caller index already did.
+- **Symbol kinds in search.** The FTS table read SCIP kinds against the wrong
+  enum, so a Dart class was reported as a `variable`. Existing databases rebuild
+  on first use.
+- **`findReferences` on a class includes calls of its unnamed constructor**
+  (`` `<constructor>` ``, `` `<init>` ``). They resolve to the constructor symbol
+  and left the class's reference list short.
+
 ## [9.4.0] - 2026-11-06
 
 ### Added — the done check

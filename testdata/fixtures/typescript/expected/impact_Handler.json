@@ -8,33 +8,38 @@
   "directImpact": [
     {
       "file": "src/pkg/server.ts",
-      "kind": "unknown",
-      "name": ""
-    },
-    {
-      "file": "src/pkg/server.ts",
-      "kind": "unknown",
+      "kind": "type-dependency",
       "name": "\u003cconstructor\u003e"
     },
     {
       "file": "src/pkg/server.ts",
-      "kind": "unknown",
+      "kind": "type-dependency",
       "name": "Server"
     },
     {
       "file": "src/pkg/server.ts",
-      "kind": "unknown",
+      "kind": "type-dependency",
       "name": "getHandler"
     },
     {
       "file": "src/pkg/handler.ts",
-      "kind": "unknown",
+      "kind": "type-dependency",
+      "name": "newHandler"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "type-dependency",
       "name": "newHandler"
     },
     {
       "file": "src/pkg/server.ts",
-      "kind": "unknown",
+      "kind": "type-dependency",
       "name": "newServer"
+    },
+    {
+      "file": "src/pkg/server.ts",
+      "kind": "unknown",
+      "name": ""
     }
   ],
   "modulesAffected": [
@@ -44,7 +49,7 @@
       "name": "src"
     },
     {
-      "impactCount": 6,
+      "impactCount": 7,
       "moduleId": "src/pkg",
       "name": "src/pkg"
     }

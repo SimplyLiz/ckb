@@ -217,42 +217,16 @@ func convertSymbolToFTSRecord(symInfo *scip.SymbolInformation, index *scip.SCIPI
 	}
 }
 
-// inferKindString converts the SCIP kind int32 to a string
+// inferKindString names a symbol's kind from its SCIP SymbolInformation.Kind,
+// and from the descriptor suffix when the indexer left Kind unset.
 func inferKindString(kind int32, scipId *scip.SCIPIdentifier) string {
-	switch kind {
-	case 1:
-		return "class"
-	case 2:
-		return "interface"
-	case 3:
-		return "enum"
-	case 6:
-		return "function"
-	case 7:
-		return "variable"
-	case 8:
-		return "constant"
-	case 9:
-		return "method"
-	case 10:
-		return "property"
-	case 11:
-		return "field"
-	case 12:
-		return "parameter"
-	case 19:
-		return "namespace"
-	case 20:
-		return "package"
-	case 21:
-		return "type"
-	default:
-		// Fall back to descriptor-based inference
-		if scipId != nil {
-			return string(scipId.ExtractSymbolKind())
-		}
-		return "unknown"
+	if k := scip.MapSCIPKind(kind); k != scip.KindUnknown {
+		return string(k)
 	}
+	if scipId != nil {
+		return string(scipId.ExtractSymbolKind())
+	}
+	return "unknown"
 }
 
 // SearchSymbolsFTS performs FTS5-accelerated symbol search.

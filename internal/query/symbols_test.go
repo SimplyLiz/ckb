@@ -136,7 +136,7 @@ func TestIsTypeLikeKind(t *testing.T) {
 
 // TestRankSearchResults_EnumOutranksPropertyOnCaseFold is a regression test
 // for a bug where isTypeLikeKind omitted "enum" — a real SCIP-emitted kind
-// (SCIP kind 3 / inferKindString case 3 in internal/query/fts.go) — so a
+// (SymbolInformation_Enum, through MapSCIPKind in inferKindString) — so a
 // case-fold-only query like "STATUS" ranked an enum `Status` no higher than
 // a property `status`, contrary to the type-like tie-break policy exercised
 // by TestRankSearchResults_CaseExactOutranksFold.

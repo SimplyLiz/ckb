@@ -52,7 +52,13 @@ func ClassifyImpact(ref *Reference, symbol *Symbol) ImpactKind {
 		// Type reference - could be parameter, return type, field type, etc.
 		return TypeDependency
 
-	case RefRead, RefWrite:
+	case RefRead, RefWrite, RefReference:
+		// Access roles are optional: scip-dart and scip-typescript set none, so
+		// their calls arrive as plain references. Without a role, one outside any
+		// function is as likely an import statement as a use, and stays unknown.
+		if ref.Kind == RefReference && ref.FromSymbol == "" {
+			return Unknown
+		}
 		// SCIP has no "call" role: a call to a function is a read occurrence, and
 		// so is passing it as a value. Both break when its contract changes.
 		if symbol.Kind == KindFunction || symbol.Kind == KindMethod {
@@ -79,7 +85,7 @@ func ClassifyImpactWithConfidence(ref *Reference, symbol *Symbol) (ImpactKind, f
 	case DirectCaller:
 		// High confidence for direct calls
 		confidence = 0.95
-		if ref.Kind == RefRead || ref.Kind == RefWrite {
+		if ref.Kind == RefRead || ref.Kind == RefWrite || ref.Kind == RefReference {
 			// Slightly lower for property access
 			confidence = 0.9
 		}
@@ -130,7 +136,7 @@ func IsBreakingChange(ref *Reference, symbol *Symbol, changeType string) bool {
 
 	case "behavioral-change":
 		// Behavioral changes affect callers but not type dependencies
-		return ref.Kind == RefCall || ref.Kind == RefRead || ref.Kind == RefWrite
+		return ref.Kind == RefCall || ref.Kind == RefRead || ref.Kind == RefWrite || ref.Kind == RefReference
 
 	default:
 		// Conservative: assume breaking for unknown change types

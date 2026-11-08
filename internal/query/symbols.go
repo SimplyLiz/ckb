@@ -777,7 +777,7 @@ func parseScope(scope string) []string {
 //
 // This covers every type-defining SymbolKind this codebase emits
 // (internal/backends/scip/types.go): class, interface, struct, type, and
-// enum (SCIP kind 3 / inferKindString case 3 — e.g. Go/TS/Java/Rust enums,
+// enum (SymbolInformation_Enum via MapSCIPKind — e.g. Go/TS/Java/Rust enums,
 // case-fold-matched by a query like "STATUS" against `enum Status`).
 // There is no separate trait/protocol/typealias SymbolKind in this
 // codebase — Rust traits and meta descriptors both resolve to KindType,

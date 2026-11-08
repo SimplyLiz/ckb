@@ -13,8 +13,9 @@ import (
 // automatically. History: 1 = first versioned release (container-qualified
 // Alias in NameIndex, descriptor-aware kinds, rust-analyzer impl blocks).
 // 2 = local variables and parameters no longer count as containers in
-// ContainerIndex.
-const DerivedCacheVersion = 2
+// ContainerIndex. 3 = functions with inferred extents count as containers for
+// indexers without EnclosingRange.
+const DerivedCacheVersion = 3
 
 // derivedCache is the on-disk representation of the expensive derived indexes.
 // It is keyed by the .scip file's mtime+size so it is invalidated automatically

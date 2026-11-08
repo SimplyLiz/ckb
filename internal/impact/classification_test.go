@@ -12,6 +12,24 @@ func TestClassifyImpact(t *testing.T) {
 		expected ImpactKind
 	}{
 		{
+			name:     "occurrence without an access role on a method is a caller",
+			ref:      &Reference{Kind: RefReference, FromSymbol: "caller()."},
+			symbol:   &Symbol{Kind: KindMethod},
+			expected: DirectCaller,
+		},
+		{
+			name:     "occurrence without an access role on a class is a type dependency",
+			ref:      &Reference{Kind: RefReference, FromSymbol: "caller()."},
+			symbol:   &Symbol{Kind: KindClass},
+			expected: TypeDependency,
+		},
+		{
+			name:     "occurrence without an access role outside any function stays unknown",
+			ref:      &Reference{Kind: RefReference},
+			symbol:   &Symbol{Kind: KindFunction},
+			expected: Unknown,
+		},
+		{
 			name: "direct call",
 			ref: &Reference{
 				Kind:   RefCall,
