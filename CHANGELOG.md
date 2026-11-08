@@ -4,6 +4,13 @@ All notable changes to CKB will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **`findReferences` over MCP answers per file by default:** `files` with each
+  file's lines, in place of one entry per reference. On six symbols of a Flutter
+  app that is 8 KB instead of 46 KB. `detail: "full"` returns the previous list,
+  and `ckb refs --compact` gives the CLI the same form; its JSON is unchanged.
+
 ### Fixed
 
 - **`analyzeImpact` counted no callers for indexers without access roles.**

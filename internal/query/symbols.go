@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -915,6 +916,49 @@ type ReferenceInfo struct {
 	Kind     string        `json:"kind"`
 	Context  string        `json:"context,omitempty"`
 	IsTest   bool          `json:"isTest,omitempty"`
+}
+
+// FileReferences is every reference in one file, by line.
+type FileReferences struct {
+	Path            string `json:"path"`
+	Lines           []int  `json:"lines,omitempty"`
+	DefinitionLines []int  `json:"definitionLines,omitempty"`
+	IsTest          bool   `json:"isTest,omitempty"`
+}
+
+// GroupReferencesByFile folds references into one entry per file, in the order
+// the files first appear, with each file's lines ascending and unique. Repeating
+// a path and five position fields per reference costs several times the bytes of
+// the answer most callers want, which is where a symbol is used.
+func GroupReferencesByFile(refs []ReferenceInfo) []FileReferences {
+	groups := make([]FileReferences, 0)
+	indexByPath := make(map[string]int)
+	for _, r := range refs {
+		if r.Location == nil {
+			continue
+		}
+		i, ok := indexByPath[r.Location.FileId]
+		if !ok {
+			i = len(groups)
+			indexByPath[r.Location.FileId] = i
+			groups = append(groups, FileReferences{Path: r.Location.FileId, IsTest: r.IsTest})
+		}
+		if r.Kind == "definition" {
+			groups[i].DefinitionLines = append(groups[i].DefinitionLines, r.Location.StartLine)
+		} else {
+			groups[i].Lines = append(groups[i].Lines, r.Location.StartLine)
+		}
+	}
+	for i := range groups {
+		groups[i].Lines = sortedUniqueInts(groups[i].Lines)
+		groups[i].DefinitionLines = sortedUniqueInts(groups[i].DefinitionLines)
+	}
+	return groups
+}
+
+func sortedUniqueInts(values []int) []int {
+	sort.Ints(values)
+	return slices.Compact(values)
 }
 
 // FindReferences finds all references to a symbol.

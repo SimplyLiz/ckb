@@ -724,8 +724,12 @@ func (s *MCPServer) toolFindReferences(params map[string]interface{}) (*envelope
 	}
 
 	data := map[string]interface{}{
-		"references": refs,
 		"totalCount": refsResp.TotalCount,
+	}
+	if detail, _ := params["detail"].(string); detail == "full" {
+		data["references"] = refs
+	} else {
+		data["files"] = query.GroupReferencesByFile(refsResp.References)
 	}
 
 	// Record wide-result metrics

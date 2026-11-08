@@ -28,6 +28,7 @@ var (
 	refsIncludeTest bool
 	refsLimit       int
 	refsFormat      string
+	refsCompact     bool
 )
 
 var refsCmd = &cobra.Command{
@@ -49,6 +50,7 @@ func init() {
 	refsCmd.Flags().BoolVar(&refsIncludeTest, "include-tests", false, "Include test file references")
 	refsCmd.Flags().IntVar(&refsLimit, "limit", 100, "Maximum number of references")
 	refsCmd.Flags().StringVar(&refsFormat, "format", "human", "Output format (human, json)")
+	refsCmd.Flags().BoolVar(&refsCompact, "compact", false, "One entry per file with its lines, instead of one per reference")
 	rootCmd.AddCommand(refsCmd)
 }
 
@@ -92,7 +94,14 @@ func runRefs(cmd *cobra.Command, args []string) {
 	}
 
 	// Convert to CLI response format
-	cliResponse := convertRefsResponse(symbolID, response)
+	var cliResponse interface{} = convertRefsResponse(symbolID, response)
+	if refsCompact {
+		cliResponse = &CompactReferencesResponseCLI{
+			SymbolID:        symbolID,
+			TotalReferences: response.TotalCount,
+			Files:           query.GroupReferencesByFile(response.References),
+		}
+	}
 
 	// Format and output
 	output, err := FormatResponse(cliResponse, OutputFormat(refsFormat))
@@ -117,6 +126,13 @@ type ReferencesResponseCLI struct {
 	References      []ReferenceCLI        `json:"references"`
 	ByModule        []ModuleReferencesCLI `json:"byModule,omitempty"`
 	Provenance      *ProvenanceCLI        `json:"provenance,omitempty"`
+}
+
+// CompactReferencesResponseCLI is the --compact form: one entry per file.
+type CompactReferencesResponseCLI struct {
+	SymbolID        string                 `json:"symbolId"`
+	TotalReferences int                    `json:"totalReferences"`
+	Files           []query.FileReferences `json:"files"`
 }
 
 // ReferenceCLI represents a single reference to a symbol

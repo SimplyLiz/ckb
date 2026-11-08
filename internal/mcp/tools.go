@@ -289,6 +289,12 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 						"default":     100,
 						"description": "Maximum number of references to return",
 					},
+					"detail": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"files", "full"},
+						"default":     "files",
+						"description": "files: lines grouped per file. full: one entry per reference with columns and reference kind",
+					},
 				},
 				"required": []string{"symbolId"},
 			},
