@@ -2,37 +2,7 @@
 
 All notable changes to CKB will be documented in this file.
 
-## [Unreleased]
-
-### Changed
-
-- **`findReferences` over MCP answers per file by default:** `files` with each
-  file's lines, in place of one entry per reference. On six symbols of a Flutter
-  app that is 8 KB instead of 46 KB. `detail: "full"` returns the previous list,
-  and `ckb refs --compact` gives the CLI the same form; its JSON is unchanged.
-
-### Fixed
-
-- **`analyzeImpact` counted no callers for indexers without access roles.**
-  scip-dart and scip-typescript mark an occurrence with no read or write role,
-  so every call was `unknown`: the report said "0 direct caller(s)" and scored
-  the risk on that. A reference inside a function is now a caller; one outside
-  any function stays `unknown`, since it is as likely an import.
-- **Blast radius inflated by SCIP locals.** A local function's `local N` ID is
-  unique per document only, and was treated as global: on a Flutter app, 41 of
-  108 impacts landed in generated localization code. Locals no longer enter the
-  call graph; what a local function calls is attributed to the function around it.
-- **Callers for indexers without `EnclosingRange`.** References in scip-dart
-  output had no enclosing symbol. Function extents are now inferred, as the
-  caller index already did.
-- **Symbol kinds in search.** The FTS table read SCIP kinds against the wrong
-  enum, so a Dart class was reported as a `variable`. Existing databases rebuild
-  on first use.
-- **`findReferences` on a class includes calls of its unnamed constructor**
-  (`` `<constructor>` ``, `` `<init>` ``). They resolve to the constructor symbol
-  and left the class's reference list short.
-
-## [9.4.0] - 2026-11-06
+## [9.4.0] - 2026-11-08
 
 ### Added — the done check
 
@@ -91,6 +61,23 @@ All notable changes to CKB will be documented in this file.
 These change what `assessChange`, `prepareChange`, `analyzeImpact` and
 `searchSymbols` report, so expect different numbers than in 9.3.
 
+- **`analyzeImpact` counted no callers for indexers without access roles.**
+  scip-dart and scip-typescript mark an occurrence with no read or write role,
+  so every call was `unknown`: the report said "0 direct caller(s)" and scored
+  the risk on that. A reference inside a function is now a caller; one outside
+  any function stays `unknown`, since it is as likely an import.
+- **Blast radius inflated by SCIP locals.** A local function's `local N` ID is
+  unique per document only, and was treated as global: on a Flutter app, 41 of
+  108 impacts landed in generated localization code. Locals no longer enter the
+  call graph; what a local function calls is attributed to the function around it.
+- **Callers for indexers without `EnclosingRange`.** References in scip-dart
+  output had no enclosing symbol. Function extents are now inferred, as the
+  caller index already did.
+- **One risk level per `analyzeImpact` answer.** `blastRadius.riskLevel` was a
+  size class from module and caller counts, while `riskScore.level` weighed
+  visibility, callers, spread and kind, so the same response said `medium` next
+  to `high`. It now carries the score's level, as `prepareChange` already did;
+  the counts are unchanged.
 - **`contractChanged` checks the use, not the file.** A file counted as handled as
   soon as the diff touched it, so a comment edit hid a call the compiler still
   rejects, and took the risk floor with it. A consumer inside the diff now counts
@@ -187,6 +174,12 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
 
 ### Fixed — search and navigation
 
+- **Symbol kinds in search.** The FTS table read SCIP kinds against the wrong
+  enum, so a Dart class was reported as a `variable`. Existing databases rebuild
+  on first use.
+- **`findReferences` on a class includes calls of its unnamed constructor**
+  (`` `<constructor>` ``, `` `<init>` ``). They resolve to the constructor symbol
+  and left the class's reference list short.
 - **Search results have real locations.** The FTS path only set the file, so
   `searchSymbols` returned `startLine: 0` for everything.
 - **Locals and files outside the repo are gone from results.** `ckb search y`
@@ -212,6 +205,10 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
 
 ### Changed
 
+- **`findReferences` over MCP answers per file by default:** `files` with each
+  file's lines, in place of one entry per reference. On six symbols of a Flutter
+  app that is 8 KB instead of 46 KB. `detail: "full"` returns the previous list,
+  and `ckb refs --compact` gives the CLI the same form; its JSON is unchanged.
 - **`getCallGraph` has a response budget.** A widely used symbol returned 250
   nodes and about 46k tokens. It now returns the 20 nodes closest to the symbol,
   says in `truncation` how many were cut, and takes a `limit`. `ckb callgraph`
@@ -228,6 +225,9 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
 
 ### Output changes consumers will notice
 
+- `findReferences` over MCP returns `files` by default; `references` needs
+  `detail: "full"`. `blastRadius.riskLevel` in `analyzeImpact` equals
+  `riskScore.level`.
 - `changedSymbols`: new `note`, fewer entries, `file:` entries for lines no
   definition could be found for; deleted symbols list old-file lines.
 - `riskFactors` may include `deleted_with_consumers`.
