@@ -44,6 +44,7 @@ const (
 	RefCall       ReferenceKind = "call"       // Function/method call
 	RefRead       ReferenceKind = "read"       // Read access
 	RefWrite      ReferenceKind = "write"      // Write access
+	RefReference  ReferenceKind = "reference"  // Occurrence the indexer gave no access role
 	RefType       ReferenceKind = "type"       // Type reference
 	RefImplements ReferenceKind = "implements" // Interface implementation
 	RefExtends    ReferenceKind = "extends"    // Class extension

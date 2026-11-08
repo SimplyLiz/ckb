@@ -3,28 +3,28 @@
     "fileCount": 3,
     "moduleCount": 2,
     "riskLevel": "low",
-    "uniqueCallerCount": 2
+    "uniqueCallerCount": 4
   },
   "directImpact": [
     {
-      "file": "src/main.ts",
-      "kind": "unknown",
-      "name": ""
-    },
-    {
       "file": "src/pkg/handler.ts",
-      "kind": "unknown",
-      "name": ""
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "unknown",
+      "kind": "direct-caller",
       "name": "handle"
     },
     {
       "file": "src/main.ts",
-      "kind": "unknown",
+      "kind": "direct-caller",
       "name": "main"
+    },
+    {
+      "file": "src/main.ts",
+      "kind": "unknown",
+      "name": ""
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "kind": "unknown",
+      "name": ""
     }
   ],
   "modulesAffected": [
@@ -40,9 +40,9 @@
     }
   ],
   "riskScore": {
-    "explanation": "Low risk: 0 direct caller(s) across 2 module(s). Changes have limited impact.",
-    "level": "low",
-    "score": 0.39
+    "explanation": "Medium risk: 2 direct caller(s) across 2 module(s). Changes require careful testing.",
+    "level": "medium",
+    "score": 0.54
   },
   "symbol": {
     "file": "src/internal/util.ts",

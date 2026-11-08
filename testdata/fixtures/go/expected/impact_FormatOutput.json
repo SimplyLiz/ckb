@@ -7,19 +7,19 @@
   },
   "directImpact": [
     {
-      "file": "main.go",
-      "kind": "direct-caller",
-      "name": ""
-    },
-    {
       "file": "pkg/handler.go",
       "kind": "direct-caller",
-      "name": ""
+      "name": "Handle"
+    },
+    {
+      "file": "main.go",
+      "kind": "direct-caller",
+      "name": "Handler"
     },
     {
       "file": "pkg/service.go",
       "kind": "direct-caller",
-      "name": ""
+      "name": "Process"
     }
   ],
   "modulesAffected": [

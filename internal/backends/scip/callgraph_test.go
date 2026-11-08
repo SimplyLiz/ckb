@@ -796,3 +796,37 @@ func TestDefinitionBounds_Exclusions(t *testing.T) {
 		t.Errorf("T = %+v, want a point", b)
 	}
 }
+
+// scip-dart gives a local function a callable Kind and a "local N" ID. That ID
+// is unique per document only, so it must never become a node of the call graph.
+func TestBuildCallerIndex_LocalFunctionsDoNotLeakAcrossDocuments(t *testing.T) {
+	pkg := "scip-dart pub demo 1.0.0 lib/`a.dart`/"
+	outer, callee, unrelated := pkg+"outer().", pkg+"callee().", pkg+"unrelated()."
+	fnKind := int32(17) // SymbolInformation_Function
+	withLocal := &Document{
+		RelativePath: "lib/a.dart",
+		Symbols:      []*SymbolInformation{{Symbol: outer}, {Symbol: "local 1", Kind: fnKind}},
+		Occurrences: []*Occurrence{
+			{Range: []int32{0, 5, 10}, Symbol: outer, SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{1, 7, 12}, Symbol: "local 1", SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{2, 4, 10}, Symbol: callee},
+			{Range: []int32{4, 2, 7}, Symbol: "local 1"},
+		},
+	}
+	sameIDElsewhere := &Document{
+		RelativePath: "lib/b.dart",
+		Symbols:      []*SymbolInformation{{Symbol: unrelated}},
+		Occurrences: []*Occurrence{
+			{Range: []int32{0, 5, 14}, Symbol: unrelated, SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{1, 2, 7}, Symbol: "local 1"},
+		},
+	}
+
+	callers := buildCallerIndex([]*Document{withLocal, sameIDElsewhere})
+	if got := callers[callee]; len(got) != 1 || got[0] != outer {
+		t.Errorf("callers of callee = %v, want the named function around the local one", got)
+	}
+	if got := callers["local 1"]; len(got) != 0 {
+		t.Errorf("callers of local 1 = %v, want none", got)
+	}
+}

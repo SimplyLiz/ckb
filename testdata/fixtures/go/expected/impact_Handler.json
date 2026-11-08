@@ -7,26 +7,6 @@
   },
   "directImpact": [
     {
-      "file": "pkg/handler.go",
-      "kind": "type-dependency",
-      "name": ""
-    },
-    {
-      "file": "pkg/handler.go",
-      "kind": "type-dependency",
-      "name": ""
-    },
-    {
-      "file": "pkg/handler.go",
-      "kind": "type-dependency",
-      "name": ""
-    },
-    {
-      "file": "pkg/handler.go",
-      "kind": "type-dependency",
-      "name": ""
-    },
-    {
       "file": "pkg/server.go",
       "kind": "type-dependency",
       "name": ""
@@ -34,7 +14,27 @@
     {
       "file": "pkg/server.go",
       "kind": "type-dependency",
-      "name": ""
+      "name": "GetHandler"
+    },
+    {
+      "file": "pkg/handler.go",
+      "kind": "type-dependency",
+      "name": "Handle"
+    },
+    {
+      "file": "pkg/handler.go",
+      "kind": "type-dependency",
+      "name": "HandleBatch"
+    },
+    {
+      "file": "pkg/handler.go",
+      "kind": "type-dependency",
+      "name": "NewHandler"
+    },
+    {
+      "file": "pkg/handler.go",
+      "kind": "type-dependency",
+      "name": "NewHandler"
     }
   ],
   "modulesAffected": [

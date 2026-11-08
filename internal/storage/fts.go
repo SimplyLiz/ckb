@@ -156,7 +156,7 @@ func (m *FTSManager) InitSchema() error {
 
 // ftsContentVersion is bumped when the FTS table layout or the meaning of its
 // columns changes. It is part of the stamp the caller stores with SetStamp.
-const ftsContentVersion = 1
+const ftsContentVersion = 2
 
 // Stamp returns the stamp that content built for the given source identity
 // carries. Callers compare it with GetStamp to decide whether the FTS content

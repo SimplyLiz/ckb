@@ -9,12 +9,12 @@
     "usage": {
       "calleeCount": 10,
       "callerCount": 0,
-      "referenceCount": 2
+      "referenceCount": 3
     }
   },
   "summary": {
     "identity": "class DefaultService in module ",
-    "tldr": "class DefaultService in module  – 0 callers, 2 references across 1 modules",
-    "usage": "0 callers, 2 references across 1 modules"
+    "tldr": "class DefaultService in module  – 0 callers, 3 references across 1 modules",
+    "usage": "0 callers, 3 references across 1 modules"
   }
 }

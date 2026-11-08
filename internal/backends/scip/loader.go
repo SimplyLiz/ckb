@@ -629,6 +629,13 @@ func containerEntries(doc *Document) map[string]string {
 		}
 	}
 	if len(defScopes) == 0 {
+		// scip-dart gives no EnclosingRange at all. Infer the functions' extents
+		// the way the caller index does, or no reference has a caller.
+		for _, b := range functionBounds(doc) {
+			defScopes = append(defScopes, defScope{b.Symbol, int32(b.Start), int32(b.End)}) // #nosec G115 -- lines came from int32 SCIP ranges
+		}
+	}
+	if len(defScopes) == 0 {
 		return entries
 	}
 	// Smallest first, so the first match is the innermost.

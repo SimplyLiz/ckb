@@ -222,7 +222,10 @@ func buildCallerIndex(docs []*Document) map[string][]string {
 		gen++
 
 		for _, occ := range doc.Occurrences {
-			if occ.Symbol == "" || occ.SymbolRoles&SymbolRoleDefinition != 0 {
+			// A local's ID is only unique within its document; keyed globally,
+			// "local 12" in one file would collect the callers of every other
+			// file's "local 12".
+			if occ.Symbol == "" || IsLocalSymbol(occ.Symbol) || occ.SymbolRoles&SymbolRoleDefinition != 0 {
 				continue
 			}
 			occLine := int(occ.Range[0]) // #nosec G115 -- SCIP int32 fits in int
@@ -406,13 +409,14 @@ func enclosingLines(occ *Occurrence) (start, end int, ok bool) {
 
 // functionBounds returns the bounds of every function in a document, one per
 // symbol: EnclosingRange where the indexer gave it, otherwise closed off at the
-// next function.
+// next function. A local function is not one of them: what it calls is called by
+// the function around it, and it must not end that function's inferred range.
 func functionBounds(doc *Document) []DefinitionBound {
 	callable := make(map[string]bool, len(doc.Symbols))
 	for _, sym := range doc.Symbols {
 		// Detect functions from the symbol ID as well: Kind is optional in SCIP,
 		// and scip-typescript never sets it.
-		if isFunctionSymbol(sym.Symbol) || isCallableKind(sym.Kind) {
+		if !IsLocalSymbol(sym.Symbol) && (isFunctionSymbol(sym.Symbol) || isCallableKind(sym.Kind)) {
 			callable[sym.Symbol] = true
 		}
 	}
