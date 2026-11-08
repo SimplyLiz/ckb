@@ -2,7 +2,7 @@
   "blastRadius": {
     "fileCount": 4,
     "moduleCount": 2,
-    "riskLevel": "low",
+    "riskLevel": "medium",
     "uniqueCallerCount": 5
   },
   "directImpact": [

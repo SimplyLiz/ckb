@@ -222,7 +222,7 @@ type BlastRadiusSummary struct {
 	ModuleCount       int    `json:"moduleCount"`
 	FileCount         int    `json:"fileCount"`
 	UniqueCallerCount int    `json:"uniqueCallerCount"` // SCIP static callers only (drives thresholds)
-	RiskLevel         string `json:"riskLevel"`         // "low", "medium", "high"
+	RiskLevel         string `json:"riskLevel"`         // same value as riskScore.level, kept for consumers reading it here
 
 	// LIP semantic enrichment (omitted when LIP is unavailable)
 	StaticCallerCount   int                  `json:"staticCallerCount,omitempty"`
@@ -725,7 +725,11 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 		}
 	}
 
-	if blastRadius != nil && consumersNotAssessed {
+	// One level per answer. The analyzer classifies the blast radius by its
+	// counts alone, which disagreed with riskScore in the same response (medium
+	// next to high, low next to medium). prepareChange already reports the
+	// score's level here; the counts stay as they are.
+	if blastRadius != nil {
 		blastRadius.RiskLevel = riskScore.Level
 	}
 
