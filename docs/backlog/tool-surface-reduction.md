@@ -84,10 +84,6 @@ investment. About 10 tools remain.
 A later trim to 6 or 7 tools is possible: merge `federationStatus` and
 `federationRepos`, fold symbol search into `federationSearch(kind)`.
 
-Known bug: after `ckb init`, `ckb federation add` warns that the repository
-database is missing and advises `ckb init` again. The database only exists after
-`ckb index` or a first query, so the advice loops.
-
 ## Open decisions
 
 - **Review check count.** The code has 24 `checkEnabled` checks, some of them
