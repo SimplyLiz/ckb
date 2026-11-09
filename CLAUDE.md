@@ -85,8 +85,9 @@ Releases are fully automated via `.github/workflows/release.yml`, triggered by p
 **Steps to release:**
 1. `go run scripts/sync-version.go X.Y.Z` (see below)
 2. Update `CHANGELOG.md`
-3. Merge to main, tag `vX.Y.Z`, push the tag
-4. The pipeline handles everything else:
+3. Rewrite the post-update notice in `internal/update/notice.go` and set its `noticeVersion` (a test fails until it matches)
+4. Merge to main, tag `vX.Y.Z`, push the tag
+5. The pipeline handles everything else:
    - Runs `go test -race ./...`
    - Builds each target on a native runner (cgo + the prebuilt Cartographer
      static lib) and uploads the archives straight to the GitHub Release

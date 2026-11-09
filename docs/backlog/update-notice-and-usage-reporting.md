@@ -1,7 +1,6 @@
 # Post-update notice and opt-in usage reporting
 
-**Status:** Notice agreed in principle, not built. Usage reporting comes after it.
-**Target:** notice in 9.4.0 if it makes the tag (9.4.0 is not tagged yet)
+**Status:** Notice built for 9.4.0 (`internal/update/notice.go`). Usage reporting comes after it.
 
 ---
 
@@ -36,16 +35,15 @@ What's new
   • findReferences over MCP is far smaller: grouped by file by default
   • Upgrades no longer need a fresh .ckb
 
-CKB is built by a tiny team, and we want it to stay free for the people
+CKB is built by one developer, and I want it to stay free for the people
 who make software on their own or are just getting started. It's free for
-personal use, open source projects, and startups and small businesses
-under $25k annual revenue.
+personal use, open source projects, and organizations under $25k annual
+revenue.
 
 If your organization is above that, please get a license. It's what keeps
-CKB going, and we appreciate it: https://codeknowledge.dev/pricing
+CKB going, and I appreciate it: https://codeknowledge.dev/pricing
 
-We'd love to hear from you, good or bad:
-  Discord  <invite link>
+I'd love to hear from you, good or bad:
   GitHub   https://github.com/SimplyLiz/ckb/discussions
 
 (Shown once per version. Silence it with CKB_NO_NOTICE=1)
@@ -54,14 +52,13 @@ We'd love to hear from you, good or bad:
 The wording has to match `LICENSE`: free use is not limited to private
 individuals.
 
-### Open before shipping
+### Decided
 
-- Is "tiny team" accurate?
 - Discord does not exist yet. Until there is a permanent invite link, the line
-  is left out and only GitHub Discussions is linked.
-- Solo freelancers: `LICENSE` says "personal, non-commercial" and
-  "organizations" under $25k. Paid work by one person fits neither clearly.
-  Settle this before the notice goes out, these are the people who will ask.
+  stays out and only GitHub Discussions is linked.
+- Solo freelancers count as organizations: free under $25k annual revenue, a
+  license above it. `LICENSE` still says only "personal, non-commercial" and
+  "organizations", so it needs a sentence saying so. Not written yet.
 
 ## Opt-in usage reporting
 

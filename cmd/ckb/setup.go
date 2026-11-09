@@ -273,6 +273,13 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	fmt.Println("  cargo install lip-cli && lip daemon --socket ~/.local/share/lip/lip.sock && lip index .")
 	fmt.Println("  https://lip-sigma.vercel.app  —  once running, CKB picks it up automatically.")
 
+	// People who only use CKB through an MCP client never see the post-update
+	// notice. A person only: license text does not go into agent context.
+	if isTerminal(os.Stdout) {
+		fmt.Println()
+		fmt.Println("License: free for personal use, open source projects and organizations under $25k annual revenue; above that see https://codeknowledge.dev/pricing")
+	}
+
 	return nil
 }
 
