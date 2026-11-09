@@ -264,6 +264,7 @@ var coreToolOrder = []string{
 	"explore",
 	"understand",
 	"prepareChange",
+	"assessChange",
 	"batchGet",
 	"batchSearch",
 	// Granular tools (fallback)

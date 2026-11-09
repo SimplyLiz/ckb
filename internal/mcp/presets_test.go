@@ -20,7 +20,7 @@ func TestPresetFiltering(t *testing.T) {
 
 	// Verify compound tools come first (preferred for AI workflows)
 	expectedFirst := []string{
-		"explore", "understand", "prepareChange", "batchGet", "batchSearch",
+		"explore", "understand", "prepareChange", "assessChange", "batchGet", "batchSearch",
 		"searchSymbols", "symbolExists", "getSymbol", "explainSymbol", "explainFile", "explainPath",
 		"findReferences", "getCallGraph", "traceUsage",
 		"getArchitecture", "getModuleOverview", "getModuleResponsibilities", "listKeyConcepts",

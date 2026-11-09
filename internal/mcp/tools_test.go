@@ -81,3 +81,20 @@ func TestExpandToolsetDescriptionCountsMatchPresets(t *testing.T) {
 		t.Errorf("expandToolset description missing/mismatched count for preset \"full\": want %q, got: %s", wantFull, tool.Description)
 	}
 }
+
+// TestDescriptionsDoNotRecommendDeprecatedTool guards against sending agents
+// to analyzeChange: it is deprecated and missing from the core preset, so a
+// core tool recommending it pointed at a tool the agent did not have.
+func TestDescriptionsDoNotRecommendDeprecatedTool(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := NewMCPServer("test", nil, logger)
+
+	for _, tool := range server.GetToolDefinitions() {
+		if tool.Name == "analyzeChange" {
+			continue
+		}
+		if strings.Contains(tool.Description, "analyzeChange") {
+			t.Errorf("%s recommends the deprecated analyzeChange", tool.Name)
+		}
+	}
+}

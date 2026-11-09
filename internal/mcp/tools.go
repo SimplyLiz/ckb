@@ -130,7 +130,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		},
 		{
 			Name:        "searchSymbols",
-			Description: "Semantic code search returning symbol types, locations, and relationships—more accurate than text-based grep/find. Note: may not match class methods or record properties by bare name — use symbolExists for authoritative boolean lookups.",
+			Description: "Search symbols by name in the index: full-text search over symbol names and signatures first, then SCIP if that finds nothing. Returns symbol IDs, kinds and locations. Note: may not match class methods or record properties by bare name — use symbolExists for authoritative boolean lookups.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -345,7 +345,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		},
 		{
 			Name:        "analyzeImpact",
-			Description: "Use this to check 'what breaks if I change X?' — returns callers, affected modules, and risk score for a single symbol. For full pre-change analysis with tests and coupling, use prepareChange instead. For analyzing a git diff of changes already made, use analyzeChange.",
+			Description: "Use this to check 'what breaks if I change X?' — returns callers, affected modules, and risk score for a single symbol. For full pre-change analysis with tests and coupling, use prepareChange instead. For analyzing a git diff of changes already made, use assessChange.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1002,7 +1002,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		// v6.1 CI/CD tools
 		{
 			Name:        "summarizePr",
-			Description: "Use this for a PR summary with risk assessment — compares branches and returns affected modules, hotspots, and suggested reviewers. Lighter than reviewPR (no quality gates or scoring). For full review with 15 checks, use reviewPR. For commit-level diffs, use summarizeDiff.",
+			Description: "Use this for a PR summary with risk assessment — compares branches and returns affected modules, hotspots, and suggested reviewers. Lighter than reviewPR (no quality gates or scoring). For a full review with quality checks, use reviewPR. For commit-level diffs, use summarizeDiff.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1871,7 +1871,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		// v7.6 Breaking Change Detection Tool
 		{
 			Name:        "compareAPI",
-			Description: "Use this to detect breaking API changes between git refs — finds removed symbols, signature changes, visibility changes, and renames. Essential for release planning and backwards compatibility. For general change impact (not API-specific), use analyzeChange.",
+			Description: "Use this to detect breaking API changes between git refs — finds removed symbols, signature changes, visibility changes, and renames. Essential for release planning and backwards compatibility. For general change impact (not API-specific), use assessChange.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -2270,7 +2270,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		// v8.2 Unified PR Review
 		{
 			Name:        "reviewPR",
-			Description: "Run a comprehensive PR review with 15 quality checks. Use this FIRST when reviewing a PR — it gives you structural context so you can focus on what matters. Checks: breaking changes, secrets, test coverage, complexity, health, coupling, hotspots, risk, dead code, test gaps, blast radius, comment drift, format consistency, bug patterns, split suggestions. Returns verdict (pass/warn/fail), score (0-100), findings with file:line, health report, review effort estimate, PR tier, and suggested reviewers. Follow up with findReferences, analyzeImpact, or explainSymbol to drill into specific findings — the SCIP index stays loaded between calls.",
+			Description: "Run a comprehensive PR review with structural quality checks. Use this FIRST when reviewing a PR — it gives you structural context so you can focus on what matters. Checks include breaking changes, secrets, test coverage, complexity, health, coupling, hotspots, risk, dead code, unwired code, test gaps, blast radius, comment drift, format consistency, bug patterns, split suggestions. Returns verdict (pass/warn/fail), score (0-100), findings with file:line, health report, review effort estimate, PR tier, and suggested reviewers. Follow up with findReferences, analyzeImpact, or explainSymbol to drill into specific findings — the SCIP index stays loaded between calls.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -2521,7 +2521,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		},
 		{
 			Name:        "prepareChange",
-			Description: "Use this BEFORE making a code change — returns blast radius, affected tests, coupled files, and risk score. Essential before modifying, renaming, deleting, or moving code. More comprehensive than analyzeImpact (includes tests + coupling). For analyzing changes already made, use analyzeChange instead.",
+			Description: "Use this BEFORE making a code change — returns blast radius, affected tests, coupled files, and risk score. Essential before modifying, renaming, deleting, or moving code. More comprehensive than analyzeImpact (includes tests + coupling). For analyzing changes already made, use assessChange instead.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -2694,7 +2694,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		// v8.4 Performance scan
 		{
 			Name:        "scanPerformance",
-			Description: "Scan for structural performance problems. Detects hidden coupling: file pairs that co-change frequently in git history but have no static import edge between them. Hidden coupling indicates implicit shared state or behavioral coupling that the dependency graph cannot see, and is the highest-signal structural risk for refactoring and maintenance cost.",
+			Description: "Detect hidden coupling (despite the name, this does not measure performance): file pairs that co-change frequently in git history but have no static import edge between them. Hidden coupling indicates implicit shared state or behavioral coupling that the dependency graph cannot see, and is the highest-signal structural risk for refactoring and maintenance cost.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
