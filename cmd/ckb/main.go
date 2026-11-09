@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/SimplyLiz/CodeMCP/internal/update"
 )
 
@@ -19,6 +21,10 @@ func main() {
 	// Skip for mcp/serve commands to avoid breaking protocol
 	var refreshWg sync.WaitGroup
 	if !isMCPCommand() {
+		// Before the refresh below: that creates the file the notice reads as
+		// the mark of an earlier install.
+		update.ShowPostUpdateNotice(os.Stderr, isTerminal(os.Stderr))
+
 		checker := update.NewChecker()
 		// Show cached update notification (instant, no HTTP)
 		if info := checker.CheckCached(); info != nil && isTerminal(os.Stderr) {
@@ -58,20 +64,25 @@ func waitWithTimeout(wg *sync.WaitGroup, timeout time.Duration) {
 	}
 }
 
-// isMCPCommand checks if the current command is 'mcp' or 'serve'
-// These commands should not show update notifications as it would break protocols
-// isTerminal reports whether f is a character device. The update box is for a
-// person at a terminal: agents and scripts capture stderr together with the
-// result and otherwise have to filter the box out of every call.
+// isTerminal reports whether f is a terminal. The update box and notice are for
+// a person: agents and scripts capture stderr together with the result and
+// otherwise have to filter them out of every call. A character-device check is
+// not enough, /dev/null is one too.
 func isTerminal(f *os.File) bool {
-	info, err := f.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(f.Fd())) // #nosec G115 -- a file descriptor fits in int
 }
 
+// isMCPCommand checks if the current command is 'mcp' or 'serve'. These must
+// not show update notifications as it would break protocols. It resolves the
+// command through cobra so a flag in front (`ckb -v mcp`) cannot hide it.
 func isMCPCommand() bool {
-	if len(os.Args) < 2 {
+	return isMCPCommandArgs(os.Args[1:])
+}
+
+func isMCPCommandArgs(args []string) bool {
+	cmd, _, err := rootCmd.Find(args)
+	if err != nil || cmd == nil {
 		return false
 	}
-	cmd := os.Args[1]
-	return cmd == "mcp" || cmd == "serve"
+	return cmd.Name() == "mcp" || cmd.Name() == "serve"
 }
