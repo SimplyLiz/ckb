@@ -215,6 +215,9 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   `.git/info/exclude`.
 - **The daemon handles nested projects** and uses the repo's language for
   incremental refresh.
+- **`ckb federation add` no longer loops on `ckb init`.** A repository with `.ckb`
+  but no database was told to run `ckb init` again, which doesn't create one. It
+  now says `ckb index`.
 
 ### Changed
 

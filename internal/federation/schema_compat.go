@@ -78,7 +78,7 @@ func CheckSchemaCompatibility(repoID, repoPath string) (*CompatibilityCheck, err
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		check.Status = CompatibilityNotInitialized
 		check.Message = "Repository database not found"
-		check.Action = fmt.Sprintf("Run: cd %s && ckb init", repoPath)
+		check.Action = fmt.Sprintf("Run: cd %s && ckb index", repoPath)
 		return check, nil
 	}
 
