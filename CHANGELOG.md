@@ -194,6 +194,19 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
 - **Handler detection** no longer matches `serverConfig`. Python module symbols
   (`__init__:`) and file-level pseudo-symbols are no longer callers.
 
+### Fixed — what the tool descriptions promise
+
+- `analyzeImpact`, `prepareChange` and `compareAPI` no longer send agents to
+  `analyzeChange`, which is deprecated and missing from the `core` preset. They
+  name `assessChange`.
+- `assessChange` now sits right after `prepareChange` in the tool list, instead
+  of behind `expandToolset`.
+- `reviewPR` and `summarizePr` no longer state a check count; the number had
+  gone stale.
+- `searchSymbols` describes what it does, full-text search with a SCIP fallback,
+  instead of "semantic code search". `scanPerformance` says that it detects
+  hidden coupling.
+
 ### Fixed — upgrades and setup
 
 - **Upgrading needs no fresh `.ckb`.** The derived symbol cache, FTS content and
