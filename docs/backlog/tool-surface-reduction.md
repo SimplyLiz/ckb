@@ -70,10 +70,26 @@ After the cuts above, `analyzeOutgoingImpact`, `detectShotgunSurgery`,
 `getArchitecturalEvolution`, `renderArchitecture` and `queryContext` remain
 reachable through `full` only. Each goes into a preset or out.
 
+## Decided: federation and contracts stay in MCP (2026-11-09)
+
+They stay behind the `federation` preset, with the cuts above and no new
+investment. About 10 tools remain.
+
+- They are not in `core`, so default sessions pay nothing for them.
+- `analyzeContractImpact` fits the change-safety positioning: a two-repo smoke
+  test found the consumer of a changed proto in the other repo, which grep
+  does not do.
+- Removing them would save little and break the few who use them.
+
+A later trim to 6 or 7 tools is possible: merge `federationStatus` and
+`federationRepos`, fold symbol search into `federationSearch(kind)`.
+
+Known bug: after `ckb init`, `ckb federation add` warns that the repository
+database is missing and advises `ckb init` again. The database only exists after
+`ckb index` or a first query, so the advice loops.
+
 ## Open decisions
 
-- **Federation and contracts in MCP.** About 10 tools remain after the cuts.
-  Without real federation users they are CLI-only, 10 tools fewer.
 - **Review check count.** The code has 24 `checkEnabled` checks, some of them
   conditional. README and CLAUDE.md say 21, parts of `docs/` still say 15. The
   tool descriptions no longer state a number.
