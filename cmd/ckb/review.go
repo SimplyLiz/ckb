@@ -373,11 +373,23 @@ func formatReviewHuman(resp *query.ReviewPRResponse) string {
 		b.WriteString("\n")
 	}
 
+	if strings.HasPrefix(resp.VerdictReason, "no check warned, but") {
+		b.WriteString(wrapIndent("Not a pass: "+strings.TrimPrefix(resp.VerdictReason, "no check warned, but "), "  ", 72) + "\n")
+	}
+
 	// Narrative
 	if resp.Narrative != "" {
 		b.WriteString("\n" + wrapIndent(resp.Narrative, "  ", 72) + "\n")
 	}
 	b.WriteString("\n")
+
+	for _, l := range resp.Limitations {
+		b.WriteString(wrapIndent("Not seen: "+l.Message, "  ", 72) + "\n")
+		for _, ex := range l.Examples {
+			b.WriteString("    " + truncateRunes(ex, 100) + "\n")
+		}
+		b.WriteString("\n")
+	}
 
 	// --- Checks: collapse passes into one line (#4) ---
 	b.WriteString("Checks:\n")
@@ -702,9 +714,23 @@ func formatReviewMarkdown(resp *query.ReviewPRResponse) string {
 	}
 	b.WriteString("\n")
 
+	if strings.HasPrefix(resp.VerdictReason, "no check warned, but") {
+		b.WriteString("Not a pass: " + strings.TrimPrefix(resp.VerdictReason, "no check warned, but ") + "\n\n")
+	}
+
 	// Narrative
 	if resp.Narrative != "" {
 		b.WriteString("> " + resp.Narrative + "\n\n")
+	}
+
+	for _, l := range resp.Limitations {
+		b.WriteString("**Not seen:** " + l.Message + "\n\n")
+		for _, ex := range l.Examples {
+			b.WriteString("- `" + strings.ReplaceAll(truncateRunes(ex, 100), "`", "'") + "`\n")
+		}
+		if len(l.Examples) > 0 {
+			b.WriteString("\n")
+		}
 	}
 
 	// Checks table
@@ -1066,4 +1092,14 @@ func postReviewComment(resp *query.ReviewPRResponse, prRef string) error {
 
 	fmt.Fprintf(os.Stderr, "Review posted to PR %s\n", prRef)
 	return nil
+}
+
+// truncateRunes cuts s to at most n characters, not bytes, so a multi-byte
+// character in a quoted code line isn't split.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
 }

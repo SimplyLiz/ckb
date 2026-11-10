@@ -34,7 +34,12 @@ It is structurally sound but semantically blind:
 - **Domain edge cases**: error paths, boundary conditions tests don't cover
 
 CKB's scoring uses per-check caps (max -20) and per-rule caps (max -10), so a score
-of 85 can still hide multiple capped warnings. HoldTheLine only flags changed lines,
+of 85 can still hide multiple capped warnings. The score never drops below 20 (80
+points of deductions in all), so 20 means "at least that bad". `verdictReason` says
+which checks decided the verdict; a pass needs no warning finding and a score of 50.
+`limitations` lists what the index can't see in this diff (members reached by a
+computed key, `obj[key]`): read those lines yourself, the callers and tests above
+leave them out. HoldTheLine only flags changed lines,
 so pre-existing issues interacting with new code won't surface.
 
 ## Phase 1: Structural scan (~1k tokens into context)

@@ -81,16 +81,23 @@ type ReviewPolicy struct {
 
 // ReviewPRResponse is the unified review result.
 type ReviewPRResponse struct {
-	CkbVersion    string              `json:"ckbVersion"`
-	SchemaVersion string              `json:"schemaVersion"`
-	Tool          string              `json:"tool"`
-	Verdict       string              `json:"verdict"` // "pass", "warn", "fail"
-	Score         int                 `json:"score"`   // 0-100
-	Summary       ReviewSummary       `json:"summary"`
-	Checks        []ReviewCheck       `json:"checks"`
-	Findings      []ReviewFinding     `json:"findings"`
-	Reviewers     []SuggestedReview   `json:"reviewers,omitempty"`
-	Generated     []GeneratedFileInfo `json:"generated,omitempty"`
+	CkbVersion    string `json:"ckbVersion"`
+	SchemaVersion string `json:"schemaVersion"`
+	Tool          string `json:"tool"`
+	Verdict       string `json:"verdict"` // "pass", "warn", "fail"
+	// VerdictReason says which checks decided the verdict, or why a review whose
+	// checks all passed is still not a pass.
+	VerdictReason string `json:"verdictReason,omitempty"`
+	// Score is 100 minus a deduction per finding (error 10, warning 3, info 1;
+	// capped at 20 per check, 10 per rule and 80 in all, so it never drops below 20).
+	Score int `json:"score"`
+	// Limitations are what the review could not see in this diff.
+	Limitations []ReviewLimitation  `json:"limitations,omitempty"`
+	Summary     ReviewSummary       `json:"summary"`
+	Checks      []ReviewCheck       `json:"checks"`
+	Findings    []ReviewFinding     `json:"findings"`
+	Reviewers   []SuggestedReview   `json:"reviewers,omitempty"`
+	Generated   []GeneratedFileInfo `json:"generated,omitempty"`
 	// Batch 3: Large PR Intelligence
 	SplitSuggestion  *PRSplitSuggestion          `json:"splitSuggestion,omitempty"`
 	ChangeBreakdown  *ChangeBreakdown            `json:"changeBreakdown,omitempty"`
@@ -701,8 +708,19 @@ func (e *Engine) ReviewPR(ctx context.Context, opts ReviewPROptions) (*ReviewPRR
 	// Calculate score
 	score := calculateReviewScore(checks, findings)
 
-	// Determine verdict
-	verdict := determineVerdict(checks, opts.Policy)
+	// Say what the index can't see, where this diff does it.
+	var limitations []ReviewLimitation
+	if e.hasConsumerGraph() {
+		rawDiff := ""
+		if opts.Staged {
+			rawDiff, _ = e.gitAdapter.GetStagedDiffUnified()
+		} else {
+			rawDiff, _ = e.gitAdapter.GetCommitRangeDiffUnified(opts.BaseBranch, opts.HeadBranch)
+		}
+		if l := dynamicAccessLimitation(rawDiff, 5); l != nil {
+			limitations = append(limitations, *l)
+		}
+	}
 
 	// Count critical files
 	for _, f := range findings {
@@ -753,6 +771,9 @@ func (e *Engine) ReviewPR(ctx context.Context, opts ReviewPROptions) (*ReviewPRR
 	// Re-sort after adding split check
 	sortChecks(checks)
 
+	// Determine verdict, after the split check: added late, it was left out of it.
+	verdict, verdictReason := explainVerdict(checks, findings, score, opts.Policy)
+
 	// Get repo state
 	repoState, err := e.GetRepoState(ctx, "head")
 	if err != nil {
@@ -764,6 +785,8 @@ func (e *Engine) ReviewPR(ctx context.Context, opts ReviewPROptions) (*ReviewPRR
 		SchemaVersion:    "8.2",
 		Tool:             "reviewPR",
 		Verdict:          verdict,
+		VerdictReason:    verdictReason,
+		Limitations:      limitations,
 		Score:            score,
 		Summary:          summary,
 		Checks:           checks,
