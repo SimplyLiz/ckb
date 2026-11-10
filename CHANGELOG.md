@@ -233,7 +233,7 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   sides, the hidden pass uses the same 70% floor as the regular one, and
   `ckb coupling` / `analyzeCoupling` leave out commits touching more than 50 files,
   which made every file in them 100% coupled to every other (Cartographer already
-  did). The regular pass finds nothing on that branch now.
+  did). On that branch two findings are left, both code files.
 
 ### Fixed — search and navigation
 
