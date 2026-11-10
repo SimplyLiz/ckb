@@ -1995,6 +1995,21 @@ func (e *Engine) buildChangeConfidence(
 	}
 }
 
+// forkPoint returns where head forked from base, for diffing a branch the way
+// a pull request shows it. Without a merge base (a shallow clone, unrelated
+// histories) it keeps base, which compares the two tips.
+func (e *Engine) forkPoint(base, head string) string {
+	if e.gitAdapter == nil || base == "" {
+		return base
+	}
+	mb, err := e.gitAdapter.MergeBase(base, head)
+	if err != nil {
+		e.logger.Warn("No merge base, diffing against the base's tip", "base", base, "head", head, "error", err)
+		return base
+	}
+	return mb
+}
+
 // getGitDiff gets the current git diff.
 func (e *Engine) getGitDiff(staged bool, baseBranch string) (string, error) {
 	args := []string{"diff", fmt.Sprintf("-U%d", diff.DeclarationContextLines)}
@@ -2006,6 +2021,9 @@ func (e *Engine) getGitDiff(staged bool, baseBranch string) (string, error) {
 	base := baseBranch
 	if base == "" && !staged {
 		base = "HEAD"
+	}
+	if base != "" && base != "HEAD" && !staged {
+		base = e.forkPoint(base, "HEAD")
 	}
 	if staged && base == "HEAD" {
 		base = ""
