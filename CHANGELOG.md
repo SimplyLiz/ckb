@@ -290,6 +290,20 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   branch became 79, and `isCustomKey` with 18 callers is among the findings now) and
   `unwired` all see them. Not covered: a store built by a call, such as zustand's
   `create(...)`, is still a constant, and its actions' calls belong to its members.
+- **The stored call graph has callers.** The `callgraph` table that `ckb index`
+  fills for incremental updates, and that the index server and `ckb diff` read, had
+  a caller on no edge at all: 0 of 48,326 on CKB itself, 0 of 11,441 on a
+  TypeScript app. Its kind mapping used LSP's numbers, where 6 is a method and 12 a
+  function; in SCIP they are Boolean and EnumMember. A symbol without a Kind came
+  out `unknown` and was never a caller, and a Rust function (Kind 17) was never a
+  callee, while enum members were. The ID check also took `run().(x)`, a
+  parameter, for a call. The table and the index server's upload now use the SCIP
+  backend's own rule, function-valued constants included, with each function's end
+  taken from its EnclosingRange: 45,369 of 45,643 edges on CKB have a caller, 6,769
+  of 10,248 on that app (the rest are mostly anonymous test callbacks). A call to a
+  function-valued constant from
+  another file is still missed there, since telling it from a plain constant needs
+  its definition. The PageRank graph behind result ranking uses `IsCallable` too.
 - **`switchProject` into a linked worktree stays there.** The next call with a
   relative `filePath` resolved it against the client's root first, found the same file
   in the main checkout and switched back to the main checkout's index, without saying so.

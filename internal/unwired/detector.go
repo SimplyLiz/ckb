@@ -515,7 +515,7 @@ func parseSymbolInfo(sym *scip.SymbolInformation) *symbolInfo {
 	}
 
 	kind := "type"
-	if isFunctionSymbol(sym.Symbol) {
+	if scip.IsFunctionSymbol(sym.Symbol) {
 		kind = "function"
 	}
 
@@ -550,10 +550,6 @@ func isExported(name string) bool {
 	}
 	r := []rune(name)
 	return unicode.IsUpper(r[0])
-}
-
-func isFunctionSymbol(symbolID string) bool {
-	return strings.Contains(symbolID, "().")
 }
 
 // findSymbolFile returns the file path where a symbol is defined.

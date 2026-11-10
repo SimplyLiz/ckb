@@ -407,6 +407,12 @@ func enclosingLines(occ *Occurrence) (start, end int, ok bool) {
 	return 0, 0, false
 }
 
+// FunctionBounds is functionBounds for code that reads documents itself: the
+// call sites of a document belong to the innermost bound that holds them.
+func FunctionBounds(doc *Document) []DefinitionBound {
+	return functionBounds(doc)
+}
+
 // functionBounds returns the bounds of every function in a document, one per
 // symbol: EnclosingRange where the indexer gave it, otherwise closed off at the
 // next function. A local function is not one of them: what it calls is called by
@@ -465,18 +471,57 @@ func functionBounds(doc *Document) []DefinitionBound {
 // the keyword, before the name. An indexer that states a Kind has said what the
 // symbol is, so only a symbol without one is looked at.
 func isFunctionValuedTerm(symbolID string, kind int32, def *Occurrence) bool {
-	if kind != 0 || def == nil || IsLocalSymbol(symbolID) || !strings.HasSuffix(symbolID, ".") || isFunctionSymbol(symbolID) {
+	if def == nil {
 		return false
 	}
-	if len(def.Range) < 3 || len(def.EnclosingRange) < 3 {
+	return IsFunctionValuedTerm(symbolID, kind, def.Range, def.EnclosingRange)
+}
+
+// IsFunctionValuedTerm is isFunctionValuedTerm on the raw ranges of a
+// definition occurrence, for callers that hold the protobuf types.
+func IsFunctionValuedTerm(symbolID string, kind int32, rng, enclosing []int32) bool {
+	if kind != 0 || IsLocalSymbol(symbolID) || !strings.HasSuffix(symbolID, ".") || isFunctionSymbol(symbolID) {
 		return false
 	}
-	nameEndLine, nameEndCol := def.Range[0], def.Range[2]
-	if len(def.Range) >= 4 {
-		nameEndLine, nameEndCol = def.Range[2], def.Range[3]
+	if len(rng) < 3 || len(enclosing) < 3 {
+		return false
 	}
-	encLine, encCol := def.EnclosingRange[0], def.EnclosingRange[1]
+	nameEndLine, nameEndCol := rng[0], rng[2]
+	if len(rng) >= 4 {
+		nameEndLine, nameEndCol = rng[2], rng[3]
+	}
+	encLine, encCol := enclosing[0], enclosing[1]
 	return encLine > nameEndLine || encLine == nameEndLine && encCol >= nameEndCol
+}
+
+// IsCallableDefinition decides for one definition occurrence whether its
+// symbol can be called, from what a single document knows: the ID, the Kind
+// the indexer stated (0 when it stated none), and the definition's ranges.
+// It is the rule SCIPIndex.IsCallable applies, for code that reads documents
+// one at a time.
+func IsCallableDefinition(symbolID string, kind int32, rng, enclosing []int32) bool {
+	return isFunctionSymbol(symbolID) || isCallableKind(kind) || IsFunctionValuedTerm(symbolID, kind, rng, enclosing)
+}
+
+// IsCallableReference decides whether a reference targets something callable
+// when only the ID and, if the target is defined in the same document, its
+// Kind are known. A function-valued constant defined in another document is
+// missed: telling it apart from a plain constant needs its definition.
+func IsCallableReference(symbolID string, kind int32) bool {
+	return isFunctionSymbol(symbolID) || isCallableKind(kind)
+}
+
+// IsCallableKind reports whether a SCIP SymbolInformation.Kind is a callable.
+// The values are SCIP's own enum, not LSP's SymbolKind (where 6 and 12 are
+// method and function; in SCIP they are Boolean and EnumMember).
+func IsCallableKind(kind int32) bool {
+	return isCallableKind(kind)
+}
+
+// IsFunctionSymbol reports whether a SCIP ID names a function or method by its
+// descriptor alone (see isFunctionSymbol).
+func IsFunctionSymbol(symbolID string) bool {
+	return isFunctionSymbol(symbolID)
 }
 
 // IsCallable reports whether a symbol is something that can be called: a

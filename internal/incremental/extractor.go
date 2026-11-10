@@ -204,14 +204,12 @@ func (e *SCIPExtractor) extractFileDelta(doc *scip.Document, change ChangedFile)
 		if len(occ.Range) >= 1 {
 			sym.StartLine = int(occ.Range[0]) + 1 // #nosec G115 -- SCIP int32 coordinates fit in int
 		}
-		if len(occ.Range) >= 3 {
-			sym.EndLine = int(occ.Range[2]) + 1 // #nosec G115 -- SCIP int32 coordinates fit in int
-		} else {
-			sym.EndLine = sym.StartLine
-		}
+		sym.EndLine = definitionEndLine(sym.StartLine, occ.EnclosingRange)
 
 		// Enrich with symbol information if available
+		var kind int32
 		if info, ok := symbolInfo[occ.Symbol]; ok {
+			kind = info.Kind
 			sym.Name = extractSymbolName(occ.Symbol, info.DisplayName)
 			sym.Kind = mapSymbolKind(info.Kind)
 			if len(info.Documentation) > 0 {
@@ -222,6 +220,7 @@ func (e *SCIPExtractor) extractFileDelta(doc *scip.Document, change ChangedFile)
 			sym.Name = extractSymbolName(occ.Symbol, "")
 			sym.Kind = "unknown"
 		}
+		sym.Callable = scip.IsCallableDefinition(occ.Symbol, kind, occ.Range, occ.EnclosingRange)
 
 		delta.Symbols = append(delta.Symbols, sym)
 	}
@@ -252,6 +251,7 @@ func (e *SCIPExtractor) extractFileDelta(doc *scip.Document, change ChangedFile)
 
 	// v1.1: Extract call edges
 	// Call edges are references to callable symbols (functions/methods)
+	callable := callableDefinitions(delta.Symbols)
 	for _, occ := range doc.Occurrences {
 		// Skip definitions
 		if occ.SymbolRoles&scip.SymbolRoleDefinition != 0 {
@@ -264,7 +264,7 @@ func (e *SCIPExtractor) extractFileDelta(doc *scip.Document, change ChangedFile)
 		}
 
 		// Check if callee is callable (function/method)
-		if !isCallable(occ.Symbol, symbolInfo) {
+		if !callable[occ.Symbol] && !isCallableReference(occ.Symbol, symbolInfo) {
 			continue
 		}
 
@@ -333,67 +333,17 @@ func isLocalSymbol(symbolID string) bool {
 	return len(symbolID) > 6 && symbolID[:6] == "local "
 }
 
-// mapSymbolKind converts SCIP kind int32 to our string kind
+// mapSymbolKind names a SCIP SymbolInformation.Kind in lower case
+// ("function", "staticmethod", "enummember"), or "unknown" for none.
 func mapSymbolKind(kind int32) string {
-	// SCIP kind enum values (from scip.proto)
-	switch kind {
-	case 0:
-		return "unknown"
-	case 1:
-		return "file"
-	case 2:
-		return "module"
-	case 3:
-		return "namespace"
-	case 4:
-		return "package"
-	case 5:
-		return "class"
-	case 6:
-		return "method"
-	case 7:
-		return "property"
-	case 8:
-		return "field"
-	case 9:
-		return "constructor"
-	case 10:
-		return "enum"
-	case 11:
-		return "interface"
-	case 12:
-		return "function"
-	case 13:
-		return "variable"
-	case 14:
-		return "constant"
-	case 15:
-		return "string"
-	case 16:
-		return "number"
-	case 17:
-		return "boolean"
-	case 18:
-		return "array"
-	case 19:
-		return "object"
-	case 20:
-		return "key"
-	case 21:
-		return "null"
-	case 22:
-		return "enum_member"
-	case 23:
-		return "struct"
-	case 24:
-		return "event"
-	case 25:
-		return "operator"
-	case 26:
-		return "type_parameter"
-	default:
+	if kind == 0 {
 		return "unknown"
 	}
+	name, ok := scippb.SymbolInformation_Kind_name[kind]
+	if !ok {
+		return "unknown"
+	}
+	return strings.ToLower(name)
 }
 
 // computeDocHash computes a hash of the SCIP document for caching
@@ -445,31 +395,42 @@ func hashFile(path string) (string, error) {
 	return fmt.Sprintf("%x", sum[:]), nil
 }
 
-// isFunctionSymbol checks if a SCIP symbol ID represents a callable (Go-specific heuristic)
-// SCIP Go symbols for functions/methods contain "()." in the descriptor
-func isFunctionSymbol(symbolID string) bool {
-	return strings.Contains(symbolID, "().")
-}
-
-// isCallableKind checks if a SCIP symbol kind is callable
-func isCallableKind(kind int32) bool {
-	// SCIP kind values for callables
-	return kind == 6 || // Method
-		kind == 9 || // Constructor
-		kind == 12 // Function
-}
-
-// isCallable determines if a symbol is callable using tiered detection
-// Tier 1: Check SymbolInformation.Kind if available
-// Tier 2: Fall back to Go-specific symbol ID heuristic
-func isCallable(symbolID string, symbolInfo map[string]*scip.SymbolInformation) bool {
-	// Tier 1: Try to use Kind from SymbolInformation
-	if info, ok := symbolInfo[symbolID]; ok && info.Kind != 0 {
-		return isCallableKind(info.Kind)
+// isCallableReference decides whether a reference targets a callable, from its
+// ID and, when the target is defined in the same document, its Kind. A target
+// defined in this document has already been decided by callableDefinitions,
+// which also sees function-valued constants.
+func isCallableReference(symbolID string, symbolInfo map[string]*scip.SymbolInformation) bool {
+	var kind int32
+	if info, ok := symbolInfo[symbolID]; ok {
+		kind = info.Kind
 	}
+	return scip.IsCallableReference(symbolID, kind)
+}
 
-	// Tier 2: Go-specific heuristic (primary path for scip-go)
-	return isFunctionSymbol(symbolID)
+// callableDefinitions is the set of symbols a document defines that can be
+// called, so a call to one of them counts even when only its definition can
+// tell (a function-valued constant).
+func callableDefinitions(symbols []Symbol) map[string]bool {
+	set := make(map[string]bool)
+	for _, sym := range symbols {
+		if sym.Callable {
+			set[sym.ID] = true
+		}
+	}
+	return set
+}
+
+// definitionEndLine is the 1-indexed last line of a definition, from its
+// EnclosingRange. The definition's own Range covers only the name, so without
+// an EnclosingRange the end is the start, and resolveCallerSymbol infers it.
+func definitionEndLine(startLine int, enclosing []int32) int {
+	switch len(enclosing) {
+	case 3:
+		return int(enclosing[0]) + 1 // #nosec G115 -- SCIP int32 coordinates fit in int
+	case 4:
+		return int(enclosing[2]) + 1 // #nosec G115 -- SCIP int32 coordinates fit in int
+	}
+	return startLine
 }
 
 // extractFileDeltaFromProto is the proto-native equivalent of extractFileDelta.
@@ -518,14 +479,12 @@ func (e *SCIPExtractor) extractFileDeltaFromProto(pbDoc *scippb.Document, change
 		if len(occ.Range) >= 1 {
 			sym.StartLine = int(occ.Range[0]) + 1 // #nosec G115
 		}
-		if len(occ.Range) >= 3 {
-			sym.EndLine = int(occ.Range[2]) + 1 // #nosec G115
-		} else {
-			sym.EndLine = sym.StartLine
-		}
+		sym.EndLine = definitionEndLine(sym.StartLine, occ.EnclosingRange)
+		var kind int32
 		if info, ok := symbolInfo[occ.Symbol]; ok {
+			kind = int32(info.Kind)
 			sym.Name = extractSymbolName(occ.Symbol, info.DisplayName)
-			sym.Kind = mapSymbolKind(int32(info.Kind))
+			sym.Kind = mapSymbolKind(kind)
 			if len(info.Documentation) > 0 {
 				sym.Documentation = info.Documentation[0]
 			}
@@ -533,6 +492,7 @@ func (e *SCIPExtractor) extractFileDeltaFromProto(pbDoc *scippb.Document, change
 			sym.Name = extractSymbolName(occ.Symbol, "")
 			sym.Kind = "unknown"
 		}
+		sym.Callable = scip.IsCallableDefinition(occ.Symbol, kind, occ.Range, occ.EnclosingRange)
 		delta.Symbols = append(delta.Symbols, sym)
 	}
 
@@ -556,6 +516,7 @@ func (e *SCIPExtractor) extractFileDeltaFromProto(pbDoc *scippb.Document, change
 	}
 
 	// Extract call edges
+	callable := callableDefinitions(delta.Symbols)
 	for _, occ := range pbDoc.Occurrences {
 		if occ.SymbolRoles&defRole != 0 {
 			continue
@@ -563,7 +524,7 @@ func (e *SCIPExtractor) extractFileDeltaFromProto(pbDoc *scippb.Document, change
 		if isLocalSymbol(occ.Symbol) {
 			continue
 		}
-		if !isCallableFromProto(occ.Symbol, symbolInfo) {
+		if !callable[occ.Symbol] && !isCallableReferenceFromProto(occ.Symbol, symbolInfo) {
 			continue
 		}
 		edge := CallEdge{
@@ -613,12 +574,13 @@ func computeDocHashProto(pbDoc *scippb.Document) string {
 	return fmt.Sprintf("%x", h.Sum(nil))[:16]
 }
 
-// isCallableFromProto is the proto-native equivalent of isCallable.
-func isCallableFromProto(symbolID string, symbolInfo map[string]*scippb.SymbolInformation) bool {
-	if info, ok := symbolInfo[symbolID]; ok && info.Kind != 0 {
-		return isCallableKind(int32(info.Kind))
+// isCallableReferenceFromProto is the proto-native isCallableReference.
+func isCallableReferenceFromProto(symbolID string, symbolInfo map[string]*scippb.SymbolInformation) bool {
+	var kind int32
+	if info, ok := symbolInfo[symbolID]; ok {
+		kind = int32(info.Kind)
 	}
-	return isFunctionSymbol(symbolID)
+	return scip.IsCallableReference(symbolID, kind)
 }
 
 // resolveCallerSymbol finds the enclosing callable symbol for a call site
@@ -628,7 +590,7 @@ func (e *SCIPExtractor) resolveCallerSymbol(symbols []Symbol, callLine int) stri
 	// Filter to callables only
 	var callables []Symbol
 	for _, sym := range symbols {
-		if sym.Kind == "function" || sym.Kind == "method" {
+		if sym.Callable {
 			callables = append(callables, sym)
 		}
 	}

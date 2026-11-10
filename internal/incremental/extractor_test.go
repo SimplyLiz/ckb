@@ -85,20 +85,23 @@ func TestExtractSymbolName(t *testing.T) {
 	}
 }
 
+// The numbers are SCIP's SymbolInformation.Kind, not LSP's SymbolKind: 6 is
+// Boolean and 12 EnumMember, Function is 17 and Method 26.
 func TestMapSymbolKind(t *testing.T) {
 	tests := []struct {
 		kind     int32
 		expected string
 	}{
 		{0, "unknown"},
-		{5, "class"},
-		{6, "method"},
-		{8, "field"},
-		{12, "function"},
-		{13, "variable"},
-		{14, "constant"},
-		{23, "struct"},
-		{999, "unknown"}, // Unknown value
+		{6, "boolean"},
+		{7, "class"},
+		{9, "constructor"},
+		{12, "enummember"},
+		{17, "function"},
+		{26, "method"},
+		{49, "struct"},
+		{80, "staticmethod"},
+		{999, "unknown"},
 	}
 
 	for _, tc := range tests {
@@ -267,7 +270,7 @@ func TestExtractFileDelta(t *testing.T) {
 			{Symbol: "local 0", Range: []int32{7, 1, 7, 5}, SymbolRoles: 1},
 		},
 		Symbols: []*scip.SymbolInformation{
-			{Symbol: "scip-go gomod example 1.0 main.main().", DisplayName: "main", Kind: 12},
+			{Symbol: "scip-go gomod example 1.0 main.main().", DisplayName: "main", Kind: 17},
 		},
 	}
 
@@ -366,112 +369,15 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
-func TestMapSymbolKind_AllValues(t *testing.T) {
-	// Test all documented kind values
-	kinds := map[int32]string{
-		0:  "unknown",
-		1:  "file",
-		2:  "module",
-		3:  "namespace",
-		4:  "package",
-		5:  "class",
-		6:  "method",
-		7:  "property",
-		8:  "field",
-		9:  "constructor",
-		10: "enum",
-		11: "interface",
-		12: "function",
-		13: "variable",
-		14: "constant",
-		15: "string",
-		16: "number",
-		17: "boolean",
-		18: "array",
-		19: "object",
-		20: "key",
-		21: "null",
-		22: "enum_member",
-		23: "struct",
-		24: "event",
-		25: "operator",
-		26: "type_parameter",
-	}
-
-	for kind, expected := range kinds {
-		result := mapSymbolKind(kind)
-		if result != expected {
-			t.Errorf("mapSymbolKind(%d) = %q, want %q", kind, result, expected)
-		}
-	}
-}
-
 // v1.1 Callgraph Tests
 
-func TestIsFunctionSymbol(t *testing.T) {
-	tests := []struct {
-		symbolID string
-		expected bool
-	}{
-		// Functions should match
-		{"scip-go gomod example.com/foo 1.0 pkg.Func().", true},
-		{"scip-go gomod example.com/foo 1.0 main.main().", true},
-		// Methods should match
-		{"scip-go gomod example.com/foo 1.0 pkg.Type.Method().", true},
-		// Types should NOT match
-		{"scip-go gomod example.com/foo 1.0 pkg.Type.", false},
-		// Variables should NOT match
-		{"scip-go gomod example.com/foo 1.0 pkg.Variable.", false},
-		// Empty string
-		{"", false},
-		// Has "()" but not "()." pattern
-		{"has()something.", false},
-		// Has "()." pattern
-		{"has().something", true},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.symbolID, func(t *testing.T) {
-			result := isFunctionSymbol(tc.symbolID)
-			if result != tc.expected {
-				t.Errorf("isFunctionSymbol(%q) = %v, want %v", tc.symbolID, result, tc.expected)
-			}
-		})
-	}
-}
-
-func TestIsCallableKind(t *testing.T) {
-	tests := []struct {
-		kind     int32
-		expected bool
-	}{
-		{6, true},   // Method
-		{9, true},   // Constructor
-		{12, true},  // Function
-		{5, false},  // Class
-		{8, false},  // Field
-		{13, false}, // Variable
-		{23, false}, // Struct
-		{0, false},  // Unknown
-	}
-
-	for _, tc := range tests {
-		t.Run(mapSymbolKind(tc.kind), func(t *testing.T) {
-			result := isCallableKind(tc.kind)
-			if result != tc.expected {
-				t.Errorf("isCallableKind(%d) = %v, want %v", tc.kind, result, tc.expected)
-			}
-		})
-	}
-}
-
-func TestIsCallable(t *testing.T) {
-	// Test with SymbolInformation available (Tier 1)
+func TestIsCallableReference(t *testing.T) {
 	symbolInfo := map[string]*scip.SymbolInformation{
-		"scip-go gomod example 1.0 pkg.Func().":   {Symbol: "scip-go gomod example 1.0 pkg.Func().", Kind: 12},
-		"scip-go gomod example 1.0 pkg.Method().": {Symbol: "scip-go gomod example 1.0 pkg.Method().", Kind: 6},
-		"scip-go gomod example 1.0 pkg.Type.":     {Symbol: "scip-go gomod example 1.0 pkg.Type.", Kind: 5},
-		"scip-go gomod example 1.0 pkg.NoKind().": {Symbol: "scip-go gomod example 1.0 pkg.NoKind().", Kind: 0}, // Kind=0 means unknown
+		"rust-analyzer cargo demo 0.1.0 run.":      {Kind: 17}, // Function, ID without "()"
+		"rust-analyzer cargo demo 0.1.0 S#go.":     {Kind: 26}, // Method
+		"rust-analyzer cargo demo 0.1.0 Mode#Off.": {Kind: 12}, // EnumMember, LSP's Function
+		"rust-analyzer cargo demo 0.1.0 FLAG.":     {Kind: 6},  // Boolean, LSP's Method
+		"scip-go gomod example 1.0 pkg.NoKind().":  {Kind: 0},
 	}
 
 	tests := []struct {
@@ -479,19 +385,20 @@ func TestIsCallable(t *testing.T) {
 		symbolID string
 		expected bool
 	}{
-		{"function with Kind", "scip-go gomod example 1.0 pkg.Func().", true},
-		{"method with Kind", "scip-go gomod example 1.0 pkg.Method().", true},
-		{"class type", "scip-go gomod example 1.0 pkg.Type.", false},
-		{"unknown kind falls back to heuristic", "scip-go gomod example 1.0 pkg.NoKind().", true},
-		{"not in symbolInfo uses heuristic", "scip-go gomod example 1.0 other.Func().", true},
-		{"not in symbolInfo non-func", "scip-go gomod example 1.0 other.Variable.", false},
+		{"function by Kind", "rust-analyzer cargo demo 0.1.0 run.", true},
+		{"method by Kind", "rust-analyzer cargo demo 0.1.0 S#go.", true},
+		{"enum member is not called", "rust-analyzer cargo demo 0.1.0 Mode#Off.", false},
+		{"boolean is not called", "rust-analyzer cargo demo 0.1.0 FLAG.", false},
+		{"no Kind falls back to the ID", "scip-go gomod example 1.0 pkg.NoKind().", true},
+		{"unknown target, function ID", "scip-go gomod example 1.0 other.Func().", true},
+		{"unknown target, value ID", "scip-go gomod example 1.0 other.Variable.", false},
+		{"parameter of a function", "scip-typescript npm demo 1.0.0 src/`a.ts`/run().(x)", false},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			result := isCallable(tc.symbolID, symbolInfo)
-			if result != tc.expected {
-				t.Errorf("isCallable(%q) = %v, want %v", tc.symbolID, result, tc.expected)
+			if got := isCallableReference(tc.symbolID, symbolInfo); got != tc.expected {
+				t.Errorf("isCallableReference(%q) = %v, want %v", tc.symbolID, got, tc.expected)
 			}
 		})
 	}
@@ -502,9 +409,9 @@ func TestResolveCallerSymbol(t *testing.T) {
 	ext := NewSCIPExtractor("/repo", ".scip/index.scip", logger)
 
 	symbols := []Symbol{
-		{ID: "scip-go gomod example 1.0 pkg.init().", Name: "init", Kind: "function", StartLine: 5, EndLine: 10},
-		{ID: "scip-go gomod example 1.0 pkg.main().", Name: "main", Kind: "function", StartLine: 12, EndLine: 30},
-		{ID: "scip-go gomod example 1.0 pkg.helper().", Name: "helper", Kind: "function", StartLine: 32, EndLine: 40},
+		{ID: "scip-go gomod example 1.0 pkg.init().", Name: "init", Kind: "function", Callable: true, StartLine: 5, EndLine: 10},
+		{ID: "scip-go gomod example 1.0 pkg.main().", Name: "main", Kind: "function", Callable: true, StartLine: 12, EndLine: 30},
+		{ID: "scip-go gomod example 1.0 pkg.helper().", Name: "helper", Kind: "function", Callable: true, StartLine: 32, EndLine: 40},
 		{ID: "scip-go gomod example 1.0 pkg.Type.", Name: "Type", Kind: "struct", StartLine: 1, EndLine: 3}, // Not a callable
 	}
 
@@ -538,8 +445,8 @@ func TestResolveCallerSymbol_InferredEndLine(t *testing.T) {
 
 	// Symbols without explicit EndLine (EndLine == StartLine or 0)
 	symbols := []Symbol{
-		{ID: "scip-go gomod example 1.0 pkg.first().", Name: "first", Kind: "function", StartLine: 10, EndLine: 10},
-		{ID: "scip-go gomod example 1.0 pkg.second().", Name: "second", Kind: "function", StartLine: 50, EndLine: 50},
+		{ID: "scip-go gomod example 1.0 pkg.first().", Name: "first", Kind: "function", Callable: true, StartLine: 10, EndLine: 10},
+		{ID: "scip-go gomod example 1.0 pkg.second().", Name: "second", Kind: "function", Callable: true, StartLine: 50, EndLine: 50},
 	}
 
 	tests := []struct {
@@ -592,8 +499,8 @@ func TestExtractFileDelta_CallEdges(t *testing.T) {
 			{Symbol: "scip-go gomod example 1.0 pkg.Variable.", Range: []int32{8, 1, 8, 8}, SymbolRoles: 0},
 		},
 		Symbols: []*scip.SymbolInformation{
-			{Symbol: "scip-go gomod example 1.0 main.main().", DisplayName: "main", Kind: 12},
-			{Symbol: "scip-go gomod fmt 1.0 fmt.Println().", DisplayName: "Println", Kind: 12},
+			{Symbol: "scip-go gomod example 1.0 main.main().", DisplayName: "main", Kind: 17},
+			{Symbol: "scip-go gomod fmt 1.0 fmt.Println().", DisplayName: "Println", Kind: 17},
 		},
 	}
 
@@ -622,6 +529,104 @@ func TestExtractFileDelta_CallEdges(t *testing.T) {
 	// CallerID should be resolved to main.main since the call is on line 8, within main (lines 6-end)
 	if edge.CallerID != "scip-go gomod example 1.0 main.main()." {
 		t.Errorf("expected caller 'main.main', got %q", edge.CallerID)
+	}
+}
+
+// rust-analyzer states a Kind for every symbol, and its function IDs carry no
+// "()": `fn run` is "run.". Calls to it are edges, a reference to an enum
+// member is not, and the caller is the function whose EnclosingRange holds the
+// call, not whatever definition happens to precede it.
+func TestExtractFileDelta_RustKinds(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "lib.rs"), []byte("fn main() {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ext := NewSCIPExtractor(tmpDir, ".scip/index.scip", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	pkg := "rust-analyzer cargo demo 0.1.0 "
+	outer, run, helper, off := pkg+"outer.", pkg+"run.", pkg+"helper.", pkg+"Mode#Off."
+	doc := &scip.Document{
+		RelativePath: "lib.rs",
+		Occurrences: []*scip.Occurrence{
+			{Symbol: outer, Range: []int32{0, 3, 8}, EnclosingRange: []int32{0, 0, 3, 1}, SymbolRoles: 1},
+			{Symbol: run, Range: []int32{1, 4}, SymbolRoles: 0},
+			{Symbol: off, Range: []int32{2, 4, 13}, SymbolRoles: 0},
+			{Symbol: helper, Range: []int32{5, 3, 9}, EnclosingRange: []int32{5, 0, 7, 1}, SymbolRoles: 1},
+			{Symbol: run, Range: []int32{6, 4, 7}, SymbolRoles: 0},
+			// A top-level item after helper: no function encloses it.
+			{Symbol: run, Range: []int32{20, 4, 7}, SymbolRoles: 0},
+		},
+		Symbols: []*scip.SymbolInformation{
+			{Symbol: outer, Kind: 17},
+			{Symbol: helper, Kind: 17},
+			{Symbol: run, Kind: 17},
+			{Symbol: off, Kind: 12},
+		},
+	}
+
+	delta := ext.extractFileDelta(doc, ChangedFile{Path: "lib.rs", ChangeType: ChangeAdded})
+
+	type edge struct {
+		caller string
+		line   int
+	}
+	var got []edge
+	for _, e := range delta.CallEdges {
+		if e.CalleeID != run {
+			t.Errorf("edge to %q, only calls to run are calls", e.CalleeID)
+		}
+		got = append(got, edge{e.CallerID, e.Line})
+	}
+	want := []edge{{outer, 2}, {helper, 7}, {"", 21}}
+	if len(got) != len(want) {
+		t.Fatalf("edges = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("edge %d = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+// `export const save = () => persist()` is a term ("save.") to SCIP, without a
+// Kind; scip-typescript marks it as a function with an EnclosingRange that
+// starts after the name. It is the caller of persist, and a call to it from
+// the same file is an edge.
+func TestExtractFileDelta_FunctionValuedConstant(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "a.ts"), []byte("export const save = () => persist()"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ext := NewSCIPExtractor(tmpDir, ".scip/index.scip", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	pkg := "scip-typescript npm demo 1.0.0 src/`a.ts`/"
+	save, persist, limit, run := pkg+"save.", pkg+"persist().", pkg+"LIMIT.", pkg+"run()."
+	doc := &scip.Document{
+		RelativePath: "a.ts",
+		Occurrences: []*scip.Occurrence{
+			{Symbol: save, Range: []int32{0, 13, 17}, EnclosingRange: []int32{0, 20, 2, 1}, SymbolRoles: 1},
+			{Symbol: persist, Range: []int32{1, 2, 9}, SymbolRoles: 0},
+			{Symbol: limit, Range: []int32{3, 13, 18}, SymbolRoles: 1},
+			{Symbol: run, Range: []int32{4, 9, 12}, EnclosingRange: []int32{4, 0, 7, 1}, SymbolRoles: 1},
+			{Symbol: save, Range: []int32{5, 2, 6}, SymbolRoles: 0},
+			{Symbol: limit, Range: []int32{6, 2, 7}, SymbolRoles: 0},
+		},
+	}
+
+	delta := ext.extractFileDelta(doc, ChangedFile{Path: "a.ts", ChangeType: ChangeAdded})
+
+	got := map[string]string{}
+	for _, e := range delta.CallEdges {
+		got[e.CalleeID] = e.CallerID
+	}
+	if got[persist] != save {
+		t.Errorf("caller of persist = %q, want save", got[persist])
+	}
+	if c, ok := got[save]; !ok || c != run {
+		t.Errorf("call to save: caller %q (edge %v), want run", c, ok)
+	}
+	if _, ok := got[limit]; ok {
+		t.Errorf("LIMIT is a value, got a call edge to it")
 	}
 }
 
