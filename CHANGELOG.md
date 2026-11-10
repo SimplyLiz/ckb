@@ -211,6 +211,20 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   symbol. A test helper under `tests/` (`tests/render/fixtures.ts`) is test code but
   no test, and is no longer listed as one in JavaScript and TypeScript, where
   vitest and jest only run `*.test.*`, `*.spec.*` and `__tests__/`.
+- **A review whose checks all pass is not a pass at 20/100.** The score is 100 minus
+  a deduction per finding, the verdict looked only at check statuses, and the two
+  never met: warning findings in a passing check, or enough of them to sit on the
+  score's floor of 20, still said `pass`. A pass now also needs no warning or error
+  finding and a score of at least 50; otherwise the review is `warn`. Findings never
+  make it `fail` on their own. `verdictReason` says which checks decided it, or why
+  passing checks weren't enough. The `split` check was added after the verdict was
+  set and never counted; it does now.
+- **The review says what the index can't see.** A member reached by a computed key
+  (`profile[kind]`, `WORDS[kind]`) has no SCIP reference, so callers, tests and
+  blast radius leave it out, and on the branch above that is where the real problem
+  sat. When the diff adds such lines in JavaScript, TypeScript, Python or Ruby,
+  `limitations` names them, up to five, and the human and markdown output print them
+  under "Not seen".
 
 ### Fixed — search and navigation
 

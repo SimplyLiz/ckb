@@ -180,6 +180,14 @@ func compactReviewResponse(r *query.ReviewPRResponse) map[string]interface{} {
 		"findings":     findings,
 	}
 
+	if r.VerdictReason != "" {
+		result["verdictReason"] = r.VerdictReason
+	}
+	// What the review could not see is worth more to an agent than another finding.
+	if len(r.Limitations) > 0 {
+		result["limitations"] = r.Limitations
+	}
+
 	// Add health summary if present
 	if r.HealthReport != nil && (r.HealthReport.Degraded > 0 || r.HealthReport.Improved > 0) {
 		result["health"] = map[string]interface{}{
