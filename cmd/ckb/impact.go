@@ -576,6 +576,7 @@ type ChangeSetResponseCLI struct {
 	Reviewers     []SuggestedReviewCLI `json:"reviewers,omitempty"`
 	Confidence    *ChangeConfidenceCLI `json:"confidence,omitempty"`
 	DoneCheck     *query.DoneCheck     `json:"doneCheck,omitempty"`
+	CoChangeCheck *query.CoChangeCheck `json:"coChangeCheck,omitempty"`
 
 	// ConsumerFiles is every file behind AffectedSymbols, which can be cut. Truncated
 	// says it was.
@@ -743,6 +744,7 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 		Recommendations: recommendations,
 		ConsumerFiles:   resp.ConsumerFiles,
 		DoneCheck:       resp.DoneCheck,
+		CoChangeCheck:   resp.CoChangeCheck,
 		Truncated:       resp.Truncated,
 		TruncationInfo:  convertTruncation(resp.TruncationInfo),
 	}
@@ -995,6 +997,11 @@ func formatImpactMarkdown(resp *ChangeSetResponseCLI) string {
 	if resp.DoneCheck != nil {
 		var check strings.Builder
 		writeDoneCheck(&check, resp.DoneCheck, true)
+		b.WriteString("```\n" + strings.TrimSpace(check.String()) + "\n```\n\n")
+	}
+	if resp.CoChangeCheck != nil {
+		var check strings.Builder
+		writeCoChangeCheck(&check, resp.CoChangeCheck, true)
 		b.WriteString("```\n" + strings.TrimSpace(check.String()) + "\n```\n\n")
 	}
 

@@ -60,6 +60,38 @@ These come from reading what commits did to the uses the compiler rejected, and 
 against three of them. See `docs/eval/change-prediction.md` for what has and hasn't been
 measured.
 
+## Files that usually change together
+
+References reach a use of a changed declaration. They don't reach an importer that
+moves with an editor by habit, and outside Rust they don't reach an added field at all.
+`coChangeCheck` reads git history instead, and `ckb changes` prints it as "Usually
+changed with":
+
+```json
+"coChangeCheck": {
+  "status": "open",
+  "openFiles": [
+    {"file": "cv/importer.go", "with": "cv/editor.go", "together": 5, "of": 6,
+     "share": 0.83, "lastTogether": "2026-11-06"}
+  ],
+  "openCount": 1,
+  "commitsRead": 6,
+  "note": "..."
+}
+```
+
+It reads the last 400 commits that touched a changed file, skipping any commit of more
+than 50 files, and counts for every other file how many of a changed file's commits it
+was in. A file is listed when it was in at least half of them, 3 at least, and the
+diff doesn't touch it. A commit that touched a changed file alone counts too: it is
+evidence that the file moves on its own. `with` names the changed file it moves with
+most, and `share` is `together / of`.
+
+It is `not_assessed` when no changed file has 3 commits yet, and `clear` otherwise.
+It is history, not code: a listed file may need nothing this time, and a file that
+needs an edit may never have moved with the changed one before. It works for every
+language, and for files that aren't code.
+
 ## What it can't tell you
 
 It compares text and compiles nothing, so it says "open", never "safe".

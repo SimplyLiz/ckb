@@ -31,6 +31,16 @@ All notable changes to CKB will be documented in this file.
   compile finds the same files with both binaries (13/13), with 38 fewer open uses: 43 fewer
   on one commit, 5 more from these rules, all false alarms. So they stay unproven outside the
   commits they came from.
+- **`coChangeCheck` in `assessChange` and `ckb changes`: the files that usually change
+  with the touched files, and were left alone.** The done check follows references,
+  so it can't see an importer that moves with an editor by habit rather than by type,
+  and outside Rust it doesn't see an added field at all. This check reads git history
+  instead: the last 400 commits of the changed files, skipping commits of more than 50
+  files, and lists every file that was in at least half of a changed file's commits
+  (3 at least) and isn't in the diff, with `file`, `with`, `together`, `of` and
+  `lastTogether`. Status `open`, `clear`, or `not_assessed` when no changed file has
+  3 commits yet. It is history, not code: a listed file may need nothing. Works for
+  every language and for files that aren't code.
 - **`assessChange` is in the default preset,** and in every preset built on core,
   so core goes from 25 tools to 26. The first 512 bytes of the MCP instructions now
   end on it.
