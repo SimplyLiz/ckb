@@ -75,7 +75,7 @@ func (e *Engine) checkBlastRadius(ctx context.Context, changedFiles []string, op
 			Duration: time.Since(start).Milliseconds(),
 		}, nil
 	}
-	candidates := blastRadiusCandidates(cs.ChangedSymbols, changedFiles, e.scipAdapter.GetReferenceCount)
+	candidates := blastRadiusCandidates(cs.ChangedSymbols, changedFiles, e.scipAdapter.GetReferenceCount, e.scipAdapter.IsCallable)
 	symbols := selectBlastRadiusSymbols(candidates, maxBlastRadiusSymbols)
 
 	var findings []ReviewFinding
@@ -233,7 +233,7 @@ type blastRadiusSymbol struct {
 // or outside the reviewed files, nothing deleted (the done check covers its
 // uses), nothing only reworded, nothing but functions and methods, and no
 // framework wiring.
-func blastRadiusCandidates(changed []ChangedSymbolInfo, files []string, refCount func(string) int) []blastRadiusSymbol {
+func blastRadiusCandidates(changed []ChangedSymbolInfo, files []string, refCount func(string) int, isCallable func(string) bool) []blastRadiusSymbol {
 	order := make(map[string]int, len(files))
 	for i, f := range files {
 		order[f] = i
@@ -254,6 +254,10 @@ func blastRadiusCandidates(changed []ChangedSymbolInfo, files []string, refCount
 		kind := string(id.ExtractSymbolKind())
 		// Callers are what the check counts, and only something callable has them:
 		// a changed type with dozens of references would take a slot and report 0.
+		// `const f = () => …` has a constant's ID but is called like a function.
+		if kind != string(scip.KindFunction) && kind != string(scip.KindMethod) && isCallable(sym.SymbolID) {
+			kind = string(scip.KindFunction)
+		}
 		if (kind != string(scip.KindFunction) && kind != string(scip.KindMethod)) || isFrameworkSymbol(kind, sym.Name, sym.File) {
 			continue
 		}

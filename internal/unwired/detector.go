@@ -77,7 +77,7 @@ func (d *Detector) BuildReachableSet(ctx context.Context, entrypoints []architec
 		// `import { createApp } from './app'` followed by `createApp()`
 		// seed the BFS with `createApp`.
 		for _, occ := range doc.Occurrences {
-			if isFunctionSymbol(occ.Symbol) {
+			if index.IsCallable(occ.Symbol) {
 				if !reachable[occ.Symbol] {
 					reachable[occ.Symbol] = true
 					queue = append(queue, occ.Symbol)
@@ -259,7 +259,11 @@ func (d *Detector) Analyze(ctx context.Context, opts DetectorOptions, reachable 
 		}
 
 		// Skip non-callable symbols unless IncludeTypes is set
-		if !isFunctionSymbol(sym.Symbol) && !opts.IncludeTypes {
+		callable := index.IsCallable(sym.Symbol)
+		if callable && info.kind != "function" {
+			info.kind = "function" // `const f = () => …` has a constant's ID
+		}
+		if !callable && !opts.IncludeTypes {
 			continue
 		}
 
@@ -290,7 +294,7 @@ func (d *Detector) Analyze(ctx context.Context, opts DetectorOptions, reachable 
 		}
 
 		kind := info.kind
-		if isFunctionSymbol(sym.Symbol) {
+		if callable {
 			if strings.Contains(sym.Symbol, "#") {
 				kind = "method"
 			} else {

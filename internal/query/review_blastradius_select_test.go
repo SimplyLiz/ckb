@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,7 @@ func TestBlastRadiusCandidates_OnlyChangedCallables(t *testing.T) {
 		{SymbolID: pkg + "`entries.ts`/listOf().", Name: "listOf", File: "src/entries.ts", ChangeType: "added"},
 		{SymbolID: pkg + "`entries.ts`/ListKind#", Name: "ListKind", File: "src/entries.ts", ChangeType: "modified"},        // type: has no callers
 		{SymbolID: pkg + "`entries.ts`/MAX.", Name: "MAX", File: "src/entries.ts", ChangeType: "modified"},                  // constant
+		{SymbolID: pkg + "`entries.ts`/removeEntry.", Name: "removeEntry", File: "src/entries.ts", ChangeType: "modified"},  // const removeEntry = () =>
 		{SymbolID: pkg + "`entries.ts`/gone().", Name: "gone", File: "src/entries.ts", ChangeType: "deleted"},               // done check's
 		{SymbolID: pkg + "`entries.ts`/doc().", Name: "doc", File: "src/entries.ts", ChangeType: "modified", Trivial: true}, // comment only
 		{SymbolID: "file:src/entries.ts", Name: "src/entries.ts", File: "src/entries.ts", ChangeType: "modified"},
@@ -19,13 +21,14 @@ func TestBlastRadiusCandidates_OnlyChangedCallables(t *testing.T) {
 		{SymbolID: pkg + "`other.ts`/notReviewed().", Name: "notReviewed", File: "src/other.ts", ChangeType: "modified"}, // outside --scope
 	}
 	files := []string{"src/big.tsx", "src/entries.ts", "src/x.test.ts"}
-	got := blastRadiusCandidates(changed, files, func(string) int { return 1 })
+	isCallable := func(id string) bool { return strings.HasSuffix(id, "().") || strings.HasSuffix(id, "/removeEntry.") }
+	got := blastRadiusCandidates(changed, files, func(string) int { return 1 }, isCallable)
 	var names []string
 	for _, c := range got {
 		names = append(names, c.name)
 	}
-	if fmt.Sprint(names) != "[Big listOf]" {
-		t.Errorf("candidates = %v, want [Big listOf]", names)
+	if fmt.Sprint(names) != "[Big listOf removeEntry]" {
+		t.Errorf("candidates = %v, want [Big listOf removeEntry]", names)
 	}
 }
 

@@ -116,9 +116,9 @@ func (idx *SCIPIndex) FindCallees(symbolId string) ([]*CallGraphNode, error) {
 			continue
 		}
 
-		// Check if the target is a callable (function, method)
-		// Use isFunctionSymbol since scip-go doesn't populate Kind
-		if isFunctionSymbol(occ.Symbol) {
+		// Check if the target is a callable (function, method, function-valued
+		// constant). The ID decides first, since scip-go doesn't populate Kind.
+		if idx.IsCallable(occ.Symbol) {
 			seen[occ.Symbol] = true
 
 			kind := KindFunction
@@ -413,7 +413,9 @@ func enclosingLines(occ *Occurrence) (start, end int, ok bool) {
 // the function around it, and it must not end that function's inferred range.
 func functionBounds(doc *Document) []DefinitionBound {
 	callable := make(map[string]bool, len(doc.Symbols))
+	kinds := make(map[string]int32, len(doc.Symbols))
 	for _, sym := range doc.Symbols {
+		kinds[sym.Symbol] = sym.Kind
 		// Detect functions from the symbol ID as well: Kind is optional in SCIP,
 		// and scip-typescript never sets it.
 		if !IsLocalSymbol(sym.Symbol) && (isFunctionSymbol(sym.Symbol) || isCallableKind(sym.Kind)) {
@@ -424,7 +426,10 @@ func functionBounds(doc *Document) []DefinitionBound {
 	var funcs []DefinitionBound
 	seen := make(map[string]bool, len(callable))
 	for _, occ := range doc.Occurrences {
-		if !callable[occ.Symbol] || seen[occ.Symbol] || occ.SymbolRoles&SymbolRoleDefinition == 0 || len(occ.Range) == 0 {
+		if seen[occ.Symbol] || occ.SymbolRoles&SymbolRoleDefinition == 0 || len(occ.Range) == 0 {
+			continue
+		}
+		if !callable[occ.Symbol] && !isFunctionValuedTerm(occ.Symbol, kinds[occ.Symbol], occ) {
 			continue
 		}
 		seen[occ.Symbol] = true
@@ -450,6 +455,49 @@ func functionBounds(doc *Document) []DefinitionBound {
 		}
 	}
 	return funcs
+}
+
+// isFunctionValuedTerm reports whether a term definition is a function written
+// as a value, `export const f = (x) => …`, which SCIP names like any other
+// constant ("f."). scip-typescript gives such a definition an EnclosingRange
+// that covers the initializer only, so it starts after the name; a plain
+// constant gets none, and the range rust-analyzer gives `const LIMIT` starts at
+// the keyword, before the name. An indexer that states a Kind has said what the
+// symbol is, so only a symbol without one is looked at.
+func isFunctionValuedTerm(symbolID string, kind int32, def *Occurrence) bool {
+	if kind != 0 || def == nil || IsLocalSymbol(symbolID) || !strings.HasSuffix(symbolID, ".") || isFunctionSymbol(symbolID) {
+		return false
+	}
+	if len(def.Range) < 3 || len(def.EnclosingRange) < 3 {
+		return false
+	}
+	nameEndLine, nameEndCol := def.Range[0], def.Range[2]
+	if len(def.Range) >= 4 {
+		nameEndLine, nameEndCol = def.Range[2], def.Range[3]
+	}
+	encLine, encCol := def.EnclosingRange[0], def.EnclosingRange[1]
+	return encLine > nameEndLine || encLine == nameEndLine && encCol >= nameEndCol
+}
+
+// IsCallable reports whether a symbol is something that can be called: a
+// function or method by its ID or Kind, or a function-valued constant (see
+// isFunctionValuedTerm). The ID alone misses the last kind, which in a
+// TypeScript codebase written with arrow functions is most of them.
+func (idx *SCIPIndex) IsCallable(symbolID string) bool {
+	if isFunctionSymbol(symbolID) {
+		return true
+	}
+	var kind int32
+	if sym := idx.GetSymbol(symbolID); sym != nil {
+		if isCallableKind(sym.Kind) {
+			return true
+		}
+		kind = sym.Kind
+	}
+	if ref := idx.DefinitionIndex[symbolID]; ref != nil {
+		return isFunctionValuedTerm(symbolID, kind, ref.Occ)
+	}
+	return false
 }
 
 // isFunctionSymbol detects if a SCIP symbol ID represents a function/method from
