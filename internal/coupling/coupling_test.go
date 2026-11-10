@@ -2,6 +2,7 @@ package coupling
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -418,5 +419,54 @@ func runGit(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v failed: %v\n%s", args, err, output)
+	}
+}
+
+// A commit touching more files than maxFilesPerCommit made every file in it fully
+// coupled to every other. It no longer counts, in the count or in the total.
+func TestAnalyze_IgnoresGiantCommits(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("init", "-q")
+	// One sweeping commit with the target, a partner and 60 others.
+	write("target.ts", "1")
+	write("partner.ts", "1")
+	for i := 0; i < 60; i++ {
+		write(fmt.Sprintf("other%d.ts", i), "1")
+	}
+	run("add", ".")
+	run("commit", "-q", "-m", "import")
+	// Two ordinary commits: target with partner.
+	for i := 2; i <= 3; i++ {
+		write("target.ts", fmt.Sprint(i))
+		write("partner.ts", fmt.Sprint(i))
+		run("commit", "-q", "-am", fmt.Sprint(i))
+	}
+
+	a := NewAnalyzer(dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	res, err := a.Analyze(context.Background(), AnalyzeOptions{Target: "target.ts", MinCorrelation: 0.1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Correlations) != 1 || res.Correlations[0].FilePath != "partner.ts" ||
+		res.Correlations[0].Correlation != 1 || res.Correlations[0].TotalChanges != 2 {
+		t.Errorf("correlations = %+v, want only partner.ts at 2/2", res.Correlations)
 	}
 }

@@ -25,6 +25,9 @@ func NewAnalyzer(repoRoot string, logger *slog.Logger) *Analyzer {
 }
 
 // Analyze performs coupling analysis on a target file or symbol
+// maxFilesPerCommit is the largest commit co-change analysis counts.
+const maxFilesPerCommit = 50
+
 func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingAnalysis, error) {
 	// Set defaults
 	if opts.MinCorrelation <= 0 {
@@ -77,8 +80,13 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingA
 		}, nil
 	}
 
-	// For each commit, get all other files changed
+	// For each commit, get all other files changed. A commit touching more than
+	// maxFilesPerCommit files (an initial import, a rename sweep, a formatter run)
+	// says nothing about which files belong together, and counted it made every
+	// file in it 100% coupled to every other: it is left out of the count and of
+	// the total, as Cartographer's co-change analysis does.
 	coChangeCounts := make(map[string]int)
+	counted := 0
 	for _, commitHash := range targetCommits {
 		filesInCommit, err := a.getFilesInCommit(ctx, commitHash)
 		if err != nil {
@@ -87,6 +95,10 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingA
 				"error", err.Error())
 			continue
 		}
+		if len(filesInCommit) > maxFilesPerCommit {
+			continue
+		}
+		counted++
 
 		for _, file := range filesInCommit {
 			if file != targetFile && file != "" {
@@ -98,7 +110,7 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingA
 	// Compute correlations
 	correlations := make([]Correlation, 0, len(coChangeCounts))
 	for file, count := range coChangeCounts {
-		correlation := float64(count) / float64(len(targetCommits))
+		correlation := float64(count) / float64(counted)
 
 		if correlation >= opts.MinCorrelation {
 			correlations = append(correlations, Correlation{
@@ -106,7 +118,7 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingA
 				FilePath:      file,
 				Correlation:   correlation,
 				CoChangeCount: count,
-				TotalChanges:  len(targetCommits),
+				TotalChanges:  counted,
 				Level:         GetCorrelationLevel(correlation),
 			})
 		}
