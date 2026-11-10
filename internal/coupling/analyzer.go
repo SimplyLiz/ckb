@@ -124,10 +124,7 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingA
 		}
 	}
 
-	// Sort by correlation descending
-	sort.Slice(correlations, func(i, j int) bool {
-		return correlations[i].Correlation > correlations[j].Correlation
-	})
+	sortCorrelations(correlations)
 
 	// Apply limit
 	if len(correlations) > opts.Limit {
@@ -343,4 +340,20 @@ func uitoa(u uint) string {
 		u /= 10
 	}
 	return string(buf[i:])
+}
+
+// sortCorrelations orders by correlation, strongest first. The counts come out
+// of a map, so ties need an order of their own, or a limit keeps a different
+// set of equally coupled files on every run.
+func sortCorrelations(correlations []Correlation) {
+	sort.Slice(correlations, func(i, j int) bool {
+		a, b := correlations[i], correlations[j]
+		if a.Correlation != b.Correlation {
+			return a.Correlation > b.Correlation
+		}
+		if a.CoChangeCount != b.CoChangeCount {
+			return a.CoChangeCount > b.CoChangeCount
+		}
+		return a.FilePath < b.FilePath
+	})
 }

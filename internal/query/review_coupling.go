@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os/exec"
 	"strings"
 	"time"
@@ -129,6 +130,10 @@ type CouplingGap struct {
 }
 
 // checkCouplingGaps checks if commonly co-changed files are missing from the changeset.
+// maxMissingPerFile is how many missing co-change partners one changed file
+// can report.
+const maxMissingPerFile = 5
+
 func (e *Engine) checkCouplingGaps(ctx context.Context, changedFiles []string, diffStats []git.DiffStats) (ReviewCheck, []ReviewFinding) {
 	start := time.Now()
 
@@ -179,22 +184,30 @@ func (e *Engine) checkCouplingGaps(ctx context.Context, changedFiles []string, d
 		if ctx.Err() != nil {
 			break
 		}
+		// The cut to the top partners comes after dropping the ones the change
+		// already touches: cut first, and files in the changeset took the
+		// places of the missing partners they tied with.
 		result, err := analyzer.Analyze(ctx, coupling.AnalyzeOptions{
 			Target:         file,
 			MinCorrelation: minCorrelation,
 			WindowDays:     365,
-			Limit:          5,
+			Limit:          math.MaxInt32,
 		})
 		if err != nil {
 			continue
 		}
 
+		perFile := 0
 		for _, corr := range result.Correlations {
+			if perFile >= maxMissingPerFile {
+				break
+			}
 			missing := corr.FilePath
 			if missing == "" {
 				missing = corr.File
 			}
 			if corr.Correlation >= minCorrelation && !changedSet[missing] && !isCouplingNoiseFile(missing) {
+				perFile++
 				candidates = append(candidates, candidateGap{
 					changedFile:  file,
 					missingFile:  missing,
