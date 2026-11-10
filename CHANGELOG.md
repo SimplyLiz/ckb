@@ -228,6 +228,22 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
 
 ### Fixed — search and navigation
 
+- **`ckb entrypoints` knows Next.js.** Entrypoints came from names alone (`main` under
+  `cmd/`, `Handle*`, `Run*`), so a Next.js app had none of its pages or route
+  handlers: on a 16.x app with 21 pages and 49 route handlers it listed three
+  functions that happened to be called `handle`. Files Next.js calls by convention
+  are now entrypoints, as `detectionBasis: framework-convention`: `page`, `layout`,
+  `template`, `loading`, `error`, `not-found`, `global-error` and `default` under
+  `app/` (type `page`), `route` handlers and `pages/api/` (type `api`), the pages
+  router, and `middleware`, `proxy` and `instrumentation` at the root, each by the
+  export Next.js calls (default, `GET`/`POST`/..., `export { handler as GET }`).
+  That app now has 105.
+- **`ckb trace` finds paths through components.** A node's callees were cut at 30
+  before anything else, and a React component calls `String#trim` and `Array#map`
+  as often as anything, so the project's own callees fell off and the path with
+  them. External declarations no longer take those places, and trace starts from up
+  to 200 entrypoints instead of 50. With no path it said "Entrypoint set
+  unavailable" even when there were entrypoints; it now says which.
 - **`switchProject` into a linked worktree stays there.** The next call with a
   relative `filePath` resolved it against the client's root first, found the same file
   in the main checkout and switched back to the main checkout's index, without saying so.

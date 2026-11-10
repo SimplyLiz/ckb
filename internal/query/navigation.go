@@ -1272,9 +1272,9 @@ type ListEntrypointsResponse struct {
 type EntrypointV52 struct {
 	SymbolId       string        `json:"symbolId"`
 	Name           string        `json:"name"`
-	Type           string        `json:"type"` // api, cli, job, event
+	Type           string        `json:"type"` // api, cli, page, job, event
 	Location       *LocationInfo `json:"location"`
-	DetectionBasis string        `json:"detectionBasis"` // naming, framework-config, static-call
+	DetectionBasis string        `json:"detectionBasis"` // naming, framework-convention, framework-config, static-call
 	FanOut         int           `json:"fanOut"`         // Number of functions called
 	Ranking        *RankingV52   `json:"ranking"`
 }
@@ -1390,6 +1390,9 @@ func (e *Engine) ListEntrypoints(ctx context.Context, opts ListEntrypointsOption
 				}
 			}
 		}
+
+		// Files a framework calls by convention (Next.js pages and route handlers).
+		entrypoints = append(entrypoints, e.frameworkEntrypoints(e.scipAdapter.GetIndex())...)
 	} else {
 		confidenceBasis = append(confidenceBasis, ConfidenceBasisItem{
 			Backend: "scip",
@@ -1431,6 +1434,8 @@ func (e *Engine) ListEntrypoints(ctx context.Context, opts ListEntrypointsOption
 			score += 100 // CLI mains are most important
 		case "api":
 			score += 80
+		case "page":
+			score += 70
 		case "job":
 			score += 60
 		case "event":
@@ -1606,7 +1611,7 @@ func (e *Engine) TraceUsage(ctx context.Context, opts TraceUsageOptions) (*Trace
 	}
 
 	// Get entrypoints to use as start nodes
-	entrypointsResp, err := e.ListEntrypoints(ctx, ListEntrypointsOptions{Limit: 50})
+	entrypointsResp, err := e.ListEntrypoints(ctx, ListEntrypointsOptions{Limit: 200}) // A Next.js app has a hundred
 	if err != nil {
 		limitations = append(limitations, "Entrypoint detection failed")
 	}
@@ -1690,7 +1695,12 @@ func (e *Engine) TraceUsage(ctx context.Context, opts TraceUsageOptions) (*Trace
 
 		// Fallback: if no paths from entrypoints, use direct callers
 		if len(paths) == 0 {
-			limitations = append(limitations, "Entrypoint set unavailable; showing nearest callers")
+			if len(entrypoints) == 0 {
+				limitations = append(limitations, "No entrypoints found; showing nearest callers")
+			} else {
+				limitations = append(limitations, fmt.Sprintf(
+					"No path from %d entrypoint(s) within depth %d; showing nearest callers. Calls made inside a function assigned to a variable (const f = () => ...) are not in the call graph", len(entrypoints), opts.MaxDepth))
+			}
 
 			// Get callers and build short paths from them
 			graph, err := e.scipAdapter.BuildCallGraph(targetId, scip.CallGraphOptions{
@@ -1829,6 +1839,7 @@ func (e *Engine) findPathBFSCached(ctx context.Context, sourceId, targetId strin
 
 	const maxVisitedNodes = 500 // Cap to prevent explosion
 	const maxCalleesPerNode = 30
+	const maxCalleesFetched = 300
 
 	visited := make(map[string]bool)
 	queue := []bfsNode{{id: sourceId, path: []string{sourceId}, depth: 0}}
@@ -1850,10 +1861,13 @@ func (e *Engine) findPathBFSCached(ctx context.Context, sourceId, targetId strin
 				continue
 			}
 
+			// Fetch more than the cap, then keep the project's own callees: a
+			// component calls String#trim and Array#map as often as anything, and
+			// those took the 30 places of the calls a path can run through.
 			graph, err := e.scipAdapter.BuildCallGraph(current.id, scip.CallGraphOptions{
 				Direction: scip.DirectionCallees,
 				MaxDepth:  1,
-				MaxNodes:  maxCalleesPerNode,
+				MaxNodes:  maxCalleesFetched,
 			})
 
 			if err != nil || graph == nil {
@@ -1861,11 +1875,7 @@ func (e *Engine) findPathBFSCached(ctx context.Context, sourceId, targetId strin
 				continue
 			}
 
-			// Extract callee IDs and cache
-			callees = make([]string, 0, len(graph.Callees))
-			for _, callee := range graph.Callees {
-				callees = append(callees, callee.SymbolID)
-			}
+			callees = projectCallees(graph.Callees, e.scipAdapter.GetIndex(), maxCalleesPerNode)
 			cache.callees[current.id] = callees
 		}
 
@@ -3989,4 +3999,23 @@ func splitNameWords(name string) []string {
 	}
 	flush()
 	return words
+}
+
+// projectCallees returns up to limit callee IDs defined in the index, in order:
+// a path to a project symbol runs through project code, not through the standard
+// library's declarations.
+func projectCallees(nodes []*scip.CallGraphNode, idx *scip.SCIPIndex, limit int) []string {
+	out := make([]string, 0, limit)
+	for _, n := range nodes {
+		if n == nil || len(out) >= limit {
+			break
+		}
+		if idx != nil && idx.DefinitionIndex != nil {
+			if def := idx.DefinitionIndex[n.SymbolID]; def == nil {
+				continue
+			}
+		}
+		out = append(out, n.SymbolID)
+	}
+	return out
 }
