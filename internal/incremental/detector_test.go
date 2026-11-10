@@ -233,9 +233,9 @@ func TestIsGoFile(t *testing.T) {
 					Excludes:   tc.excludes,
 				},
 			}
-			result := d.isGoFile(tc.path)
+			result := d.isSourceFile(tc.path)
 			if result != tc.expected {
-				t.Errorf("isGoFile(%q) = %v, want %v", tc.path, result, tc.expected)
+				t.Errorf("isSourceFile(%q) = %v, want %v", tc.path, result, tc.expected)
 			}
 		})
 	}
