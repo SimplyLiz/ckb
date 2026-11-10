@@ -225,6 +225,15 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   sat. When the diff adds such lines in JavaScript, TypeScript, Python or Ruby,
   `limitations` names them, up to five, and the human and markdown output print them
   under "Not seen".
+- **Coupling no longer reports docs and sweeping commits.** On that branch 9.3
+  reported 59 co-change gaps, 56 of them from the hidden-coupling pass, which had no
+  floor and warned about a 14% "coupling", and nine involving Markdown
+  (`docs/roadmap.md` with `HeroCards.tsx`). Docs (`docs/`, `.md`, `.mdx`, `.rst`,
+  `.adoc`, `.txt`) and test helpers under a root `tests/` are now noise on both
+  sides, the hidden pass uses the same 70% floor as the regular one, and
+  `ckb coupling` / `analyzeCoupling` leave out commits touching more than 50 files,
+  which made every file in them 100% coupled to every other (Cartographer already
+  did). The regular pass finds nothing on that branch now.
 
 ### Fixed — search and navigation
 

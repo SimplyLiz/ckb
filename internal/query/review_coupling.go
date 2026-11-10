@@ -269,6 +269,11 @@ func (e *Engine) checkCouplingGaps(ctx context.Context, changedFiles []string, d
 			const maxHiddenPerFile = 3
 			perFile := make(map[string]int)
 			for _, pair := range hidden {
+				// The same floor as the regular pass: both are count / the smaller
+				// file's commits, and a 14% "coupling" was reported as a warning.
+				if pair.CouplingScore < minCorrelation {
+					continue
+				}
 				srcChanged := changedSet[pair.FileA]
 				tgtChanged := changedSet[pair.FileB]
 				if !srcChanged && !tgtChanged {
@@ -366,6 +371,18 @@ func isCouplingNoiseFile(path string) bool {
 		}
 	}
 
+	// Documentation: a plan or an ADR written alongside the code is not a file the
+	// next change to that code has to touch.
+	lower := strings.ToLower(path)
+	if strings.HasPrefix(lower, "docs/") || strings.HasPrefix(lower, "doc/") || strings.Contains(lower, "/docs/") {
+		return true
+	}
+	for _, ext := range []string{".md", ".mdx", ".rst", ".adoc", ".txt"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+
 	noiseSuffixes := []string{
 		// Config/metadata
 		".yml", ".yaml", ".lock", ".sum",
@@ -398,7 +415,9 @@ func isCouplingNoiseFile(path string) bool {
 		strings.HasSuffix(path, "_test.py") ||
 		strings.HasSuffix(path, "_test.rs") ||
 		strings.Contains(path, "/test/") ||
-		strings.Contains(path, "/tests/") {
+		strings.Contains(path, "/tests/") ||
+		strings.HasPrefix(path, "test/") ||
+		strings.HasPrefix(path, "tests/") {
 		return true
 	}
 

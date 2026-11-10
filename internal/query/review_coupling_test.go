@@ -135,3 +135,19 @@ func TestParseLastModified(t *testing.T) {
 		}
 	}
 }
+
+func TestIsCouplingNoiseFile_DocsAndRootTests(t *testing.T) {
+	for path, want := range map[string]bool{
+		"docs/roadmap.md": true,
+		"docs/architecture/adr/0018-bewerbungsdaten.md": true,
+		"packages/api/docs/setup.mdx":                   true,
+		"NOTES.txt":                                     true,
+		"tests/support/server.ts":                       true,
+		"src/components/marketing/HeroCards.tsx":        false,
+		"src/lib/applications/client.ts":                false,
+	} {
+		if got := isCouplingNoiseFile(path); got != want {
+			t.Errorf("isCouplingNoiseFile(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
