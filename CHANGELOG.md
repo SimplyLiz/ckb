@@ -188,9 +188,16 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
 - **A widely used consumer no longer looks untested.** `testGaps` read a budgeted
   consumer list, which cuts transitive items first, so past 20 direct callers a test
   reaching it through one of them was gone.
+- **The affected-tests command uses vitest where the repo does.** It suggested
+  `npx jest` in every JavaScript repo without a jest config, vitest projects included.
+  A vitest config or a vitest dependency now gives `npx vitest run`.
 
 ### Fixed — search and navigation
 
+- **`switchProject` into a linked worktree stays there.** The next call with a
+  relative `filePath` resolved it against the client's root first, found the same file
+  in the main checkout and switched back to the main checkout's index, without saying so.
+  The active repo now goes first.
 - **Symbol kinds in search.** The FTS table read SCIP kinds against the wrong
   enum, so a Dart class was reported as a `variable`. Existing databases rebuild
   on first use.

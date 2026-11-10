@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -2872,6 +2873,38 @@ func findCorrespondingTestFiles(repoRoot, sourcePath string) []string {
 }
 
 // fileExists checks if a file exists.
+// jsTestRunner names the JavaScript test runner a repo uses: "vitest" when it
+// has a vitest config or depends on vitest, "jest-config" when it has a jest
+// config, "" when neither shows. Suggesting npx jest in a vitest project hands
+// the agent a command that fails.
+func jsTestRunner(repoRoot string) string {
+	for _, ext := range []string{"ts", "mts", "cts", "js", "mjs", "cjs"} {
+		if fileExists(filepath.Join(repoRoot, "vitest.config."+ext)) {
+			return "vitest"
+		}
+	}
+	for _, ext := range []string{"js", "ts", "mjs", "cjs"} {
+		if fileExists(filepath.Join(repoRoot, "jest.config."+ext)) {
+			return "jest-config"
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(repoRoot, "package.json")); err == nil {
+		var pkg struct {
+			Dependencies    map[string]string `json:"dependencies"`
+			DevDependencies map[string]string `json:"devDependencies"`
+		}
+		if json.Unmarshal(data, &pkg) == nil {
+			if _, ok := pkg.DevDependencies["vitest"]; ok {
+				return "vitest"
+			}
+			if _, ok := pkg.Dependencies["vitest"]; ok {
+				return "vitest"
+			}
+		}
+	}
+	return ""
+}
+
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
@@ -2917,12 +2950,14 @@ func generateTestRunCommand(repoRoot string, tests []AffectedTest) string {
 		return fmt.Sprintf("go test %s", strings.Join(pkgList, " "))
 
 	case len(jsTests) > 0:
-		// Check for common test runners
-		if fileExists(filepath.Join(repoRoot, "jest.config.js")) ||
-			fileExists(filepath.Join(repoRoot, "jest.config.ts")) {
-			return fmt.Sprintf("npm test -- %s", strings.Join(jsTests[:min(5, len(jsTests))], " "))
+		files := strings.Join(jsTests[:min(5, len(jsTests))], " ")
+		switch jsTestRunner(repoRoot) {
+		case "vitest":
+			return fmt.Sprintf("npx vitest run %s", files)
+		case "jest-config":
+			return fmt.Sprintf("npm test -- %s", files)
 		}
-		return fmt.Sprintf("npx jest %s", strings.Join(jsTests[:min(5, len(jsTests))], " "))
+		return fmt.Sprintf("npx jest %s", files)
 
 	case len(pyTests) > 0:
 		return fmt.Sprintf("pytest %s", strings.Join(pyTests[:min(10, len(pyTests))], " "))

@@ -218,3 +218,36 @@ func isParentOrEqual(parent, child string) bool {
 	// If relative path doesn't start with "..", parent is an ancestor
 	return len(rel) > 0 && rel[0] != '.'
 }
+
+// A relative path that exists in both the main checkout (the client root) and
+// the linked worktree switchProject moved to must stay in the worktree.
+func TestResolveRelativeHint_ActiveRepoBeatsClientRoot(t *testing.T) {
+	base := t.TempDir()
+	mainRepo := filepath.Join(base, "main")
+	worktree := filepath.Join(mainRepo, ".claude", "worktrees", "review")
+	for _, dir := range []string{mainRepo, worktree} {
+		if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "src", "a.ts"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(mainRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := resolveRelativeHint("src/a.ts", worktree, []string{mainRepo})
+	if normalizePath(got) != normalizePath(worktree) {
+		t.Errorf("resolved to %q, want the active worktree %q", got, worktree)
+	}
+
+	// With no active repo the client root still resolves.
+	got = resolveRelativeHint("src/a.ts", "", []string{mainRepo})
+	if normalizePath(got) != normalizePath(mainRepo) {
+		t.Errorf("resolved to %q, want the client root %q", got, mainRepo)
+	}
+}
