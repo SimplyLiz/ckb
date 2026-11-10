@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"unicode"
 
 	"github.com/SimplyLiz/CodeMCP/internal/architecture"
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
@@ -130,9 +129,12 @@ func (d *Detector) BuildReachableSet(ctx context.Context, entrypoints []architec
 			continue
 		}
 
-		// Collect all symbols referenced in this file
+		// Collect all symbols referenced in this file. A definition is not a
+		// use: counting it would make everything defined in a file reachable
+		// as soon as one of its symbols is, so an unused export next to a
+		// used one would never show.
 		for _, occ := range doc.Occurrences {
-			if occ.Symbol == "" {
+			if occ.Symbol == "" || occ.SymbolRoles&scip.SymbolRoleDefinition != 0 {
 				continue
 			}
 
@@ -221,6 +223,7 @@ func (d *Detector) Analyze(ctx context.Context, opts DetectorOptions, reachable 
 	}
 
 	exclusions := deadcode.NewExclusionRules(opts.ExcludePatterns)
+	rules := newExportRules(d.repoRoot, index)
 
 	// Group items by module (directory)
 	moduleItems := make(map[string][]UnwiredItem)
@@ -233,7 +236,7 @@ func (d *Detector) Analyze(ctx context.Context, opts DetectorOptions, reachable 
 			break
 		}
 
-		info := parseSymbolInfo(sym)
+		info := parseSymbolInfo(sym, rules)
 		if info == nil {
 			continue
 		}
@@ -472,7 +475,7 @@ type symbolInfo struct {
 	exported   bool
 }
 
-func parseSymbolInfo(sym *scip.SymbolInformation) *symbolInfo {
+func parseSymbolInfo(sym *scip.SymbolInformation, rules *exportRules) *symbolInfo {
 	if sym == nil || sym.Symbol == "" {
 		return nil
 	}
@@ -514,12 +517,18 @@ func parseSymbolInfo(sym *scip.SymbolInformation) *symbolInfo {
 		}
 	}
 
+	// The definition occurrence is the reliable source: rust-analyzer IDs
+	// carry no file path at all, and none of the IDs carry a line.
+	if path, line := rules.site(sym.Symbol); path != "" {
+		filePath, lineNumber = path, line
+	}
+
 	kind := "type"
 	if scip.IsFunctionSymbol(sym.Symbol) {
 		kind = "function"
 	}
 
-	exported := isExported(name)
+	exported := rules.exported(sym.Symbol, name)
 
 	return &symbolInfo{
 		name:       name,
@@ -542,14 +551,6 @@ func extractName(symbolID string) string {
 	last = strings.TrimSuffix(last, "#")
 	last = strings.TrimSuffix(last, ".")
 	return last
-}
-
-func isExported(name string) bool {
-	if name == "" {
-		return false
-	}
-	r := []rune(name)
-	return unicode.IsUpper(r[0])
 }
 
 // findSymbolFile returns the file path where a symbol is defined.
