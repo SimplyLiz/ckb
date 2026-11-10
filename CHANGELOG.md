@@ -256,6 +256,23 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   each run kept a different five: on that branch four runs gave 0, 1, 1 and 0
   findings. Ties are now ordered by count and path, and the cut comes after the
   changed files are gone, so both missing partners are found on every run.
+- **`ckb unwired` finds unwired code outside Go.** It only counted names starting
+  with a capital letter as exported, so lowercase TypeScript, Python and Rust
+  functions were never candidates. Neither scip-typescript nor rust-analyzer
+  records `export` or `pub`, so for those the definition line decides: `export`
+  (or a local `export { … }`, `export default` or CommonJS export) in TS/JS, a
+  bare `pub` in Rust, no leading underscore in Python. A member counts if its
+  class does. Not counted: module-private functions, `pub(crate)` and private
+  `fn`, which the compiler's own unused-code checks already cover. Go keeps the
+  capital-letter rule. Two more fixes were needed for this to report anything.
+  The import walk counted every definition in a reachable file as reachable, so
+  an unused export sitting next to a used one never showed. And every Go and
+  Rust item had an empty `filePath`, because neither indexer puts the file in
+  the symbol ID. So `ckb review`'s unwired check, which keeps only items in
+  changed files, could never fire on those repos, `_test.go` symbols got past
+  the test filter, and everything landed in module `.`. File and line now come
+  from the definition. Limit: a Rust `pub fn` that shares its line with `impl …
+  {` is not seen.
 
 ### Fixed — search and navigation
 
@@ -395,6 +412,9 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
 - `kind` values for symbols resolved through SCIP change where the old tables
   were wrong; `startColumn` is 1-based on search results.
 - TypeScript call graphs change: parameters no longer count as functions.
+- `findUnwiredModules` / `ckb unwired`: items have `filePath`, `lineNumber` and
+  a real `module` for every language; TS, Python and Rust repos report more
+  items, and `ckb review` can now raise unwired findings on Go and Rust.
 
 ### Changed — the automatic first index stays cheap
 
