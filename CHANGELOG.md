@@ -70,6 +70,15 @@ All notable changes to CKB will be documented in this file.
 - **Nested projects always get a full index.** Incremental indexers run from the
   repo root, found no project there and reported an empty success over a stale
   index.
+- **Incremental indexing sees changes outside Go.** Change detection only looked
+  at `.go` files, so in a TypeScript, JavaScript, Python, Dart or Rust repo with a
+  `.ckb/ckb.db`, `ckb index` after a commit said "Index is up to date", skipped the
+  indexer and still stamped the index with HEAD: stale, and counted as fresh. On a
+  TS repo, a function added in a new commit was in neither `index.scip` nor
+  `ckb.db`; it now is, through an incremental update of the one changed file. This
+  goes through `ckb index`, `--watch`, the daemon and MCP `reindex`. Tracking after
+  a full index also kept only documents whose language was `go` or unset, so a
+  rust-analyzer index (`rust`) tracked no file at all.
 - **The update box only goes to a terminal.** Agents and scripts capture stderr
   with the result and were filtering the box out of every call by hand.
 

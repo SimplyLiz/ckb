@@ -99,7 +99,8 @@ func (i *IncrementalIndexer) IndexIncrementalWithLang(ctx context.Context, since
 		return nil, fmt.Errorf("%w: %s (install: %s)", ErrIndexerNotInstalled, config.Cmd, installCmd)
 	}
 
-	// 1. Detect changes
+	// 1. Detect changes in this language's source files
+	i.detector.SetExtensions(config.Extensions)
 	changes, err := i.detector.DetectChanges(since)
 	if err != nil {
 		return nil, fmt.Errorf("change detection failed: %w", err)

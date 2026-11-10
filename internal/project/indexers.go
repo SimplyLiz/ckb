@@ -26,7 +26,14 @@ type IndexerConfig struct {
 
 	// SupportsIncremental indicates if this indexer works with incremental mode
 	SupportsIncremental bool
+
+	// Extensions are the source files the indexer reads. Incremental change
+	// detection looks at these and nothing else, so a language without them
+	// would never see a change and never re-run its indexer.
+	Extensions []string
 }
+
+var tsExtensions = []string{".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"}
 
 // Indexers maps languages to their SCIP indexer configurations.
 // Only languages with SupportsIncremental=true can use incremental indexing.
@@ -35,36 +42,42 @@ var Indexers = map[Language]IndexerConfig{
 		Cmd:                 "scip-go",
 		OutputFlag:          "--output",
 		SupportsIncremental: true,
+		Extensions:          []string{".go"},
 	},
 	LangTypeScript: {
 		Cmd:                 "scip-typescript",
 		Args:                []string{"index", "--infer-tsconfig"},
 		OutputFlag:          "--output",
 		SupportsIncremental: true,
+		Extensions:          tsExtensions,
 	},
 	LangJavaScript: {
 		Cmd:                 "scip-typescript",
 		Args:                []string{"index", "--infer-tsconfig"},
 		OutputFlag:          "--output",
 		SupportsIncremental: true,
+		Extensions:          tsExtensions,
 	},
 	LangPython: {
 		Cmd:                 "scip-python",
 		Args:                []string{"index", "."},
 		OutputFlag:          "--output",
 		SupportsIncremental: true,
+		Extensions:          []string{".py", ".pyi"},
 	},
 	LangDart: {
 		Cmd:                 "dart",
 		Args:                []string{"pub", "global", "run", "scip_dart", "./"},
 		OutputFlag:          "--output",
 		SupportsIncremental: true,
+		Extensions:          []string{".dart"},
 	},
 	LangRust: {
 		Cmd:                 "rust-analyzer",
 		Args:                []string{"scip", "."},
 		FixedOutput:         "index.scip",
 		SupportsIncremental: true,
+		Extensions:          []string{".rs"},
 	},
 	LangJava: {
 		Cmd:                 "scip-java",
