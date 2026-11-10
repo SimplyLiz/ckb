@@ -456,7 +456,7 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 	if symbolInfo == nil {
 		return nil, errors.NewCkbError(
 			errors.SymbolNotFound,
-			fmt.Sprintf("Symbol not found: %s", opts.SymbolId),
+			e.notFoundMessage(opts.SymbolId),
 			nil, nil, nil,
 		)
 	}

@@ -36,18 +36,22 @@ var refsCmd = &cobra.Command{
 	Short: "Find all references to a symbol",
 	Long: `Find all references to a symbol across the codebase.
 
+References in tests are always included. Past --limit, every file's first
+reference comes before any file's second, so a cut drops repeats, not files.
+In JSON, totalReferences is the uncapped count (findReferences over MCP calls it
+totalCount) and truncated says whether references were left out.
+
 Examples:
   ckb refs symbol-123
   ckb refs symbol-123 --scope=api-module
-  ckb refs symbol-123 --include-tests
-  ckb refs symbol-123 --limit=100`,
+  ckb refs symbol-123 --limit=300`,
 	Args: cobra.ExactArgs(1),
 	Run:  runRefs,
 }
 
 func init() {
 	refsCmd.Flags().StringVar(&refsScope, "scope", "", "Limit search to module ID")
-	refsCmd.Flags().BoolVar(&refsIncludeTest, "include-tests", false, "Include test file references")
+	refsCmd.Flags().BoolVar(&refsIncludeTest, "include-tests", false, "No effect: test references are always included")
 	refsCmd.Flags().IntVar(&refsLimit, "limit", 100, "Maximum number of references")
 	refsCmd.Flags().StringVar(&refsFormat, "format", "human", "Output format (human, json)")
 	refsCmd.Flags().BoolVar(&refsCompact, "compact", false, "One entry per file with its lines, instead of one per reference")
@@ -99,6 +103,7 @@ func runRefs(cmd *cobra.Command, args []string) {
 		cliResponse = &CompactReferencesResponseCLI{
 			SymbolID:        symbolID,
 			TotalReferences: response.TotalCount,
+			Truncated:       response.Truncated,
 			Files:           query.GroupReferencesByFile(response.References),
 		}
 	}
@@ -123,6 +128,7 @@ func runRefs(cmd *cobra.Command, args []string) {
 type ReferencesResponseCLI struct {
 	SymbolID        string                `json:"symbolId"`
 	TotalReferences int                   `json:"totalReferences"`
+	Truncated       bool                  `json:"truncated,omitempty"`
 	References      []ReferenceCLI        `json:"references"`
 	ByModule        []ModuleReferencesCLI `json:"byModule,omitempty"`
 	Provenance      *ProvenanceCLI        `json:"provenance,omitempty"`
@@ -132,6 +138,7 @@ type ReferencesResponseCLI struct {
 type CompactReferencesResponseCLI struct {
 	SymbolID        string                 `json:"symbolId"`
 	TotalReferences int                    `json:"totalReferences"`
+	Truncated       bool                   `json:"truncated,omitempty"`
 	Files           []query.FileReferences `json:"files"`
 }
 
@@ -193,6 +200,7 @@ func convertRefsResponse(symbolID string, resp *query.FindReferencesResponse) *R
 	result := &ReferencesResponseCLI{
 		SymbolID:        symbolID,
 		TotalReferences: resp.TotalCount,
+		Truncated:       resp.Truncated,
 		References:      refs,
 		ByModule:        byModule,
 	}

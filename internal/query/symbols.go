@@ -994,7 +994,9 @@ func (e *Engine) FindReferences(ctx context.Context, opts FindReferencesOptions)
 	// Query SCIP for references
 	if e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
 		refOpts := backends.RefOptions{
-			MaxResults:         opts.Limit * 2,
+			// Enough to choose from: the cut below spreads over files, and a
+			// backend cut in its own order would decide which files survive.
+			MaxResults:         maxRefCandidates(opts.Limit),
 			IncludeTests:       opts.IncludeTests,
 			IncludeDeclaration: true,
 			Scope:              parseScope(opts.Scope),
@@ -1033,7 +1035,7 @@ func (e *Engine) FindReferences(ctx context.Context, opts FindReferencesOptions)
 	if len(refs) == 0 && (resolved == nil || resolved.Symbol == nil) {
 		return nil, errors.NewCkbError(
 			errors.SymbolNotFound,
-			fmt.Sprintf("Symbol not found: %s", opts.SymbolId),
+			e.notFoundMessage(opts.SymbolId),
 			nil, nil, nil,
 		)
 	}
@@ -1062,7 +1064,7 @@ func (e *Engine) FindReferences(ctx context.Context, opts FindReferencesOptions)
 		}
 	}
 	if len(refs) > opts.Limit {
-		refs = refs[:opts.Limit]
+		refs = spreadReferences(refs, opts.Limit)
 	}
 	if truncationInfo != nil {
 		truncationInfo.ReturnedCount = len(refs)
@@ -1112,6 +1114,42 @@ func deduplicateReferences(refs []ReferenceInfo) []ReferenceInfo {
 }
 
 // sortReferences sorts references deterministically.
+// maxRefCandidates is how many references FindReferences asks a backend for.
+func maxRefCandidates(limit int) int {
+	if n := limit * 10; n > 5000 {
+		return n
+	}
+	return 5000
+}
+
+// spreadReferences keeps limit of refs (sorted by path), every file's first
+// reference before any file's second, and returns them sorted again. Cut in path
+// order, tests/ sorted after src/ and a widely used symbol came back with 100
+// production references and none of the 13 tests using it.
+func spreadReferences(refs []ReferenceInfo, limit int) []ReferenceInfo {
+	if len(refs) <= limit {
+		return refs
+	}
+	rank := make([]int, len(refs)) // Position of each ref within its file
+	for i := range refs {
+		if i > 0 && refs[i].Location.FileId == refs[i-1].Location.FileId {
+			rank[i] = rank[i-1] + 1
+		}
+	}
+	order := make([]int, len(refs))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return rank[order[a]] < rank[order[b]] })
+	keep := order[:limit]
+	sort.Ints(keep)
+	out := make([]ReferenceInfo, 0, limit)
+	for _, i := range keep {
+		out = append(out, refs[i])
+	}
+	return out
+}
+
 func sortReferences(refs []ReferenceInfo) {
 	sort.Slice(refs, func(i, j int) bool {
 		if refs[i].Location.FileId != refs[j].Location.FileId {
