@@ -27,6 +27,19 @@ func TestIsMCPCommandArgs(t *testing.T) {
 	}
 }
 
+func TestIsCompletionCommand(t *testing.T) {
+	for _, args := range [][]string{{"completion", "zsh"}, {"__complete", "st"}, {"__completeNoDesc", ""}, {"-v", "completion", "bash"}} {
+		if !isCompletionCommand(args) {
+			t.Errorf("isCompletionCommand(%q) = false", args)
+		}
+	}
+	for _, args := range [][]string{{"status"}, {"mcp"}, nil} {
+		if isCompletionCommand(args) {
+			t.Errorf("isCompletionCommand(%q) = true", args)
+		}
+	}
+}
+
 func TestIsTerminalRejectsDevNull(t *testing.T) {
 	f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err != nil {

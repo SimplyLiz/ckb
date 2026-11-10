@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,7 +24,7 @@ func main() {
 	if !isMCPCommand() {
 		// Before the refresh below: that creates the file the notice reads as
 		// the mark of an earlier install.
-		update.ShowPostUpdateNotice(os.Stderr, isTerminal(os.Stderr))
+		update.ShowPostUpdateNotice(os.Stderr, isTerminal(os.Stderr) && !isCompletionCommand(os.Args[1:]))
 
 		checker := update.NewChecker()
 		// Show cached update notification (instant, no HTTP)
@@ -80,9 +81,33 @@ func isMCPCommand() bool {
 }
 
 func isMCPCommandArgs(args []string) bool {
-	cmd, _, err := rootCmd.Find(args)
-	if err != nil || cmd == nil {
-		return false
+	name := commandName(args)
+	return name == "mcp" || name == "serve"
+}
+
+// isCompletionCommand reports shell completion: `ckb completion zsh` runs from
+// a shell's startup file and `__complete` on every TAB, so the notice there
+// would greet a person opening a shell or be swallowed. cobra adds both
+// only once Execute runs, so Find does not know them yet.
+func isCompletionCommand(args []string) bool {
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		return a == "completion" || strings.HasPrefix(a, "__complete")
 	}
-	return cmd.Name() == "mcp" || cmd.Name() == "serve"
+	return false
+}
+
+// commandName resolves args to the top-level command they run, flags in front
+// included; "" when there is none.
+func commandName(args []string) string {
+	cmd, _, err := rootCmd.Find(args)
+	if err != nil || cmd == nil || cmd == rootCmd {
+		return ""
+	}
+	for cmd.Parent() != nil && cmd.Parent() != rootCmd {
+		cmd = cmd.Parent()
+	}
+	return cmd.Name()
 }

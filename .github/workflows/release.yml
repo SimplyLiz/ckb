@@ -237,50 +237,8 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          BASE="https://github.com/SimplyLiz/CodeMCP/releases/download/v${VERSION}"
           cd rel
-          sha() { grep " $1\$" checksums.txt | awk '{print $1}'; }
-          DA=$(sha "ckb_${VERSION}_darwin_arm64.tar.gz")
-          DI=$(sha "ckb_${VERSION}_darwin_amd64.tar.gz")
-          LA=$(sha "ckb_${VERSION}_linux_arm64.tar.gz")
-          LI=$(sha "ckb_${VERSION}_linux_amd64.tar.gz")
-          cat > ckb.rb <<EOF
-          class Ckb < Formula
-            desc "Code intelligence orchestration layer for AI-assisted development"
-            homepage "https://github.com/SimplyLiz/CodeMCP"
-            version "${VERSION}"
-
-            on_macos do
-              on_arm do
-                url "${BASE}/ckb_${VERSION}_darwin_arm64.tar.gz"
-                sha256 "${DA}"
-              end
-              on_intel do
-                url "${BASE}/ckb_${VERSION}_darwin_amd64.tar.gz"
-                sha256 "${DI}"
-              end
-            end
-
-            on_linux do
-              on_arm do
-                url "${BASE}/ckb_${VERSION}_linux_arm64.tar.gz"
-                sha256 "${LA}"
-              end
-              on_intel do
-                url "${BASE}/ckb_${VERSION}_linux_amd64.tar.gz"
-                sha256 "${LI}"
-              end
-            end
-
-            def install
-              bin.install "ckb"
-            end
-
-            test do
-              assert_match version.to_s, shell_output("#{bin}/ckb version")
-            end
-          end
-          EOF
+          ../scripts/brew-formula.sh "$VERSION" checksums.txt > ckb.rb
           git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/SimplyLiz/homebrew-ckb.git" tap
           mkdir -p tap/Formula
           cp ckb.rb tap/Formula/ckb.rb
