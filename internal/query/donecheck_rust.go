@@ -90,7 +90,7 @@ func (c *doneChecker) checkStructFields(ctx context.Context, adapter referenceFi
 		sym := impact.ChangedSymbol{SymbolID: id, Name: name, File: path}
 		via := fmt.Sprintf("fields of %s changed", name)
 		files := make(map[string]bool)
-		c.checkUses(ctx, adapter, sym, useQuery{name: name, change: impact.DeclChanged, via: via, literal: true}, files)
+		c.checkUses(ctx, adapter, sym, useQuery{name: name, change: impact.DeclChanged, via: via, literal: true, lang: "rust"}, files)
 		for _, ctor := range index.GeneratedMethods(id, "new") {
 			ctorSym := impact.ChangedSymbol{SymbolID: ctor, Name: name + "::new", File: path}
 			c.checkUses(ctx, adapter, ctorSym, useQuery{name: "new", change: impact.DeclChanged, via: via}, files)

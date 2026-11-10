@@ -31,6 +31,20 @@ All notable changes to CKB will be documented in this file.
   compile finds the same files with both binaries (13/13), with 38 fewer open uses: 43 fewer
   on one commit, 5 more from these rules, all false alarms. So they stay unproven outside the
   commits they came from.
+- **Go and TypeScript: a type whose members changed lists the places that build it.**
+  scip-go and scip-typescript give a type no enclosing range, so a field added to a
+  struct or an interface reached no symbol: the change was a file-level entry at low
+  confidence, risk stayed low, and the done check said `clear`. Adding a field to
+  `impact.ChangedSymbol`, built by literals in seven files, said exactly that. Now each
+  Go struct and TypeScript interface, class or object type alias declared in a changed
+  file is read on both sides, and when its members differ (a tag alone doesn't count) the
+  sites that build it are listed with `via: fields of Foo changed`: Go composite literals
+  (`Foo{`, `&Foo{`, `[]Foo{{`, `map[K]Foo{"a": {`, not `Foo{}` or `[]Foo{existing}`),
+  and TypeScript constructions (`: Foo = {`, `: Foo[] = [`, `): Foo {` and `): Foo => ({`
+  as a function's return, `<Foo>{`, `} as Foo`, `} satisfies Foo`). An edit to an
+  existing member no longer makes the check `not_assessed` for "a declaration that can't
+  be compared": the type's body was compared, and the check says so. Text, not types,
+  like the Rust rules, and like them not yet measured on a holdout.
 - **`coChangeCheck` in `assessChange` and `ckb changes`: the files that usually change
   with the touched files, and were left alone.** The done check follows references,
   so it can't see an importer that moves with an editor by habit rather than by type,

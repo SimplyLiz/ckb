@@ -1491,7 +1491,9 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		usesFinder = e.scipAdapter
 	}
 	publicContractChanges := 0
-	var rustOpens []rustOpen
+	// Go and TypeScript types whose members changed, read from the files before the
+	// symbols are looked at: a changed line inside one is explained by it.
+	rustOpens := done.checkTypeFiles(ctx, usesFinder)
 
 	// Confidence input: average symbol-mapping confidence across changed symbols.
 	var totalMappingConfidence float64
@@ -1503,7 +1505,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			mappingConfidenceCount++
 		}
 
-		if sym.DeletionUnresolved {
+		if sym.DeletionUnresolved && !done.explains(sym) {
 			done.unreadable++
 		}
 		if sym.NotInIndex {
@@ -1528,7 +1530,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		}
 
 		declaration := symbolDeclarationChange(sym)
-		if declaration == "" && sym.ChangeType != impact.ChangeAdded {
+		if declaration == "" && sym.ChangeType != impact.ChangeAdded && !done.explains(sym) {
 			done.unreadable++
 		}
 		var contractConsumers []string

@@ -81,10 +81,11 @@ type doneChecker struct {
 	sites      []OpenSite
 	updated    int
 	filesRead  int
-	cut        bool     // A reference list or the file limit stopped the check short
-	failed     int      // Changed declarations whose uses couldn't be looked up
-	unreadable int      // Changed symbols whose declaration couldn't be compared
-	unindexed  []string // Changed code files the index doesn't cover, so nothing in them was checked
+	cut        bool           // A reference list or the file limit stopped the check short
+	failed     int            // Changed declarations whose uses couldn't be looked up
+	unreadable int            // Changed symbols whose declaration couldn't be compared
+	unindexed  []string       // Changed code files the index doesn't cover, so nothing in them was checked
+	compared   []comparedSpan // Type bodies read on both sides, which explain lines no symbol names
 }
 
 func newDoneChecker(repoRoot string, opts AnalyzeChangeSetOptions, parsed *impact.ParsedDiff) *doneChecker {
@@ -133,7 +134,8 @@ type useQuery struct {
 	name    string
 	change  impact.DeclarationChange
 	via     string
-	literal bool // Only struct literals and patterns without `..` count
+	literal bool   // Only literals count: Rust's without `..`, Go's and TypeScript's that build the type
+	lang    string // The reading of a literal; empty is Rust
 }
 
 // checkUses classifies a symbol's references into openFiles. False means they couldn't
@@ -186,7 +188,7 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 		if oldLines != nil {
 			lines = oldLines
 		}
-		if !diff.IsRustLiteralUse(lines, ref.Location.Line, ref.Location.Column, query.name) {
+		if !diff.IsLiteralUse(query.lang, lines, ref.Location.Line, ref.Location.Column, query.name) {
 			return
 		}
 	}
@@ -196,6 +198,7 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 		Column:  ref.Location.Column,
 		Name:    query.name,
 		Literal: query.literal,
+		Lang:    query.lang,
 	})
 	switch result.State {
 	case diff.UseGone:

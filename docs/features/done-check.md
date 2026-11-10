@@ -60,6 +60,27 @@ These come from reading what commits did to the uses the compiler rejected, and 
 against three of them. See `docs/eval/change-prediction.md` for what has and hasn't been
 measured.
 
+## Go and TypeScript: a type whose members changed
+
+scip-go and scip-typescript give a type no enclosing range, so a field added inside a
+struct or an interface reaches no symbol, and the type's first line reads as unchanged.
+Each Go struct and each TypeScript interface, class or object type alias declared in a
+changed file is read on both sides instead. When its members differ (a struct tag alone
+doesn't count, and a class's methods don't), the places that build the type are listed
+with `via: fields of Foo changed`:
+
+| Language | What is listed | Not listed |
+|---|---|---|
+| Go | Composite literals: `Foo{`, `&Foo{`, `[]Foo{{`, `map[K]Foo{"a": {`, `Foo[T]{`. The brace has to follow the name directly, as gofmt writes it | `Foo{}`, `[]Foo{existing}`, `func f() Foo {`, the receiver, the declaration |
+| TypeScript | `: Foo = {`, `: Foo[] = [`, `): Foo {` and `): Foo => ({` as a function's return, `<Foo>{`, `} as Foo`, `} satisfies Foo` | imports, parameters, `extends`, `implements`, `= await load()`, `Promise<Foo>`, the declaration |
+
+A literal the diff touched anywhere between its braces counts as updated, and so does a
+function returning the type whose body the diff touched. A keyed Go literal still compiles
+without the new field, so a listed site may need nothing; it is listed because the question
+is whether the field was handled where the type is built. An edit to an existing member
+no longer makes the check `not_assessed` for "a declaration that can't be compared": the
+type's body was compared, and that explains the line.
+
 ## Files that usually change together
 
 References reach a use of a changed declaration. They don't reach an importer that
@@ -108,9 +129,9 @@ It compares text and compiles nothing, so it says "open", never "safe".
   that reason, even when the check is clear.
 - **Types are uneven.** A changed struct field lists the uses of that field, which is what
   you want. A retargeted type (`type ID int` to `type ID string`) lists every use of the type,
-  and many of those may still compile. Outside Rust, an added field lists nothing, though a
-  positional struct literal breaks on it, and a retargeted type isn't followed through the
-  functions naming it.
+  and many of those may still compile. In Go and TypeScript a changed member set lists the
+  literals and constructions above, but not a function whose signature names the type, and
+  a retargeted type isn't followed through the functions naming it. Python has none of this.
 - **Rust, still not seen:** an added enum variant, which breaks a `match` without a wildcard;
   `Self { .. }` literals, which don't spell the struct's name; a `.method()` on a later line
   counts as untouched even when the commit changed that line.
