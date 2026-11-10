@@ -234,6 +234,12 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   `ckb coupling` / `analyzeCoupling` leave out commits touching more than 50 files,
   which made every file in them 100% coupled to every other (Cartographer already
   did). On that branch two findings are left, both code files.
+- **Coupling says the same thing twice in a row.** A file's partners came out of a
+  map, were sorted by rate alone and cut at five, and only then were the files the
+  change already touched dropped. With more than five partners at the same rate,
+  each run kept a different five: on that branch four runs gave 0, 1, 1 and 0
+  findings. Ties are now ordered by count and path, and the cut comes after the
+  changed files are gone, so both missing partners are found on every run.
 
 ### Fixed — search and navigation
 
@@ -265,6 +271,18 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   them. External declarations no longer take those places, and trace starts from up
   to 200 entrypoints instead of 50. With no path it said "Entrypoint set
   unavailable" even when there were entrypoints; it now says which.
+- **`const f = () => …` is a function.** SCIP names it like any constant (`f.`), and
+  only IDs ending in `().` counted, so its calls had no caller: on a TypeScript app
+  with 589 such functions, `setList` had 0 callers though `removeEntry` calls it,
+  and `callgraph removeEntry` listed 30 callees, read from everything between its
+  name and the next `function` (`Math#random`, `fixLevels`, …), where it has 3. A constant counts as a
+  function when the indexer gives no Kind and its EnclosingRange starts after the
+  name, which is how scip-typescript marks an arrow or function initializer; a plain
+  constant has none, and rust-analyzer's `const` range starts before the name.
+  Callers, callees, `impact`, `trace`, blast radius (52 changed functions on that
+  branch became 79, and `isCustomKey` with 18 callers is among the findings now) and
+  `unwired` all see them. Not covered: a store built by a call, such as zustand's
+  `create(...)`, is still a constant, and its actions' calls belong to its members.
 - **`switchProject` into a linked worktree stays there.** The next call with a
   relative `filePath` resolved it against the client's root first, found the same file
   in the main checkout and switched back to the main checkout's index, without saying so.
