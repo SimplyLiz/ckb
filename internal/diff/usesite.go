@@ -31,6 +31,8 @@ type UseSite struct {
 	Name   string
 	// Literal means the use is a struct literal or pattern, which ends at its brace.
 	Literal bool
+	// Lang picks the reading of a literal: "go", "typescript", or Rust when empty.
+	Lang string
 }
 
 // UseResult is the classification of a UseSite.
@@ -184,10 +186,7 @@ func anyNewLineChanged(blocks []impact.ChangeBlock, from, to int) bool {
 // siteEnd returns the last line of a use, which is on line.
 func siteEnd(lines []string, line int, site UseSite) int {
 	if site.Literal {
-		if end, _, ok := rustLiteral(lines, line, site.Column, site.Name); ok {
-			return end
-		}
-		return line
+		return literalEnd(site.Lang, lines, line, site.Column, site.Name)
 	}
 	return callEnd(lines, line, site.Column, site.Name)
 }
