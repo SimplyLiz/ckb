@@ -1185,6 +1185,9 @@ type AnalyzeChangeSetResponse struct {
 	TestGaps *TestGapsInfo `json:"testGaps,omitempty"`
 	// DoneCheck says which uses of a changed declaration the diff left untouched.
 	DoneCheck *DoneCheck `json:"doneCheck,omitempty"`
+	// CoChangeCheck says which files usually change with the touched files and were
+	// left alone, from git history alone.
+	CoChangeCheck *CoChangeCheck `json:"coChangeCheck,omitempty"`
 	// Contracts flags changed symbols that are public/exported, as a
 	// "possible contract change" heuristic. This is deliberately not called
 	// a "breaking change" -- it is a line-level, visibility-only signal.
@@ -1872,6 +1875,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		ConsumerFiles:   consumerFiles,
 		TestGaps:        testGapsInfo,
 		DoneCheck:       done.result(diffContent, e.hasConsumerGraph(), len(parsedDiff.Files) == 0, staleIndex),
+		CoChangeCheck:   e.coChangeCheck(ctx, parsedDiff),
 		Contracts:       contracts,
 		Decisions:       changeDecisions,
 		Reviewers:       reviewers,

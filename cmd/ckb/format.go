@@ -1279,6 +1279,42 @@ func writeDoneCheck(b *strings.Builder, check *query.DoneCheck, verbose bool) {
 	b.WriteString("\n")
 }
 
+// writeCoChangeCheck lists the files that usually change with the touched files and
+// were left alone. History, not code: it says "open", never "missing".
+func writeCoChangeCheck(b *strings.Builder, check *query.CoChangeCheck, verbose bool) {
+	if check == nil {
+		return
+	}
+	switch check.Status {
+	case query.CoChangeOpen:
+		b.WriteString(fmt.Sprintf("Usually changed with: OPEN  %s left alone\n",
+			countNoun(check.OpenCount, "file", "files")))
+	case query.CoChangeClear:
+		b.WriteString(fmt.Sprintf("Usually changed with: clear  %d commits read\n", check.CommitsRead))
+	default:
+		b.WriteString("Usually changed with: NOT ASSESSED\n")
+	}
+	shown := len(check.OpenFiles)
+	if !verbose && shown > 10 {
+		shown = 10
+	}
+	for i := range check.OpenFiles[:shown] {
+		file := &check.OpenFiles[i]
+		b.WriteString(fmt.Sprintf("  %s  with %s in %d of %d commits", file.File, file.With, file.Together, file.Of))
+		if file.LastTogether != "" {
+			b.WriteString(", last " + file.LastTogether)
+		}
+		b.WriteString("\n")
+	}
+	if more := check.OpenCount - shown; more > 0 {
+		b.WriteString(fmt.Sprintf("  … and %d more (--verbose, or --format=json up to %d)\n", more, query.MaxCoChangeFiles))
+	}
+	if check.Note != "" {
+		b.WriteString("  " + check.Note + "\n")
+	}
+	b.WriteString("\n")
+}
+
 func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 	var b strings.Builder
 
@@ -1335,6 +1371,7 @@ func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 	}
 
 	writeDoneCheck(&b, resp.DoneCheck, verbose)
+	writeCoChangeCheck(&b, resp.CoChangeCheck, verbose)
 
 	// Counts line
 	symbolsChanged, downstream, modules := 0, 0, 0
