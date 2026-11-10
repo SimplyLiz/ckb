@@ -237,6 +237,18 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
 
 ### Fixed — search and navigation
 
+- **`ckb refs` no longer cuts the tests off.** References were sorted by path and
+  cut at `--limit`, after the backend had already cut at twice that in its own
+  order, so `tests/` came last and went first: a store with 334 references came
+  back with 100 from `src/` and none of the 13 test files using it. The cut now
+  takes every file's first reference before any file's second (51 files, all 13
+  tests), and the CLI JSON says `truncated`. `--include-tests` never did anything,
+  tests are always included; its help now says so. The help also says that
+  `totalReferences` is what MCP calls `totalCount`.
+- **A symbol ID with the wrong suffix says which one exists.** SCIP ends a type or
+  type alias in `#`, a value in `.` and a function in `().`, and a hand-copied
+  `ListKind.` was plainly "not found". `refs`, `impact` and the tools behind them
+  now add "did you mean …ListKind#?".
 - **`ckb entrypoints` knows Next.js.** Entrypoints came from names alone (`main` under
   `cmd/`, `Handle*`, `Run*`), so a Next.js app had none of its pages or route
   handlers: on a 16.x app with 21 pages and 49 route handlers it listed three
