@@ -74,8 +74,8 @@ func BuildFromSCIP(ctx context.Context, idx *scip.SCIPIndex, weights EdgeWeights
 					weight := weights.Reference
 					kind := "reference"
 
-					// If it looks like a function call
-					if isFunctionSymbol(refSymbol) {
+					// A reference to something callable is a call
+					if idx.IsCallable(refSymbol) {
 						weight = weights.Call
 						kind = "call"
 					}
@@ -168,29 +168,6 @@ func extractModule(symbol string) string {
 		}
 	}
 	return ""
-}
-
-// isFunctionSymbol checks if a symbol looks like a function/method.
-func isFunctionSymbol(symbol string) bool {
-	// Functions/methods typically end with () or have () before the descriptor
-	n := len(symbol)
-	if n < 2 {
-		return false
-	}
-
-	// Check for () suffix
-	if symbol[n-2:] == "()" {
-		return true
-	}
-
-	// Check for ().<something> pattern
-	for i := 0; i < n-2; i++ {
-		if symbol[i:i+2] == "()" {
-			return true
-		}
-	}
-
-	return false
 }
 
 // SymbolGraphStats returns statistics about the graph.
