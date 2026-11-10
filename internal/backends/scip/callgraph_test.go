@@ -830,3 +830,47 @@ func TestBuildCallerIndex_LocalFunctionsDoNotLeakAcrossDocuments(t *testing.T) {
 		t.Errorf("callers of local 1 = %v, want none", got)
 	}
 }
+
+// `export const removeEntry = (kind, id) => (cv) => setList(…)`, as
+// scip-typescript emits it: a term whose EnclosingRange covers only the arrow
+// function and so starts after the name. Its calls belong to it.
+func TestFunctionValuedTerms(t *testing.T) {
+	pkg := "scip-typescript npm demo 1.0.0 src/`entries.ts`/"
+	removeEntry, setList, limit, labels := pkg+"removeEntry.", pkg+"setList().", pkg+"MAX_BULLETS.", pkg+"ADD_LABEL."
+	rust := "rust-analyzer cargo demo 0.1.0 LIMIT."
+	doc := &Document{
+		RelativePath: "src/entries.ts",
+		Occurrences: []*Occurrence{
+			{Range: []int32{0, 9, 16}, Symbol: setList, SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{0, 0, 3, 1}},
+			{Range: []int32{5, 13, 24}, Symbol: removeEntry, SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{6, 2, 9, 3}},
+			{Range: []int32{8, 4, 11}, Symbol: setList},
+			{Range: []int32{11, 13, 24}, Symbol: limit, SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{12, 13, 22}, Symbol: labels, SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{12, 0, 14, 2}},
+			{Range: []int32{13, 4, 11}, Symbol: setList},
+			{Range: []int32{20, 10, 15}, Symbol: rust, SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{20, 0, 22, 2}},
+			{Range: []int32{21, 4, 11}, Symbol: setList},
+		},
+	}
+
+	callers := buildCallerIndex([]*Document{doc})
+	if got := callers[setList]; len(got) != 1 || got[0] != removeEntry {
+		t.Errorf("callers of setList = %v, want only removeEntry: a range that starts at or before the name is a declaration, not a function value", got)
+	}
+
+	idx := &SCIPIndex{Documents: []*Document{doc}, DefinitionIndex: map[string]*OccurrenceRef{}}
+	for _, occ := range doc.Occurrences {
+		if occ.SymbolRoles&SymbolRoleDefinition != 0 {
+			idx.DefinitionIndex[occ.Symbol] = &OccurrenceRef{Doc: doc, Occ: occ}
+		}
+	}
+	for sym, want := range map[string]bool{removeEntry: true, setList: true, limit: false, labels: false, rust: false} {
+		if got := idx.IsCallable(sym); got != want {
+			t.Errorf("IsCallable(%s) = %v, want %v", sym, got, want)
+		}
+	}
+
+	// An indexer that sets a Kind has the last word.
+	if isFunctionValuedTerm(removeEntry, 13, doc.Occurrences[1]) { // SymbolInformation_Variable
+		t.Error("a term with a stated non-callable Kind must not become a function")
+	}
+}
