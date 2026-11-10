@@ -85,7 +85,7 @@ Releases are fully automated via `.github/workflows/release.yml`, triggered by p
 **Steps to release:**
 1. `go run scripts/sync-version.go X.Y.Z` (see below)
 2. Update `CHANGELOG.md`
-3. Rewrite the post-update notice in `internal/update/notice.go` and set its `noticeVersion` (a test fails until it matches)
+3. For a minor or major release, rewrite the post-update notice in `internal/update/notice.txt` and set `noticeLine` in `notice.go` (a test fails until it matches). Patch releases keep both. The same file becomes the Homebrew caveats (`scripts/brew-formula.sh`)
 4. Merge to main, tag `vX.Y.Z`, push the tag
 5. The pipeline handles everything else:
    - Runs `go test -race ./...`

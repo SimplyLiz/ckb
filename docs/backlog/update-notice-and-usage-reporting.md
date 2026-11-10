@@ -21,8 +21,18 @@ license kindly, and asks for feedback.
   version" to read.
 - Users who only run CKB through an MCP client never see it. One plain line in
   `ckb setup` reaches some of them. No license text goes into agent context.
-- A test keeps the notice's version equal to `internal/version/version.go`, so
-  a release cannot ship last release's news.
+- The news belong to a minor release (`noticeLine`): every version of the line
+  shows them to whoever has not seen them, so skipping x.y.0 does not skip the
+  news, and a patch update does not repeat them. A test keeps `noticeLine`
+  equal to `internal/version/version.go`, so a release cannot ship last
+  release's news.
+- Shell completion (`ckb completion`, `__complete`) never shows it: one runs
+  from a shell's startup file, the other on every TAB.
+- The text lives in `internal/update/notice.txt`. Homebrew gets it as caveats,
+  which reaches MCP-only users who install through brew. npm cannot: it hides
+  install-script output since npm 7.
+- The pricing link carries `?ref=notice-X.Y` or `?ref=brew-X.Y`, so the site's
+  analytics show whether the notice brings visits, without telemetry.
 
 ### Text
 
@@ -41,7 +51,7 @@ personal use, open source projects, and organizations under $25k annual
 revenue.
 
 If your organization is above that, please get a license. It's what keeps
-CKB going, and I appreciate it: https://codeknowledge.dev/pricing
+CKB going, and I appreciate it: https://codeknowledge.dev/pricing?ref=notice-9.4
 
 I'd love to hear from you, good or bad:
   GitHub   https://github.com/SimplyLiz/ckb/discussions
@@ -57,8 +67,8 @@ individuals.
 - Discord does not exist yet. Until there is a permanent invite link, the line
   stays out and only GitHub Discussions is linked.
 - Solo freelancers count as organizations: free under $25k annual revenue, a
-  license above it. `LICENSE` still says only "personal, non-commercial" and
-  "organizations", so it needs a sentence saying so. Not written yet.
+  license above it. `LICENSE` names self-employed individuals and sole
+  proprietors under item 3.
 
 ## Opt-in usage reporting
 

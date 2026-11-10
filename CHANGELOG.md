@@ -37,15 +37,20 @@ All notable changes to CKB will be documented in this file.
 
 ### Added — a notice after updating
 
-- **The first run of a new version says what's new, once.** It also states the
-  license and asks for feedback. Stderr only, only on a terminal, never in `ckb mcp`
-  or `ckb serve`, and off with `CKB_NO_NOTICE=1`. A fresh install records its version
-  silently; `~/.ckb/update-check.json` or `~/.ckb/ckb.db` from an older version marks
-  an upgrade. An upgrade first run from a script stays pending for the first run a
-  person reads. Interactive `ckb setup` prints one line about the license for people
-  who only use CKB through an MCP client.
-- The update box no longer takes `2>/dev/null` for a terminal, and a flag in front of
-  the command (`ckb -v mcp`) no longer gets past the protocol-server check.
+- **The first run of a new release says what's new, once.** It also states the
+  license and asks for feedback. Stderr only, only on a terminal, never in `ckb mcp`,
+  `ckb serve` or shell completion, and off with `CKB_NO_NOTICE=1`. The news belong
+  to the minor release, so going straight from 9.3 to 9.4.1 still shows them and a
+  patch update doesn't repeat them. A fresh install records its version silently;
+  `~/.ckb/update-check.json` or `~/.ckb/ckb.db` from an older version marks an
+  upgrade. An upgrade first run from a script stays pending for the first run a
+  person reads, and two runs started together show it once.
+- **Homebrew shows the same text as caveats** after install and upgrade, which also
+  reaches people who only run CKB through an MCP client. Interactive `ckb setup`
+  prints one line about the license for them.
+- The update box tells Homebrew installs to run `brew upgrade ckb`, no longer takes
+  `2>/dev/null` for a terminal, and a flag in front of the command (`ckb -v mcp`) no
+  longer gets past the protocol-server check.
 
 ### Fixed — first contact with a repo
 
