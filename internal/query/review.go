@@ -372,6 +372,12 @@ func (e *Engine) ReviewPR(ctx context.Context, opts ReviewPROptions) (*ReviewPRR
 
 	var wg sync.WaitGroup
 
+	// The symbol-level change set, shared by the tests and blast-radius checks:
+	// computed once, by whichever of them asks first, while the other waits.
+	changeSet := sync.OnceValues(func() (*AnalyzeChangeSetResponse, error) {
+		return e.AnalyzeChangeSet(ctx, affectedTestsChangeSetOptions(opts.BaseBranch, opts.Staged))
+	})
+
 	// Check: Breaking Changes
 	if checkEnabled("breaking") {
 		wg.Add(1)
@@ -399,7 +405,7 @@ func (e *Engine) ReviewPR(ctx context.Context, opts ReviewPROptions) (*ReviewPRR
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c, ff := e.checkAffectedTests(ctx, opts)
+			c, ff := e.checkAffectedTests(ctx, opts, changeSet)
 			addCheck(c)
 			addFindings(ff)
 		}()
@@ -511,7 +517,7 @@ func (e *Engine) ReviewPR(ctx context.Context, opts ReviewPROptions) (*ReviewPRR
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c, ff := e.checkBlastRadius(ctx, changedFiles, opts)
+			c, ff := e.checkBlastRadius(ctx, changedFiles, opts, changeSet)
 			addCheck(c)
 			addFindings(ff)
 		}()
@@ -1069,12 +1075,14 @@ func (e *Engine) checkSecrets(ctx context.Context, files []string) (ReviewCheck,
 	}, findings
 }
 
-func (e *Engine) checkAffectedTests(ctx context.Context, opts ReviewPROptions) (ReviewCheck, []ReviewFinding) {
+func (e *Engine) checkAffectedTests(ctx context.Context, opts ReviewPROptions, changeSet func() (*AnalyzeChangeSetResponse, error)) (ReviewCheck, []ReviewFinding) {
 	start := time.Now()
 
-	resp, err := e.GetAffectedTests(ctx, GetAffectedTestsOptions{
-		BaseBranch: opts.BaseBranch,
-	})
+	cs, err := changeSet()
+	var resp *AffectedTestsResponse
+	if err == nil {
+		resp = e.affectedTestsFromChangeSet(ctx, cs, start)
+	}
 
 	if err != nil {
 		return ReviewCheck{
@@ -1088,7 +1096,7 @@ func (e *Engine) checkAffectedTests(ctx context.Context, opts ReviewPROptions) (
 
 	testCount := len(resp.Tests)
 	status := "pass"
-	summary := fmt.Sprintf("%d test(s) cover the changes", testCount)
+	summary := affectedTestsSummary(resp)
 
 	var findings []ReviewFinding
 	if testCount == 0 && opts.Policy.RequireTests {
@@ -1112,6 +1120,21 @@ func (e *Engine) checkAffectedTests(ctx context.Context, opts ReviewPROptions) (
 		Summary:  summary,
 		Duration: time.Since(start).Milliseconds(),
 	}, findings
+}
+
+// affectedTestsSummary says how many test files the change reaches and on what
+// evidence: a use of a changed symbol, or only of something in a changed file.
+func affectedTestsSummary(resp *AffectedTestsResponse) string {
+	total := len(resp.Tests)
+	fileLevel := 0
+	if resp.Summary != nil {
+		fileLevel = resp.Summary.FileLevelFiles
+	}
+	if fileLevel == 0 {
+		return fmt.Sprintf("%d test(s) cover the changes", total)
+	}
+	return fmt.Sprintf("%d test file(s) reach the changes: %d through a changed symbol, %d only through something else in a changed file",
+		total, total-fileLevel, fileLevel)
 }
 
 func (e *Engine) checkCriticalPaths(ctx context.Context, files []string, opts ReviewPROptions) (ReviewCheck, []ReviewFinding) {

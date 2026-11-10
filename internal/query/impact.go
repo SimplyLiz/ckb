@@ -1299,6 +1299,8 @@ type ChangedSymbolInfo struct {
 	// Declaration says what happened to its declaration, from comparing text:
 	// "unchanged" (a body edit), "compatible", "changed" or "removed". Empty if unread.
 	Declaration string `json:"declaration,omitempty"`
+	// Trivial is set when only comments or whitespace changed in it.
+	Trivial bool `json:"trivial,omitempty"`
 }
 
 // Recommendation suggests an action based on impact analysis.
@@ -1659,6 +1661,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			Confidence:  sym.Confidence,
 			Note:        sym.Note,
 			Declaration: string(symbolDeclarationChange(sym)),
+			Trivial:     sym.Trivial,
 		}
 	}
 
@@ -1742,6 +1745,9 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	testConsumers := make([]ImpactItem, 0, len(allDirectImpact)+len(allTransitiveImpact)+len(allTestImpact))
 	testConsumers = append(append(append(testConsumers, allDirectImpact...), allTransitiveImpact...), allTestImpact...)
 	affectedTests := e.deriveAffectedTests(changedSymbolInfos, testConsumers)
+	if e.hasConsumerGraph() {
+		affectedTests = mergeFileLevelTests(affectedTests, testsUsingFiles(e.scipAdapter.GetIndex(), changedSourceFiles(changedSymbols)))
+	}
 
 	// Sort impact items, so the budget below keeps the ones that matter most
 	sortImpactItems(allDirectImpact)
@@ -2460,10 +2466,12 @@ type AffectedTest struct {
 
 // TestSummary provides an overview of affected tests.
 type TestSummary struct {
-	TotalFiles       int    `json:"totalFiles"`
-	DirectFiles      int    `json:"directFiles"`
-	TransitiveFiles  int    `json:"transitiveFiles"`
-	CoverageFiles    int    `json:"coverageFiles"`
+	TotalFiles      int `json:"totalFiles"`
+	DirectFiles     int `json:"directFiles"`
+	TransitiveFiles int `json:"transitiveFiles"`
+	CoverageFiles   int `json:"coverageFiles"`
+	// FileLevelFiles use something defined in a changed file, not a changed symbol.
+	FileLevelFiles   int    `json:"fileLevelFiles,omitempty"`
 	EstimatedRuntime string `json:"estimatedRuntime,omitempty"`
 }
 
@@ -2493,7 +2501,26 @@ func (e *Engine) GetAffectedTests(ctx context.Context, opts GetAffectedTestsOpti
 	if err != nil {
 		return nil, err
 	}
+	return e.affectedTestsFromChangeSet(ctx, changeSet, startTime), nil
+}
 
+// affectedTestsOptions are the AnalyzeChangeSet options GetAffectedTests runs
+// with, for a caller that computes the change set once and shares it.
+func affectedTestsChangeSetOptions(baseBranch string, staged bool) AnalyzeChangeSetOptions {
+	if baseBranch == "" {
+		baseBranch = "HEAD"
+	}
+	return AnalyzeChangeSetOptions{
+		Staged:          staged,
+		BaseBranch:      baseBranch,
+		TransitiveDepth: 1,
+		IncludeTests:    true,
+	}
+}
+
+// affectedTestsFromChangeSet builds GetAffectedTests' response from a change set
+// analyzed with tests included.
+func (e *Engine) affectedTestsFromChangeSet(ctx context.Context, changeSet *AnalyzeChangeSetResponse, startTime time.Time) *AffectedTestsResponse {
 	var coverageUsed bool
 
 	tests := changeSet.AffectedTests
@@ -2508,6 +2535,8 @@ func (e *Engine) GetAffectedTests(ctx context.Context, opts GetAffectedTestsOpti
 			summary.TransitiveFiles++
 		case "coverage":
 			summary.CoverageFiles++
+		case reasonUsesChangedFile:
+			summary.FileLevelFiles++
 		}
 	}
 
@@ -2535,7 +2564,7 @@ func (e *Engine) GetAffectedTests(ctx context.Context, opts GetAffectedTestsOpti
 		Confidence:   avgConfidence,
 		RunCommand:   runCommand,
 		Provenance:   provenance,
-	}, nil
+	}
 }
 
 // deriveAffectedTests computes the tests that use or reach a set of changed
@@ -2546,7 +2575,7 @@ func (e *Engine) deriveAffectedTests(changedSymbols []ChangedSymbolInfo, affecte
 
 	// 1. Direct test files (tests that reference changed symbols)
 	for _, sym := range affectedSymbols {
-		if !isTestFile(sym.Location) {
+		if sym.Location == nil || !isRunnableTestPath(sym.Location.FileId) {
 			continue
 		}
 		path := ""

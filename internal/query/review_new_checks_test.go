@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -133,8 +134,9 @@ func CoreFunction() string {
 	for _, c := range resp.Checks {
 		if c.Name == "blast-radius" {
 			found = true
-			if c.Status != "info" && c.Status != "pass" {
-				t.Errorf("expected blast-radius to be info/pass with default policy (maxFanOut=0), got %q", c.Status)
+			// No SCIP index in this repo: no callers to count, which is a skip, not a pass.
+			if c.Status != "info" && c.Status != "pass" && !(c.Status == "skip" && strings.Contains(c.Summary, "ckb index")) {
+				t.Errorf("expected blast-radius to be info/pass with default policy (maxFanOut=0), got %q: %s", c.Status, c.Summary)
 			}
 			if c.Severity != "info" {
 				t.Errorf("expected blast-radius severity 'info' in informational mode, got %q", c.Severity)
