@@ -191,6 +191,26 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
 - **The affected-tests command uses vitest where the repo does.** It suggested
   `npx jest` in every JavaScript repo without a jest config, vitest projects included.
   A vitest config or a vitest dependency now gives `npx vitest run`.
+- **The review's blast-radius check looks at what changed.** It took every symbol
+  of each changed file, in diff order, until 30 were taken, so on a 40-file Next.js
+  branch the first component file filled all 30 slots and `listOf` in
+  `src/lib/cv/entries.ts`, changed and called from eight places, was never looked at.
+  The summary didn't say so. It now counts callers for the changed functions and
+  methods, spreads the 30 slots over the files (each file's best-referenced first),
+  and says "30 of 52 changed functions checked" when it had to cut. Types no longer
+  take slots; they have references, not callers, and always reported 0. Without a
+  SCIP index the check says it skipped instead of passing. It shares one change-set
+  analysis with the tests check instead of computing it twice.
+- **The review's tests check missed two thirds of the tests.** On the same branch it
+  found 24 test files; 63 import a changed module directly. A change inside an object
+  literal, such as a new action in a zustand store, is attributed to the literal's
+  members, so a test reaching the store through `useEditor` used no changed symbol.
+  A test that uses something defined in a changed file now counts as well, with
+  `reason: uses-changed-file`, confidence 0.5 and `summary.fileLevelFiles`, and the
+  summary says how many tests rest on which: 70 on that branch, 23 through a changed
+  symbol. A test helper under `tests/` (`tests/render/fixtures.ts`) is test code but
+  no test, and is no longer listed as one in JavaScript and TypeScript, where
+  vitest and jest only run `*.test.*`, `*.spec.*` and `__tests__/`.
 
 ### Fixed — search and navigation
 
