@@ -234,6 +234,13 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   `ckb coupling` / `analyzeCoupling` leave out commits touching more than 50 files,
   which made every file in them 100% coupled to every other (Cartographer already
   did). On that branch two findings are left, both code files.
+- **A review diffs from where the branch forked.** `ckb review`, `summarizePr` and
+  `ckb changes --base` ran `git diff main HEAD`, which compares the two tips: once
+  `main` moved on, every file it changed since the fork was in the review, its
+  changes reversed, as if the branch had undone them. They now diff from
+  `git merge-base`, and so do the "before" sides of complexity, health, bug
+  patterns and the API comparison. Without a merge base (a shallow clone, unrelated
+  histories) they fall back to the tip and log a warning.
 - **Coupling says the same thing twice in a row.** A file's partners came out of a
   map, were sorted by rate alone and cut at five, and only then were the files the
   change already touched dropped. With more than five partners at the same rate,

@@ -267,6 +267,9 @@ func (e *Engine) ReviewPR(ctx context.Context, opts ReviewPROptions) (*ReviewPRR
 			}
 			opts.BaseBranch = resolved
 		}
+		// Everything below compares against the fork point: the diff, the
+		// "before" side of complexity, health and bug patterns, the API diff.
+		opts.BaseBranch = e.forkPoint(opts.BaseBranch, opts.HeadBranch)
 		diffStats, err = e.gitAdapter.GetCommitRangeDiff(opts.BaseBranch, opts.HeadBranch)
 	}
 	if err != nil {

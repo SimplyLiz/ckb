@@ -119,6 +119,7 @@ func (e *Engine) SummarizePR(ctx context.Context, opts SummarizePROptions) (*Sum
 		baseRef = resolved
 		opts.BaseBranch = resolved
 	}
+	baseRef = e.forkPoint(baseRef, headRef)
 	diffStats, err := e.gitAdapter.GetCommitRangeDiff(baseRef, headRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get diff: %w", err)
