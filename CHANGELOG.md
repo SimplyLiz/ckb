@@ -85,6 +85,24 @@ All notable changes to CKB will be documented in this file.
   `affectedTests`, so a preview of a large result never reached them. Now they start
   at character 156.
 
+### Added — MCP 2026-07-28
+
+- **CKB speaks the stateless MCP revision next to the old handshake.** A request whose
+  `_meta` names `2026-07-28`, and `server/discover`, take the new path; everything else
+  works as before. `server/discover` answers with the supported version, capabilities,
+  instructions and caching hints; results carry `resultType` and `serverInfo`;
+  `tools/list` and `resources/list` carry `ttlMs` and `cacheScope`; other versions get
+  `-32022` with the supported list; a request without `clientCapabilities` is invalid
+  params; `subscriptions/listen` is acknowledged and closed at once, since nothing a
+  modern client sees changes while CKB runs.
+- **The revision forbids state across requests, so two things work differently for
+  it.** `tools/list` is the preset CKB was started with, and `expandToolset` is not
+  offered: a wider set means `--preset=review` or `--preset=full`. `switchProject` and
+  `switchRepo` are replaced by an optional `repo` argument on every repo-bound tool (a
+  path, relative to the start repo, or a registered name), and every call starts from
+  the start repo, so a file path from another repo in one call no longer redirects the
+  next.
+
 ### Fixed — MCP protocol
 
 - **Switching repositories switches the index and git with them.** `ckb init` writes
