@@ -470,3 +470,41 @@ func TestAnalyze_IgnoresGiantCommits(t *testing.T) {
 		t.Errorf("correlations = %+v, want only partner.ts at 2/2", res.Correlations)
 	}
 }
+
+// A co-changed file is reported by its repo-relative path, not its basename:
+// prepareChange listed "symbols.go" and review's split graph never matched a
+// coupled file against its own path list.
+func TestAnalyzeReportsRepoRelativePaths(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	tmpDir := t.TempDir()
+	runGit(t, tmpDir, "init")
+	runGit(t, tmpDir, "config", "user.email", "test@test.com")
+	runGit(t, tmpDir, "config", "user.name", "Test")
+	if err := os.MkdirAll(filepath.Join(tmpDir, "internal", "a"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		for _, f := range []string{"main.go", "internal/a/helper.go"} {
+			content := []byte("package x // " + itoa(i) + "\n")
+			if err := os.WriteFile(filepath.Join(tmpDir, f), content, 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runGit(t, tmpDir, "add", ".")
+		runGit(t, tmpDir, "commit", "-m", "change "+itoa(i))
+	}
+
+	analyzer := NewAnalyzer(tmpDir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	result, err := analyzer.Analyze(context.Background(), AnalyzeOptions{Target: "main.go"})
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	if len(result.Correlations) != 1 {
+		t.Fatalf("want 1 correlation, got %+v", result.Correlations)
+	}
+	if got := result.Correlations[0].File; got != "internal/a/helper.go" {
+		t.Errorf("Correlation.File = %q, want repo-relative internal/a/helper.go", got)
+	}
+}

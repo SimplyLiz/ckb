@@ -114,7 +114,10 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingA
 
 		if correlation >= opts.MinCorrelation {
 			correlations = append(correlations, Correlation{
-				File:          filepath.Base(file),
+				// Repo-relative, like FilePath: a basename names nothing to
+				// open, and every consumer matching against diff or file lists
+				// (review's split graph, prepareChange) has paths, not names.
+				File:          file,
 				FilePath:      file,
 				Correlation:   correlation,
 				CoChangeCount: count,
