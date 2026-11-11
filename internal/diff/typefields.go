@@ -479,3 +479,234 @@ func braceEnd(lines []string, line, offset int) int {
 	}
 	return line
 }
+
+var goFieldNamesRe = regexp.MustCompile(`^([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s+(\S.*)$`)
+
+// GoStructFieldTypes returns a struct's fields by name, each with its type squeezed and
+// without the tag. An embedded field is named by its type, without pointer or package.
+// False means the file has no struct of that name.
+func GoStructFieldTypes(lines []string, name string) (map[string]string, bool) {
+	re := regexp.MustCompile(`^\s*(?:type\s+)?` + regexp.QuoteMeta(name) + `(?:\[[^\]]*\])?\s+struct\s*\{`)
+	for i, text := range lines {
+		if !re.MatchString(text) {
+			continue
+		}
+		entries, ok := typeBodyEntries(lines, i, "")
+		if !ok {
+			return nil, false
+		}
+		fields := make(map[string]string)
+		for _, entry := range entries {
+			entry = strings.TrimSpace(goStructTagRe.ReplaceAllString(entry, ""))
+			if entry == "" {
+				continue
+			}
+			if m := goFieldNamesRe.FindStringSubmatch(entry); m != nil && !goTypeKeywords[m[1]] {
+				for _, field := range strings.Split(m[1], ",") {
+					fields[strings.TrimSpace(field)] = squeeze(m[2], "go")
+				}
+				continue
+			}
+			embedded := strings.TrimPrefix(entry, "*")
+			if dot := strings.LastIndexByte(embedded, '.'); dot >= 0 {
+				embedded = embedded[dot+1:]
+			}
+			if at := strings.IndexByte(embedded, '['); at >= 0 {
+				embedded = embedded[:at]
+			}
+			fields[embedded] = squeeze(entry, "go")
+		}
+		return fields, true
+	}
+	return nil, false
+}
+
+// GoBrokenFields compares a struct's fields across a diff: the ones a keyed literal
+// can no longer set as it did, because they went away or changed type. changed is
+// false if the field set is the same.
+func GoBrokenFields(before, after map[string]string) (broken map[string]bool, changed bool) {
+	broken = make(map[string]bool)
+	for field, typ := range before {
+		if now, ok := after[field]; !ok || now != typ {
+			broken[field] = true
+		}
+	}
+	return broken, len(broken) > 0 || len(after) != len(before)
+}
+
+var goKeyRe = regexp.MustCompile(`^([A-Za-z_]\w*)\s*:`)
+
+// GoLiteralKeys reads the composite literal of the named type at a use: the field keys
+// it sets, sorted, and whether any value in it is positional. Of `[]Name{` and
+// `map[K]Name{` it reads each element's braces. A keyed literal compiles after a field
+// is added; a positional one has to list every field. False means no literal is there.
+func GoLiteralKeys(lines []string, line, column int, name string) (keys []string, positional bool, ok bool) {
+	end, ok := goLiteral(lines, line, column, name)
+	if !ok {
+		return nil, false, false
+	}
+	text := rawLine(lines, line)
+	start := nameIndex(text, column, name)
+	rest := text[start+len(name):]
+	if strings.HasPrefix(rest, "[") {
+		rest = rest[matchingBracket(rest, '[', ']')+1:]
+	}
+	var body strings.Builder
+	body.WriteString(rest)
+	for l := line + 1; l <= end; l++ {
+		body.WriteString("\n")
+		body.WriteString(rawLine(lines, l))
+	}
+	content, ok := goBraceContent(body.String())
+	if !ok {
+		return nil, false, false
+	}
+	holder := strings.HasSuffix(trimQualifier(text[:start]), "]")
+	seen := make(map[string]bool)
+	read := func(content string) {
+		for _, entry := range goSplitEntries(content) {
+			if m := goKeyRe.FindStringSubmatch(entry); m != nil {
+				seen[m[1]] = true
+			} else {
+				positional = true
+			}
+		}
+	}
+	if !holder {
+		read(content)
+	} else {
+		for _, element := range goSplitEntries(content) {
+			if at := goTopLevelBrace(element); at >= 0 {
+				if inner, ok := goBraceContent(element[at:]); ok && strings.TrimSpace(inner) != "" {
+					read(inner)
+				}
+			}
+		}
+	}
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys, positional, true
+}
+
+// goScan walks Go source outside strings, runes and comments, calling visit with each
+// byte's index and the bracket depth before it. visit returns false to stop.
+func goScan(s string, visit func(i, depth int) bool) {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '"' || c == '\'' || c == '`':
+			for j := i + 1; j < len(s); j++ {
+				if s[j] == '\\' && c != '`' {
+					j++
+				} else if s[j] == c {
+					i = j
+					break
+				}
+			}
+			continue
+		case c == '/' && i+1 < len(s) && s[i+1] == '/':
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+			continue
+		case c == '/' && i+1 < len(s) && s[i+1] == '*':
+			if end := strings.Index(s[i+2:], "*/"); end >= 0 {
+				i += end + 3
+			} else {
+				i = len(s)
+			}
+			continue
+		}
+		if !visit(i, depth) {
+			return
+		}
+		switch c {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		}
+	}
+}
+
+// goBraceContent returns what is between the first `{` in s and its partner.
+func goBraceContent(s string) (string, bool) {
+	open, closeAt := -1, -1
+	goScan(s, func(i, depth int) bool {
+		switch {
+		case open < 0 && s[i] == '{':
+			open = i
+		case open >= 0 && s[i] == '}' && depth == 1:
+			closeAt = i
+			return false
+		}
+		return true
+	})
+	if open < 0 || closeAt < 0 {
+		return "", false
+	}
+	return s[open+1 : closeAt], true
+}
+
+// goSplitEntries splits a literal's content at its top-level commas.
+func goSplitEntries(content string) []string {
+	var entries []string
+	var current strings.Builder
+	last := 0
+	flush := func(upto int) {
+		current.WriteString(content[last:upto])
+		if entry := goLeadingComments(current.String()); entry != "" {
+			entries = append(entries, entry)
+		}
+		current.Reset()
+	}
+	goScan(content, func(i, depth int) bool {
+		if content[i] == ',' && depth == 0 {
+			flush(i)
+			last = i + 1
+		}
+		return true
+	})
+	flush(len(content))
+	return entries
+}
+
+// goTopLevelBrace is the index of the first `{` outside any bracket, or -1.
+func goTopLevelBrace(s string) int {
+	at := -1
+	goScan(s, func(i, depth int) bool {
+		if s[i] == '{' && depth == 0 {
+			at = i
+			return false
+		}
+		return true
+	})
+	return at
+}
+
+// goLeadingComments drops the comments an entry starts with: a comment after the last
+// comma is no entry, and one before a key doesn't make it positional.
+func goLeadingComments(s string) string {
+	for {
+		s = strings.TrimSpace(s)
+		switch {
+		case strings.HasPrefix(s, "//"):
+			if nl := strings.IndexByte(s, '\n'); nl >= 0 {
+				s = s[nl+1:]
+			} else {
+				return ""
+			}
+		case strings.HasPrefix(s, "/*"):
+			if end := strings.Index(s, "*/"); end >= 0 {
+				s = s[end+2:]
+			} else {
+				return ""
+			}
+		default:
+			return s
+		}
+	}
+}

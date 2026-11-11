@@ -140,6 +140,10 @@ type useQuery struct {
 	via     string
 	literal bool   // Only literals count: Rust's without `..`, Go's and TypeScript's that build the type
 	lang    string // The reading of a literal; empty is Rust
+	// goBroken, for a Go struct, holds the fields a keyed literal can't set as before.
+	// Non-nil means only literals the compiler rejects count: positional ones, and keyed
+	// ones setting one of these.
+	goBroken map[string]bool
 }
 
 // checkUses classifies a symbol's references into openFiles. False means they couldn't
@@ -197,6 +201,9 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 			return
 		}
 		literalLines = diff.LiteralEnd(query.lang, lines, ref.Location.Line, ref.Location.Column, query.name) - ref.Location.Line
+		if query.goBroken != nil && !breaksGoLiteral(lines, ref, query) {
+			return
+		}
 	}
 
 	result := diff.ClassifyUse(file, oldLines, newLines, diff.UseSite{
@@ -241,6 +248,21 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 
 		literalLines: literalLines,
 	})
+}
+
+// breaksGoLiteral says whether a Go composite literal stops compiling: it is
+// positional, or sets a field in goBroken. A literal that can't be read counts.
+func breaksGoLiteral(lines []string, ref *backends.Reference, query useQuery) bool {
+	keys, positional, ok := diff.GoLiteralKeys(lines, ref.Location.Line, ref.Location.Column, query.name)
+	if !ok || positional {
+		return true
+	}
+	for _, key := range keys {
+		if query.goBroken[key] {
+			return true
+		}
+	}
+	return false
 }
 
 // dropCoveredLiterals removes a literal site whose braces already hold an open use
