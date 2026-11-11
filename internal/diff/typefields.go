@@ -246,6 +246,11 @@ func IsLiteralUse(lang string, lines []string, line, column int, name string) bo
 	return IsRustLiteralUse(lines, line, column, name)
 }
 
+// LiteralEnd returns the last line of the literal starting at the name, or line.
+func LiteralEnd(lang string, lines []string, line, column int, name string) int {
+	return literalEnd(lang, lines, line, column, name)
+}
+
 // literalEnd returns the last line of the literal starting at the name, or line.
 func literalEnd(lang string, lines []string, line, column int, name string) int {
 	var end int

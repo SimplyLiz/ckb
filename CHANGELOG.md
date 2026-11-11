@@ -174,6 +174,45 @@ All notable changes to CKB will be documented in this file.
 - **The update box only goes to a terminal.** Agents and scripts capture stderr
   with the result and were filtering the box out of every call by hand.
 
+### Fixed — found by running CKB on its own repo
+
+Three changes with known breakage, checked against the compiler: a new parameter on
+`query.NewEngine` (20 call sites), a renamed field `backends.SearchOptions.MaxResults`
+(17) and a renamed method on the `backends.Backend` interface (4 implementations).
+
+- **The done check lists the implementations a changed Go interface leaves behind.**
+  Renaming, re-typing or adding an interface method said `clear` before, because an
+  implementation isn't a reference. It now finds them through the index's
+  implementation relations and, since scip-go only records those within a package,
+  through types whose methods match the interface's as it was before the diff. The
+  sites carry `via: "implements Backend"`. Interface rename: 4/4, added method: 2/2
+  (the two types without it). If the lookup can't run, the status is `not_assessed`.
+- **A struct literal is listed once.** When a field changed, a literal that names it
+  was listed for the field and again as "fields of X changed". The literal's own entry
+  now only stays when no field use inside its braces is open, for instance a literal
+  that leaves the field out. The field rename went from 30 sites back to 17.
+- **A symbol ID from before the last commit still resolves.** scip-go puts the commit
+  hash into every ID, so each commit invalidated the IDs an agent held. MCP and A2A
+  calls now retry without the version field, take only a unique match, and say so in a
+  `SYMBOL_ID_VERSION_REMAPPED` warning. The HTTP API and CLI don't remap yet.
+- **`prepareChange` lists the tests that use the target.** Before, it listed the first
+  20 test files of the module, alphabetically; for `NewEngine` none of the 14 that call
+  it. It now uses the same derivation as `assessChange`: direct, then transitive, then
+  same-module files as filler, each labelled by its real reason.
+- **`prepareChange` on a file counts what the file declares.** `internal/backends/backend.go`
+  gave 0 affected files; with its types, fields and methods it is 134 callers in 9 modules.
+- **Co-changed files carry their path.** `coChangeFiles` said `symbols.go`; it says
+  `internal/query/symbols.go`. That also fixes review's split graph, which compared the
+  basename against full paths and never matched, and `explainOrigin`'s co-changes.
+- **`assessChange` has `format: "compact"`** (`ckb changes --format=compact`): no
+  symbol IDs, open sites as `file:line`. 7.5 KB instead of 25.8 KB for the `NewEngine`
+  change. Test names and affected symbols carry short names, not SCIP IDs, and
+  `affectedBy` names the changed symbol that selected the test.
+- **A server older than its binary says so in every answer.** `meta.staleServer`, checked
+  at most every 30 s, instead of only in `getStatus`.
+- **`understand "Backend.Priority"` means Backend's `Priority`**, not the first method of
+  that name, and the symbol has its module again (it read "in module  –").
+
 ### Fixed — what CKB says about a change
 
 These change what `assessChange`, `prepareChange`, `analyzeImpact` and
