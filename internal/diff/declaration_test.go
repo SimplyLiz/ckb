@@ -238,3 +238,42 @@ func TestClassifyDeclaration(t *testing.T) {
 		}
 	})
 }
+
+// A Go constant moved into a const block is the same declaration, not a removed
+// one: inside the block the line has no keyword.
+func TestClassifyDeclaration_GoGroupedDeclaration(t *testing.T) {
+	def := &SymbolDefInfo{StartLine: 3, EndLine: 3, DefLine: 3}
+	old := []string{"", "const X = 20", ""}
+	cases := []struct {
+		name string
+		new  []string
+		want impact.DeclarationChange
+	}{
+		{"moved into a block", []string{"", "const (", "\tX = 20", "\tY = 50", ")", ""}, impact.DeclUnchanged},
+		{"moved and typed", []string{"", "const (", "\tX string = \"a\"", ")", ""}, impact.DeclChanged},
+		{"block without it", []string{"", "const (", "\tY = 50", ")", ""}, impact.DeclRemoved},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var added []int
+			for i := 1; i < len(c.new)-1; i++ {
+				added = append(added, 2+i)
+			}
+			file := changedFile("a.go", 2, old, c.new, []int{3}, added)
+			got, before, after := classifyDeclaration(file, def, "X", indexMatchesOld, impact.ChangeModified, "a.go")
+			if got != c.want {
+				t.Errorf("got %q (%q -> %q), want %q", got, before, after, c.want)
+			}
+		})
+	}
+
+	// Out of a block, the other way round.
+	def = &SymbolDefInfo{StartLine: 4, EndLine: 4, DefLine: 4}
+	file := changedFile("a.go", 2,
+		[]string{"", "const (", "\tX = 20", ")", ""},
+		[]string{"", "const X = 20", ""},
+		[]int{3, 4, 5}, []int{3})
+	if got, before, after := classifyDeclaration(file, def, "X", indexMatchesOld, impact.ChangeModified, "a.go"); got != impact.DeclUnchanged {
+		t.Errorf("out of a block: got %q (%q -> %q)", got, before, after)
+	}
+}

@@ -396,7 +396,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		},
 		{
 			Name:        "assessChange",
-			Description: "The post-change counterpart to prepareChange: use this AFTER changes are made to assess what you actually changed and what to verify before finishing. Defaults to the uncommitted working tree; also supports staged changes or a base-branch range. Answers: what might break? which tests should run? are there possible contract changes? `doneCheck` lists each use of a changed declaration that the diff left as it was (`openSites`: at file:line, code, consumer, and `via` when the symbol itself isn't what changed), with status open, clear or not_assessed. It compares text and compiles nothing, so clear is not proof. `coChangeOpen` lists the files that usually change with the touched files (git history, any language) and were left alone. The default format \"compact\" returns just what to act on (risk, open sites, tests, contracts, consumer files) without symbol ids; pass format \"full\" for every detail, including symbol ids, affected modules, recommendations and the per-check structure (`coChangeCheck.openFiles`). For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
+			Description: "The post-change counterpart to prepareChange: use this AFTER changes are made to assess what you actually changed and what to verify before finishing. Defaults to the uncommitted working tree; also supports staged changes or a base-branch range. Answers: what might break? which tests should run? are there possible contract changes? `doneCheck` lists each use of a changed declaration that the diff left as it was (`openSites`: at file:line, code, consumer, and `via` when the symbol itself isn't what changed), with status open, clear or not_assessed. It compares text and compiles nothing, so clear is not proof. `coChangeOpen` lists the files that usually change with the touched files (git history, any language) and were left alone. The default format \"compact\" returns just what to act on (risk, open sites, tests, contracts, consumer files) without symbol ids; pass focus \"done\", \"tests\" or \"risk\" for only that part, paged with offset; pass format \"full\" for every detail, including symbol ids, affected modules, recommendations and the per-check structure (`coChangeCheck.openFiles`). For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -434,6 +434,20 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 						"enum":        []string{"full", "compact"},
 						"default":     "compact",
 						"description": "Response format: 'compact' (default) returns what to act on (risk, doneCheck open sites as file:line with code and consumer, affected test files with test names, contract kinds, direct consumer files) without symbol ids, a fraction of the size; 'full' returns all details including symbol ids",
+					},
+					"focus": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"done", "tests", "risk"},
+						"description": "Compact only: return just the part you need. 'done': open sites and co-change files left alone (is the change finished?). 'tests': affected test files with test names and runTests, a command that runs them. 'risk': score, riskFactors, contract changes, consumer files. Omit for all sections. The summary always covers everything",
+					},
+					"offset": map[string]interface{}{
+						"type":        "integer",
+						"default":     0,
+						"description": "With focus 'done' or 'tests': skip this many open sites or test files. The response's 'more' says the next offset",
+					},
+					"limit": map[string]interface{}{
+						"type":        "integer",
+						"description": "With focus 'done' or 'tests': at most this many open sites (default 50) or test files (default 20)",
 					},
 				},
 			},

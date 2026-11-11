@@ -1407,6 +1407,21 @@ func (s *MCPServer) toolAssessChange(params map[string]interface{}) (*envelope.R
 	if format != "full" && format != "compact" {
 		return nil, errors.NewInvalidParameterError("format", "must be 'full' or 'compact'")
 	}
+	focus, _ := params["focus"].(string)
+	offset, limit := 0, 0
+	if v, ok := params["offset"].(float64); ok {
+		offset = int(v)
+	}
+	if v, ok := params["limit"].(float64); ok {
+		limit = int(v)
+	}
+	if format == "full" && (focus != "" || offset != 0 || limit != 0) {
+		return nil, errors.NewInvalidParameterError("focus", "focus, offset and limit apply to format 'compact'")
+	}
+	compactOpts := query.CompactAssessOptions{Focus: focus, Offset: offset, Limit: limit}
+	if _, err := query.CompactAssessChangeFor(nil, compactOpts); err != nil {
+		return nil, errors.NewInvalidParameterError("focus", err.Error()) // before the analysis, which is the slow part
+	}
 
 	s.logger.Debug("Executing assessChange",
 		"format", format,
@@ -1435,7 +1450,14 @@ func (s *MCPServer) toolAssessChange(params map[string]interface{}) (*envelope.R
 	totalAffected := len(resp.AffectedSymbols)
 	var data interface{} = resp
 	if format == "compact" {
-		data = query.CompactAssessChangeFrom(resp)
+		if focus == query.AssessFocusTests {
+			compactOpts.RunCommand = s.engine().TestRunCommand(resp.AffectedTests)
+		}
+		compact, cerr := query.CompactAssessChangeFor(resp, compactOpts)
+		if cerr != nil {
+			return nil, errors.NewInvalidParameterError("focus", cerr.Error())
+		}
+		data = compact
 	}
 	responseBytes := MeasureJSONSize(data)
 	truncatedCount := 0
