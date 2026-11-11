@@ -1797,7 +1797,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		// Unwired Module Detection
 		{
 			Name:        "findUnwiredModules",
-			Description: "Find exported symbols that are never transitively reachable from application entrypoints (main, server, CLI). Detects the 'built but never plugged in' pattern where modules exist and are tested but aren't wired into the execution pipeline. Complements findDeadCode which only checks reference counts.",
+			Description: "Find exported symbols that are never transitively reachable from application entrypoints (main, server, CLI). Detects the 'built but never plugged in' pattern where modules exist and are tested but aren't wired into the execution pipeline. Complements findDeadCode which only checks reference counts. Go `init` files of a reached package count as reached; a method implementing a reachable interface on a reachable type is not listed (`summary.viaInterface` counts them). `limit` takes one item per module in turn; `truncated` says when it cut.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1827,7 +1827,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 					},
 					"maxNodes": map[string]interface{}{
 						"type":        "integer",
-						"default":     10000,
+						"default":     100000,
 						"description": "Max symbols in reachable set (budget for BFS traversal)",
 					},
 					"limit": map[string]interface{}{

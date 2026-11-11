@@ -298,6 +298,44 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   from the definition. Limit: a Rust `pub fn` that shares its line with `impl …
   {` is not seen.
 
+### Fixed — `ckb unwired` and `findUnwiredModules`
+
+- **A Go `init` runs whether or not anything references its file.** The walk from
+  `main.go` followed references only, and a cobra subcommand registers itself from
+  an `init` in a file nothing references, so every subcommand and everything under
+  it read as unwired: the HTTP API, the A2A server, the compliance frameworks. When
+  a Go file is reached, the files of its package that define an `init` are reached
+  too. On CKB the headline went from 1,938 unwired symbols to 620.
+- **A method called through an interface counts as reached.** `c.Run()` references
+  `Check#Run`, not `piiInLogsCheck#Run`, so 704 of the 1,530 listed methods were the
+  `ID`, `Name`, `Run`, `Severity` and `Article` of compliance checks that run on every
+  audit. A method is reached through an interface when the interface or that method
+  of it is reachable and so is the type: by the implementation relationship where the
+  indexer wrote one (scip-typescript; scip-go for a fraction), and for Go by method
+  set, as the language does it. `summary.viaInterface` says how many were left out
+  this way (782 on CKB). A type nobody builds is still unwired, popular interface or
+  not. The list of common interface methods (`String`, `Error`, `Close`, …) was
+  never consulted: it asked for kind `method` and was handed `function`.
+- **A Go reference never led into the file that defines it.** The guess from the
+  symbol ID read scip-go's `` `example.com/m/pkg` `` as a TypeScript file name, so
+  the import walk stopped at the first file on Go and only the callee walk went
+  on. The definition index decides now. That exposed a scan of the whole index per
+  callee in `FindCallees` and `findSymbolLocation`, three minutes on CKB, now half a
+  second; `getCallGraph`, `findImplementations` and `getSymbol` go through the same
+  lookup.
+- **`--limit` cut modules, not items.** The default of 100 showed `internal/api` alone,
+  156 items, and dropped the other 73 modules. The cut now takes one item per module
+  in turn, so every module keeps its top items, each module says `… and N more`, and
+  the result says `truncated` with the full counts in `summary`. `maxNodes` was read
+  and never passed on; it is now, and its default is 100,000 instead of 10,000, since
+  a cut walk makes everything not yet reached look unwired (CKB has 20,000 symbols
+  and the fixed walk reaches 15,000). `local N` symbols no longer count.
+- **A manifest in a hidden directory is not a module.** `.claude/worktrees/*/go.mod`
+  made agent worktrees entrypoints of this repo and `.github/actions/*/package.json`
+  a module. Module and language detection skip hidden directories and `third_party/`.
+  On CKB `ckb index` still asks for `--lang`: `npm/package.json` is a real second
+  manifest.
+
 ### Fixed — search and navigation
 
 - **`ckb refs` no longer cuts the tests off.** References were sorted by path and

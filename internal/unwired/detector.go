@@ -15,7 +15,11 @@ import (
 )
 
 const (
-	defaultMaxNodes = 10000
+	// defaultMaxNodes bounds the reachable set. It is a stop against runaway
+	// walks, not a sample size: a set cut here makes everything not yet
+	// reached look unwired, so it sits well above the symbol count of a large
+	// repo. CKB itself has about 20,000 symbols.
+	defaultMaxNodes = 100000
 	defaultLimit    = 100
 )
 
@@ -36,8 +40,9 @@ func NewDetector(scipAdapter *scip.SCIPAdapter, repoRoot string, logger *slog.Lo
 }
 
 // BuildReachableSet performs BFS from entrypoint symbols to build the set of all
-// transitively reachable symbol IDs.
-func (d *Detector) BuildReachableSet(ctx context.Context, entrypoints []architecture.Entrypoint) (map[string]bool, bool) {
+// transitively reachable symbol IDs. maxNodes caps the set; 0 means the default.
+// The second result is true when the cap cut the walk short.
+func (d *Detector) BuildReachableSet(ctx context.Context, entrypoints []architecture.Entrypoint, maxNodes int) (map[string]bool, bool) {
 	index := d.scipAdapter.GetIndex()
 	if index == nil {
 		return nil, false
@@ -45,7 +50,9 @@ func (d *Detector) BuildReachableSet(ctx context.Context, entrypoints []architec
 
 	reachable := make(map[string]bool)
 	queue := make([]string, 0, 256)
-	maxNodes := defaultMaxNodes
+	if maxNodes <= 0 {
+		maxNodes = defaultMaxNodes
+	}
 	partial := false
 
 	// Also detect additional entrypoints from package.json scripts
@@ -76,6 +83,9 @@ func (d *Detector) BuildReachableSet(ctx context.Context, entrypoints []architec
 		// `import { createApp } from './app'` followed by `createApp()`
 		// seed the BFS with `createApp`.
 		for _, occ := range doc.Occurrences {
+			if isLocal(occ.Symbol) {
+				continue
+			}
 			if index.IsCallable(occ.Symbol) {
 				if !reachable[occ.Symbol] {
 					reachable[occ.Symbol] = true
@@ -109,6 +119,8 @@ func (d *Detector) BuildReachableSet(ctx context.Context, entrypoints []architec
 	for f := range visitedFiles {
 		fileQueue = append(fileQueue, f)
 	}
+	sort.Strings(fileQueue)
+	inits := initFiles(index)
 
 	for len(fileQueue) > 0 {
 		if ctx.Err() != nil {
@@ -129,12 +141,23 @@ func (d *Detector) BuildReachableSet(ctx context.Context, entrypoints []architec
 			continue
 		}
 
+		// A Go package loads whole: when one of its files is reached, every
+		// file with an init runs, referenced or not.
+		if strings.HasSuffix(filePath, ".go") {
+			for _, initFile := range inits[filepath.Dir(filePath)] {
+				if !visitedFiles[initFile] {
+					visitedFiles[initFile] = true
+					fileQueue = append(fileQueue, initFile)
+				}
+			}
+		}
+
 		// Collect all symbols referenced in this file. A definition is not a
 		// use: counting it would make everything defined in a file reachable
 		// as soon as one of its symbols is, so an unused export next to a
 		// used one would never show.
 		for _, occ := range doc.Occurrences {
-			if occ.Symbol == "" || occ.SymbolRoles&scip.SymbolRoleDefinition != 0 {
+			if occ.Symbol == "" || isLocal(occ.Symbol) || occ.SymbolRoles&scip.SymbolRoleDefinition != 0 {
 				continue
 			}
 
@@ -224,6 +247,8 @@ func (d *Detector) Analyze(ctx context.Context, opts DetectorOptions, reachable 
 
 	exclusions := deadcode.NewExclusionRules(opts.ExcludePatterns)
 	rules := newExportRules(d.repoRoot, index)
+	interfaces := newInterfaceReach(allSymbols, reachable)
+	viaInterface := 0
 
 	// Group items by module (directory)
 	moduleItems := make(map[string][]UnwiredItem)
@@ -269,11 +294,15 @@ func (d *Detector) Analyze(ctx context.Context, opts DetectorOptions, reachable 
 		if !callable && !opts.IncludeTypes {
 			continue
 		}
+		kind := info.kind
+		if callable && strings.Contains(sym.Symbol, "#") {
+			kind = "method"
+		}
 
-		// Skip exclusions (main, init, interface methods, etc.)
+		// Skip exclusions (main, init, common interface methods, etc.)
 		excl := exclusions.ShouldExclude(deadcode.SymbolInfo{
 			Name:     info.name,
-			Kind:     info.kind,
+			Kind:     kind,
 			FilePath: info.filePath,
 			Exported: info.exported,
 		})
@@ -289,20 +318,15 @@ func (d *Detector) Analyze(ctx context.Context, opts DetectorOptions, reachable 
 		if reachable[sym.Symbol] {
 			continue
 		}
+		if kind == "method" && interfaces.via(sym) != "" {
+			viaInterface++
+			continue
+		}
 
 		// This symbol is unwired — classify it
 		confidence, reason := d.classifyUnwired(sym, index)
 		if confidence < minConf {
 			continue
-		}
-
-		kind := info.kind
-		if callable {
-			if strings.Contains(sym.Symbol, "#") {
-				kind = "method"
-			} else {
-				kind = "function"
-			}
 		}
 
 		item := UnwiredItem{
@@ -330,9 +354,12 @@ func (d *Detector) Analyze(ctx context.Context, opts DetectorOptions, reachable 
 	byKind := make(map[string]int)
 
 	for modPath, items := range moduleItems {
-		// Sort by confidence desc
-		sort.Slice(items, func(i, j int) bool {
-			return items[i].Confidence > items[j].Confidence
+		// Sort by confidence desc, then by name so the order is stable
+		sort.SliceStable(items, func(i, j int) bool {
+			if items[i].Confidence != items[j].Confidence {
+				return items[i].Confidence > items[j].Confidence
+			}
+			return items[i].SymbolName < items[j].SymbolName
 		})
 
 		for _, item := range items {
@@ -349,34 +376,68 @@ func (d *Detector) Analyze(ctx context.Context, opts DetectorOptions, reachable 
 		})
 	}
 
-	// Sort modules by unwired count desc
-	sort.Slice(modules, func(i, j int) bool {
-		return modules[i].Summary.UnwiredCount > modules[j].Summary.UnwiredCount
+	// Sort modules by unwired count desc, then by path
+	sort.SliceStable(modules, func(i, j int) bool {
+		if modules[i].Summary.UnwiredCount != modules[j].Summary.UnwiredCount {
+			return modules[i].Summary.UnwiredCount > modules[j].Summary.UnwiredCount
+		}
+		return modules[i].Path < modules[j].Path
 	})
 
-	// Apply limit
-	if limit > 0 {
-		total := 0
-		for i := range modules {
-			total += len(modules[i].Items)
-			if total > limit {
-				modules = modules[:i+1]
-				break
-			}
-		}
-	}
+	listed, truncated := cutToLimit(modules, limit)
 
 	return &Result{
-		UnwiredModules: modules,
+		UnwiredModules: listed,
 		Summary: Summary{
 			TotalExported:  totalExported,
 			ReachableCount: len(reachable),
 			UnwiredCount:   totalUnwired,
 			UnwiredModules: len(modules),
+			ViaInterface:   viaInterface,
 			ByKind:         byKind,
 		},
 		ReachableCount: len(reachable),
+		Truncated:      truncated,
 	}, nil
+}
+
+// cutToLimit keeps at most limit items, taken one per module in turn so
+// every module keeps its top items and the result shows the breadth rather
+// than the first module alone. Each module's summary keeps its full count.
+func cutToLimit(modules []UnwiredModule, limit int) ([]UnwiredModule, bool) {
+	total := 0
+	for _, mod := range modules {
+		total += len(mod.Items)
+	}
+	if limit <= 0 || total <= limit {
+		return modules, false
+	}
+	keep := make([]int, len(modules))
+	for left := limit; left > 0; {
+		gave := false
+		for i, mod := range modules {
+			if left == 0 {
+				break
+			}
+			if keep[i] < len(mod.Items) {
+				keep[i]++
+				left--
+				gave = true
+			}
+		}
+		if !gave {
+			break
+		}
+	}
+	var listed []UnwiredModule
+	for i, mod := range modules {
+		if keep[i] == 0 {
+			continue
+		}
+		mod.Items = mod.Items[:keep[i]]
+		listed = append(listed, mod)
+	}
+	return listed, true
 }
 
 // classifyUnwired determines confidence and reason for an unwired symbol.
@@ -463,6 +524,13 @@ func (d *Detector) DetectScriptEntrypoints() []architecture.Entrypoint {
 	}
 
 	return entrypoints
+}
+
+// isLocal says whether a symbol is a document-local one (`local 3`): a
+// parameter or a variable in a body, which means nothing across files and
+// would fill the reachable set with collisions.
+func isLocal(symbol string) bool {
+	return strings.HasPrefix(symbol, "local ")
 }
 
 // --- Symbol parsing helpers ---
@@ -556,12 +624,24 @@ func extractName(symbolID string) string {
 // findSymbolFile returns the file path where a symbol is defined.
 // Returns empty string if not found.
 func findSymbolFile(symbolID string, index *scip.SCIPIndex) string {
-	// Fast path: check the Symbols map for location info
+	// The definition occurrence is the one source every indexer has. scip-go
+	// puts the package path in the ID, not the file, and the guess from the ID
+	// below used to read `example.com/m/pkg` as a TypeScript file name, so no
+	// Go reference ever led into the file that defines it.
+	if index.DefinitionIndex != nil {
+		if ref := index.DefinitionIndex[symbolID]; ref != nil && ref.Doc != nil {
+			return ref.Doc.RelativePath
+		}
+		// Every definition in the index is in that map, so a symbol missing
+		// from it is defined outside the repo: the standard library, a
+		// dependency. Scanning the documents for it would find nothing and
+		// cost a pass over the index per external reference.
+		return ""
+	}
+
+	// Next: the file as the symbol ID spells it, e.g.
+	//   scip-typescript npm pkg 1.0.0 src/router/`app.ts`/createApp().
 	if sym := index.GetSymbol(symbolID); sym != nil {
-		// Try to extract file path from the symbol ID itself.
-		// SCIP symbol IDs encode the file: e.g.,
-		//   scip-typescript npm pkg 1.0.0 src/router/`app.ts`/createApp().
-		//   scip-go gomod pkg src/internal/query/engine.go/Engine#GetStatus().
 		if path := extractFileFromSymbolID(symbolID); path != "" {
 			return path
 		}
@@ -582,10 +662,11 @@ func findSymbolFile(symbolID string, index *scip.SCIPIndex) string {
 // TypeScript: scip-typescript npm pkg 1.0.0 src/router/`app.ts`/createApp().
 // Go: scip-go gomod github.com/pkg v1.0.0 src/file.go/Symbol().
 func extractFileFromSymbolID(symbolID string) string {
-	// TypeScript pattern: backtick-quoted file names
+	// TypeScript pattern: backtick-quoted file names. scip-go quotes the
+	// package path the same way; a path with a slash in it is not a file name.
 	if idx := strings.Index(symbolID, "`"); idx >= 0 {
 		end := strings.Index(symbolID[idx+1:], "`")
-		if end >= 0 {
+		if end >= 0 && !strings.Contains(symbolID[idx+1:idx+1+end], "/") {
 			// Extract the path prefix before the backtick + the filename
 			// e.g., "scip-typescript npm llmrouter 0.1.0 src/router/`app.ts`/createApp()."
 			// We want "src/router/app.ts"

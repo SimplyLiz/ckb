@@ -26,6 +26,7 @@ type FindUnwiredModulesResponse struct {
 	Entrypoints    []string                `json:"entrypoints"`
 	ReachableCount int                     `json:"reachableCount"`
 	Partial        bool                    `json:"partial,omitempty"`
+	Truncated      bool                    `json:"truncated,omitempty"`
 	Provenance     *Provenance             `json:"provenance,omitempty"`
 }
 
@@ -44,7 +45,7 @@ func (e *Engine) FindUnwiredModules(ctx context.Context, opts FindUnwiredModules
 		opts.Limit = 100
 	}
 	if opts.MaxNodes == 0 {
-		opts.MaxNodes = 10000
+		opts.MaxNodes = 100000
 	}
 
 	// Check SCIP availability
@@ -104,7 +105,7 @@ func (e *Engine) FindUnwiredModules(ctx context.Context, opts FindUnwiredModules
 	}
 
 	// Build reachable set via BFS from entrypoints
-	reachable, partial := detector.BuildReachableSet(ctx, appEntrypoints)
+	reachable, partial := detector.BuildReachableSet(ctx, appEntrypoints, opts.MaxNodes)
 
 	// Analyze: find exported symbols not in the reachable set
 	detOpts := unwired.DetectorOptions{
@@ -130,6 +131,7 @@ func (e *Engine) FindUnwiredModules(ctx context.Context, opts FindUnwiredModules
 		Entrypoints:    entrypointNames,
 		ReachableCount: result.ReachableCount,
 		Partial:        partial,
+		Truncated:      result.Truncated,
 		Provenance:     prov,
 	}, nil
 }
