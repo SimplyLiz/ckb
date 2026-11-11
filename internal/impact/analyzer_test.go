@@ -315,3 +315,36 @@ func TestTransitiveCallersGetModuleFromLocator(t *testing.T) {
 		t.Errorf("transitive item not located: %+v", items[0])
 	}
 }
+
+// TestExtractNameFromStableId_SCIP is a regression test for transitive callers
+// in assessChange whose "name" was the whole SCIP symbol: the name is the last
+// descriptor's, and an id that isn't SCIP stays as it is.
+func TestExtractNameFromStableId_SCIP(t *testing.T) {
+	cases := map[string]string{
+		"scip-go gomod github.com/SimplyLiz/CodeMCP 67d776584a29 `github.com/SimplyLiz/CodeMCP/cmd/ckb`/collectDiagnostics().":                 "collectDiagnostics",
+		"scip-go gomod github.com/SimplyLiz/CodeMCP 67d776584a29 `github.com/SimplyLiz/CodeMCP/internal/mcp`/MCPServer#createEngineForRoot().": "createEngineForRoot",
+		"scip-go gomod github.com/SimplyLiz/CodeMCP 67d776584a29 `github.com/SimplyLiz/CodeMCP/internal/query`/Engine#":                        "Engine",
+		"sym.Target": "sym.Target",
+		"":           "",
+	}
+	for id, want := range cases {
+		if got := extractNameFromStableId(id); got != want {
+			t.Errorf("extractNameFromStableId(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+func TestShortName(t *testing.T) {
+	id := "scip-go gomod m v `m/internal/api`/TestArchitectureEndpoint()."
+	cases := []struct{ name, id, want string }{
+		{"newTestServer", "", "newTestServer"},
+		{id, "", "TestArchitectureEndpoint"},
+		{"", id, "TestArchitectureEndpoint"},
+		{"", "not-scip", ""},
+	}
+	for _, c := range cases {
+		if got := ShortName(c.name, c.id); got != c.want {
+			t.Errorf("ShortName(%q, %q) = %q, want %q", c.name, c.id, got, c.want)
+		}
+	}
+}
