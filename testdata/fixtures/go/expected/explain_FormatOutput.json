@@ -1,6 +1,6 @@
 {
   "facts": {
-    "module": "",
+    "module": "internal",
     "symbol": {
       "file": "internal/util.go",
       "kind": "function",
@@ -13,8 +13,8 @@
     }
   },
   "summary": {
-    "identity": "function FormatOutput in module ",
-    "tldr": "function FormatOutput in module  – 0 callers, 4 references across 3 modules",
+    "identity": "function FormatOutput in module internal",
+    "tldr": "function FormatOutput in module internal – 0 callers, 4 references across 3 modules",
     "usage": "0 callers, 4 references across 3 modules"
   }
 }

@@ -74,6 +74,12 @@ type SCIPIndex struct {
 	CallerIndex     map[string][]string
 	callerIndexOnce sync.Once
 
+	// versionlessIndex maps a SCIP ID with its package-version field removed
+	// to every ID in the index that has that shape. Built lazily on the first
+	// ResolveAcrossVersions miss (see version_resolve.go).
+	versionlessIndex     map[string][]string
+	versionlessIndexOnce sync.Once
+
 	// LoadedAt is when the index was loaded
 	LoadedAt time.Time
 

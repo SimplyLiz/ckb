@@ -1108,6 +1108,12 @@ func (e *Engine) Understand(ctx context.Context, opts UnderstandOptions) (*Under
 			}
 		}
 
+		// "Container.Member": prefer the member of that container
+		qualified := qualifiedMatches(searchResp.Symbols, opts.Query)
+		if targetSymbol == nil && len(qualified) == 1 {
+			targetSymbol = &searchResp.Symbols[qualified[0]]
+		}
+
 		// If no exact match, return ambiguity info
 		if targetSymbol == nil {
 			topMatches := make([]UnderstandMatch, 0, 5)
@@ -1132,7 +1138,11 @@ func (e *Engine) Understand(ctx context.Context, opts UnderstandOptions) (*Under
 				TopMatches: topMatches,
 				Hint:       "Add module scope or use full symbol ID to disambiguate",
 			}
-			targetSymbol = &searchResp.Symbols[0] // Use best match
+			best := 0
+			if len(qualified) > 0 {
+				best = qualified[0]
+			}
+			targetSymbol = &searchResp.Symbols[best] // Use best match
 		}
 	} else {
 		targetSymbol = &searchResp.Symbols[0]
