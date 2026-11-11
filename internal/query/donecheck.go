@@ -66,6 +66,10 @@ type OpenSite struct {
 	Via string `json:"via,omitempty"`
 	// Unverified means the index no longer matches the file, so the line may be off.
 	Unverified bool `json:"unverified,omitempty"`
+
+	// literalLines is how many lines past Line a literal site's braces reach; zero
+	// for any other site.
+	literalLines int
 }
 
 // doneChecker collects a change's use sites, one changed symbol at a time.
@@ -183,6 +187,7 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 		oldLines = c.readOld(file, path)
 	}
 
+	literalLines := 0
 	if query.literal {
 		lines := newLines
 		if oldLines != nil {
@@ -191,6 +196,7 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 		if !diff.IsLiteralUse(query.lang, lines, ref.Location.Line, ref.Location.Column, query.name) {
 			return
 		}
+		literalLines = diff.LiteralEnd(query.lang, lines, ref.Location.Line, ref.Location.Column, query.name) - ref.Location.Line
 	}
 
 	result := diff.ClassifyUse(file, oldLines, newLines, diff.UseSite{
@@ -232,7 +238,43 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 		IsTest:     isTestFilePath(path),
 		Unverified: result.Unverified,
 		Via:        query.via,
+
+		literalLines: literalLines,
 	})
+}
+
+// dropCoveredLiterals removes a literal site whose braces already hold an open use
+// of a changed field: the field's site says what to fix there, and the literal's
+// would count the same edit twice.
+func dropCoveredLiterals(sites []OpenSite) []OpenSite {
+	kept := sites[:0]
+	for i := range sites {
+		if sites[i].literalLines > 0 || isLiteralVia(sites[i].Via) {
+			if coversUse(sites, i) {
+				continue
+			}
+		}
+		kept = append(kept, sites[i])
+	}
+	return kept
+}
+
+func isLiteralVia(via string) bool {
+	return strings.HasPrefix(via, "fields of ")
+}
+
+func coversUse(sites []OpenSite, lit int) bool {
+	l := &sites[lit]
+	for j := range sites {
+		s := &sites[j]
+		if j == lit || s.File != l.File || isLiteralVia(s.Via) {
+			continue
+		}
+		if s.Line >= l.Line && s.Line <= l.Line+l.literalLines {
+			return true
+		}
+	}
+	return false
 }
 
 // readNew returns a file as the diff's new side has it. A file outside the diff is the
@@ -339,6 +381,7 @@ func indexDoubt(repoRoot, indexedCommit string) string {
 // stop on, so it has to be earned.
 func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, indexDoubt string) *DoneCheck {
 	sum := sha256.Sum256([]byte(diffContent))
+	c.sites = dropCoveredLiterals(c.sites)
 	check := &DoneCheck{
 		Diff:         hex.EncodeToString(sum[:])[:12],
 		OpenCount:    len(c.sites),
