@@ -128,26 +128,29 @@ func CompactAssessChangeFrom(r *AnalyzeChangeSetResponse) *CompactAssessChange {
 func compactAssessSummary(r *AnalyzeChangeSetResponse, c *CompactAssessChange) string {
 	var parts []string
 	if s := r.Summary; s != nil {
-		parts = append(parts, fmt.Sprintf("%d files, %d symbols changed; %d direct and %d transitive consumers; risk %s.",
-			s.FilesChanged, s.SymbolsChanged, s.DirectlyAffected, s.TransitivelyAffected, c.Risk))
+		parts = append(parts, fmt.Sprintf("%s, %s changed; %d direct and %d transitive consumers; risk %s.",
+			plural(s.FilesChanged, "file"), plural(s.SymbolsChanged, "symbol"), s.DirectlyAffected, s.TransitivelyAffected, c.Risk))
 	}
 	if c.DoneCheck != nil {
 		switch c.DoneCheck.Status {
 		case "open":
-			noun := "uses"
-			if c.DoneCheck.OpenCount == 1 {
-				noun = "use"
-			}
-			parts = append(parts, fmt.Sprintf("%d %s of a changed declaration left open.", c.DoneCheck.OpenCount, noun))
+			parts = append(parts, plural(c.DoneCheck.OpenCount, "use")+" of a changed declaration left open.")
 		default:
 			parts = append(parts, "doneCheck "+c.DoneCheck.Status+".")
 		}
 	}
 	if c.TestsTotal > 0 {
-		parts = append(parts, fmt.Sprintf("%d test files affected.", c.TestsTotal))
+		parts = append(parts, plural(c.TestsTotal, "test file")+" affected.")
 	}
 	if len(parts) == 0 {
 		return "Nothing assessed."
 	}
 	return strings.Join(parts, " ")
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
