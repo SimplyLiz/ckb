@@ -259,6 +259,10 @@ Three changes with known breakage, checked against the compiler: a new parameter
   `export` from `export function f` into a list at the end of the file read as
   narrowed visibility, `changed`, with every caller open. A list re-exporting from
   another module, or exporting the name as another, still doesn't count.
+- **With `--base`, the done check reads the old side at the merge base.** The diff has
+  compared against the merge base since `ckb review` learned it, but the check read each
+  file's old text at the base branch's tip. Once that branch moved on, the lines were
+  elsewhere and an updated use wasn't recognized as one.
 - **A server older than its binary says so in every answer.** `meta.staleServer`, checked
   at most every 30 s, instead of only in `getStatus`. Both now say to reconnect the
   server (`/mcp` in Claude Code); `getStatus` said `/clear`, which doesn't restart it.
