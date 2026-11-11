@@ -1161,7 +1161,16 @@ type AnalyzeChangeSetOptions struct {
 
 // AnalyzeChangeSetResponse is the response for AnalyzeChangeSet.
 type AnalyzeChangeSetResponse struct {
-	Summary         *ChangeSummary      `json:"summary"`
+	Summary *ChangeSummary `json:"summary"`
+	// DoneCheck says which uses of a changed declaration the diff left untouched.
+	// It and CoChangeCheck come right after the summary on purpose: they are
+	// what an agent has to act on, and a client that keeps only the head of a
+	// large result (Claude Code moves results over its size limit to a file and
+	// shows a preview) must still show them.
+	DoneCheck *DoneCheck `json:"doneCheck,omitempty"`
+	// CoChangeCheck says which files usually change with the touched files and were
+	// left alone, from git history alone.
+	CoChangeCheck   *CoChangeCheck      `json:"coChangeCheck,omitempty"`
 	ChangedSymbols  []ChangedSymbolInfo `json:"changedSymbols"`
 	AffectedSymbols []ImpactItem        `json:"affectedSymbols"`
 	ModulesAffected []ModuleImpact      `json:"modulesAffected"`
@@ -1183,11 +1192,6 @@ type AnalyzeChangeSetResponse struct {
 	// TestGaps summarizes direct consumers of changed symbols that no test
 	// appears to reach within a depth-2 call graph traversal.
 	TestGaps *TestGapsInfo `json:"testGaps,omitempty"`
-	// DoneCheck says which uses of a changed declaration the diff left untouched.
-	DoneCheck *DoneCheck `json:"doneCheck,omitempty"`
-	// CoChangeCheck says which files usually change with the touched files and were
-	// left alone, from git history alone.
-	CoChangeCheck *CoChangeCheck `json:"coChangeCheck,omitempty"`
 	// Contracts flags changed symbols that are public/exported, as a
 	// "possible contract change" heuristic. This is deliberately not called
 	// a "breaking change" -- it is a line-level, visibility-only signal.

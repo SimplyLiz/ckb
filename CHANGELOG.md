@@ -71,6 +71,19 @@ All notable changes to CKB will be documented in this file.
   every later call depends on them), federation config, and the daemon's schedules and
   webhooks. The three read-only federation tools that ask a remote server carry
   `openWorldHint: true`. Costs about 1 KB on the default preset's `tools/list`.
+- **Large whole-result tools stay inline in Claude Code.** Claude Code moves a text
+  result over 50,000 characters to a file and shows the model a preview. `assessChange`
+  ran to 101k characters on a five-commit diff of CKB, `reviewPR` to 60k. Those two,
+  `analyzeChange`, `findUnwiredModules`, `findDeadCode` and `summarizeDiff` now set
+  `_meta["anthropic/maxResultSizeChars"]` to 150,000. `exportForLLM` (408k) keeps the
+  default: an export that size belongs in a file.
+- **`prepareChange` and `assessChange` load upfront** (`_meta["anthropic/alwaysLoad"]`).
+  The server instructions tell the agent to call them around every edit; deferred
+  behind tool search, they cost a search first.
+- **`doneCheck` and `coChangeCheck` come right after `summary`** in `assessChange` and
+  `analyzeChange`. They sat behind 63k characters of `changedSymbols` and
+  `affectedTests`, so a preview of a large result never reached them. Now they start
+  at character 156.
 
 ### Fixed — MCP protocol
 
