@@ -240,6 +240,21 @@ Three changes with known breakage, checked against the compiler: a new parameter
   compared there: unchanged, or `changed` if its signature changed on the way. Into
   another directory, or between a package and its external `_test` package, it stays
   `removed`.
+- **A Go struct's literals are open where the compiler rejects them.** A field added to a
+  struct listed every composite literal of it, though a keyed literal still compiles. Now
+  a positional literal is open on any field change, and a keyed one only if it sets a
+  field that went away or changed type; the elements of `[]T{...}` and `map[K]T{...}`
+  are read one by one. TypeScript keeps the old rule.
+- **A Go type's rename carries its methods and the signatures naming it.** Exporting a
+  type and moving it to another package (`exportRules` → `deadcode.ExportRules`) listed
+  each unchanged `r.line(...)` as a use of a removed method, and `parseSymbolInfo(...,
+  rules)` as a changed signature. A method found again on a type the diff declares, and
+  a signature whose only difference is the new name, now follow the rename; the type
+  itself stays `removed`, so code still naming it is still listed.
+- **A parameter isn't a declaration of its name.** `func (r *T) line(...) (text string,
+  file *sourceFile, ok bool)` counted as declaring `file`, so a declaration looked for on
+  the other side of the diff could be paired with the wrong one. The name now has to
+  follow its keyword (Go, TypeScript and Rust).
 - **A server older than its binary says so in every answer.** `meta.staleServer`, checked
   at most every 30 s, instead of only in `getStatus`. Both now say to reconnect the
   server (`/mcp` in Claude Code); `getStatus` said `/clear`, which doesn't restart it.

@@ -386,13 +386,32 @@ func declaresSame(text, like, name, lang string) bool {
 		}
 	}
 	if keyword != "" {
-		return true
+		return namesFollowKeyword(prefix, keyword)
 	}
 	if !modifierOnlyRe.MatchString(prefix) {
 		return false // `return name(x)`: a use, not a declaration
 	}
 	rest := strings.TrimSpace(text[len(prefix)+len(name):])
 	return rest != "" && strings.IndexByte("(<:=?,", rest[0]) >= 0 || lang == "go"
+}
+
+var (
+	afterFuncKeywordRe  = regexp.MustCompile(`^\s*(\([^()]*\)\s*|\*\s*)?$`)
+	afterValueKeywordRe = regexp.MustCompile(`^\s*(mut\s+)?([A-Za-z_$][\w$]*\s*,\s*)*$`)
+)
+
+// namesFollowKeyword says whether the declaration's keyword is right before its name:
+// nothing in between but a Go receiver, a generator's `*`, Rust's `static mut`, or the
+// other names of a `var a, b`. `func open(file string)` declares open, not file.
+func namesFollowKeyword(prefix, keyword string) bool {
+	between := prefix[strings.LastIndex(prefix, keyword)+len(keyword):]
+	switch keyword {
+	case "func", "fn", "function":
+		return afterFuncKeywordRe.MatchString(between)
+	case "const", "let", "var", "static":
+		return afterValueKeywordRe.MatchString(between)
+	}
+	return strings.TrimSpace(between) == ""
 }
 
 func beforeWord(text, name string) string {
