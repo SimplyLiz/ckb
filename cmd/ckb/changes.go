@@ -17,6 +17,9 @@ var (
 	changesRepo    string
 	changesVerbose bool
 	changesFormat  string
+	changesFocus   string
+	changesOffset  int
+	changesLimit   int
 	changesCheck   bool
 )
 
@@ -62,12 +65,25 @@ func init() {
 	changesCmd.Flags().StringVar(&changesRepo, "repo", "", "Repository path or registry name (auto-detected)")
 	changesCmd.Flags().BoolVar(&changesVerbose, "verbose", false, "Show full lists instead of capped summaries")
 	changesCmd.Flags().StringVar(&changesFormat, "format", "human", "Output format (human, json, compact)")
+	changesCmd.Flags().StringVar(&changesFocus, "focus", "", "With --format=compact: only done, tests or risk")
+	changesCmd.Flags().IntVar(&changesOffset, "offset", 0, "With --focus done or tests: skip this many open sites or test files")
+	changesCmd.Flags().IntVar(&changesLimit, "limit", 0, "With --focus done or tests: at most this many (default 50 sites, 20 test files)")
 	changesCmd.Flags().BoolVar(&changesCheck, "check", false, "Set the exit code from the done check: 0 clear, 2 open, 3 not assessed")
 	rootCmd.AddCommand(changesCmd)
 }
 
 func runChanges(cmd *cobra.Command, args []string) {
 	logger := newLogger(changesFormat)
+
+	compactOpts := query.CompactAssessOptions{Focus: changesFocus, Offset: changesOffset, Limit: changesLimit}
+	if changesFormat != "compact" && (changesFocus != "" || changesOffset != 0 || changesLimit != 0) {
+		fmt.Fprintln(os.Stderr, "Error: --focus, --offset and --limit need --format=compact")
+		os.Exit(1)
+	}
+	if _, err := query.CompactAssessChangeFor(nil, compactOpts); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	repoRoot := resolveChangesRepoRoot(changesRepo)
 	engine := mustGetEngine(repoRoot, logger)
@@ -85,7 +101,15 @@ func runChanges(cmd *cobra.Command, args []string) {
 	cliResp := convertChangeSetResponse(resp)
 
 	if changesFormat == "compact" {
-		out, err := json.MarshalIndent(query.CompactAssessChangeFrom(resp), "", "  ")
+		if changesFocus == query.AssessFocusTests {
+			compactOpts.RunCommand = engine.TestRunCommand(resp.AffectedTests)
+		}
+		compact, err := query.CompactAssessChangeFor(resp, compactOpts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		out, err := json.MarshalIndent(compact, "", "  ")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error formatting output: %v\n", err)
 			os.Exit(1)

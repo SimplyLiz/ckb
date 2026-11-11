@@ -209,7 +209,22 @@ Three changes with known breakage, checked against the compiler: a new parameter
   basename against full paths and never matched, and `explainOrigin`'s co-changes.
 - **`assessChange` answers in `format: "compact"` by default** (`ckb changes
   --format=compact`): no symbol IDs, open sites as `file:line`. 7.5 KB instead of 25.8 KB
-  for the `NewEngine` change. `format: "full"` returns the previous answer. Test names and affected symbols carry short names, not SCIP IDs, and
+  for the `NewEngine` change. `format: "full"` returns the previous answer.
+- **`assessChange` takes a `focus`**: `done` (open sites, co-change files left alone),
+  `tests` (affected test files and `runTests`, a command that runs them) or `risk`
+  (score, `riskFactors`, contract changes, consumer files). The summary still covers
+  everything. `offset` and `limit` page the open sites or test files, and `more` names
+  the next offset. Same flags on `ckb changes --format=compact`. `riskScore` is
+  rounded to two places (it read `0.6599999999999999`).
+- **`ckb activity --followups <tool>`** counts which CKB call came next in the same
+  session after each call of the tool, labelled by `focus`, `format`, `changeType` and
+  `offset`. It shows what callers had to fetch after an answer; `--all` reads every
+  registered repo. Only CKB calls are in the ledger, not the file reads in between.
+- **A Go constant moved into a `const (...)` block is not removed.** Inside the block the
+  line has no keyword, so the declaration wasn't found on the other side and its uses
+  were listed as open sites under `definition-removed`. A `const`, `var` or `type`
+  block the diff shows now lends its keyword. Found by running `assessChange` on the
+  change that added `focus`. Test names and affected symbols carry short names, not SCIP IDs, and
   `affectedBy` names the changed symbol that selected the test.
 - **A server older than its binary says so in every answer.** `meta.staleServer`, checked
   at most every 30 s, instead of only in `getStatus`. Both now say to reconnect the

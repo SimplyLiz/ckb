@@ -114,8 +114,10 @@ func classifyDeclaration(file *impact.ChangedFile, def *SymbolDefInfo, name stri
 	if !containsWord(first, name) {
 		return "", "", ""
 	}
+	first = withGoGroupKeyword(indexLines, line, first, lang)
 
 	indexDecl := readDeclaration(indexLines, line, lang)
+	indexDecl.text = withGoGroupKeyword(indexLines, line, indexDecl.text, lang)
 
 	otherLine, inContext := toOther[line]
 	if !inContext {
@@ -128,6 +130,7 @@ func classifyDeclaration(file *impact.ChangedFile, def *SymbolDefInfo, name stri
 		}
 	}
 	otherDecl := readDeclaration(otherLines, otherLine, lang)
+	otherDecl.text = withGoGroupKeyword(otherLines, otherLine, otherDecl.text, lang)
 
 	before, after = indexDecl.text, otherDecl.text
 	if side == indexMatchesNew {
@@ -315,6 +318,9 @@ func findDeclaration(lines map[int]string, changed map[int]bool, like, name, lan
 	best := 0
 	for line := range changed {
 		text, ok := lines[line]
+		if ok {
+			text = withGoGroupKeyword(lines, line, text, lang)
+		}
 		if !ok || !containsWord(text, name) || !declaresSame(text, like, name, lang) {
 			continue
 		}
@@ -663,4 +669,33 @@ func compareParameters(before, after []parameter) impact.DeclarationChange {
 		result = impact.DeclCompatible
 	}
 	return result
+}
+
+var (
+	goGroupOpenRe = regexp.MustCompile(`^(const|var|type)\s*\(\s*(//.*)?$`)
+	goDeclStartRe = regexp.MustCompile(`^\s*(const|var|type|func)\b`)
+)
+
+// withGoGroupKeyword gives a Go declaration inside a const, var or type block the
+// block's keyword, so `const X = 1` and the line `X = 1` in a `const (` block read
+// as the same declaration: moving a constant into a group is not removing it. Only
+// a block opening the diff shows counts; when the hunk starts inside the block,
+// neither side sees it and both stay as they are.
+func withGoGroupKeyword(lines map[int]string, line int, text, lang string) string {
+	if lang != "go" || goDeclStartRe.MatchString(text) {
+		return text
+	}
+	for l := line - 1; ; l-- {
+		prev, ok := lines[l]
+		if !ok {
+			return text
+		}
+		trimmed := strings.TrimSpace(prev)
+		if m := goGroupOpenRe.FindStringSubmatch(trimmed); m != nil {
+			return m[1] + " " + strings.TrimSpace(text)
+		}
+		if strings.HasPrefix(trimmed, ")") || (prev != "" && prev[0] != ' ' && prev[0] != '\t' && !strings.HasPrefix(trimmed, "//")) {
+			return text // Left the block, or never was in one
+		}
+	}
 }

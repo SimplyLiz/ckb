@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/SimplyLiz/CodeMCP/internal/activity"
 	"github.com/SimplyLiz/CodeMCP/internal/repos"
 	"github.com/SimplyLiz/CodeMCP/internal/storage"
 )
@@ -24,6 +25,7 @@ var (
 	activitySummary  bool
 	activityAll      bool
 	activityJSON     bool
+	activityFollow   string
 )
 
 var activityCmd = &cobra.Command{
@@ -46,7 +48,9 @@ Examples:
   ckb activity --since 2h
   ckb activity --json
   ckb activity --summary        # per-tool: calls, p50/p95 ms, avg bytes, error/truncation rate
-  ckb activity --all            # across every registered repo`,
+  ckb activity --all            # across every registered repo
+  ckb activity --followups assessChange --all
+                                # which CKB call came next after each assessChange`,
 	Run: runActivity,
 }
 
@@ -59,6 +63,7 @@ func init() {
 	activityCmd.Flags().BoolVar(&activitySummary, "summary", false, "Show a per-tool summary instead of a call list")
 	activityCmd.Flags().BoolVar(&activityAll, "all", false, "Show activity across every registered repo")
 	activityCmd.Flags().BoolVar(&activityJSON, "json", false, "Output as JSON")
+	activityCmd.Flags().StringVar(&activityFollow, "followups", "", "For each call of this tool, count the next CKB call in the same session (within 10 min)")
 	rootCmd.AddCommand(activityCmd)
 }
 
@@ -87,6 +92,11 @@ func runActivity(cmd *cobra.Command, args []string) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	if activityFollow != "" {
+		runActivityFollowups(logger, sinceMs)
+		return
+	}
 
 	if activityAll {
 		runActivityAllRepos(logger, filter, sinceMs)
@@ -359,4 +369,60 @@ func parseDurationWithDays(s string) (time.Duration, error) {
 		return time.Duration(days * 24 * float64(time.Hour)), nil
 	}
 	return time.ParseDuration(s)
+}
+
+// followupCallLimit bounds the ledger rows one --followups run reads per repo.
+const followupCallLimit = 100000
+
+// runActivityFollowups prints which call followed each call of --followups,
+// in this repo or, with --all, across every registered repo. Every tool's calls
+// are read, since the follow-up can be any of them.
+func runActivityFollowups(logger *slog.Logger, sinceMs int64) {
+	var dbs []string
+	if activityAll {
+		registry, err := repos.LoadRegistry()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading repo registry: %v\n", err)
+			os.Exit(1)
+		}
+		for _, e := range registry.List() {
+			if registry.ValidateState(e.Name) == repos.RepoStateValid {
+				dbs = append(dbs, e.Path)
+			}
+		}
+	} else {
+		dbs = []string{mustGetRepoRoot()}
+	}
+
+	var calls []storage.ToolCall
+	for _, root := range dbs {
+		db, err := storage.Open(root, logger)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to open %s: %v\n", root, err)
+			continue
+		}
+		got, err := db.ListToolCalls(storage.ToolCallFilter{Since: sinceMs, Consumer: activityConsumer, Limit: followupCallLimit})
+		_ = db.Close()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to read activity for %s: %v\n", root, err)
+			continue
+		}
+		calls = append(calls, got...)
+	}
+
+	report := activity.Followups(calls, activityFollow, activity.FollowupWindow)
+	if activityJSON {
+		out, _ := json.MarshalIndent(report, "", "  ")
+		fmt.Println(string(out))
+		return
+	}
+	fmt.Printf("%s: %d call(s) in %d session(s); next CKB call in the same session within %s:\n",
+		report.Tool, report.Calls, report.Sessions, activity.FollowupWindow)
+	for _, f := range report.Followups {
+		fmt.Printf("  %4d  %s\n", f.Count, f.Next)
+	}
+	if report.NoSession > 0 {
+		fmt.Printf("  (%d call(s) without a session id left out)\n", report.NoSession)
+	}
+	fmt.Println("Only CKB calls are recorded; file reads and searches in between don't show here.")
 }
