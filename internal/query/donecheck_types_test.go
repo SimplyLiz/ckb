@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/SimplyLiz/CodeMCP/internal/backends/git"
+
 	scippb "github.com/sourcegraph/scip/bindings/go/scip"
 )
 
@@ -189,5 +191,31 @@ func TestDoneCheck_TSFieldRemovedListsTheConstructions(t *testing.T) {
 	check := runChangeSet(t, engine, AnalyzeChangeSetOptions{}).DoneCheck
 	if check.Status != DoneCheckOpen || check.OpenCount != 2 {
 		t.Fatalf("check = %+v, want 2 open", check)
+	}
+}
+
+// With a base branch that moved on since the fork, the old side is the merge base, as
+// in the diff, not the branch's tip: there the lines are elsewhere.
+func TestDoneCheck_BaseBranchReadsTheMergeBase(t *testing.T) {
+	engine, root := typeFixtureRepo(t)
+	runGit(t, root, "checkout", "-q", "-b", "feature")
+	runGit(t, root, "checkout", "-q", "-b", "upstream")
+	editRepoFile(t, root, "cv/importer.go", "package cv\n", "package cv\n\n// Import reads a CV.\n// It moved two lines down.\n")
+	runGit(t, root, "commit", "-q", "-am", "upstream moves on")
+	runGit(t, root, "checkout", "-q", "feature")
+	gitAdapter, err := git.NewGitAdapter(engine.config, engine.logger) // The engine came before the repo
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.gitAdapter = gitAdapter
+
+	editRepoFile(t, root, "cv/cv.go", "\tTitle string\n", "\tHeading string\n")
+	editRepoFile(t, root, "cv/importer.go", "\t\tTitle: title,\n", "\t\tHeading: title,\n")
+	check := runChangeSet(t, engine, AnalyzeChangeSetOptions{BaseBranch: "upstream"}).DoneCheck
+	if got := openSiteKeys(check); fmt.Sprint(got) != "[cv/other.go:6 cv/positional.go:3]" {
+		t.Errorf("open sites = %v, want other.go and the positional literal", got)
+	}
+	if check.UpdatedCount != 1 {
+		t.Errorf("updated = %d, want the importer's literal", check.UpdatedCount)
 	}
 }

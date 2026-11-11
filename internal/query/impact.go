@@ -1493,6 +1493,9 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	var brokenContracts []brokenContract
 	var contractChangedFiles, contractChangedTests []string
 	done := newDoneChecker(e.repoRoot, opts, parsedDiff)
+	if opts.DiffContent == "" {
+		done.base = e.diffOldRev(opts.Staged, opts.BaseBranch) // Read the old side the diff came from
+	}
 	var usesFinder referenceFinder
 	if e.hasConsumerGraph() {
 		usesFinder = e.scipAdapter
@@ -2061,16 +2064,22 @@ func (e *Engine) diffFileReader(staged bool, baseBranch string) diff.FileReader 
 		}
 		if !resolved {
 			resolved = true
-			oldRev = baseBranch
-			switch {
-			case oldRev == "":
-				oldRev = "HEAD"
-			case oldRev != "HEAD" && !staged:
-				oldRev = e.forkPoint(oldRev, "HEAD")
-			}
+			oldRev = e.diffOldRev(staged, baseBranch)
 		}
 		return show(oldRev + ":" + path)
 	}
+}
+
+// diffOldRev is the revision getGitDiff compares against: the base's merge base with
+// HEAD, the base itself for staged changes, HEAD without one.
+func (e *Engine) diffOldRev(staged bool, baseBranch string) string {
+	switch {
+	case baseBranch == "":
+		return "HEAD"
+	case baseBranch != "HEAD" && !staged:
+		return e.forkPoint(baseBranch, "HEAD")
+	}
+	return baseBranch
 }
 
 // getGitDiff gets the current git diff.
