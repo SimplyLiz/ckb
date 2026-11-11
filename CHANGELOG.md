@@ -226,6 +226,13 @@ Three changes with known breakage, checked against the compiler: a new parameter
   block the diff shows now lends its keyword. Found by running `assessChange` on the
   change that added `focus`. Test names and affected symbols carry short names, not SCIP IDs, and
   `affectedBy` names the changed symbol that selected the test.
+- **Done-check false alarms, measured.** The last 80 commits of `develop`, each indexed
+  at its parent with the whole commit applied: every one builds and vets, so every open
+  site is a false alarm. Before the fixes below: 279 open sites in 22 commits, 273 of
+  them struct literals and 6 from one type rename. After: 2, both a 2,799-line
+  `[]Tool{...}` that runs past the 300 lines a literal is followed and so counts as
+  open. Six commits that were `open` are `not_assessed` now: the declaration they
+  couldn't compare was there before, hidden by the false open sites.
 - **A declaration is read from the whole file, not only the hunks.** A constant moved
   out of a long `const (` block whose opening line the hunk doesn't reach was still
   `removed`: the block's keyword was invisible. Both sides of each changed file are
