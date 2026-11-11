@@ -2,6 +2,7 @@ package diff
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -160,6 +161,11 @@ func tsDoc() *scip.Document {
 
 func mapDoc(t *testing.T, doc *scip.Document, diffText string) []impact.ChangedSymbol {
 	t.Helper()
+	return mapDocWith(t, doc, diffText, nil)
+}
+
+func mapDocWith(t *testing.T, doc *scip.Document, diffText string, files FileReader) []impact.ChangedSymbol {
+	t.Helper()
 	index := &scip.SCIPIndex{Documents: []*scip.Document{doc}, DocumentsByPath: map[string]*scip.Document{doc.RelativePath: doc}, Symbols: map[string]*scip.SymbolInformation{}}
 	for _, sym := range doc.Symbols {
 		index.Symbols[sym.Symbol] = sym
@@ -168,7 +174,7 @@ func mapDoc(t *testing.T, doc *scip.Document, diffText string) []impact.ChangedS
 	if err != nil {
 		t.Fatalf("parse diff: %v", err)
 	}
-	result, err := NewDiffSymbolMapper(NewSCIPSymbolIndex(index)).MapToSymbols(parsed)
+	result, err := NewDiffSymbolMapper(NewSCIPSymbolIndex(index)).WithFileReader(files).MapToSymbols(parsed)
 	if err != nil {
 		t.Fatalf("map: %v", err)
 	}
@@ -512,5 +518,95 @@ func TestIsTrivialBlock_IndentationLanguages(t *testing.T) {
 	}
 	if !isTrivialBlock("a.py", impact.ChangeBlock{Added: []string{"# note"}}) {
 		t.Error("# is a comment in Python")
+	}
+}
+
+// A definition moved to another file of the same Go package is still there for
+// every caller: the package is the scope, not the file. Moved anywhere else, or
+// into the package's external tests, it is gone.
+func TestMapToSymbols_GoDefinitionMovedWithinPackage(t *testing.T) {
+	removeTarget := fileDiff("lib/lib.go", "@@ -6,7 +6,1 @@\n \n-func Target(x int) int {\n-\ty := x + 1\n-\tfmt.Println(y)\n-\treturn y\n-}\n-\n func After() {}\n")
+	newFile := func(path string, lines ...string) string {
+		var b strings.Builder
+		b.WriteString("diff --git a/" + path + " b/" + path + "\nnew file mode 100644\n--- /dev/null\n+++ b/" + path + "\n")
+		b.WriteString("@@ -0,0 +1," + strconv.Itoa(len(lines)) + " @@\n")
+		for _, l := range lines {
+			b.WriteString("+" + l + "\n")
+		}
+		return b.String()
+	}
+	body := []string{"package lib", "", "import \"fmt\"", "", "func Target(x int) int {", "\ty := x + 1", "\tfmt.Println(y)", "\treturn y", "}"}
+	changedSig := append([]string{}, body...)
+	changedSig[4] = "func Target(x int, label string) int {"
+
+	cases := []struct {
+		name       string
+		other      string
+		wantType   impact.ChangeType
+		wantChange impact.DeclarationChange
+	}{
+		{"same package", newFile("lib/target.go", body...), impact.ChangeModified, impact.DeclUnchanged},
+		{"same package, signature changed", newFile("lib/target.go", changedSig...), impact.ChangeModified, impact.DeclChanged},
+		{"another package", newFile("other/target.go", body...), impact.ChangeDeleted, impact.DeclRemoved},
+		{"into the tests", newFile("lib/target_test.go", body...), impact.ChangeDeleted, impact.DeclRemoved},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := mapDoc(t, goDoc(), "diff --git a/lib/lib.go b/lib/lib.go\n"+removeTarget+c.other)
+			var target *impact.ChangedSymbol
+			for i := range got {
+				if got[i].Name == "Target" {
+					target = &got[i]
+				}
+			}
+			if target == nil {
+				t.Fatalf("Target not reported: %s", names(got))
+			}
+			if target.ChangeType != c.wantType || target.Declaration != c.wantChange {
+				t.Errorf("got %s/%q (%q -> %q), want %s/%q", target.ChangeType, target.Declaration,
+					target.DeclarationBefore, target.DeclarationAfter, c.wantType, c.wantChange)
+			}
+		})
+	}
+}
+
+// Between two test files of one directory, a move is only within the package if
+// both say the same package: lib_test is another one.
+func TestMapToSymbols_GoMoveBetweenTestFiles(t *testing.T) {
+	doc := goDoc()
+	doc.RelativePath = "lib/lib_test.go"
+	oldFile := []string{"package lib", "", "import \"fmt\"", "", "const Limit = 10", "", "func Target(x int) int {",
+		"\ty := x + 1", "\tfmt.Println(y)", "\treturn y", "}", "", "var Table = map[string]int{", "\t\"a\": 1,", "}",
+		"", "type Point struct {", "\tX int", "}", "", "func After() {}"}
+	newFile := append(append([]string{}, oldFile[:6]...), oldFile[12:]...)
+	remove := "diff --git a/lib/lib_test.go b/lib/lib_test.go\n--- a/lib/lib_test.go\n+++ b/lib/lib_test.go\n" +
+		"@@ -6,8 +6,2 @@\n \n-func Target(x int) int {\n-\ty := x + 1\n-\tfmt.Println(y)\n-\treturn y\n-}\n-\n var Table = map[string]int{\n"
+	for _, c := range []struct {
+		pkg  string
+		want impact.DeclarationChange
+	}{{"lib", impact.DeclUnchanged}, {"lib_test", impact.DeclRemoved}} {
+		t.Run(c.pkg, func(t *testing.T) {
+			target := []string{"package " + c.pkg, "", "func Target(x int) int {", "\treturn x + 1", "}"}
+			add := "diff --git a/lib/target_test.go b/lib/target_test.go\nnew file mode 100644\n--- /dev/null\n+++ b/lib/target_test.go\n@@ -0,0 +1,5 @@\n"
+			for _, l := range target {
+				add += "+" + l + "\n"
+			}
+			reader := func(path string, old bool) []string {
+				switch {
+				case path == "lib/lib_test.go" && old:
+					return oldFile
+				case path == "lib/lib_test.go":
+					return newFile
+				case path == "lib/target_test.go" && !old:
+					return target
+				}
+				return nil
+			}
+			for _, sym := range mapDocWith(t, doc, remove+add, reader) {
+				if sym.Name == "Target" && sym.Declaration != c.want {
+					t.Errorf("got %s/%q, want %q", sym.ChangeType, sym.Declaration, c.want)
+				}
+			}
+		})
 	}
 }

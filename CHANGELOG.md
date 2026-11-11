@@ -226,6 +226,20 @@ Three changes with known breakage, checked against the compiler: a new parameter
   block the diff shows now lends its keyword. Found by running `assessChange` on the
   change that added `focus`. Test names and affected symbols carry short names, not SCIP IDs, and
   `affectedBy` names the changed symbol that selected the test.
+- **A declaration is read from the whole file, not only the hunks.** A constant moved
+  out of a long `const (` block whose opening line the hunk doesn't reach was still
+  `removed`: the block's keyword was invisible. Both sides of each changed file are
+  read now (`git show` at the diff's base or merge base, the index with `--staged`, the
+  working tree), and only if they agree with every line the hunks show; a diff passed
+  in from outside whose files don't match falls back to the hunks. Multi-line
+  signatures that ran past the diff's context are compared in full as well.
+- **A Go declaration moved to another file of its package is not removed.** Callers
+  name the package, so moving a function, method, type or constant between files
+  changed nothing for them, yet the old file's side listed every use as an open site.
+  The declaration is now looked up in the diff's other files of the same directory and
+  compared there: unchanged, or `changed` if its signature changed on the way. Into
+  another directory, or between a package and its external `_test` package, it stays
+  `removed`.
 - **A server older than its binary says so in every answer.** `meta.staleServer`, checked
   at most every 30 s, instead of only in `getStatus`. Both now say to reconnect the
   server (`/mcp` in Claude Code); `getStatus` said `/clear`, which doesn't restart it.

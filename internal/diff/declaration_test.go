@@ -113,6 +113,14 @@ func TestReadDeclaration(t *testing.T) {
 }
 
 // A hunk as the parser produces it, for a definition on line 3 of the old file.
+// classifyDeclaration classifies from the hunks alone, as without a file reader.
+func classifyDeclaration(file *impact.ChangedFile, def *SymbolDefInfo, name string, side indexSide, changeType impact.ChangeType, path string) (impact.DeclarationChange, string, string) {
+	if file.IsNew {
+		return "", "", ""
+	}
+	return classifyDeclarationIn(readFileText(file, nil), file.Deleted, def, name, side, changeType, path)
+}
+
 func changedFile(path string, oldStart int, oldText, newText []string, removed, added []int) *impact.ChangedFile {
 	return &impact.ChangedFile{OldPath: path, NewPath: path, Hunks: []impact.ChangedHunk{{
 		OldStart: oldStart, NewStart: oldStart, OldText: oldText, NewText: newText, Removed: removed, Added: added,
@@ -275,5 +283,88 @@ func TestClassifyDeclaration_GoGroupedDeclaration(t *testing.T) {
 		[]int{3, 4, 5}, []int{3})
 	if got, before, after := classifyDeclaration(file, def, "X", indexMatchesOld, impact.ChangeModified, "a.go"); got != impact.DeclUnchanged {
 		t.Errorf("out of a block: got %q (%q -> %q)", got, before, after)
+	}
+}
+
+// A constant moved out of a long `const (` block whose opening line the hunk
+// doesn't reach: the whole file says it is in the block.
+func TestClassifyDeclaration_GoGroupHeaderOutsideHunk(t *testing.T) {
+	oldFile := []string{"package a", "", "const ("}
+	for _, n := range []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P"} {
+		oldFile = append(oldFile, "\t"+n+" = 1")
+	}
+	// line 20: X; 21: ")"
+	oldFile = append(oldFile, "\tX = 20", ")", "")
+	newFile := append(append([]string{}, oldFile[:19]...), ")", "", "const X = 20", "")
+	blockOnly := append(append([]string{}, oldFile[:19]...), ")", "")
+
+	// Hunk from line 17: three lines of context, X removed, `const X` added after.
+	moved := changedFile("a.go", 17,
+		[]string{"\tN = 1", "\tO = 1", "\tP = 1", "\tX = 20", ")", ""},
+		[]string{"\tN = 1", "\tO = 1", "\tP = 1", ")", "", "const X = 20", ""},
+		[]int{20}, []int{22, 23})
+	gone := changedFile("a.go", 17,
+		[]string{"\tN = 1", "\tO = 1", "\tP = 1", "\tX = 20", ")", ""},
+		[]string{"\tN = 1", "\tO = 1", "\tP = 1", ")", ""},
+		[]int{20}, nil)
+	def := &SymbolDefInfo{StartLine: 20, EndLine: 20, DefLine: 20}
+
+	cases := []struct {
+		name  string
+		file  *impact.ChangedFile
+		whole *fileSides
+		want  impact.DeclarationChange
+	}{
+		{"moved out, whole file read", moved, &fileSides{old: oldFile, new: newFile}, impact.DeclUnchanged},
+		{"removed from the block", gone, &fileSides{old: oldFile, new: blockOnly}, impact.DeclRemoved},
+		// Text that doesn't match the hunks isn't the file the diff was made from.
+		{"whole file from another revision", moved, &fileSides{old: blockOnly, new: newFile}, impact.DeclRemoved},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, before, after := classifyDeclarationIn(readFileText(c.file, c.whole), false, def, "X", indexMatchesOld, impact.ChangeModified, "a.go")
+			if got != c.want {
+				t.Errorf("got %q (%q -> %q), want %q", got, before, after, c.want)
+			}
+		})
+	}
+}
+
+// Go's other declaration forms, each across a diff whose hunk shows it whole.
+func TestClassifyDeclaration_GoForms(t *testing.T) {
+	cases := []struct {
+		name, symbol string
+		old, new     []string
+		removed      []int
+		added        []int
+		defLine      int
+		want         impact.DeclarationChange
+	}{
+		{"iota continuation after the first changed", "B",
+			[]string{"const (", "\tA = iota", "\tB", ")"}, []string{"const (", "\tA = iota + 1", "\tB", ")"},
+			[]int{3}, []int{3}, 4, impact.DeclUnchanged},
+		{"two names, one value changed", "b",
+			[]string{"var a, b = 1, 2"}, []string{"var a, b = 1, 3"}, []int{2}, []int{2}, 2, impact.DeclUnchanged},
+		{"two names into a var block", "b",
+			[]string{"var a, b = 1, 2", ""}, []string{"var (", "\ta, b = 1, 2", "\tc = 3", ")", ""}, []int{2}, []int{2, 3, 4, 5}, 2, impact.DeclUnchanged},
+		{"type into a type block", "T",
+			[]string{"type T struct {", "\tX int", "}"}, []string{"type (", "\tT struct {", "\t\tX int", "\t}", ")"},
+			[]int{2, 3, 4}, []int{2, 3, 4, 5, 6}, 2, impact.DeclUnchanged},
+		{"defined type to alias", "T",
+			[]string{"type T int"}, []string{"type T = int"}, []int{2}, []int{2}, 2, impact.DeclChanged},
+		{"constant typed", "X",
+			[]string{"const X = 1"}, []string{"const X int64 = 1"}, []int{2}, []int{2}, 2, impact.DeclChanged},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			old := append(append([]string{""}, c.old...), "")
+			new := append(append([]string{""}, c.new...), "")
+			file := changedFile("a.go", 1, old, new, c.removed, c.added)
+			def := &SymbolDefInfo{StartLine: c.defLine, EndLine: c.defLine, DefLine: c.defLine}
+			got, before, after := classifyDeclaration(file, def, c.symbol, indexMatchesOld, impact.ChangeModified, "a.go")
+			if got != c.want {
+				t.Errorf("got %q (%q -> %q), want %q", got, before, after, c.want)
+			}
+		})
 	}
 }

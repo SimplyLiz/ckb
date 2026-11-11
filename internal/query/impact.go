@@ -1414,7 +1414,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	}
 
 	if symbolIndex != nil {
-		mapper := diff.NewDiffSymbolMapper(symbolIndex)
+		mapper := diff.NewDiffSymbolMapper(symbolIndex).WithFileReader(e.diffFileReader(opts.Staged, opts.BaseBranch))
 		changedSymbols, err = mapper.MapToSymbols(parsedDiff)
 		if err != nil {
 			e.logger.Warn("Failed to map diff to symbols",
@@ -2031,6 +2031,46 @@ func (e *Engine) forkPoint(base, head string) string {
 		return base
 	}
 	return mb
+}
+
+// diffFileReader reads a changed file's whole text from the two sides getGitDiff
+// compares. For a diff passed in from outside these may be other revisions; the
+// mapper checks the text against the hunks and drops what doesn't match.
+func (e *Engine) diffFileReader(staged bool, baseBranch string) diff.FileReader {
+	var oldRev string
+	var resolved bool
+	show := func(object string) []string {
+		cmd := exec.Command("git", "show", object)
+		cmd.Dir = e.repoRoot
+		out, err := cmd.Output()
+		if err != nil {
+			return nil
+		}
+		return splitFileLines(string(out))
+	}
+	return func(path string, old bool) []string {
+		if !old {
+			if staged {
+				return show(":" + path)
+			}
+			content, err := os.ReadFile(filepath.Join(e.repoRoot, path))
+			if err != nil {
+				return nil
+			}
+			return splitFileLines(string(content))
+		}
+		if !resolved {
+			resolved = true
+			oldRev = baseBranch
+			switch {
+			case oldRev == "":
+				oldRev = "HEAD"
+			case oldRev != "HEAD" && !staged:
+				oldRev = e.forkPoint(oldRev, "HEAD")
+			}
+		}
+		return show(oldRev + ":" + path)
+	}
 }
 
 // getGitDiff gets the current git diff.
