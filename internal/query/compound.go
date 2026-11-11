@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/complexity"
 	"github.com/SimplyLiz/CodeMCP/internal/coupling"
@@ -1522,34 +1523,36 @@ func (e *Engine) PrepareChange(ctx context.Context, opts PrepareChangeOptions) (
 	var warnings []string
 	var archImpact *cartographer.ImpactAnalysis
 
-	// Get impact analysis
+	// Get impact analysis. A file target is the sum of what it declares: its
+	// types, their fields and methods, its functions.
+	var testConsumers []ImpactItem
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if target.SymbolId == "" {
+		var imp *prepareImpact
+		var err error
+		switch {
+		case target.SymbolId != "":
+			imp, err = e.getPrepareImpact(ctx, target.SymbolId)
+		case target.Kind == "file":
+			imp, err = e.getPrepareFileImpact(ctx, target.Path)
+		default:
 			return
 		}
-		deps, trans, factors, err := e.getPrepareImpact(ctx, target.SymbolId)
 		if err != nil {
 			mu.Lock()
 			warnings = append(warnings, fmt.Sprintf("impact: %s", err.Error()))
 			mu.Unlock()
 			return
 		}
+		if imp == nil {
+			return
+		}
 		mu.Lock()
-		directDependents = deps
-		transitiveImpact = trans
-		riskFactors = append(riskFactors, factors...)
-		mu.Unlock()
-	}()
-
-	// Get affected tests
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		tests := e.getPrepareTests(ctx, target)
-		mu.Lock()
-		relatedTests = tests
+		directDependents = imp.dependents
+		transitiveImpact = imp.transitive
+		testConsumers = imp.tests
+		riskFactors = append(riskFactors, imp.factors...)
 		mu.Unlock()
 	}()
 
@@ -1635,6 +1638,9 @@ func (e *Engine) PrepareChange(ctx context.Context, opts PrepareChangeOptions) (
 	}
 
 	wg.Wait()
+
+	// Tests come from the references the impact analysis found, so they wait for it.
+	relatedTests = e.getPrepareTests(target, testConsumers)
 
 	// Calculate risk assessment
 	risk := e.calculatePrepareRisk(target, directDependents, transitiveImpact, relatedTests, coChangeFiles, riskFactors, opts.ChangeType)
@@ -1757,19 +1763,154 @@ func (e *Engine) resolvePrepareTarget(ctx context.Context, target string) (*Prep
 	}, nil
 }
 
-// getPrepareImpact retrieves impact analysis data.
-func (e *Engine) getPrepareImpact(ctx context.Context, symbolId string) ([]PrepareDependent, *PrepareTransitive, []string, error) {
+// prepareImpact is what prepareChange takes from impact analysis.
+type prepareImpact struct {
+	dependents []PrepareDependent
+	transitive *PrepareTransitive
+	// tests holds every consumer found, test code included: getPrepareTests
+	// picks the test files out of it.
+	tests   []ImpactItem
+	factors []string
+}
+
+// getPrepareImpact retrieves impact analysis data for one symbol.
+func (e *Engine) getPrepareImpact(ctx context.Context, symbolId string) (*prepareImpact, error) {
 	impactResp, err := e.AnalyzeImpact(ctx, AnalyzeImpactOptions{
 		SymbolId: symbolId,
 		Depth:    2,
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
-	// Convert direct impacts to dependents
-	dependents := make([]PrepareDependent, 0, len(impactResp.DirectImpact))
-	for _, imp := range impactResp.DirectImpact {
+	var factors []string
+	if impactResp.RiskScore != nil {
+		for _, f := range impactResp.RiskScore.Factors {
+			factors = append(factors, f.Name)
+		}
+	}
+	return &prepareImpact{
+		dependents: toPrepareDependents(impactResp.DirectImpact),
+		transitive: summarizeTransitive(impactResp),
+		tests:      allConsumers(impactResp.DirectImpact, impactResp.TransitiveImpact, impactResp.TestImpact),
+		factors:    factors,
+	}, nil
+}
+
+// maxPrepareFileSymbols bounds the impact analyses a file target runs, one per
+// symbol it declares.
+const maxPrepareFileSymbols = 300
+
+// getPrepareFileImpact is the impact of changing a file: the consumers of every
+// symbol it declares, types and their fields and methods included, outside the
+// file itself. Without a SCIP index there is no symbol list to start from.
+func (e *Engine) getPrepareFileImpact(ctx context.Context, path string) (*prepareImpact, error) {
+	if !e.hasConsumerGraph() {
+		return nil, nil
+	}
+	symbols, total := fileDeclaredSymbols(e.scipAdapter.GetIndex(), path, maxPrepareFileSymbols)
+
+	var direct, transitive, tests []ImpactItem
+	for _, sym := range symbols {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		resp, err := e.AnalyzeImpact(ctx, AnalyzeImpactOptions{SymbolId: sym, Depth: 2, AllItems: true})
+		if err != nil {
+			continue // A symbol the index can't resolve has no consumers to add
+		}
+		direct = append(direct, outsideFile(resp.DirectImpact, path)...)
+		transitive = append(transitive, outsideFile(resp.TransitiveImpact, path)...)
+		tests = append(tests, resp.TestImpact...)
+	}
+	direct, transitive = mergeConsumers(direct, transitive)
+	sortImpactItems(direct)
+	sortImpactItems(transitive)
+
+	imp := &prepareImpact{
+		transitive: summarizeTransitive(&AnalyzeImpactResponse{DirectImpact: direct, TransitiveImpact: transitive}),
+		tests:      allConsumers(direct, transitive, tests),
+	}
+	if total > len(symbols) {
+		imp.factors = append(imp.factors, fmt.Sprintf("Impact covers the first %d of %d symbols the file declares", len(symbols), total))
+	}
+	if limit := e.compressor.GetBudget().MaxImpactItems; limit > 0 && len(direct) > limit {
+		direct = direct[:limit]
+	}
+	imp.dependents = toPrepareDependents(direct)
+	return imp, nil
+}
+
+// fileDeclaredSymbols returns the symbols a file defines, top-level ones (types,
+// functions, variables) before members (fields, methods), at most limit of them,
+// and how many there were. Locals and the namespace (the package or module
+// itself, which every import names) are left out.
+func fileDeclaredSymbols(idx *scip.SCIPIndex, path string, limit int) ([]string, int) {
+	if idx == nil {
+		return nil, 0
+	}
+	doc := idx.GetDocument(path)
+	if doc == nil {
+		return nil, 0
+	}
+	var top, members []string
+	seen := make(map[string]bool)
+	for _, sym := range doc.Symbols {
+		if sym == nil || sym.Symbol == "" || seen[sym.Symbol] ||
+			strings.HasPrefix(sym.Symbol, "local ") || strings.HasSuffix(sym.Symbol, "/") {
+			continue
+		}
+		seen[sym.Symbol] = true
+		if isMemberSymbol(sym.Symbol) {
+			members = append(members, sym.Symbol)
+		} else {
+			top = append(top, sym.Symbol)
+		}
+	}
+	all := append(top, members...)
+	total := len(all)
+	if limit > 0 && len(all) > limit {
+		all = all[:limit]
+	}
+	return all, total
+}
+
+// isMemberSymbol reports whether a SCIP symbol names a member of a type (a
+// field or method: "pkg/Type#Field."), not a top-level declaration ("pkg/Type#",
+// "pkg/Func().").
+func isMemberSymbol(symbol string) bool {
+	descriptor := symbol
+	if i := strings.LastIndex(symbol, "/"); i >= 0 {
+		descriptor = symbol[i+1:]
+	}
+	i := strings.Index(descriptor, "#")
+	return i >= 0 && i < len(descriptor)-1
+}
+
+// outsideFile drops the consumers inside path: a file's own uses of what it
+// declares are not something a change to it breaks elsewhere.
+func outsideFile(items []ImpactItem, path string) []ImpactItem {
+	out := make([]ImpactItem, 0, len(items))
+	for _, item := range items {
+		if item.Location != nil && item.Location.FileId == path {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func allConsumers(lists ...[]ImpactItem) []ImpactItem {
+	var all []ImpactItem
+	for _, list := range lists {
+		all = append(all, list...)
+	}
+	return all
+}
+
+func toPrepareDependents(items []ImpactItem) []PrepareDependent {
+	dependents := make([]PrepareDependent, 0, len(items))
+	for _, imp := range items {
 		line := 0
 		file := ""
 		if imp.Location != nil {
@@ -1785,51 +1926,85 @@ func (e *Engine) getPrepareImpact(ctx context.Context, symbolId string) ([]Prepa
 			ModuleId: imp.ModuleId,
 		})
 	}
-
-	transitive := summarizeTransitive(impactResp)
-
-	// Extract risk factors
-	var factors []string
-	if impactResp.RiskScore != nil {
-		for _, f := range impactResp.RiskScore.Factors {
-			factors = append(factors, f.Name)
-		}
-	}
-
-	return dependents, transitive, factors, nil
+	return dependents
 }
 
-// getPrepareTests finds tests affected by the change.
-func (e *Engine) getPrepareTests(ctx context.Context, target *PrepareChangeTarget) []PrepareTest {
-	var tests []PrepareTest
+// maxPrepareTests bounds relatedTests. Tests that reference the target are
+// listed up to maxPrepareReferencingTests; same-module test files only fill the
+// list up to maxPrepareTests.
+const (
+	maxPrepareTests            = 20
+	maxPrepareReferencingTests = 50
+)
 
-	// Look for test files in the same module
-	if target.ModuleId != "" {
-		patterns := []string{
-			filepath.Join(e.repoRoot, target.ModuleId, "*_test.go"),
-			filepath.Join(e.repoRoot, target.ModuleId, "*.test.ts"),
-			filepath.Join(e.repoRoot, target.ModuleId, "*.test.js"),
-			filepath.Join(e.repoRoot, target.ModuleId, "*.spec.ts"),
-			filepath.Join(e.repoRoot, target.ModuleId, "*.spec.js"),
+// getPrepareTests finds the tests affected by the change: first the test files
+// that reference the target ("direct") or reach it through other code
+// ("transitive"), the same derivation assessChange uses, then, if there is room,
+// the other test files in the target's module ("same-module"), which may not
+// touch it at all.
+func (e *Engine) getPrepareTests(target *PrepareChangeTarget, consumers []ImpactItem) []PrepareTest {
+	return prepareTestList(e.deriveAffectedTests(nil, consumers), e.sameModuleTestFiles(target))
+}
+
+// prepareTestList orders reference-derived tests direct before transitive, then
+// by path, and fills up with same-module files not already listed.
+func prepareTestList(referencing []AffectedTest, sameModule []string) []PrepareTest {
+	rank := func(reason string) int {
+		switch reason {
+		case "direct":
+			return 0
+		case "transitive":
+			return 1
 		}
-		for _, pattern := range patterns {
-			matches, _ := filepath.Glob(pattern)
-			for _, match := range matches {
-				rel, _ := filepath.Rel(e.repoRoot, match)
-				tests = append(tests, PrepareTest{
-					File:     rel,
-					Relation: "same-module",
-				})
-			}
+		return 2
+	}
+	sort.SliceStable(referencing, func(i, j int) bool {
+		ri, rj := rank(referencing[i].Reason), rank(referencing[j].Reason)
+		if ri != rj {
+			return ri < rj
 		}
-	}
+		return referencing[i].FilePath < referencing[j].FilePath
+	})
 
-	// Limit to 20 tests
-	if len(tests) > 20 {
-		tests = tests[:20]
+	tests := make([]PrepareTest, 0, len(referencing))
+	listed := make(map[string]bool)
+	for _, t := range referencing {
+		if len(tests) >= maxPrepareReferencingTests {
+			break
+		}
+		if listed[t.FilePath] {
+			continue
+		}
+		listed[t.FilePath] = true
+		tests = append(tests, PrepareTest{File: t.FilePath, Name: strings.Join(t.TestNames, ", "), Relation: t.Reason})
 	}
-
+	for _, path := range sameModule {
+		if len(tests) >= maxPrepareTests {
+			break
+		}
+		if listed[path] {
+			continue
+		}
+		listed[path] = true
+		tests = append(tests, PrepareTest{File: path, Relation: "same-module"})
+	}
 	return tests
+}
+
+// sameModuleTestFiles lists the test files in the target's module directory.
+func (e *Engine) sameModuleTestFiles(target *PrepareChangeTarget) []string {
+	if target.ModuleId == "" {
+		return nil
+	}
+	var files []string
+	for _, glob := range []string{"*_test.go", "*.test.ts", "*.test.js", "*.spec.ts", "*.spec.js"} {
+		matches, _ := filepath.Glob(filepath.Join(e.repoRoot, target.ModuleId, glob))
+		for _, match := range matches {
+			rel, _ := filepath.Rel(e.repoRoot, match)
+			files = append(files, rel)
+		}
+	}
+	return files
 }
 
 // languageSupportsTestDiscovery reports whether getPrepareTests' glob-based
@@ -1927,7 +2102,7 @@ func (e *Engine) getPrepareCoChanges(ctx context.Context, path string) ([]Prepar
 	coChanges := make([]PrepareCoChange, 0, len(result.Correlations))
 	for _, cf := range result.Correlations {
 		coChanges = append(coChanges, PrepareCoChange{
-			File:        cf.File,
+			File:        cf.FilePath,
 			Correlation: cf.Correlation,
 			CoChanges:   cf.CoChangeCount,
 		})

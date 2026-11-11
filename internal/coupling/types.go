@@ -8,8 +8,8 @@ import "time"
 type Correlation struct {
 	// What changes with the target
 	Symbol   string `json:"symbol,omitempty"`
-	File     string `json:"file"`
-	FilePath string `json:"filePath,omitempty"` // Full path
+	File     string `json:"file"`               // Repo-relative path
+	FilePath string `json:"filePath,omitempty"` // Same as File, kept for existing consumers
 
 	// Correlation strength
 	Correlation   float64 `json:"correlation"`   // 0-1
