@@ -336,6 +336,75 @@ These change what `assessChange`, `prepareChange`, `analyzeImpact` and
   On CKB `ckb index` still asks for `--lang`: `npm/package.json` is a real second
   manifest.
 
+- **A Next.js app had no entrypoints, so nothing was unwired.** The walk started from
+  the architecture's entrypoint list, which knows `main`, `cmd/` and manifest
+  mains, and a Next.js app has none of those: 16,500 symbols, 105 entrypoints in
+  `ckb entrypoints`, and `ckb unwired` said 0 reachable, 0 exported, 0 unwired, which
+  the review read as a pass. The files a framework calls by convention (pages,
+  layouts, route handlers, `proxy.ts`) seed the walk now. On a 375-file Next.js app
+  that is 82 entrypoints, 9,555 reachable symbols and 21 unwired. With no
+  entrypoint at all the CLI says so and what it looks for, and the review check is
+  `skip`, not `pass`. `tests/support/*.ts` is test code: a `tests/` directory at the
+  repo root counted only with a leading slash, as did `test/`, `testdata/` and
+  `__tests__/`, so vitest helpers were the biggest unwired module. Nothing under a
+  hidden directory (`.next/dev/types`) is a module.
+
+### Fixed — `ckb dead-code` and `findDeadCode`
+
+The analysis read everything about a symbol from its ID, which told it the wrong
+things in every language. Checked on this repo and on a Next.js app.
+
+- **The file was a guess from the symbol ID, and wrong.** A scip-go ID carries the
+  package path (`` `github.com/SimplyLiz/CodeMCP/internal/query` ``), not a file, and a
+  scip-typescript ID quotes the file in backticks. Every Go finding was filed under
+  `github.com/SimplyLiz`, every TypeScript one under the quoted descriptor, so
+  `IsTestFile` never matched a test, the scope filter matched nothing, and the
+  review's dead-code check, which looks up findings by changed file, never found one
+  in any repo: it was `pass` on a Next.js branch with 2,296 changed lines. File and
+  line come from the definition now, the same source `ckb unwired` moved to, and
+  each finding has its `symbolId` (it was always `""`).
+- **Every kind was `unknown`.** The kind table mapped SCIP's descriptor numbers
+  (1 package, 2 type, 3 term …) where the field holds `SymbolInformation.Kind`
+  (a constant is 8, a method 26), so a Go constant was `attr` and nothing else was
+  anything. The real enum is read now, and when the indexer wrote no kind
+  (scip-typescript never does) the descriptor decides: `name().` is a function,
+  `Type#name().` a method, `Type#` a type, `Type#name.` a field, an ALL_CAPS term a
+  constant. `const f = () => …` is a function, as it already was for unwired.
+- **Exported meant a capital letter, in every language.** TypeScript's `startSync`
+  was never analyzed, `Home` was. `export`, `pub` and the Python underscore rule
+  decide now; the rules are shared with `ckb unwired` and live in one place.
+- **A use elsewhere in the same file counted as a self-reference.** "Only
+  referenced by itself (recursive but never called)" at 95% went to every type used
+  in its own file: `FindCyclesResponse`, `ComplianceConfig`, 361 of 440 findings on
+  the Next.js app. A self-reference is a use inside the symbol's own body now; a use
+  elsewhere in the file is a use.
+- **What a framework calls is not dead.** A Next.js page's default export, a
+  layout, a route handler's `GET`, `proxy`, `onRequestError` in `instrumentation.ts`,
+  and what Next.js reads rather than calls (`metadata`, `viewport`, `dynamic`,
+  `revalidate`, `runtime`, …) have no reference in the index and were the top of
+  every list: 51 of the first 100 findings. The entrypoint detection from `ckb
+  entrypoints` marks them.
+- **Members and literals are not declarations.** scip-typescript writes a symbol
+  for every object literal member (`{ ArrowDown: … }` is `ArrowDown0:`), every type
+  literal member (`Attachment#typeLiteral0:name`), every parameter; a struct field
+  is set in a literal or read through JSON, which the index does not record as a
+  reference; an interface's method specification is a contract, not code. None of
+  these are listed any more. Methods are matched against interfaces the way
+  `ckb unwired` does it: `Severity`, `Article` and `ID` of 770 compliance checks
+  were "dead" because `c.Severity()` references the interface's method.
+- **Numbers.** CKB: 1,723 findings all filed under one wrong path, now 339 with
+  files and lines (`AcquireAdaptive`, `GetFileStatus`, `NewFileCursor`: exported,
+  zero references). The Next.js app: 117 findings of which 51 were pages and route
+  handlers and the rest object literal keys, now 18, six of them the app's own
+  `export const instant`, which a loader of its own reads. The review's dead-code
+  check on that branch finds 2, both on unchanged lines.
+- **`ckb review` printed "Usually changed with: " and nothing after it** for a file
+  with exactly one missing co-change: the first message of a group was dropped on
+  the way in. The golden file had enshrined it.
+- **`ckb entrypoints` says when it cut.** "Total Entrypoints: 105" over a list of 30
+  looked like a count of 30 with `page (1)` under it; it now says `showing 30, raise
+  --limit for more`, and the groups come in a fixed order.
+
 ### Fixed — search and navigation
 
 - **`ckb refs` no longer cuts the tests off.** References were sorted by path and

@@ -12,6 +12,7 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/architecture"
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/config"
+	"github.com/SimplyLiz/CodeMCP/internal/deadcode"
 )
 
 func fixtureAdapter(t *testing.T, dir string) (*scip.SCIPAdapter, string) {
@@ -111,13 +112,13 @@ func TestSplitMember(t *testing.T) {
 		"scip-go gomod m v1 `m/check`/Check#Run().(ctx)": {"scip-go gomod m v1 `m/check`/Check#", "Run", "ok"},
 	}
 	for symbol, want := range cases {
-		parent, name, ok := splitMember(symbol)
+		parent, name, ok := deadcode.SplitMember(symbol)
 		if parent != want[0] || name != want[1] || ok != (want[2] == "ok") {
 			t.Errorf("%s = %q %q %v, want %q %q %v", symbol, parent, name, ok, want[0], want[1], want[2] == "ok")
 		}
 	}
-	if got := displayName("scip-go gomod m v1 `m/check`/Check#"); got != "Check" {
-		t.Errorf("displayName = %q", got)
+	if got := deadcode.DisplayName("scip-go gomod m v1 `m/check`/Check#"); got != "Check" {
+		t.Errorf("DisplayName = %q", got)
 	}
 }
 

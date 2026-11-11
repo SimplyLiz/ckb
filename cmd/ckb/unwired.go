@@ -99,13 +99,19 @@ func printUnwiredHuman(resp *query.FindUnwiredModulesResponse) {
 	fmt.Println("============================================================")
 	fmt.Println()
 
-	if len(resp.Entrypoints) > 0 {
-		fmt.Printf("Entrypoints: %d\n", len(resp.Entrypoints))
+	if len(resp.Entrypoints) == 0 {
+		fmt.Println("No entrypoints found, so nothing was analyzed.")
+		fmt.Println("CKB starts from a main under cmd/, a package.json script, or a file a")
+		fmt.Println("framework calls by convention (Next.js pages and route handlers).")
+		return
+	}
+	fmt.Printf("Entrypoints: %d\n", len(resp.Entrypoints))
+	if len(resp.Entrypoints) <= 20 {
 		for _, ep := range resp.Entrypoints {
 			fmt.Printf("  - %s\n", ep)
 		}
-		fmt.Println()
 	}
+	fmt.Println()
 
 	fmt.Printf("Reachable symbols: %d\n", resp.ReachableCount)
 	fmt.Printf("Total exported:    %d\n", resp.Summary.TotalExported)

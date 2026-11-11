@@ -127,6 +127,10 @@ type AnalyzerOptions struct {
 
 	// IncludeSource includes source code snippets.
 	IncludeSource bool
+
+	// ExcludeSymbols are symbol IDs a framework calls without a reference in
+	// the index (a Next.js page, a route handler); they are never dead.
+	ExcludeSymbols map[string]bool
 }
 
 // DefaultOptions returns sensible default options.

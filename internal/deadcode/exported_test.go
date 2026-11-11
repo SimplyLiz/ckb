@@ -1,4 +1,4 @@
-package unwired
+package deadcode
 
 import (
 	"os"
@@ -13,7 +13,7 @@ import (
 func rulesFor(t *testing.T, files map[string]string, defs map[string]struct {
 	path string
 	line int32
-}) *exportRules {
+}) *ExportRules {
 	t.Helper()
 	root := t.TempDir()
 	for path, text := range files {
@@ -38,7 +38,7 @@ func rulesFor(t *testing.T, files map[string]string, defs map[string]struct {
 			Occ: &scip.Occurrence{Symbol: id, Range: []int32{d.line, 0, 4}, SymbolRoles: scip.SymbolRoleDefinition},
 		}
 	}
-	return newExportRules(root, index)
+	return NewExportRules(root, index)
 }
 
 type def = struct {
@@ -99,7 +99,7 @@ export default function main() {}
 	}
 	for suffix, want := range cases {
 		id := p + suffix
-		if got := r.exported(id, extractName(id)); got != want {
+		if got := r.Exported(id, ExtractName(id)); got != want {
 			t.Errorf("%s: exported = %v, want %v", suffix, got, want)
 		}
 	}
@@ -119,7 +119,7 @@ module.exports = { b, alias: c };
 	})
 	for suffix, want := range map[string]bool{"a().": true, "b().": true, "c().": true, "d().": false} {
 		id := p + suffix
-		if got := r.exported(id, extractName(id)); got != want {
+		if got := r.Exported(id, ExtractName(id)); got != want {
 			t.Errorf("%s: exported = %v, want %v", suffix, got, want)
 		}
 	}
@@ -143,12 +143,12 @@ pub(crate) fn crate_only() {}
 	for suffix, want := range map[string]bool{
 		"wired().": true, "helper().": false, "crate_only().": false, "attributed().": true, "impl#[Boxy]open().": true,
 	} {
-		if got := r.exported(p+suffix, "x"); got != want {
+		if got := r.Exported(p+suffix, "x"); got != want {
 			t.Errorf("%s: exported = %v, want %v", suffix, got, want)
 		}
 	}
 	// rust-analyzer IDs carry no path; the definition supplies it.
-	if path, line := r.site(p + "helper()."); path != "src/lib.rs" || line != 2 {
+	if path, line := r.Site(p + "helper()."); path != "src/lib.rs" || line != 2 {
 		t.Errorf("site = %q:%d, want src/lib.rs:2", path, line)
 	}
 }
@@ -165,18 +165,18 @@ func TestExportedPython(t *testing.T) {
 		"_Engine#start().":   {"start", false},
 		"Engine#__init__().": {"__init__", false},
 	}
-	r := newExportRules(t.TempDir(), nil)
+	r := NewExportRules(t.TempDir(), nil)
 	for suffix, c := range cases {
-		if got := r.exported(p+suffix, c.name); got != c.want {
+		if got := r.Exported(p+suffix, c.name); got != c.want {
 			t.Errorf("%s: exported = %v, want %v", suffix, got, c.want)
 		}
 	}
 }
 
 func TestExportedGoUnchanged(t *testing.T) {
-	r := newExportRules(t.TempDir(), nil)
+	r := NewExportRules(t.TempDir(), nil)
 	const p = "scip-go gomod github.com/x/y v1 `github.com/x/y/pkg`/"
-	if !r.exported(p+"Run().", "Run") || r.exported(p+"run().", "run") {
+	if !r.Exported(p+"Run().", "Run") || r.Exported(p+"run().", "run") {
 		t.Error("Go keeps the capital-letter rule")
 	}
 }

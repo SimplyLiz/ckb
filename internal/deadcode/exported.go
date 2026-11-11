@@ -1,4 +1,4 @@
-package unwired
+package deadcode
 
 import (
 	"os"
@@ -12,7 +12,7 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 )
 
-// exportRules decides whether a symbol is part of its module's interface,
+// ExportRules decides whether a symbol is part of its module's interface,
 // which is what makes an unreachable symbol "unwired" rather than plain dead
 // code. Only Go spells that in the name. scip-typescript and rust-analyzer
 // record nothing about `export` or `pub` — an exported and a module-private
@@ -23,7 +23,7 @@ import (
 // fn or pub(crate) item gets a dead_code warning, an unused non-exported TS
 // function gets noUnusedLocals, so neither is counted here. A bare `pub` in a
 // lib and an `export` get no warning from anyone.
-type exportRules struct {
+type ExportRules struct {
 	repoRoot string
 	index    *scip.SCIPIndex
 	files    map[string]*sourceFile
@@ -34,13 +34,13 @@ type sourceFile struct {
 	named map[string]bool // TS/JS: names exported by a list or assignment elsewhere in the file
 }
 
-func newExportRules(repoRoot string, index *scip.SCIPIndex) *exportRules {
-	return &exportRules{repoRoot: repoRoot, index: index, files: make(map[string]*sourceFile)}
+func NewExportRules(repoRoot string, index *scip.SCIPIndex) *ExportRules {
+	return &ExportRules{repoRoot: repoRoot, index: index, files: make(map[string]*sourceFile)}
 }
 
 // site returns the file and 1-based line of the symbol's definition, or
 // ("", 0) when the index has no definition occurrence for it.
-func (r *exportRules) site(symbolID string) (string, int) {
+func (r *ExportRules) Site(symbolID string) (string, int) {
 	if r.index == nil || r.index.DefinitionIndex == nil {
 		return "", 0
 	}
@@ -53,8 +53,8 @@ func (r *exportRules) site(symbolID string) (string, int) {
 
 // line returns the source text of the symbol's definition line and the file
 // it is in; ok is false when either is unknown.
-func (r *exportRules) line(symbolID string) (text string, file *sourceFile, ok bool) {
-	path, n := r.site(symbolID)
+func (r *ExportRules) line(symbolID string) (text string, file *sourceFile, ok bool) {
+	path, n := r.Site(symbolID)
 	if path == "" {
 		return "", nil, false
 	}
@@ -65,7 +65,7 @@ func (r *exportRules) line(symbolID string) (text string, file *sourceFile, ok b
 	return f.lines[n-1], f, true
 }
 
-func (r *exportRules) file(path string) *sourceFile {
+func (r *ExportRules) file(path string) *sourceFile {
 	if f, ok := r.files[path]; ok {
 		return f
 	}
@@ -84,7 +84,7 @@ func (r *exportRules) file(path string) *sourceFile {
 }
 
 // exported reports whether the symbol is part of its module's interface.
-func (r *exportRules) exported(symbolID, name string) bool {
+func (r *ExportRules) Exported(symbolID, name string) bool {
 	switch scheme, _, _ := strings.Cut(symbolID, " "); scheme {
 	case "scip-typescript", "scip-javascript":
 		return r.tsExported(symbolID, name)
@@ -150,12 +150,12 @@ func tsNamedExports(text string) map[string]bool {
 	return named
 }
 
-func (r *exportRules) tsExported(symbolID, name string) bool {
+func (r *ExportRules) tsExported(symbolID, name string) bool {
 	if owner := tsOwner(symbolID); owner != "" {
 		// A member is reachable from outside as far as its class is, unless
 		// it hides itself.
 		member := strings.Trim(symbolID[len(owner):], "`")
-		if strings.HasPrefix(member, "#") || !r.tsExported(owner, extractName(owner)) {
+		if strings.HasPrefix(member, "#") || !r.tsExported(owner, ExtractName(owner)) {
 			return false
 		}
 		text, _, ok := r.line(symbolID)
@@ -195,6 +195,20 @@ func pythonExported(symbolID, name string) bool {
 		}
 	}
 	return true
+}
+
+// ExtractName returns the last descriptor of a SCIP symbol ID without its
+// suffix: "…/`lib.ts`/Box#" → "Box", "…/run()." → "run".
+func ExtractName(symbolID string) string {
+	parts := strings.Split(symbolID, "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	last := parts[len(parts)-1]
+	last = strings.TrimSuffix(last, "().")
+	last = strings.TrimSuffix(last, "#")
+	last = strings.TrimSuffix(last, ".")
+	return last
 }
 
 func startsUpper(name string) bool {

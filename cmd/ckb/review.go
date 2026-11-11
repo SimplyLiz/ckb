@@ -658,7 +658,7 @@ func groupCoChangeFindings(findings []query.ReviewFinding) []groupedFinding {
 		if _, ok := byFile[key]; ok {
 			byFile[key].messages = append(byFile[key].messages, f.Message)
 		} else {
-			g := &groupedFinding{severity: f.Severity, file: key}
+			g := &groupedFinding{severity: f.Severity, file: key, messages: []string{f.Message}}
 			byFile[key] = g
 			groupPositions[key] = len(result)
 			result = append(result, groupedFinding{}) // placeholder
