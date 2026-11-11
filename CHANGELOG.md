@@ -59,6 +59,19 @@ All notable changes to CKB will be documented in this file.
   so core goes from 25 tools to 26. The first 512 bytes of the MCP instructions now
   end on it.
 
+### Added — MCP tool annotations
+
+- **Every MCP tool says whether it changes anything.** `tools/list` now carries
+  `annotations`: `readOnlyHint: true` on the 93 tools that only read the index, git and
+  the cache, so Claude Code runs them in parallel with other read-only calls instead of
+  one after another. The 18 that change something say so, with `destructiveHint`,
+  `idempotentHint` and `openWorldHint`: the index and `.ckb` database (`reindex`,
+  `annotateModule`, contract edges…), an ADR file (`recordDecision`), session state
+  (`expandToolset`, `switchRepo`, `switchProject`, kept out of parallel runs because
+  every later call depends on them), federation config, and the daemon's schedules and
+  webhooks. The three read-only federation tools that ask a remote server carry
+  `openWorldHint: true`. Costs about 1 KB on the default preset's `tools/list`.
+
 ### Added — a notice after updating
 
 - **The first run of a new release says what's new, once.** It also states the
