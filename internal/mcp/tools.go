@@ -396,7 +396,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		},
 		{
 			Name:        "assessChange",
-			Description: "The post-change counterpart to prepareChange: use this AFTER changes are made to assess what you actually changed and what to verify before finishing. Defaults to the uncommitted working tree; also supports staged changes or a base-branch range. Answers: what might break? which tests should run? who needs to review? are there possible contract changes? `doneCheck` lists each use of a changed declaration that the diff left as it was (`openSites`: file, line, code, and `via` when the symbol itself isn't what changed), with status open, clear or not_assessed. It compares text and compiles nothing, so clear is not proof. `coChangeCheck` lists the files that usually change with the touched files (git history, any language) and were left alone (`openFiles`: file, with, together, of). For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
+			Description: "The post-change counterpart to prepareChange: use this AFTER changes are made to assess what you actually changed and what to verify before finishing. Defaults to the uncommitted working tree; also supports staged changes or a base-branch range. Answers: what might break? which tests should run? who needs to review? are there possible contract changes? `doneCheck` lists each use of a changed declaration that the diff left as it was (`openSites`: file, line, code, and `via` when the symbol itself isn't what changed), with status open, clear or not_assessed. It compares text and compiles nothing, so clear is not proof. `coChangeCheck` lists the files that usually change with the touched files (git history, any language) and were left alone (`openFiles`: file, with, together, of). Pass format \"compact\" for just what to act on (open sites, tests, contracts, consumer files) at a fraction of the size. For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -428,6 +428,12 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 						"type":        "boolean",
 						"default":     false,
 						"description": "Fail if SCIP index is stale",
+					},
+					"format": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"full", "compact"},
+						"default":     "full",
+						"description": "Response format: 'full' (default) returns all details; 'compact' returns what to act on (risk, doneCheck open sites as file:line with code and consumer, affected test files with test names, contract kinds, direct consumer files) without symbol ids, a fraction of the size",
 					},
 				},
 			},

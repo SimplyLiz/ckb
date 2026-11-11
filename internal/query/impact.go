@@ -1458,6 +1458,9 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	var allDirectImpact []ImpactItem
 	var allTransitiveImpact []ImpactItem
 	var allTestImpact []ImpactItem
+	// testCauses maps a consumer (see impactItemKey) to the changed symbols it uses
+	// or reaches, so an affected test names what selected it rather than itself.
+	testCauses := make(map[string][]string)
 	moduleImpactMap := make(map[string]*ModuleImpact)
 	lookupNotes := make(map[string]bool)
 
@@ -1573,6 +1576,14 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			}
 		}
 
+		for _, items := range [][]ImpactItem{impactResult.DirectImpact, impactResult.TransitiveImpact, impactResult.TestImpact} {
+			for i := range items {
+				if items[i].Location != nil && isRunnableTestPath(items[i].Location.FileId) {
+					key := impactItemKey(&items[i])
+					testCauses[key] = appendUnique(testCauses[key], sym.SymbolID)
+				}
+			}
+		}
 		allDirectImpact = append(allDirectImpact, impactResult.DirectImpact...)
 		allTransitiveImpact = append(allTransitiveImpact, impactResult.TransitiveImpact...)
 		allTestImpact = append(allTestImpact, impactResult.TestImpact...)
@@ -1755,7 +1766,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	consumerFiles.ContractChangedTests = boundedUniqueSorted(contractChangedTests)
 	testConsumers := make([]ImpactItem, 0, len(allDirectImpact)+len(allTransitiveImpact)+len(allTestImpact))
 	testConsumers = append(append(append(testConsumers, allDirectImpact...), allTransitiveImpact...), allTestImpact...)
-	affectedTests := e.deriveAffectedTests(changedSymbolInfos, testConsumers)
+	affectedTests := e.deriveAffectedTests(changedSymbolInfos, testConsumers, testCauses)
 	if e.hasConsumerGraph() {
 		affectedTests = mergeFileLevelTests(affectedTests, testsUsingFiles(e.scipAdapter.GetIndex(), changedSourceFiles(changedSymbols)))
 	}
@@ -2600,7 +2611,10 @@ func (e *Engine) affectedTestsFromChangeSet(ctx context.Context, changeSet *Anal
 // deriveAffectedTests computes the tests that use or reach a set of changed
 // symbols, given every consumer of them including those in test files. Other
 // consumers are ignored.
-func (e *Engine) deriveAffectedTests(changedSymbols []ChangedSymbolInfo, affectedSymbols []ImpactItem) []AffectedTest {
+//
+// causes maps a consumer (impactItemKey) to the changed symbols that selected it;
+// those, not the test's own id, go into AffectedBy. TestNames are short names.
+func (e *Engine) deriveAffectedTests(changedSymbols []ChangedSymbolInfo, affectedSymbols []ImpactItem, causes map[string][]string) []AffectedTest {
 	testFileMap := make(map[string]*AffectedTest)
 
 	// 1. Direct test files (tests that reference changed symbols)
@@ -2626,11 +2640,11 @@ func (e *Engine) deriveAffectedTests(changedSymbols []ChangedSymbolInfo, affecte
 		if sym.Confidence > existing.Confidence {
 			existing.Confidence = sym.Confidence
 		}
-		if sym.StableId != "" {
-			existing.AffectedBy = append(existing.AffectedBy, sym.StableId)
+		for _, cause := range causes[impactItemKey(&sym)] {
+			existing.AffectedBy = appendUnique(existing.AffectedBy, cause)
 		}
-		if sym.Name != "" {
-			existing.TestNames = appendUnique(existing.TestNames, sym.Name)
+		if name := impact.ShortName(sym.Name, sym.StableId); name != "" {
+			existing.TestNames = appendUnique(existing.TestNames, name)
 		}
 	}
 
@@ -2705,6 +2719,18 @@ func (e *Engine) deriveAffectedTests(changedSymbols []ChangedSymbolInfo, affecte
 	})
 
 	return tests
+}
+
+// impactItemKey identifies a consumer across the per-symbol impact results: its
+// symbol, or its file and line where no enclosing symbol was resolved.
+func impactItemKey(item *ImpactItem) string {
+	if item.StableId != "" {
+		return item.StableId
+	}
+	if item.Location != nil {
+		return fmt.Sprintf("%s:%d", item.Location.FileId, item.Location.StartLine)
+	}
+	return ""
 }
 
 func appendUnique(list []string, value string) []string {

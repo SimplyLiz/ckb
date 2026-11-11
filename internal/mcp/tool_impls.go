@@ -1398,7 +1398,16 @@ func (s *MCPServer) toolAssessChange(params map[string]interface{}) (*envelope.R
 		strict = v
 	}
 
+	format := "full"
+	if v, ok := params["format"].(string); ok && v != "" {
+		format = v
+	}
+	if format != "full" && format != "compact" {
+		return nil, errors.NewInvalidParameterError("format", "must be 'full' or 'compact'")
+	}
+
 	s.logger.Debug("Executing assessChange",
+		"format", format,
 		"staged", staged,
 		"baseBranch", baseBranch,
 		"depth", depth,
@@ -1422,7 +1431,10 @@ func (s *MCPServer) toolAssessChange(params map[string]interface{}) (*envelope.R
 
 	// Record wide-result metrics
 	totalAffected := len(resp.AffectedSymbols)
-	data := resp
+	var data interface{} = resp
+	if format == "compact" {
+		data = query.CompactAssessChangeFrom(resp)
+	}
 	responseBytes := MeasureJSONSize(data)
 	truncatedCount := 0
 	if resp.Truncated && resp.TruncationInfo != nil {

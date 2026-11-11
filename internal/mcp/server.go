@@ -71,6 +71,11 @@ type MCPServer struct {
 	// Binary staleness detection (v8.0)
 	binaryPath    string    // Path to the running binary
 	binaryModTime time.Time // Modification time at startup
+	// binaryStaleMu guards the cached check every tool response reads (see
+	// staleServerWarning): the last stat and whether it found a newer binary.
+	binaryStaleMu      sync.Mutex
+	binaryStaleChecked time.Time
+	binaryStale        bool
 
 	// Lazy engine loading (for fast MCP startup)
 	engineLoader func() (*query.Engine, error)
@@ -756,6 +761,40 @@ func (s *MCPServer) GetBinaryStaleWarning() string {
 		return ""
 	}
 	return "CKB binary has been updated. Restart Claude Code or run /clear for changes to take effect."
+}
+
+// binaryStaleCheckInterval bounds how often a tool call stats the binary.
+var binaryStaleCheckInterval = 30 * time.Second
+
+// staleServerWarning is GetBinaryStaleWarning for every tool response: it stats
+// the binary at most once per binaryStaleCheckInterval, and once the binary is
+// newer it stays so for the life of the process.
+func (s *MCPServer) staleServerWarning() string {
+	s.binaryStaleMu.Lock()
+	defer s.binaryStaleMu.Unlock()
+	if !s.binaryStale && time.Since(s.binaryStaleChecked) >= binaryStaleCheckInterval {
+		s.binaryStaleChecked = time.Now()
+		s.binaryStale = s.IsBinaryStale()
+	}
+	if !s.binaryStale {
+		return ""
+	}
+	return "The ckb binary changed after this server started, so results come from the old build. Reconnect ckb (Claude Code: /mcp) or restart the client."
+}
+
+// markStaleServer puts staleServerWarning into a tool response's meta.
+func (s *MCPServer) markStaleServer(resp *envelope.Response) {
+	if resp == nil {
+		return
+	}
+	warning := s.staleServerWarning()
+	if warning == "" {
+		return
+	}
+	if resp.Meta == nil {
+		resp.Meta = &envelope.Meta{}
+	}
+	resp.Meta.StaleServer = warning
 }
 
 // SendNotification sends a JSON-RPC notification to the client
