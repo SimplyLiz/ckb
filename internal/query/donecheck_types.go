@@ -55,15 +55,25 @@ func (c *doneChecker) checkTypeFiles(ctx context.Context, adapter referenceFinde
 			if id == "" {
 				continue
 			}
-			sym := impact.ChangedSymbol{SymbolID: id, Name: name, File: path}
-			files := make(map[string]bool)
-			c.checkUses(ctx, adapter, sym, useQuery{
+			query := useQuery{
 				name:    name,
 				change:  impact.DeclChanged,
 				via:     fmt.Sprintf("fields of %s changed", name),
 				literal: true,
 				lang:    lang,
-			}, files)
+			}
+			if lang == "go" {
+				// The compiler's rule: what breaks is a positional literal, and a keyed
+				// one setting a field that went away or changed type.
+				oldTypes, okOld := diff.GoStructFieldTypes(oldLines, name)
+				newTypes, okNew := diff.GoStructFieldTypes(newLines, name)
+				if okOld && okNew {
+					query.goBroken, _ = diff.GoBrokenFields(oldTypes, newTypes)
+				}
+			}
+			sym := impact.ChangedSymbol{SymbolID: id, Name: name, File: path}
+			files := make(map[string]bool)
+			c.checkUses(ctx, adapter, sym, query, files)
 			if len(files) > 0 {
 				open = append(open, rustOpen{name: name, change: impact.DeclChanged, files: files})
 			}

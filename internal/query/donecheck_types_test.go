@@ -18,11 +18,12 @@ const (
 )
 
 var typeFixtureFiles = map[string]string{
-	"cv/cv.go":       "package cv\n\n// CV is a résumé.\ntype CV struct {\n\tTitle string\n}\n",
-	"cv/importer.go": "package cv\n\nfunc Import(title string) CV {\n\treturn CV{\n\t\tTitle: title,\n\t}\n}\n",
-	"cv/other.go":    "package cv\n\nvar Empty = CV{}\n\nfunc Build() *CV {\n\treturn &CV{Title: \"x\"}\n}\n",
-	"cv/types.ts":    "export interface CV {\n  title: string;\n}\n",
-	"cv/importer.ts": "import { CV } from './types';\n\nexport function importCv(raw: any): CV {\n  return {\n    title: raw.title,\n  };\n}\n\nexport const empty: CV = {\n  title: '',\n};\n",
+	"cv/cv.go":         "package cv\n\n// CV is a résumé.\ntype CV struct {\n\tTitle string\n\tNote  string\n}\n",
+	"cv/positional.go": "package cv\n\nvar P = CV{\"p\", \"n\"}\n",
+	"cv/importer.go":   "package cv\n\nfunc Import(title string) CV {\n\treturn CV{\n\t\tTitle: title,\n\t}\n}\n",
+	"cv/other.go":      "package cv\n\nvar Empty = CV{}\n\nfunc Build() *CV {\n\treturn &CV{Title: \"x\"}\n}\n",
+	"cv/types.ts":      "export interface CV {\n  title: string;\n}\n",
+	"cv/importer.ts":   "import { CV } from './types';\n\nexport function importCv(raw: any): CV {\n  return {\n    title: raw.title,\n  };\n}\n\nexport const empty: CV = {\n  title: '',\n};\n",
 }
 
 // typeOcc is an occurrence at a 0-based line and column.
@@ -65,6 +66,7 @@ func typeFixtureRepo(t *testing.T) (*Engine, string) {
 			{symGoCV, 4, 14, false, 0}, // *CV {
 			{symGoCV, 5, 9, false, 0},  // &CV{
 		}),
+		typeFixtureDoc("cv/positional.go", "go", []typeOcc{{symGoCV, 2, 8, false, 0}}), // CV{"p", "n"}
 		typeFixtureDoc("cv/types.ts", "typescript", []typeOcc{{symTSCV, 0, 17, true, scippb.SymbolInformation_Interface}}),
 		typeFixtureDoc("cv/importer.ts", "typescript", []typeOcc{
 			{symTSCV, 0, 9, false, 0}, // import
@@ -94,7 +96,10 @@ func openSiteKeys(check *DoneCheck) []string {
 	return keys
 }
 
-func TestDoneCheck_GoFieldAddedListsTheLiterals(t *testing.T) {
+// Go's compiler is the rule: a keyed literal compiles after a field is added, a
+// positional one has to list every field, and a keyed one breaks only on a field it
+// sets that went away or changed type.
+func TestDoneCheck_GoFieldAddedBreaksOnlyPositionalLiterals(t *testing.T) {
 	engine, root := typeFixtureRepo(t)
 	editRepoFile(t, root, "cv/cv.go", "\tTitle string\n", "\tTitle string\n\tName  string\n")
 
@@ -102,9 +107,8 @@ func TestDoneCheck_GoFieldAddedListsTheLiterals(t *testing.T) {
 	if check.Status != DoneCheckOpen {
 		t.Fatalf("check = %+v, want open", check)
 	}
-	want := []string{"cv/importer.go:4", "cv/other.go:6"}
-	if got := openSiteKeys(check); fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("open sites = %v, want %v: the return type, the receiver and CV{} are not literals", got, want)
+	if got := openSiteKeys(check); fmt.Sprint(got) != "[cv/positional.go:3]" {
+		t.Errorf("open sites = %v, want only the positional literal: keyed ones still compile", got)
 	}
 	for _, site := range check.OpenSites {
 		if site.Via != "fields of CV changed" || site.Change != "changed" || site.Symbol != "CV" {
@@ -113,14 +117,34 @@ func TestDoneCheck_GoFieldAddedListsTheLiterals(t *testing.T) {
 	}
 }
 
+func TestDoneCheck_GoFieldRemovedBreaksTheLiteralsSettingIt(t *testing.T) {
+	cases := []struct {
+		name, old, new, want string
+	}{
+		{"a field no keyed literal sets", "\tNote  string\n", "", "[cv/positional.go:3]"},
+		{"a field they set", "\tTitle string\n", "", "[cv/importer.go:4 cv/other.go:6 cv/positional.go:3]"},
+		{"a field they set, retyped", "\tTitle string\n", "\tTitle []string\n", "[cv/importer.go:4 cv/other.go:6 cv/positional.go:3]"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			engine, root := typeFixtureRepo(t)
+			editRepoFile(t, root, "cv/cv.go", c.old, c.new)
+			check := runChangeSet(t, engine, AnalyzeChangeSetOptions{}).DoneCheck
+			if got := openSiteKeys(check); fmt.Sprint(got) != c.want {
+				t.Errorf("open sites = %v, want %s", got, c.want)
+			}
+		})
+	}
+}
+
 func TestDoneCheck_GoLiteralTouchedIsUpdated(t *testing.T) {
 	engine, root := typeFixtureRepo(t)
-	editRepoFile(t, root, "cv/cv.go", "\tTitle string\n", "\tTitle string\n\tName  string\n")
-	editRepoFile(t, root, "cv/importer.go", "\t\tTitle: title,\n", "\t\tTitle: title,\n\t\tName:  title,\n")
+	editRepoFile(t, root, "cv/cv.go", "\tTitle string\n", "\tHeading string\n")
+	editRepoFile(t, root, "cv/importer.go", "\t\tTitle: title,\n", "\t\tHeading: title,\n")
 
 	check := runChangeSet(t, engine, AnalyzeChangeSetOptions{}).DoneCheck
-	if got := openSiteKeys(check); fmt.Sprint(got) != "[cv/other.go:6]" {
-		t.Errorf("open sites = %v, want only other.go", got)
+	if got := openSiteKeys(check); fmt.Sprint(got) != "[cv/other.go:6 cv/positional.go:3]" {
+		t.Errorf("open sites = %v, want other.go and the positional literal", got)
 	}
 	if check.UpdatedCount != 1 {
 		t.Errorf("updated = %d, want the importer's literal", check.UpdatedCount)

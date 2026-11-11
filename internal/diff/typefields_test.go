@@ -241,3 +241,44 @@ func TestBraceEnd_SkipsStringsAndComments(t *testing.T) {
 		t.Errorf("end = %d, want 4", end)
 	}
 }
+
+func TestGoLiteralKeys(t *testing.T) {
+	tests := []struct {
+		name       string
+		lines      []string
+		keys       string
+		positional bool
+	}{
+		{"keyed one line", []string{"x := T{A: 1, B: f(a, b)}"}, "A B", false},
+		{"keyed multi-line", []string{"x := &T{", "\tA: 1, // why", "\tB: \"a, b\",", "}"}, "A B", false},
+		{"positional", []string{"x := T{1, 2}"}, "", true},
+		{"nested value", []string{"x := T{A: map[string]int{\"k\": 1}, B: []int{1}}"}, "A B", false},
+		{"slice elements", []string{"xs := []T{", "\t{A: 1},", "\t{B: 2},", "}"}, "A B", false},
+		{"slice positional element", []string{"xs := []T{{A: 1}, {1, 2}}"}, "A", true},
+		{"map values", []string{"m := map[string]T{", "\t\"a\": {A: 1},", "}"}, "A", false},
+		{"comments around keys", []string{"x := T{", "\t/* first */ A: 1,", "\tB: 2, // last", "\t// trailing", "}"}, "A B", false},
+		{"comparison in a value", []string{"x := T{A: a < b, B: c > d}"}, "A B", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keys, positional, ok := GoLiteralKeys(tt.lines, 1, 0, "T")
+			if !ok || strings.Join(keys, " ") != tt.keys || positional != tt.positional {
+				t.Errorf("got %v positional=%v ok=%v, want %q positional=%v", keys, positional, ok, tt.keys, tt.positional)
+			}
+		})
+	}
+}
+
+func TestGoStructFieldTypes(t *testing.T) {
+	lines := []string{"type T struct {", "\tA, B int `json:\"a\"`", "\t*pkg.Embedded", "\tC func(a, b int) error // c", "}"}
+	got, ok := GoStructFieldTypes(lines, "T")
+	want := map[string]string{"A": "int", "B": "int", "Embedded": "*pkg.Embedded", "C": "func(a,bint)error"}
+	if !ok || len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: got %q, want %q", k, got[k], v)
+		}
+	}
+}
