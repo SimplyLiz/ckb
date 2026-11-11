@@ -3,6 +3,9 @@ package impact
 import (
 	"fmt"
 	"sort"
+	"strings"
+
+	bindingscip "github.com/sourcegraph/scip/bindings/go/scip"
 )
 
 // TransitiveCallerProvider provides transitive caller information
@@ -216,15 +219,43 @@ func (a *ImpactAnalyzer) generateModuleSummaries(allImpact []ImpactItem) []Modul
 	return summaries
 }
 
-// extractNameFromStableId extracts a readable name from a stable identifier.
-// Used as a fallback when the backend didn't resolve a display name
-// (Reference.FromName); callers should treat "" as "not available" and omit
-// the field rather than display a placeholder.
+// ShortName is the name to show for a symbol: name itself, unless it is empty or
+// a whole SCIP symbol, in which case the short name is read from the symbol.
+func ShortName(name, stableId string) string {
+	if name != "" && !strings.Contains(name, " ") {
+		return name
+	}
+	if name != "" {
+		return extractNameFromStableId(name)
+	}
+	if n := extractNameFromStableId(stableId); n != stableId {
+		return n
+	}
+	return ""
+}
+
+// extractNameFromStableId returns the short name of a symbol: for a SCIP
+// symbol the name of its last descriptor that isn't a namespace, parameter or
+// type parameter ("collectDiagnostics" for "scip-go gomod m v `m/cmd`/collectDiagnostics()."),
+// which is what direct callers get from the backend too. Anything that doesn't
+// parse as SCIP is returned as it is.
 func extractNameFromStableId(stableId string) string {
-	// This is a simplified implementation
-	// In a real system, this would parse the stable ID format
 	if stableId == "" {
 		return ""
+	}
+	sym, err := bindingscip.ParseSymbol(stableId)
+	if err != nil || sym == nil {
+		return stableId
+	}
+	for i := len(sym.Descriptors) - 1; i >= 0; i-- {
+		d := sym.Descriptors[i]
+		switch d.Suffix {
+		case bindingscip.Descriptor_Namespace, bindingscip.Descriptor_Parameter, bindingscip.Descriptor_TypeParameter:
+			continue
+		}
+		if d.Name != "" {
+			return d.Name
+		}
 	}
 	return stableId
 }

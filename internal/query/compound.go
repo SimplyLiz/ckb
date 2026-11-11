@@ -1953,7 +1953,7 @@ const (
 // the other test files in the target's module ("same-module"), which may not
 // touch it at all.
 func (e *Engine) getPrepareTests(target *PrepareChangeTarget, consumers []ImpactItem) []PrepareTest {
-	return prepareTestList(e.deriveAffectedTests(nil, consumers), e.sameModuleTestFiles(target))
+	return prepareTestList(e.deriveAffectedTests(nil, consumers, nil), e.sameModuleTestFiles(target))
 }
 
 // prepareTestList orders reference-derived tests direct before transitive, then

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -47,6 +48,7 @@ Examples:
   ckb changes --verbose          # Show full lists instead of capped summaries
   ckb changes --repo=my-service  # Assess changes in a registered repo
   ckb changes --format=json
+  ckb changes --format=compact   # JSON with what to act on: open uses, tests, contracts
   ckb changes --check            # Exit 0 clear, 2 open uses, 3 not assessed, 1 error
 
 --check is a text comparison and compiles nothing. "clear" means no use of a
@@ -59,7 +61,7 @@ func init() {
 	changesCmd.Flags().StringVar(&changesBase, "base", "", "Base ref/branch for comparison (default: working tree against HEAD)")
 	changesCmd.Flags().StringVar(&changesRepo, "repo", "", "Repository path or registry name (auto-detected)")
 	changesCmd.Flags().BoolVar(&changesVerbose, "verbose", false, "Show full lists instead of capped summaries")
-	changesCmd.Flags().StringVar(&changesFormat, "format", "human", "Output format (human, json)")
+	changesCmd.Flags().StringVar(&changesFormat, "format", "human", "Output format (human, json, compact)")
 	changesCmd.Flags().BoolVar(&changesCheck, "check", false, "Set the exit code from the done check: 0 clear, 2 open, 3 not assessed")
 	rootCmd.AddCommand(changesCmd)
 }
@@ -82,7 +84,14 @@ func runChanges(cmd *cobra.Command, args []string) {
 
 	cliResp := convertChangeSetResponse(resp)
 
-	if changesFormat == "human" {
+	if changesFormat == "compact" {
+		out, err := json.MarshalIndent(query.CompactAssessChangeFrom(resp), "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error formatting output: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+	} else if changesFormat == "human" {
 		fmt.Println(formatChangesHuman(cliResp, changesVerbose))
 	} else {
 		out, err := FormatResponse(cliResp, OutputFormat(changesFormat))

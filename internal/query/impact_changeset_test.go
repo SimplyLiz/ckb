@@ -400,8 +400,34 @@ func TestDeriveAffectedTests_NamingConventionIsNotDirect(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := &Engine{repoRoot: dir}
-	tests := e.deriveAffectedTests([]ChangedSymbolInfo{{SymbolID: "s", File: "lib.go"}}, nil)
+	tests := e.deriveAffectedTests([]ChangedSymbolInfo{{SymbolID: "s", File: "lib.go"}}, nil, nil)
 	if len(tests) != 1 || tests[0].Reason != "naming-convention" {
 		t.Errorf("tests = %+v, want lib_test.go by naming-convention", tests)
+	}
+}
+
+// An affected test names what selected it: affectedBy holds the changed symbols, not
+// the test's own id again, and testNames are short names even when the consumer's
+// name came through as a whole SCIP symbol.
+func TestDeriveAffectedTests_ShortNamesAndCauses(t *testing.T) {
+	e := &Engine{repoRoot: t.TempDir()}
+	testID := "scip-go gomod m v `m/internal/api`/TestArchitectureEndpoint()."
+	items := []ImpactItem{
+		{StableId: "scip-go gomod m v `m/internal/api`/newTestServer().", Name: "newTestServer", Distance: 1, Location: &LocationInfo{FileId: "internal/api/api_test.go"}, Confidence: 0.9},
+		{StableId: testID, Name: testID, Distance: 2, Location: &LocationInfo{FileId: "internal/api/api_test.go"}, Confidence: 0.85},
+	}
+	causes := map[string][]string{
+		items[0].StableId: {"changed#NewEngine"},
+		testID:            {"changed#NewEngine"},
+	}
+	tests := e.deriveAffectedTests(nil, items, causes)
+	if len(tests) != 1 {
+		t.Fatalf("tests = %+v, want one file", tests)
+	}
+	if got := strings.Join(tests[0].TestNames, ","); got != "newTestServer,TestArchitectureEndpoint" {
+		t.Errorf("TestNames = %q", got)
+	}
+	if got := strings.Join(tests[0].AffectedBy, ","); got != "changed#NewEngine" {
+		t.Errorf("AffectedBy = %q, want the changed symbol once", got)
 	}
 }
