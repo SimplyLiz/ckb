@@ -1498,6 +1498,8 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	// Go and TypeScript types whose members changed, read from the files before the
 	// symbols are looked at: a changed line inside one is explained by it.
 	rustOpens := done.checkTypeFiles(ctx, usesFinder)
+	// Interfaces whose method set changed: their implementations don't refer to them.
+	rustOpens = append(rustOpens, done.checkImplementations(usesFinder)...)
 
 	// Confidence input: average symbol-mapping confidence across changed symbols.
 	var totalMappingConfidence float64

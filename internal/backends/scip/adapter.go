@@ -398,6 +398,101 @@ func (s *SCIPAdapter) GeneratedMethods(typeSymbol, method string) []string {
 	return ids
 }
 
+// DefinitionSite is where the index defines a symbol, 1-based.
+type DefinitionSite struct {
+	Symbol string
+	Path   string
+	Line   int
+	Column int
+}
+
+// GoTypeMethods is a concrete Go type and those of its methods a lookup asked for.
+type GoTypeMethods struct {
+	Type    DefinitionSite            // The type's own definition; Path is empty without one
+	Methods map[string]DefinitionSite // By method name
+}
+
+// GoMethodsNamed returns, per concrete Go type, its methods with one of the given names.
+// scip-go names a concrete type's method `T#M().` and an interface's `I#M.`, so
+// interfaces drop out. The method sets are the index's: what the type declared when it
+// was built.
+func (s *SCIPAdapter) GoMethodsNamed(names []string) map[string]*GoTypeMethods {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.index == nil || len(names) == 0 {
+		return nil
+	}
+	wanted := make(map[string]bool, len(names))
+	for _, name := range names {
+		wanted[name] = true
+	}
+	types := make(map[string]*GoTypeMethods)
+	for id, ref := range s.index.DefinitionIndex {
+		if !strings.HasPrefix(id, "scip-go ") || !strings.HasSuffix(id, "().") {
+			continue
+		}
+		hash := strings.LastIndex(id, "#")
+		if hash < 0 {
+			continue
+		}
+		method := id[hash+1 : len(id)-3]
+		if !wanted[method] || strings.ContainsAny(method, "#./`()") {
+			continue
+		}
+		site, ok := definitionSite(id, ref)
+		if !ok {
+			continue
+		}
+		typeID := id[:hash+1]
+		entry := types[typeID]
+		if entry == nil {
+			entry = &GoTypeMethods{Methods: make(map[string]DefinitionSite)}
+			if typeRef := s.index.DefinitionIndex[typeID]; typeRef != nil {
+				entry.Type, _ = definitionSite(typeID, typeRef)
+			}
+			entry.Type.Symbol = typeID
+			types[typeID] = entry
+		}
+		entry.Methods[method] = site
+	}
+	return types
+}
+
+// Implementations returns the symbols the index records as implementing a symbol. Not
+// every indexer writes these: scip-go only does for types in the interface's package.
+func (s *SCIPAdapter) Implementations(symbolID string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.index == nil {
+		return nil
+	}
+	refs, err := s.index.FindImplementations(symbolID)
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]bool, len(refs))
+	var ids []string
+	for _, ref := range refs {
+		if !seen[ref.SymbolId] {
+			seen[ref.SymbolId] = true
+			ids = append(ids, ref.SymbolId)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func definitionSite(id string, ref *OccurrenceRef) (DefinitionSite, bool) {
+	if ref == nil || ref.Doc == nil || ref.Occ == nil {
+		return DefinitionSite{}, false
+	}
+	loc := parseOccurrenceRange(ref.Occ, ref.Doc.RelativePath)
+	if loc == nil {
+		return DefinitionSite{}, false
+	}
+	return DefinitionSite{Symbol: id, Path: loc.FileId, Line: loc.StartLine + 1, Column: loc.StartColumn + 1}, true
+}
+
 func (s *SCIPAdapter) FindReferences(ctx context.Context, symbolID string, opts backends.RefOptions) (*backends.ReferencesResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
