@@ -105,6 +105,26 @@ func instructionsText() string {
 		"docs/decisions."
 }
 
+// supportedProtocolVersions are the MCP revisions this server implements,
+// newest first. 2025-03-26 is left out on purpose: it requires JSON-RPC
+// batching, which this server does not read, and 2025-06-18 removed batching
+// again. Nothing else between 2024-11-05 and 2025-11-25 obliges a stdio
+// server to do anything new; the additions it uses (tool annotations) are
+// fields an older client ignores.
+var supportedProtocolVersions = []string{"2025-11-25", "2025-06-18", "2024-11-05"}
+
+// negotiateProtocolVersion answers the client's requested revision when this
+// server supports it, and its newest revision otherwise. The spec leaves the
+// decision to disconnect to the client.
+func negotiateProtocolVersion(requested string) string {
+	for _, v := range supportedProtocolVersions {
+		if v == requested {
+			return v
+		}
+	}
+	return supportedProtocolVersions[0]
+}
+
 // handleInitialize handles the initialize request
 func (s *MCPServer) handleInitialize(params map[string]interface{}) (*InitializeResult, error) {
 	s.logger.Info("MCP server initializing",
@@ -131,8 +151,18 @@ func (s *MCPServer) handleInitialize(params map[string]interface{}) (*Initialize
 		)
 	}
 
+	requested, _ := params["protocolVersion"].(string)
+	version := negotiateProtocolVersion(requested)
+	s.mu.Lock()
+	s.protocolVersion = version
+	s.mu.Unlock()
+	if requested != version {
+		s.logger.Info("Client asked for an MCP revision this server does not implement",
+			"requested", requested, "answered", version)
+	}
+
 	result := &InitializeResult{
-		ProtocolVersion: "2024-11-05",
+		ProtocolVersion: version,
 		Capabilities: ServerCapabilities{
 			Tools: &ToolsCapability{
 				ListChanged: true, // Enables expandToolset dynamic preset expansion

@@ -63,6 +63,8 @@ type MCPServer struct {
 	// Client identity captured from the initialize handshake (activity ledger consumer field)
 	clientName    string
 	clientVersion string
+	// protocolVersion is the MCP revision agreed in initialize.
+	protocolVersion string
 
 	// Binary staleness detection (v8.0)
 	binaryPath    string    // Path to the running binary

@@ -72,6 +72,21 @@ All notable changes to CKB will be documented in this file.
   webhooks. The three read-only federation tools that ask a remote server carry
   `openWorldHint: true`. Costs about 1 KB on the default preset's `tools/list`.
 
+### Fixed — MCP protocol
+
+- **CKB answers the MCP revision the client asks for.** `initialize` always said
+  `2024-11-05`, whatever the client sent. It now agrees on 2025-11-25, 2025-06-18 or
+  2024-11-05, and answers 2025-11-25 to anything else. 2025-03-26 is not offered: it
+  requires JSON-RPC batching, which CKB does not read, and 2025-06-18 dropped batching
+  again.
+- **`ping` gets an answer.** It returned "Method not found"; every revision since
+  2024-11-05 requires an empty result.
+- **A failing tool says so.** The error envelope came back as an ordinary result;
+  it now carries `isError: true`. Calling a tool that does not exist is reported as
+  invalid params instead of an internal server error.
+- **`resources/read` returns JSON.** The text was a Go struct dump (`&{...}`) labelled
+  `application/json`, so every `ckb://` resource was unreadable.
+
 ### Added — a notice after updating
 
 - **The first run of a new release says what's new, once.** It also states the
