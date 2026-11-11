@@ -5,7 +5,7 @@
     "file": "pkg/service.go",
     "kind": "class",
     "line": 13,
-    "moduleId": "",
+    "moduleId": "pkg",
     "name": "DefaultService"
   }
 }

@@ -1,6 +1,7 @@
 package query
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
@@ -15,10 +16,32 @@ func (e *Engine) notFoundMessage(id string) string {
 	if e.scipAdapter == nil || !e.scipAdapter.IsAvailable() {
 		return msg
 	}
-	if alt := descriptorVariant(e.scipAdapter.GetIndex(), id); alt != "" {
+	idx := e.scipAdapter.GetIndex()
+	if alt := descriptorVariant(idx, id); alt != "" {
 		msg += " (did you mean " + alt + "?)"
+	} else if _, cands := idx.ResolveAcrossVersions(id); len(cands) > 0 {
+		msg += fmt.Sprintf(" (%d symbols match it under another package version, so none was picked: %s)",
+			len(cands), strings.Join(cands, ", "))
 	}
 	return msg
+}
+
+// ResolveSymbolIDAcrossVersions maps a SCIP ID from an older index to the ID
+// the loaded index has for the same symbol. scip-go puts the HEAD commit hash
+// in the package-version field, so an ID an agent kept from before the last
+// commit + reindex no longer matches exactly. It returns id itself when the
+// index knows it or nothing better is found, and the one ID that differs only
+// in the version field otherwise; remapped says whether it did the latter.
+// Several candidates count as no match.
+func (e *Engine) ResolveSymbolIDAcrossVersions(id string) (resolved string, remapped bool) {
+	if e == nil || e.scipAdapter == nil || !e.scipAdapter.IsAvailable() || !strings.Contains(id, " ") {
+		return id, false
+	}
+	got, _ := e.scipAdapter.GetIndex().ResolveAcrossVersions(id)
+	if got == "" || got == id {
+		return id, false
+	}
+	return got, true
 }
 
 // descriptorVariant returns the ID with another descriptor suffix that the index
