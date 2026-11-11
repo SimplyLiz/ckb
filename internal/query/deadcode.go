@@ -133,8 +133,16 @@ func (e *Engine) FindDeadCode(ctx context.Context, opts FindDeadCodeOptions) (*F
 		opts.ExcludePatterns,
 	)
 
+	// What a framework calls by convention has no reference in the index and
+	// is not dead: a Next.js page's default export, a route handler's GET.
+	var entrypointSymbols map[string]bool
+	if e.scipAdapter != nil {
+		entrypointSymbols = e.frameworkUsedSymbols(e.scipAdapter.GetIndex())
+	}
+
 	// Run analysis
 	analyzerOpts := deadcode.AnalyzerOptions{
+		ExcludeSymbols:    entrypointSymbols,
 		Scope:             opts.Scope,
 		IncludeExported:   opts.IncludeExported,
 		IncludeUnexported: opts.IncludeUnexported,

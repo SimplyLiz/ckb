@@ -72,12 +72,33 @@ var nextExport = regexp.MustCompile(`(?m)^export\s+(?:(default)\s+)?(?:async\s+)
 
 var nextCalledNames = map[string]bool{
 	"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true, "HEAD": true, "OPTIONS": true,
-	"middleware": true, "proxy": true, "register": true, "generateMetadata": true, "generateStaticParams": true,
+	"middleware": true, "proxy": true, "register": true, "onRequestError": true,
+	"generateMetadata": true, "generateStaticParams": true,
 	"getServerSideProps": true, "getStaticProps": true, "getStaticPaths": true,
+}
+
+// nextReadNames are the exports Next.js reads rather than calls: route segment
+// config and metadata. Not entrypoints, but not dead either.
+var nextReadNames = map[string]bool{
+	"metadata": true, "viewport": true, "generateViewport": true, "generateImageMetadata": true,
+	"generateSitemaps": true, "dynamic": true, "dynamicParams": true, "revalidate": true,
+	"fetchCache": true, "runtime": true, "preferredRegion": true, "maxDuration": true,
+	"experimental_ppr": true, "config": true, "contentType": true, "size": true, "alt": true,
 }
 
 // nextExportList matches an export list, export { handler as GET, POST }.
 var nextExportList = regexp.MustCompile(`(?m)^export\s*\{([^}]*)\}`)
+
+// nextReadExports returns the names of the exports Next.js reads in source.
+func nextReadExports(source string) []string {
+	var names []string
+	for _, m := range nextExport.FindAllStringSubmatch(source, -1) {
+		if name := m[2]; m[1] == "" && nextReadNames[name] && !containsString(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
 
 // nextCalledExports returns the local names of what Next.js calls in source (for
 // export { handler as GET } that is handler), and whether the default export is
@@ -115,34 +136,10 @@ func nextCalledExports(source string) (names []string, anonymousDefault bool) {
 // handler is called GET. Each called export is an entrypoint; a file whose called
 // export can't be resolved to a symbol is listed once, under its module symbol.
 func (e *Engine) frameworkEntrypoints(idx *scip.SCIPIndex) []EntrypointV52 {
-	if idx == nil || !isNextApp(e.repoRoot) {
-		return nil
-	}
 	var out []EntrypointV52
-	for _, doc := range idx.Documents {
+	e.eachFrameworkFile(idx, func(doc *scip.Document, source string, byName map[string]*scip.SymbolInformation, module string) {
 		kind := nextEntrypointType(doc.RelativePath)
-		if kind == "" {
-			continue
-		}
-		source, err := os.ReadFile(filepath.Join(e.repoRoot, doc.RelativePath))
-		if err != nil {
-			continue
-		}
-		names, anonymous := nextCalledExports(string(source))
-		byName := make(map[string]*scip.SymbolInformation)
-		module := ""
-		for _, sym := range doc.Symbols {
-			if sym == nil || strings.HasPrefix(sym.Symbol, "local ") {
-				continue
-			}
-			if strings.HasSuffix(sym.Symbol, "/") {
-				module = sym.Symbol
-				continue
-			}
-			if name := scip.SymbolSimpleName(sym.Symbol); name != "" && byName[name] == nil {
-				byName[name] = sym
-			}
-		}
+		names, anonymous := nextCalledExports(source)
 		found := 0
 		for _, name := range names {
 			sym := byName[name]
@@ -168,9 +165,59 @@ func (e *Engine) frameworkEntrypoints(idx *scip.SCIPIndex) []EntrypointV52 {
 				DetectionBasis: "framework-convention",
 			})
 		}
-	}
+	})
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Location.FileId < out[j].Location.FileId })
 	return out
+}
+
+// frameworkUsedSymbols is every symbol a framework calls or reads without a
+// reference in the index: the entrypoints above plus route segment config and
+// metadata. None of it is dead code.
+func (e *Engine) frameworkUsedSymbols(idx *scip.SCIPIndex) map[string]bool {
+	used := make(map[string]bool)
+	for _, ep := range e.frameworkEntrypoints(idx) {
+		used[ep.SymbolId] = true
+	}
+	e.eachFrameworkFile(idx, func(doc *scip.Document, source string, byName map[string]*scip.SymbolInformation, module string) {
+		for _, name := range nextReadExports(source) {
+			if sym := byName[name]; sym != nil {
+				used[sym.Symbol] = true
+			}
+		}
+	})
+	return used
+}
+
+// eachFrameworkFile calls fn for every indexed file a framework calls by
+// convention, with its source and its non-local symbols by simple name.
+func (e *Engine) eachFrameworkFile(idx *scip.SCIPIndex, fn func(doc *scip.Document, source string, byName map[string]*scip.SymbolInformation, module string)) {
+	if idx == nil || !isNextApp(e.repoRoot) {
+		return
+	}
+	for _, doc := range idx.Documents {
+		if nextEntrypointType(doc.RelativePath) == "" {
+			continue
+		}
+		source, err := os.ReadFile(filepath.Join(e.repoRoot, doc.RelativePath))
+		if err != nil {
+			continue
+		}
+		byName := make(map[string]*scip.SymbolInformation)
+		module := ""
+		for _, sym := range doc.Symbols {
+			if sym == nil || strings.HasPrefix(sym.Symbol, "local ") {
+				continue
+			}
+			if strings.HasSuffix(sym.Symbol, "/") {
+				module = sym.Symbol
+				continue
+			}
+			if name := scip.SymbolSimpleName(sym.Symbol); name != "" && byName[name] == nil {
+				byName[name] = sym
+			}
+		}
+		fn(doc, string(source), byName, module)
+	}
 }
 
 // definitionLine is the 1-based line a symbol is defined on, or 0.

@@ -92,6 +92,20 @@ func (e *Engine) FindUnwiredModules(ctx context.Context, opts FindUnwiredModules
 		}
 	}
 
+	// Files a framework calls by convention: Next.js pages and route handlers.
+	// The naming rules above see none of them, and a Next.js app has nothing else.
+	for _, ep := range e.frameworkEntrypoints(e.scipAdapter.GetIndex()) {
+		if ep.Location == nil || seen[ep.Location.FileId] {
+			continue
+		}
+		seen[ep.Location.FileId] = true
+		appEntrypoints = append(appEntrypoints, architecture.Entrypoint{
+			FileId: ep.Location.FileId,
+			Name:   ep.Name,
+			Kind:   architecture.EntrypointServer,
+		})
+	}
+
 	var entrypointNames []string
 	for _, ep := range appEntrypoints {
 		entrypointNames = append(entrypointNames, ep.FileId)

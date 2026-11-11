@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/SimplyLiz/CodeMCP/internal/query"
@@ -807,15 +808,25 @@ func formatEntrypointsHuman(resp *EntrypointsResponseCLI) (string, error) {
 	b.WriteString("Entrypoints\n")
 	b.WriteString(strings.Repeat("=", 60) + "\n\n")
 
-	b.WriteString(fmt.Sprintf("Total Entrypoints: %d\n\n", resp.TotalCount))
+	if resp.TotalCount > len(resp.Entrypoints) {
+		b.WriteString(fmt.Sprintf("Total Entrypoints: %d (showing %d, raise --limit for more)\n\n", resp.TotalCount, len(resp.Entrypoints)))
+	} else {
+		b.WriteString(fmt.Sprintf("Total Entrypoints: %d\n\n", resp.TotalCount))
+	}
 
 	// Group by type
 	byType := make(map[string][]EntrypointDetailCLI)
+	var types []string
 	for _, ep := range resp.Entrypoints {
+		if _, ok := byType[ep.Type]; !ok {
+			types = append(types, ep.Type)
+		}
 		byType[ep.Type] = append(byType[ep.Type], ep)
 	}
+	sort.Strings(types)
 
-	for epType, eps := range byType {
+	for _, epType := range types {
+		eps := byType[epType]
 		b.WriteString(fmt.Sprintf("%s (%d):\n", epType, len(eps)))
 		for _, ep := range eps[:min(10, len(eps))] {
 			b.WriteString(fmt.Sprintf("  %s\n", ep.Name))

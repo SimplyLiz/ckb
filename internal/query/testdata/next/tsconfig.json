@@ -1,0 +1,1 @@
+{"compilerOptions":{"target":"es2020","module":"esnext","moduleResolution":"bundler","jsx":"preserve","strict":true,"noEmit":true,"baseUrl":".","paths":{"@/*":["./src/*"]}},"include":["src"]}

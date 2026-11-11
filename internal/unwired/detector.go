@@ -246,8 +246,8 @@ func (d *Detector) Analyze(ctx context.Context, opts DetectorOptions, reachable 
 	}
 
 	exclusions := deadcode.NewExclusionRules(opts.ExcludePatterns)
-	rules := newExportRules(d.repoRoot, index)
-	interfaces := newInterfaceReach(allSymbols, reachable)
+	rules := deadcode.NewExportRules(d.repoRoot, index)
+	interfaces := deadcode.NewInterfaceReach(allSymbols, func(symbol string) bool { return reachable[symbol] })
 	viaInterface := 0
 
 	// Group items by module (directory)
@@ -276,8 +276,8 @@ func (d *Detector) Analyze(ctx context.Context, opts DetectorOptions, reachable 
 			continue
 		}
 
-		// Skip generated files
-		if isGeneratedFile(info.filePath) {
+		// Skip generated files and anything under a hidden directory (.next/)
+		if isGeneratedFile(info.filePath) || deadcode.IsHiddenPath(info.filePath) {
 			continue
 		}
 
@@ -318,7 +318,7 @@ func (d *Detector) Analyze(ctx context.Context, opts DetectorOptions, reachable 
 		if reachable[sym.Symbol] {
 			continue
 		}
-		if kind == "method" && interfaces.via(sym) != "" {
+		if kind == "method" && interfaces.Via(sym) != "" {
 			viaInterface++
 			continue
 		}
@@ -543,14 +543,14 @@ type symbolInfo struct {
 	exported   bool
 }
 
-func parseSymbolInfo(sym *scip.SymbolInformation, rules *exportRules) *symbolInfo {
+func parseSymbolInfo(sym *scip.SymbolInformation, rules *deadcode.ExportRules) *symbolInfo {
 	if sym == nil || sym.Symbol == "" {
 		return nil
 	}
 
 	name := sym.DisplayName
 	if name == "" {
-		name = extractName(sym.Symbol)
+		name = deadcode.ExtractName(sym.Symbol)
 	}
 	if name == "" {
 		return nil
@@ -587,7 +587,7 @@ func parseSymbolInfo(sym *scip.SymbolInformation, rules *exportRules) *symbolInf
 
 	// The definition occurrence is the reliable source: rust-analyzer IDs
 	// carry no file path at all, and none of the IDs carry a line.
-	if path, line := rules.site(sym.Symbol); path != "" {
+	if path, line := rules.Site(sym.Symbol); path != "" {
 		filePath, lineNumber = path, line
 	}
 
@@ -596,7 +596,7 @@ func parseSymbolInfo(sym *scip.SymbolInformation, rules *exportRules) *symbolInf
 		kind = "function"
 	}
 
-	exported := rules.exported(sym.Symbol, name)
+	exported := rules.Exported(sym.Symbol, name)
 
 	return &symbolInfo{
 		name:       name,
@@ -605,20 +605,6 @@ func parseSymbolInfo(sym *scip.SymbolInformation, rules *exportRules) *symbolInf
 		lineNumber: lineNumber,
 		exported:   exported,
 	}
-}
-
-func extractName(symbolID string) string {
-	// Extract the last component of the SCIP symbol ID
-	parts := strings.Split(symbolID, "/")
-	if len(parts) == 0 {
-		return ""
-	}
-	last := parts[len(parts)-1]
-	// Remove trailing descriptor markers
-	last = strings.TrimSuffix(last, "().")
-	last = strings.TrimSuffix(last, "#")
-	last = strings.TrimSuffix(last, ".")
-	return last
 }
 
 // findSymbolFile returns the file path where a symbol is defined.
