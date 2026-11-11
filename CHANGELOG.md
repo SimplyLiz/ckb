@@ -255,6 +255,10 @@ Three changes with known breakage, checked against the compiler: a new parameter
   file *sourceFile, ok bool)` counted as declaring `file`, so a declaration looked for on
   the other side of the diff could be paired with the wrong one. The name now has to
   follow its keyword (Go, TypeScript and Rust).
+- **A TypeScript declaration in its file's `export { ... }` list is exported.** Moving
+  `export` from `export function f` into a list at the end of the file read as
+  narrowed visibility, `changed`, with every caller open. A list re-exporting from
+  another module, or exporting the name as another, still doesn't count.
 - **A server older than its binary says so in every answer.** `meta.staleServer`, checked
   at most every 30 s, instead of only in `getStatus`. Both now say to reconnect the
   server (`/mcp` in Claude Code); `getStatus` said `/clear`, which doesn't restart it.

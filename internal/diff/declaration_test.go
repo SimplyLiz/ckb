@@ -398,3 +398,35 @@ func TestFindDeclaration_NameAsParameter(t *testing.T) {
 		}
 	}
 }
+
+// A TypeScript function that loses `export` but is named in the file's export list
+// is still exported. A list re-exporting from another module doesn't count.
+func TestClassifyDeclaration_TSExportList(t *testing.T) {
+	old := []string{"", "export function f(a: string) {", "  return a;", "}", ""}
+	def := &SymbolDefInfo{StartLine: 3, EndLine: 5, DefLine: 3}
+	cases := []struct {
+		name string
+		tail []string
+		want impact.DeclarationChange
+	}{
+		{"listed", []string{"export { f, g };"}, impact.DeclUnchanged},
+		{"listed over lines", []string{"export {", "  g,", "  f,", "};"}, impact.DeclUnchanged},
+		{"listed under another name", []string{"export { f as h };"}, impact.DeclChanged},
+		{"re-exported from elsewhere", []string{"export { f } from './other';"}, impact.DeclChanged},
+		{"not listed", []string{"export { g };"}, impact.DeclChanged},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			newText := append([]string{"", "function f(a: string) {", "  return a;", "}", ""}, c.tail...)
+			file := changedFile("a.ts", 2, old, newText[:5], []int{3}, []int{3})
+			whole := &fileSides{
+				old: []string{"import x from 'x';", "", "export function f(a: string) {", "  return a;", "}", ""},
+				new: append([]string{"import x from 'x';", "", "function f(a: string) {", "  return a;", "}", ""}, c.tail...),
+			}
+			got, before, after := classifyDeclarationIn(readFileText(file, whole), false, def, "f", indexMatchesOld, impact.ChangeModified, "a.ts")
+			if got != c.want {
+				t.Errorf("got %q (%q -> %q), want %q", got, before, after, c.want)
+			}
+		})
+	}
+}
