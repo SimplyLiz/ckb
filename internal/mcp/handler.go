@@ -358,6 +358,13 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 		}
 	}
 
+	// Reload a changed index before resolving IDs against it, so a stream
+	// sees it too.
+	s.refreshIndexIfChanged(toolName)
+
+	// Symbol IDs held from an index built at another commit
+	remapWarnings := s.remapSymbolIDs(toolParams)
+
 	// v8.0: Check for streaming request
 	if streamResp, err := s.wrapForStreaming(toolName, toolParams); streamResp != nil || err != nil {
 		if err != nil {
@@ -388,8 +395,6 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 		}, nil
 	}
 
-	s.refreshIndexIfChanged(toolName)
-
 	toolStart := time.Now()
 	result, err := handler(toolParams)
 	if err != nil {
@@ -407,6 +412,8 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 			"isError": true,
 		}, nil
 	}
+
+	result = withWarnings(result, remapWarnings)
 
 	// Marshal the envelope response to JSON
 	jsonBytes, err := json.Marshal(result)
