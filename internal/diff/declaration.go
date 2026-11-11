@@ -3,6 +3,7 @@ package diff
 import (
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
@@ -180,7 +181,46 @@ func classifyDeclarationIn(text *fileText, deleted bool, def *SymbolDefInfo, nam
 		}
 		return "", before, after
 	}
-	return compareDeclarations(before, after, name, lang), before, after
+	compareBefore, compareAfter := before, after
+	if lang == "ts" {
+		compareBefore = withTSExportList(text.oldAll, before, name)
+		compareAfter = withTSExportList(text.newAll, after, name)
+	}
+	return compareDeclarations(compareBefore, compareAfter, name, lang), before, after
+}
+
+var tsExportListRe = regexp.MustCompile(`\bexport\s+(?:type\s+)?\{([^}]*)\}(\s*from\b)?`)
+
+// withTSExportList gives a declaration the `export` a list such as `export { f, g }`
+// elsewhere in its file gives it. A list that re-exports from another module, or exports
+// the name as another, doesn't. Only the lines read show a list: the whole file, if it
+// could be read.
+func withTSExportList(lines map[int]string, decl, name string) string {
+	if decl == "" || strings.HasPrefix(tsVisibilityRe.FindString(decl), "export") {
+		return decl
+	}
+	numbers := make([]int, 0, len(lines))
+	for line := range lines {
+		numbers = append(numbers, line)
+	}
+	sort.Ints(numbers)
+	var all strings.Builder
+	for _, line := range numbers {
+		all.WriteString(lines[line])
+		all.WriteByte('\n')
+	}
+	for _, m := range tsExportListRe.FindAllStringSubmatch(all.String(), -1) {
+		if m[2] != "" {
+			continue
+		}
+		for _, entry := range strings.Split(m[1], ",") {
+			fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(entry), "type "))
+			if len(fields) == 1 && fields[0] == name || len(fields) == 3 && fields[0] == name && fields[1] == "as" && fields[2] == name {
+				return "export " + decl
+			}
+		}
+	}
+	return decl
 }
 
 func anyChanged(changed map[int]bool, start, count int) bool {
