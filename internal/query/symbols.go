@@ -146,7 +146,7 @@ func (e *Engine) GetSymbol(ctx context.Context, opts GetSymbolOptions) (*GetSymb
 						Signature:           result.SignatureFull,
 						SignatureNormalized: result.SignatureNormalized,
 						ContainerName:       result.ContainerName,
-						ModuleId:            result.ModuleID,
+						ModuleId:            symbolModuleID(result.ModuleID, result.Location.Path),
 						Documentation:       result.Documentation,
 						LocationFreshness:   e.getLocationFreshness(repoState),
 						Visibility: &VisibilityInfo{
@@ -217,7 +217,7 @@ func (e *Engine) GetSymbol(ctx context.Context, opts GetSymbolOptions) (*GetSymb
 					Signature:           result.SignatureFull,
 					SignatureNormalized: result.SignatureNormalized,
 					ContainerName:       result.ContainerName,
-					ModuleId:            result.ModuleID,
+					ModuleId:            symbolModuleID(result.ModuleID, result.Location.Path),
 					Documentation:       result.Documentation,
 					LocationFreshness:   e.getLocationFreshness(repoState),
 					Visibility: &VisibilityInfo{

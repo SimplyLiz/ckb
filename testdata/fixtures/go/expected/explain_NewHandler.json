@@ -1,6 +1,6 @@
 {
   "facts": {
-    "module": "",
+    "module": "pkg",
     "symbol": {
       "file": "pkg/handler.go",
       "kind": "function",
@@ -13,8 +13,8 @@
     }
   },
   "summary": {
-    "identity": "function NewHandler in module ",
-    "tldr": "function NewHandler in module  – 0 callers, 2 references across 1 modules",
+    "identity": "function NewHandler in module pkg",
+    "tldr": "function NewHandler in module pkg – 0 callers, 2 references across 1 modules",
     "usage": "0 callers, 2 references across 1 modules"
   }
 }
