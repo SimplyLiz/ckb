@@ -317,7 +317,7 @@ func (s *Server) handleGetCallGraph(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := query.CallGraphOptions{
-		SymbolId:  symbolID,
+		SymbolId:  s.remapSymbolID(w, symbolID),
 		Direction: r.URL.Query().Get("direction"),
 		Depth:     QueryParamInt(r, "depth", 2),
 	}
@@ -347,7 +347,7 @@ func (s *Server) handleExplainSymbol(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := query.ExplainSymbolOptions{
-		SymbolId: symbolID,
+		SymbolId: s.remapSymbolID(w, symbolID),
 	}
 
 	resp, err := s.engine.ExplainSymbol(ctx, opts)
@@ -375,7 +375,7 @@ func (s *Server) handleJustifySymbol(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := query.JustifySymbolOptions{
-		SymbolId: symbolID,
+		SymbolId: s.remapSymbolID(w, symbolID),
 	}
 
 	resp, err := s.engine.JustifySymbol(ctx, opts)

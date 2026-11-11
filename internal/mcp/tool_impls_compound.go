@@ -41,9 +41,11 @@ func buildMCPCompactPrepareChange(target string, r *query.PrepareChangeResponse,
 		}
 	}
 
+	// TotalCallers already counts the direct callers, and counts them all:
+	// DirectDependents is cut to the response budget.
 	affectedCount := len(r.DirectDependents)
 	if r.TransitiveImpact != nil {
-		affectedCount += r.TransitiveImpact.TotalCallers
+		affectedCount = r.TransitiveImpact.TotalCallers
 	}
 
 	var testsNeeded []string

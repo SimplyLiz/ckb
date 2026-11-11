@@ -2218,6 +2218,16 @@ func (e *Engine) calculatePrepareRisk(
 	// prints as "0.70" but would classify as "high", not "critical").
 	roundedScore := math.Round(score*100) / 100
 
+	// A rename or delete breaks every production caller left as it is, however
+	// few there are, so it gets the floor assessChange applies to the same
+	// change once it is in a diff (applyContractChangesToRisk). Without it the
+	// two tools disagree on one change: prepareChange low, assessChange high.
+	// modify has no floor: it can't tell a body edit from a signature change.
+	if (changeType == ChangeDelete || changeType == ChangeRename) && len(dependents) > 0 && roundedScore < highRiskFloor {
+		roundedScore = highRiskFloor
+		factors = append(factors, fmt.Sprintf("%s breaks %d production caller(s) unless they change too", changeType, len(dependents)))
+	}
+
 	level := "low"
 	if roundedScore >= 0.7 {
 		level = "critical"

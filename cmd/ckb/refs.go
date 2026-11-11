@@ -84,6 +84,8 @@ func runRefs(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	symbolID = remapSymbolID(engine, symbolID)
+
 	// Find references using Query Engine
 	opts := query.FindReferencesOptions{
 		SymbolId:     symbolID,
