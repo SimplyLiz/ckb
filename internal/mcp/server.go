@@ -521,7 +521,9 @@ func (s *MCPServer) CallTool(name string, params map[string]interface{}) (*envel
 		return nil, fmt.Errorf("tool not found: %s", name)
 	}
 	s.refreshIndexIfChanged(name)
-	return handler(params)
+	warnings := s.remapSymbolIDs(params)
+	resp, err := handler(params)
+	return withWarnings(resp, warnings), err
 }
 
 // GetRoots returns the current MCP roots from the client (v8.0)
