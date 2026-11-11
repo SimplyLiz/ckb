@@ -43,6 +43,7 @@ func runJustify(cmd *cobra.Command, args []string) {
 
 	repoRoot := mustGetRepoRoot()
 	engine := mustGetEngine(repoRoot, logger)
+	symbolId = remapSymbolID(engine, symbolId)
 	ctx := newContext()
 
 	opts := query.JustifySymbolOptions{

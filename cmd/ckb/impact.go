@@ -151,6 +151,7 @@ func runPrepareChange(cmd *cobra.Command, args []string) {
 
 	repoRoot := mustGetRepoRoot()
 	eng := mustGetEngine(repoRoot, logger)
+	target = remapSymbolID(eng, target)
 	ctx := newContext()
 
 	changeType := query.ChangeModify
@@ -216,9 +217,11 @@ func buildCompactPrepareChange(target string, r *query.PrepareChangeResponse, ac
 		}
 	}
 
+	// TotalCallers already counts the direct callers, and counts them all:
+	// DirectDependents is cut to the response budget.
 	affectedCount := len(r.DirectDependents)
 	if r.TransitiveImpact != nil {
-		affectedCount += r.TransitiveImpact.TotalCallers
+		affectedCount = r.TransitiveImpact.TotalCallers
 	}
 
 	// Top 5 tests
@@ -289,6 +292,7 @@ func runImpact(cmd *cobra.Command, args []string) {
 
 	repoRoot := mustGetRepoRoot()
 	engine := mustGetEngine(repoRoot, logger)
+	symbolID = remapSymbolID(engine, symbolID)
 	ctx := newContext()
 
 	// Analyze impact using Query Engine
@@ -1086,6 +1090,7 @@ func runImpactOutgoing(cmd *cobra.Command, args []string) {
 
 	repoRoot := mustGetRepoRoot()
 	engine := mustGetEngine(repoRoot, logger)
+	symbolID = remapSymbolID(engine, symbolID)
 	ctx := newContext()
 
 	resp, err := engine.AnalyzeOutgoingImpact(ctx, query.AnalyzeOutgoingImpactOptions{

@@ -1012,3 +1012,35 @@ func TestPrepareChange_FileTargetAggregatesDeclaredSymbols(t *testing.T) {
 		t.Errorf("expected a transitive summary, got %+v", resp.TransitiveImpact)
 	}
 }
+
+// TestCalculatePrepareRisk_RenameDeleteFloor: a rename or delete with production
+// callers gets assessChange's high floor, so prepareChange no longer says low for
+// a change assessChange calls high once it is in the diff. modify and a
+// rename without callers keep the count-based score.
+func TestCalculatePrepareRisk_RenameDeleteFloor(t *testing.T) {
+	engine := &Engine{}
+	target := &PrepareChangeTarget{Visibility: "internal", Path: "internal/example/widget.go"}
+	tests := []PrepareTest{{File: "internal/example/widget_test.go"}}
+	one := []PrepareDependent{{Name: "caller", File: "internal/other/use.go", Line: 3}}
+
+	cases := []struct {
+		name       string
+		changeType ChangeType
+		dependents []PrepareDependent
+		wantScore  float64
+		wantLevel  string
+	}{
+		{"rename with a caller", ChangeRename, one, highRiskFloor, "high"},
+		{"delete with a caller", ChangeDelete, one, highRiskFloor, "high"},
+		{"modify with a caller", ChangeModify, one, 0, "low"},
+		{"rename without callers", ChangeRename, nil, 0.1, "low"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			risk := engine.calculatePrepareRisk(target, c.dependents, nil, tests, nil, nil, c.changeType)
+			if risk.Score != c.wantScore || risk.Level != c.wantLevel {
+				t.Errorf("got %v %s, want %v %s (factors %v)", risk.Score, risk.Level, c.wantScore, c.wantLevel, risk.Factors)
+			}
+		})
+	}
+}

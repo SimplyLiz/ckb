@@ -1398,7 +1398,9 @@ func (s *MCPServer) toolAssessChange(params map[string]interface{}) (*envelope.R
 		strict = v
 	}
 
-	format := "full"
+	// compact by default: agents act on the open sites, tests and risk, and
+	// almost never need the symbol ids and full listings that triple the size.
+	format := "compact"
 	if v, ok := params["format"].(string); ok && v != "" {
 		format = v
 	}

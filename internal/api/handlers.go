@@ -390,7 +390,7 @@ func (s *Server) handleGetSymbol(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := query.GetSymbolOptions{
-		SymbolId:      symbolID,
+		SymbolId:      s.remapSymbolID(w, symbolID),
 		RepoStateMode: repoStateMode,
 	}
 
@@ -554,7 +554,7 @@ func (s *Server) handleFindReferences(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := query.FindReferencesOptions{
-		SymbolId:     symbolID,
+		SymbolId:     s.remapSymbolID(w, symbolID),
 		Scope:        scope,
 		IncludeTests: includeTests,
 		Limit:        limit,
@@ -783,7 +783,7 @@ func (s *Server) handleAnalyzeImpact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := query.AnalyzeImpactOptions{
-		SymbolId:     symbolID,
+		SymbolId:     s.remapSymbolID(w, symbolID),
 		Depth:        depth,
 		IncludeTests: includeTests,
 	}

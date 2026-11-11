@@ -396,7 +396,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		},
 		{
 			Name:        "assessChange",
-			Description: "The post-change counterpart to prepareChange: use this AFTER changes are made to assess what you actually changed and what to verify before finishing. Defaults to the uncommitted working tree; also supports staged changes or a base-branch range. Answers: what might break? which tests should run? who needs to review? are there possible contract changes? `doneCheck` lists each use of a changed declaration that the diff left as it was (`openSites`: file, line, code, and `via` when the symbol itself isn't what changed), with status open, clear or not_assessed. It compares text and compiles nothing, so clear is not proof. `coChangeCheck` lists the files that usually change with the touched files (git history, any language) and were left alone (`openFiles`: file, with, together, of). Pass format \"compact\" for just what to act on (open sites, tests, contracts, consumer files) at a fraction of the size. For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
+			Description: "The post-change counterpart to prepareChange: use this AFTER changes are made to assess what you actually changed and what to verify before finishing. Defaults to the uncommitted working tree; also supports staged changes or a base-branch range. Answers: what might break? which tests should run? are there possible contract changes? `doneCheck` lists each use of a changed declaration that the diff left as it was (`openSites`: at file:line, code, consumer, and `via` when the symbol itself isn't what changed), with status open, clear or not_assessed. It compares text and compiles nothing, so clear is not proof. `coChangeOpen` lists the files that usually change with the touched files (git history, any language) and were left alone. The default format \"compact\" returns just what to act on (risk, open sites, tests, contracts, consumer files) without symbol ids; pass format \"full\" for every detail, including symbol ids, affected modules, recommendations and the per-check structure (`coChangeCheck.openFiles`). For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -432,8 +432,8 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 					"format": map[string]interface{}{
 						"type":        "string",
 						"enum":        []string{"full", "compact"},
-						"default":     "full",
-						"description": "Response format: 'full' (default) returns all details; 'compact' returns what to act on (risk, doneCheck open sites as file:line with code and consumer, affected test files with test names, contract kinds, direct consumer files) without symbol ids, a fraction of the size",
+						"default":     "compact",
+						"description": "Response format: 'compact' (default) returns what to act on (risk, doneCheck open sites as file:line with code and consumer, affected test files with test names, contract kinds, direct consumer files) without symbol ids, a fraction of the size; 'full' returns all details including symbol ids",
 					},
 				},
 			},

@@ -194,7 +194,10 @@ Three changes with known breakage, checked against the compiler: a new parameter
 - **A symbol ID from before the last commit still resolves.** scip-go puts the commit
   hash into every ID, so each commit invalidated the IDs an agent held. MCP and A2A
   calls now retry without the version field, take only a unique match, and say so in a
-  `SYMBOL_ID_VERSION_REMAPPED` warning. The HTTP API and CLI don't remap yet.
+  `SYMBOL_ID_VERSION_REMAPPED` warning. The HTTP API does the same and names both IDs
+  in an `X-CKB-Symbol-Id-Remapped` header; the CLI (`symbol`, `refs`, `impact`,
+  `impact prepare`, `impact outgoing`, `callgraph`, `justify`, `trace`) prints a note on
+  stderr.
 - **`prepareChange` lists the tests that use the target.** Before, it listed the first
   20 test files of the module, alphabetically; for `NewEngine` none of the 14 that call
   it. It now uses the same derivation as `assessChange`: direct, then transitive, then
@@ -204,12 +207,20 @@ Three changes with known breakage, checked against the compiler: a new parameter
 - **Co-changed files carry their path.** `coChangeFiles` said `symbols.go`; it says
   `internal/query/symbols.go`. That also fixes review's split graph, which compared the
   basename against full paths and never matched, and `explainOrigin`'s co-changes.
-- **`assessChange` has `format: "compact"`** (`ckb changes --format=compact`): no
-  symbol IDs, open sites as `file:line`. 7.5 KB instead of 25.8 KB for the `NewEngine`
-  change. Test names and affected symbols carry short names, not SCIP IDs, and
+- **`assessChange` answers in `format: "compact"` by default** (`ckb changes
+  --format=compact`): no symbol IDs, open sites as `file:line`. 7.5 KB instead of 25.8 KB
+  for the `NewEngine` change. `format: "full"` returns the previous answer. Test names and affected symbols carry short names, not SCIP IDs, and
   `affectedBy` names the changed symbol that selected the test.
 - **A server older than its binary says so in every answer.** `meta.staleServer`, checked
-  at most every 30 s, instead of only in `getStatus`.
+  at most every 30 s, instead of only in `getStatus`. Both now say to reconnect the
+  server (`/mcp` in Claude Code); `getStatus` said `/clear`, which doesn't restart it.
+- **`prepareChange` with `rename` or `delete` gets the floor `assessChange` applies.**
+  With production callers the risk is at least high (0.6), as `assessChange` scores the
+  same change once it is in a diff. The `NewEngine` case read low 0.15 before the edit
+  and high 0.6 after it. `modify` keeps the count-based score, since it can't tell a
+  body edit from a signature change.
+- **`affected_count` no longer counts direct callers twice.** The compact `prepareChange`
+  and `ckb impact prepare` added the direct callers to a total that already held them.
 - **`understand "Backend.Priority"` means Backend's `Priority`**, not the first method of
   that name, and the symbol has its module again (it read "in module  –").
 

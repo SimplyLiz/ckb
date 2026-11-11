@@ -760,8 +760,13 @@ func (s *MCPServer) GetBinaryStaleWarning() string {
 	if !s.IsBinaryStale() {
 		return ""
 	}
-	return "CKB binary has been updated. Restart Claude Code or run /clear for changes to take effect."
+	return staleServerMessage
 }
+
+// staleServerMessage is what getStatus and every tool response's meta say once
+// the binary on disk is newer than this process. /clear does not restart an MCP
+// server; reconnecting it does.
+const staleServerMessage = "The ckb binary changed after this server started, so results come from the old build. Reconnect ckb (Claude Code: /mcp) or restart the client."
 
 // binaryStaleCheckInterval bounds how often a tool call stats the binary.
 var binaryStaleCheckInterval = 30 * time.Second
@@ -779,7 +784,7 @@ func (s *MCPServer) staleServerWarning() string {
 	if !s.binaryStale {
 		return ""
 	}
-	return "The ckb binary changed after this server started, so results come from the old build. Reconnect ckb (Claude Code: /mcp) or restart the client."
+	return staleServerMessage
 }
 
 // markStaleServer puts staleServerWarning into a tool response's meta.
