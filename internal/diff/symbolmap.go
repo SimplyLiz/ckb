@@ -3,6 +3,7 @@ package diff
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -61,6 +62,34 @@ type SymbolInfo struct {
 // DiffSymbolMapper maps diff changes to SCIP symbols
 type DiffSymbolMapper struct {
 	index SymbolIndex
+	files FileReader
+}
+
+// FileReader returns a file's whole text on one side of the diff, split into lines,
+// or nil if it can't be read. A diff shows only its hunks; a declaration can depend on
+// lines outside them, such as the `const (` a constant sits under. Text that doesn't
+// agree with the hunks is ignored, so a reader for the wrong revision costs nothing.
+type FileReader func(path string, old bool) []string
+
+// WithFileReader lets the mapper read whole files.
+func (m *DiffSymbolMapper) WithFileReader(r FileReader) *DiffSymbolMapper {
+	m.files = r
+	return m
+}
+
+// wholeFile reads both sides of a changed file, or returns nil without a reader.
+func (m *DiffSymbolMapper) wholeFile(file *impact.ChangedFile) *fileSides {
+	if m.files == nil {
+		return nil
+	}
+	sides := &fileSides{}
+	if !file.IsNew && file.OldPath != "" {
+		sides.old = m.files(file.OldPath, true)
+	}
+	if !file.Deleted && file.NewPath != "" {
+		sides.new = m.files(file.NewPath, false)
+	}
+	return sides
 }
 
 // NewDiffSymbolMapper creates a new DiffSymbolMapper
@@ -103,6 +132,8 @@ func (m *DiffSymbolMapper) MapToSymbols(diff *impact.ParsedDiff) ([]impact.Chang
 			}
 		}
 	}
+
+	m.resolveGoMoves(diff, result)
 
 	// Sort by confidence descending, then by name
 	sort.Slice(result, func(i, j int) bool {
@@ -205,6 +236,7 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 
 	wholeChanges := wholeDefinitionChanges(file, defs, side)
 	changeType := fileChangeType(file)
+	var text *fileText // Read once, for the first declaration to compare
 	result := make([]impact.ChangedSymbol, 0, len(found)+1)
 	for symbolID, sym := range found {
 		entry := impact.ChangedSymbol{
@@ -233,7 +265,12 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 			if name == "" {
 				name = sym.def.Name
 			}
-			entry.Declaration, entry.DeclarationBefore, entry.DeclarationAfter = classifyDeclaration(file, sym.def, name, side, entry.ChangeType, filePath)
+			if text == nil && !file.IsNew && declarationLanguage(filePath) != "" {
+				text = readFileText(file, m.wholeFile(file))
+			}
+			if text != nil {
+				entry.Declaration, entry.DeclarationBefore, entry.DeclarationAfter = classifyDeclarationIn(text, file.Deleted, sym.def, name, side, entry.ChangeType, filePath)
+			}
 		}
 		result = append(result, entry)
 	}
@@ -870,4 +907,97 @@ func uniqueLines(lines []int) []int {
 	}
 	sort.Ints(result)
 	return result
+}
+
+// resolveGoMoves finds where a Go declaration the diff removed went, if it went to
+// another file of the same package: callers name the package, not the file, so for
+// them nothing was removed. The declarations on both sides are then compared as for
+// any other change. Elsewhere, or into the package's external tests, it is gone.
+func (m *DiffSymbolMapper) resolveGoMoves(parsed *impact.ParsedDiff, result []impact.ChangedSymbol) {
+	texts := make(map[string]*fileText)
+	byPath := make(map[string]*impact.ChangedFile, len(parsed.Files))
+	for j := range parsed.Files {
+		file := &parsed.Files[j]
+		byPath[file.NewPath] = file
+		if file.OldPath != "" {
+			byPath[file.OldPath] = file
+		}
+	}
+	read := func(file *impact.ChangedFile) *fileText {
+		key := file.OldPath + "\x00" + file.NewPath
+		text, ok := texts[key]
+		if !ok {
+			text = readFileText(file, m.wholeFile(file))
+			texts[key] = text
+		}
+		return text
+	}
+	for i := range result {
+		sym := &result[i]
+		if sym.Declaration != impact.DeclRemoved || sym.DeclarationBefore == "" || declarationLanguage(sym.File) != "go" {
+			continue
+		}
+		name := leafSymbolName(sym)
+		if name == "" {
+			continue
+		}
+		for j := range parsed.Files {
+			file := &parsed.Files[j]
+			if file.Deleted || file.NewPath == "" || file.NewPath == sym.File || !samePackageFile(sym.File, file.NewPath) {
+				continue
+			}
+			text := read(file)
+			if strings.HasSuffix(file.NewPath, "_test.go") {
+				// Two test files of one directory may be the package and its external tests.
+				source := byPath[sym.File]
+				if source == nil || goPackage(read(source).oldAll) == "" || goPackage(read(source).oldAll) != goPackage(text.newAll) {
+					continue
+				}
+			}
+			line := findDeclaration(text.newAll, text.changedNew, sym.DeclarationBefore, name, "go")
+			if line == 0 {
+				continue
+			}
+			decl := readDeclaration(text.newAll, line, "go")
+			decl.text = withGoGroupKeyword(text.newAll, line, decl.text, "go")
+			sym.ChangeType = impact.ChangeModified
+			sym.DeclarationAfter = decl.text
+			sym.Declaration = ""
+			if decl.complete {
+				sym.Declaration = compareDeclarations(sym.DeclarationBefore, decl.text, name, "go")
+			}
+			sym.Note = "moved to " + file.NewPath
+			break
+		}
+	}
+}
+
+// leafSymbolName is the name a declaration spells out: M for a method T.M.
+func leafSymbolName(sym *impact.ChangedSymbol) string {
+	if name := scip.SymbolSimpleName(sym.SymbolID); name != "" {
+		return name
+	}
+	name := sym.Name
+	if i := strings.LastIndexAny(name, ".#"); i >= 0 {
+		name = name[i+1:]
+	}
+	return name
+}
+
+// samePackageFile reports whether two Go files are in one package: one directory,
+// and both tests or neither, since a _test.go file may be the external test package.
+func samePackageFile(a, b string) bool {
+	return filepath.Dir(a) == filepath.Dir(b) && strings.HasSuffix(a, "_test.go") == strings.HasSuffix(b, "_test.go")
+}
+
+var goPackageRe = regexp.MustCompile(`^package\s+([A-Za-z_]\w*)`)
+
+// goPackage is the package clause among a file's lines, or "" if they don't show it.
+func goPackage(lines map[int]string) string {
+	for line := 1; line <= 50; line++ {
+		if m := goPackageRe.FindStringSubmatch(lines[line]); m != nil {
+			return m[1]
+		}
+	}
+	return ""
 }

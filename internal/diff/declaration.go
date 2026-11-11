@@ -32,14 +32,24 @@ func declarationLanguage(path string) string {
 }
 
 // fileText is what a diff shows of a file: the text of both sides, which lines the
-// change itself touched, and which old line each unchanged new line was.
+// change itself touched, and which old line each unchanged new line was. oldAll and
+// newAll are the whole sides where they could be read, and otherwise the same as
+// oldLines and newLines: what lies outside every hunk, such as the `const (` a
+// constant sits under, is only there.
 type fileText struct {
 	oldLines, newLines     map[int]string
+	oldAll, newAll         map[int]string
 	changedOld, changedNew map[int]bool
 	oldToNew, newToOld     map[int]int
 }
 
-func readFileText(file *impact.ChangedFile) *fileText {
+// fileSides is a changed file's whole text on both sides of the diff, 1-based by
+// position. A side is nil if it couldn't be read.
+type fileSides struct {
+	old, new []string
+}
+
+func readFileText(file *impact.ChangedFile, whole *fileSides) *fileText {
 	t := &fileText{
 		oldLines: make(map[int]string), newLines: make(map[int]string),
 		changedOld: make(map[int]bool), changedNew: make(map[int]bool),
@@ -75,26 +85,52 @@ func readFileText(file *impact.ChangedFile) *fileText {
 			}
 		}
 	}
+	t.oldAll, t.newAll = t.oldLines, t.newLines
+	if whole != nil {
+		t.oldAll = wholeSide(t.oldLines, whole.old)
+		t.newAll = wholeSide(t.newLines, whole.new)
+	}
 	return t
 }
 
-// classifyDeclaration compares the declaration of def across the diff. The returned
+// wholeSide returns a side's whole text, if it agrees with every line the hunks show
+// of it. If not, it is some other revision of the file, and the hunks are all there is.
+func wholeSide(hunkLines map[int]string, whole []string) map[int]string {
+	if whole == nil {
+		return hunkLines
+	}
+	for line, text := range hunkLines {
+		if line < 1 || line > len(whole) || whole[line-1] != text {
+			return hunkLines
+		}
+	}
+	all := make(map[int]string, len(whole))
+	for i, text := range whole {
+		all[i+1] = text
+	}
+	return all
+}
+
+// classifyDeclarationIn compares the declaration of def across the diff. The returned
 // text is what was compared, without comments. An empty result means no answer.
-func classifyDeclaration(file *impact.ChangedFile, def *SymbolDefInfo, name string, side indexSide, changeType impact.ChangeType, path string) (change impact.DeclarationChange, before, after string) {
+func classifyDeclarationIn(text *fileText, deleted bool, def *SymbolDefInfo, name string, side indexSide, changeType impact.ChangeType, path string) (change impact.DeclarationChange, before, after string) {
 	lang := declarationLanguage(path)
-	if lang == "" || name == "" || file.IsNew || changeType == impact.ChangeAdded {
+	if lang == "" || name == "" || changeType == impact.ChangeAdded {
 		return "", "", ""
 	}
-	text := readFileText(file)
 	if len(text.oldLines) == 0 && len(text.newLines) == 0 {
 		return "", "", "" // A hunk built by hand has no text
 	}
 
-	indexLines, otherLines := text.oldLines, text.newLines
+	// The hunks decide what the change touched; the whole file, where there is one,
+	// is read for what a declaration's own lines don't say.
+	indexLines := text.oldLines
+	indexAll, otherAll := text.oldAll, text.newAll
 	indexChanged, otherChanged := text.changedOld, text.changedNew
 	toOther := text.oldToNew
 	if side == indexMatchesNew {
-		indexLines, otherLines = text.newLines, text.oldLines
+		indexLines = text.newLines
+		indexAll, otherAll = text.newAll, text.oldAll
 		indexChanged, otherChanged = text.changedNew, text.changedOld
 		toOther = text.newToOld
 	}
@@ -106,7 +142,7 @@ func classifyDeclaration(file *impact.ChangedFile, def *SymbolDefInfo, name stri
 	first, known := indexLines[line]
 	if !known {
 		// No hunk reaches the declaration, so the change is further into the body.
-		if changeType == impact.ChangeDeleted || file.Deleted {
+		if changeType == impact.ChangeDeleted || deleted {
 			return impact.DeclRemoved, "", ""
 		}
 		return impact.DeclUnchanged, "", ""
@@ -114,14 +150,14 @@ func classifyDeclaration(file *impact.ChangedFile, def *SymbolDefInfo, name stri
 	if !containsWord(first, name) {
 		return "", "", ""
 	}
-	first = withGoGroupKeyword(indexLines, line, first, lang)
+	first = withGoGroupKeyword(indexAll, line, first, lang)
 
-	indexDecl := readDeclaration(indexLines, line, lang)
-	indexDecl.text = withGoGroupKeyword(indexLines, line, indexDecl.text, lang)
+	indexDecl := readDeclaration(indexAll, line, lang)
+	indexDecl.text = withGoGroupKeyword(indexAll, line, indexDecl.text, lang)
 
 	otherLine, inContext := toOther[line]
 	if !inContext {
-		otherLine = findDeclaration(otherLines, otherChanged, first, name, lang)
+		otherLine = findDeclaration(otherAll, otherChanged, first, name, lang)
 		if otherLine == 0 {
 			if side == indexMatchesOld {
 				return impact.DeclRemoved, indexDecl.text, ""
@@ -129,8 +165,8 @@ func classifyDeclaration(file *impact.ChangedFile, def *SymbolDefInfo, name stri
 			return "", "", "" // New in this change: nothing can depend on it yet
 		}
 	}
-	otherDecl := readDeclaration(otherLines, otherLine, lang)
-	otherDecl.text = withGoGroupKeyword(otherLines, otherLine, otherDecl.text, lang)
+	otherDecl := readDeclaration(otherAll, otherLine, lang)
+	otherDecl.text = withGoGroupKeyword(otherAll, otherLine, otherDecl.text, lang)
 
 	before, after = indexDecl.text, otherDecl.text
 	if side == indexMatchesNew {
