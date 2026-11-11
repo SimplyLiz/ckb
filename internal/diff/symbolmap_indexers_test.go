@@ -610,3 +610,70 @@ func TestMapToSymbols_GoMoveBetweenTestFiles(t *testing.T) {
 		})
 	}
 }
+
+// renameDoc is lib/rules.go, a type with a method and a function taking it:
+//
+//	1 package lib
+//	2
+//	3 type rules struct{}
+//	4
+//	5 func (r *rules) line(id string) string {
+//	6 	return id
+//	7 }
+//	8
+//	9 func parse(r *rules) int { return 0 }
+func renameDoc() *scip.Document {
+	sym := func(s string) string { return goPkg + s }
+	return &scip.Document{
+		RelativePath: "lib/rules.go",
+		Occurrences: []*scip.Occurrence{
+			def(sym("rules#"), 2),
+			def(sym("rules#line()."), 4, 4, 0, 6, 1),
+			ref(sym("rules#"), 4),
+			def(sym("parse()."), 8, 8, 0, 8, 37),
+			ref(sym("rules#"), 8),
+		},
+		Symbols: []*scip.SymbolInformation{
+			{Symbol: sym("rules#"), DisplayName: "rules", Kind: 49},
+			{Symbol: sym("rules#line()."), DisplayName: "line", Kind: 26},
+			{Symbol: sym("parse()."), DisplayName: "parse", Kind: 17},
+		},
+	}
+}
+
+// A type renamed, here exported and moved to another package: its methods and the
+// signatures naming it follow along, and only the type itself is removed. Whoever
+// still names the old type is that removal's open site.
+func TestMapToSymbols_GoTypeRenameCarriesItsMethods(t *testing.T) {
+	header := "diff --git a/lib/rules.go b/lib/rules.go\n--- a/lib/rules.go\n+++ b/lib/rules.go\n"
+	cases := []struct {
+		name, hunk string
+		want       map[string]impact.DeclarationChange
+	}{
+		{"renamed in place",
+			"@@ -1,9 +1,9 @@\n package lib\n \n-type rules struct{}\n+type Rules struct{}\n \n-func (r *rules) line(id string) string {\n+func (r *Rules) line(id string) string {\n \treturn id\n }\n \n-func parse(r *rules) int { return 0 }\n+func parse(r *Rules) int { return 0 }\n",
+			map[string]impact.DeclarationChange{"rules": impact.DeclRemoved, "line": impact.DeclUnchanged, "parse": impact.DeclUnchanged}},
+		{"qualified from another package",
+			"@@ -1,9 +1,9 @@\n package lib\n \n-type rules struct{}\n+type Rules struct{}\n \n-func (r *rules) line(id string) string {\n+func (r *Rules) line(id string) string {\n \treturn id\n }\n \n-func parse(r *rules) int { return 0 }\n+func parse(r *other.Rules) int { return 0 }\n",
+			map[string]impact.DeclarationChange{"line": impact.DeclUnchanged, "parse": impact.DeclUnchanged}},
+		{"method changed on the way",
+			"@@ -1,9 +1,9 @@\n package lib\n \n-type rules struct{}\n+type Rules struct{}\n \n-func (r *rules) line(id string) string {\n+func (r *Rules) line(id int) string {\n \treturn id\n }\n \n-func parse(r *rules) int { return 0 }\n+func parse(r *Rules, n int) int { return 0 }\n",
+			map[string]impact.DeclarationChange{"line": impact.DeclChanged, "parse": impact.DeclChanged}},
+		{"type kept, method's receiver moved to a new type",
+			"@@ -1,9 +1,10 @@\n package lib\n \n type rules struct{}\n+type other struct{}\n \n-func (r *rules) line(id string) string {\n+func (r *other) line(id string) string {\n \treturn id\n }\n \n func parse(r *rules) int { return 0 }\n",
+			map[string]impact.DeclarationChange{"line": impact.DeclRemoved}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := make(map[string]impact.DeclarationChange)
+			for _, s := range mapDoc(t, renameDoc(), header+c.hunk) {
+				got[s.Name] = s.Declaration
+			}
+			for name, want := range c.want {
+				if got[name] != want {
+					t.Errorf("%s: got %q, want %q (all: %v)", name, got[name], want, got)
+				}
+			}
+		})
+	}
+}

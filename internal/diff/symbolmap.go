@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -133,7 +134,9 @@ func (m *DiffSymbolMapper) MapToSymbols(diff *impact.ParsedDiff) ([]impact.Chang
 		}
 	}
 
-	m.resolveGoMoves(diff, result)
+	texts := newDiffTexts(m, diff)
+	resolveGoMoves(texts, result)
+	resolveGoTypeRenames(texts, result)
 
 	// Sort by confidence descending, then by name
 	sort.Slice(result, func(i, j int) bool {
@@ -909,29 +912,43 @@ func uniqueLines(lines []int) []int {
 	return result
 }
 
+// diffTexts reads each file of a diff once, whole where the mapper has a reader.
+type diffTexts struct {
+	m      *DiffSymbolMapper
+	files  []*impact.ChangedFile
+	byPath map[string]*impact.ChangedFile
+	texts  map[*impact.ChangedFile]*fileText
+}
+
+func newDiffTexts(m *DiffSymbolMapper, parsed *impact.ParsedDiff) *diffTexts {
+	d := &diffTexts{m: m, byPath: make(map[string]*impact.ChangedFile), texts: make(map[*impact.ChangedFile]*fileText)}
+	for j := range parsed.Files {
+		file := &parsed.Files[j]
+		d.files = append(d.files, file)
+		if file.NewPath != "" {
+			d.byPath[file.NewPath] = file
+		}
+		if file.OldPath != "" {
+			d.byPath[file.OldPath] = file
+		}
+	}
+	return d
+}
+
+func (d *diffTexts) read(file *impact.ChangedFile) *fileText {
+	text, ok := d.texts[file]
+	if !ok {
+		text = readFileText(file, d.m.wholeFile(file))
+		d.texts[file] = text
+	}
+	return text
+}
+
 // resolveGoMoves finds where a Go declaration the diff removed went, if it went to
 // another file of the same package: callers name the package, not the file, so for
 // them nothing was removed. The declarations on both sides are then compared as for
 // any other change. Elsewhere, or into the package's external tests, it is gone.
-func (m *DiffSymbolMapper) resolveGoMoves(parsed *impact.ParsedDiff, result []impact.ChangedSymbol) {
-	texts := make(map[string]*fileText)
-	byPath := make(map[string]*impact.ChangedFile, len(parsed.Files))
-	for j := range parsed.Files {
-		file := &parsed.Files[j]
-		byPath[file.NewPath] = file
-		if file.OldPath != "" {
-			byPath[file.OldPath] = file
-		}
-	}
-	read := func(file *impact.ChangedFile) *fileText {
-		key := file.OldPath + "\x00" + file.NewPath
-		text, ok := texts[key]
-		if !ok {
-			text = readFileText(file, m.wholeFile(file))
-			texts[key] = text
-		}
-		return text
-	}
+func resolveGoMoves(texts *diffTexts, result []impact.ChangedSymbol) {
 	for i := range result {
 		sym := &result[i]
 		if sym.Declaration != impact.DeclRemoved || sym.DeclarationBefore == "" || declarationLanguage(sym.File) != "go" {
@@ -941,16 +958,15 @@ func (m *DiffSymbolMapper) resolveGoMoves(parsed *impact.ParsedDiff, result []im
 		if name == "" {
 			continue
 		}
-		for j := range parsed.Files {
-			file := &parsed.Files[j]
+		for _, file := range texts.files {
 			if file.Deleted || file.NewPath == "" || file.NewPath == sym.File || !samePackageFile(sym.File, file.NewPath) {
 				continue
 			}
-			text := read(file)
+			text := texts.read(file)
 			if strings.HasSuffix(file.NewPath, "_test.go") {
 				// Two test files of one directory may be the package and its external tests.
-				source := byPath[sym.File]
-				if source == nil || goPackage(read(source).oldAll) == "" || goPackage(read(source).oldAll) != goPackage(text.newAll) {
+				source := texts.byPath[sym.File]
+				if source == nil || goPackage(texts.read(source).oldAll) == "" || goPackage(texts.read(source).oldAll) != goPackage(text.newAll) {
 					continue
 				}
 			}
@@ -1000,4 +1016,113 @@ func goPackage(lines map[int]string) string {
 		}
 	}
 	return ""
+}
+
+var goTypeLineRe = regexp.MustCompile(`^type\s+([A-Za-z_]\w*)\b`)
+
+// resolveGoTypeRenames handles a Go type the diff renames, often exported and moved to
+// another package on the way. Its methods, found again on the new type, and the
+// signatures whose only difference is the new name, follow the rename: they have no
+// break of their own. Whoever still holds the old type names it somewhere, and that is
+// an open site of the type's removal, which stays.
+func resolveGoTypeRenames(texts *diffTexts, result []impact.ChangedSymbol) {
+	var removed []string
+	for i := range result {
+		sym := &result[i]
+		if sym.Declaration == impact.DeclRemoved && declarationLanguage(sym.File) == "go" {
+			if m := goTypeLineRe.FindStringSubmatch(sym.DeclarationBefore); m != nil {
+				removed = append(removed, m[1])
+			}
+		}
+	}
+	if len(removed) == 0 {
+		return
+	}
+	// The types the diff declares: candidates for what each removed one became.
+	var added []string
+	for _, file := range texts.files {
+		if file.Deleted || declarationLanguage(file.NewPath) != "go" {
+			continue
+		}
+		text := texts.read(file)
+		for line := range text.changedNew {
+			decl := withGoGroupKeyword(text.newAll, line, strings.TrimSpace(text.newAll[line]), "go")
+			if m := goTypeLineRe.FindStringSubmatch(decl); m != nil && !slices.Contains(added, m[1]) {
+				added = append(added, m[1])
+			}
+		}
+	}
+	slices.Sort(added)
+
+symbols:
+	for i := range result {
+		sym := &result[i]
+		if sym.DeclarationBefore == "" || declarationLanguage(sym.File) != "go" || goTypeLineRe.MatchString(sym.DeclarationBefore) {
+			continue
+		}
+		name := leafSymbolName(sym)
+		for _, from := range removed {
+			if !containsWord(sym.DeclarationBefore, from) {
+				continue
+			}
+			for _, to := range added {
+				if to == from {
+					continue
+				}
+				like := replaceWord(sym.DeclarationBefore, from, to)
+				var after string
+				switch sym.Declaration {
+				case impact.DeclChanged:
+					after = dropQualifier(sym.DeclarationAfter, to)
+					if !containsWord(after, to) || compareDeclarations(like, after, name, "go") == impact.DeclChanged {
+						continue // The rename doesn't explain the difference
+					}
+				case impact.DeclRemoved:
+					decl, found := findRenamedMethod(texts, like, name)
+					if !found {
+						continue
+					}
+					sym.ChangeType = impact.ChangeModified
+					sym.DeclarationAfter = decl.text
+					after = dropQualifier(decl.text, to)
+					if !decl.complete {
+						after = ""
+					}
+				default:
+					continue symbols
+				}
+				sym.Declaration = ""
+				if after != "" {
+					sym.Declaration = compareDeclarations(like, after, name, "go")
+				}
+				sym.Note = fmt.Sprintf("follows the rename of %s to %s", from, to)
+				continue symbols
+			}
+		}
+	}
+}
+
+// findRenamedMethod looks among the diff's added Go lines for the declaration like
+// describes, the receiver already renamed.
+func findRenamedMethod(texts *diffTexts, like, name string) (declaration, bool) {
+	for _, file := range texts.files {
+		if file.Deleted || declarationLanguage(file.NewPath) != "go" {
+			continue
+		}
+		text := texts.read(file)
+		if line := findDeclaration(text.newAll, text.changedNew, like, name, "go"); line > 0 {
+			return readDeclaration(text.newAll, line, "go"), true
+		}
+	}
+	return declaration{}, false
+}
+
+// replaceWord replaces name where it is a whole identifier.
+func replaceWord(text, name, with string) string {
+	return regexp.MustCompile(`\b`+regexp.QuoteMeta(name)+`\b`).ReplaceAllString(text, with)
+}
+
+// dropQualifier turns pkg.Name into Name.
+func dropQualifier(text, name string) string {
+	return regexp.MustCompile(`\b[A-Za-z_]\w*\.`+regexp.QuoteMeta(name)+`\b`).ReplaceAllString(text, name)
 }

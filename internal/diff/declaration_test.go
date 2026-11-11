@@ -368,3 +368,33 @@ func TestClassifyDeclaration_GoForms(t *testing.T) {
 		})
 	}
 }
+
+// A parameter with the symbol's name, in another declaration's signature, doesn't
+// declare it: the name has to follow its keyword.
+func TestFindDeclaration_NameAsParameter(t *testing.T) {
+	cases := []struct {
+		lang, name, like string
+		lines            []string
+		want             int
+	}{
+		{"go", "file", "func (r *T) file(p string) *F",
+			[]string{"func (r *T) line(id string) (text string, file *F, ok bool) {", "func (r *T) file(p string) *F {"}, 2},
+		{"go", "file", "func file(p string) *F",
+			[]string{"func open(file string) error {"}, 0},
+		{"go", "b", "var a, b = 1, 2", []string{"var a, b = 1, 3"}, 1},
+		{"ts", "file", "function file(p: string)", []string{"function open(file: string) {", "export function file(p: string) {"}, 2},
+		{"rust", "COUNT", "static mut COUNT: u32 = 0", []string{"static mut COUNT: u64 = 0;"}, 1},
+		{"rust", "file", "pub fn file(p: &str)", []string{"fn open(file: &str) {", "pub(crate) fn file(p: &str) {"}, 2},
+	}
+	for _, c := range cases {
+		lines := make(map[int]string)
+		changed := make(map[int]bool)
+		for i, l := range c.lines {
+			lines[i+1] = l
+			changed[i+1] = true
+		}
+		if got := findDeclaration(lines, changed, c.like, c.name, c.lang); got != c.want {
+			t.Errorf("%s %q: got line %d, want %d", c.lang, c.like, got, c.want)
+		}
+	}
+}
