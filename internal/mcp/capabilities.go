@@ -1,5 +1,7 @@
 package mcp
 
+import "strings"
+
 // ServerCapabilities represents the capabilities exposed by the MCP server
 type ServerCapabilities struct {
 	Tools     *ToolsCapability     `json:"tools,omitempty"`
@@ -123,6 +125,22 @@ func negotiateProtocolVersion(requested string) string {
 		}
 	}
 	return supportedProtocolVersions[0]
+}
+
+// modernPRSentence replaces the expandToolset rule for MCP 2026-07-28
+// clients, which do not get expandToolset (see modern.go).
+const modernPRSentence = `Reviewing a PR: call reviewPR; if your tool list lacks it, ask the user ` +
+	`to restart CKB with --preset=review. Pass repo to work on another repository.`
+
+// modernInstructionsText is instructionsText for MCP 2026-07-28 clients.
+func modernInstructionsText() string {
+	core := instructionsCore
+	start := strings.Index(core, "Reviewing a PR:")
+	end := strings.Index(core, "Done editing?")
+	if start >= 0 && end > start {
+		core = core[:start] + modernPRSentence + " " + core[end:]
+	}
+	return core + strings.TrimPrefix(instructionsText(), instructionsCore)
 }
 
 // handleInitialize handles the initialize request

@@ -65,6 +65,8 @@ type MCPServer struct {
 	clientVersion string
 	// protocolVersion is the MCP revision agreed in initialize.
 	protocolVersion string
+	// homeRepoPath is the repo the process was started in; see homeRepoRoot.
+	homeRepoPath string
 
 	// Binary staleness detection (v8.0)
 	binaryPath    string    // Path to the running binary

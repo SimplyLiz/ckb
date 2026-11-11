@@ -40,6 +40,10 @@ func (s *MCPServer) handleRequest(msg *MCPMessage) *MCPMessage {
 		"id", msg.Id,
 	)
 
+	if modernRequest(msg) {
+		return s.handleModernRequest(msg)
+	}
+
 	switch msg.Method {
 	case "initialize":
 		return s.handleInitializeRequest(msg)
