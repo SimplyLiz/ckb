@@ -11,6 +11,7 @@ type Tool struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
 	InputSchema map[string]interface{} `json:"inputSchema"`
+	Annotations *ToolAnnotations       `json:"annotations,omitempty"`
 }
 
 // ToolHandler is a function that handles a tool call and returns an envelope response.
@@ -2858,6 +2859,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		break
 	}
 
+	annotateTools(tools)
 	return tools
 }
 
