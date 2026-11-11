@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"time"
 
@@ -42,6 +43,8 @@ func (s *MCPServer) handleRequest(msg *MCPMessage) *MCPMessage {
 	switch msg.Method {
 	case "initialize":
 		return s.handleInitializeRequest(msg)
+	case "ping":
+		return NewResultMessage(msg.Id, map[string]interface{}{})
 	case "tools/list":
 		return s.handleListToolsRequest(msg)
 	case "tools/call":
@@ -239,6 +242,12 @@ func (s *MCPServer) handleCallToolRequest(msg *MCPMessage) *MCPMessage {
 
 	result, err := s.handleCallTool(params)
 	if err != nil {
+		// An unknown tool or a missing name is the caller's mistake, which
+		// the spec reports as invalid params, not as a server fault.
+		var unknown *errUnknownTool
+		if stderrors.As(err, &unknown) {
+			return NewErrorMessage(msg.Id, InvalidParams, err.Error(), nil)
+		}
 		return NewErrorMessage(msg.Id, InternalError, err.Error(), nil)
 	}
 
@@ -320,7 +329,7 @@ func (s *MCPServer) handleListTools(params map[string]interface{}) (interface{},
 func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, error) {
 	toolName, ok := params["name"].(string)
 	if !ok {
-		return nil, errors.NewInvalidParameterError("name", "")
+		return nil, &errUnknownTool{err: errors.NewInvalidParameterError("name", "")}
 	}
 
 	toolParams, ok := params["arguments"].(map[string]interface{})
@@ -330,7 +339,7 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 
 	handler, exists := s.tools[toolName]
 	if !exists {
-		return nil, errors.NewResourceNotFoundError("tool", toolName)
+		return nil, &errUnknownTool{err: errors.NewResourceNotFoundError("tool", toolName)}
 	}
 
 	s.logger.Info("Calling tool",
@@ -357,6 +366,7 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 						"text": string(jsonBytes),
 					},
 				},
+				"isError": true,
 			}, nil
 		}
 		// Return streaming initial response
@@ -390,6 +400,7 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 					"text": string(jsonBytes),
 				},
 			},
+			"isError": true,
 		}, nil
 	}
 
@@ -435,14 +446,25 @@ func (s *MCPServer) handleReadResource(params map[string]interface{}) (interface
 	if err != nil {
 		return nil, errors.NewOperationError("resource read", err)
 	}
+	text, err := json.Marshal(result)
+	if err != nil {
+		return nil, errors.NewOperationError("marshal resource", err)
+	}
 
 	return map[string]interface{}{
 		"contents": []map[string]interface{}{
 			{
 				"uri":      uri,
 				"mimeType": "application/json",
-				"text":     fmt.Sprintf("%v", result),
+				"text":     string(text),
 			},
 		},
 	}, nil
 }
+
+// errUnknownTool marks a tools/call that names no tool or one that does not
+// exist, so the request handler can answer with InvalidParams.
+type errUnknownTool struct{ err error }
+
+func (e *errUnknownTool) Error() string { return e.err.Error() }
+func (e *errUnknownTool) Unwrap() error { return e.err }
