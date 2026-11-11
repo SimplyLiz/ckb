@@ -395,6 +395,7 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 	if err != nil {
 		// Wrap error in envelope format
 		errResp := envelope.New().Data(nil).Error(err).Build()
+		s.markStaleServer(errResp)
 		jsonBytes, _ := json.Marshal(errResp)
 		s.recordActivity(toolName, toolParams, toolStart, jsonBytes, nil, err)
 		return map[string]interface{}{
@@ -407,6 +408,8 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 			"isError": true,
 		}, nil
 	}
+
+	s.markStaleServer(result)
 
 	// Marshal the envelope response to JSON
 	jsonBytes, err := json.Marshal(result)
