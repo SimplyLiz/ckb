@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -892,4 +893,122 @@ func TestAnalyzeImpact_IdentityOnlyIsNotAssessed(t *testing.T) {
 			t.Errorf("blast radius risk = %s, want %s", resp.BlastRadius.RiskLevel, RiskLevelNotAssessed)
 		}
 	})
+}
+
+// relatedTests used to be the first 20 test files of the target's module in
+// alphabetical order, labeled "same-module": for query.NewEngine that missed
+// every test that calls it from another package. The tests that reference the
+// target come first now, direct before transitive, and same-module files only
+// fill the remaining room.
+func TestGetPrepareTests_ReferencingTestsFirst(t *testing.T) {
+	root := t.TempDir()
+	for _, f := range []string{"pkg/a_test.go", "pkg/b_test.go", "pkg/engine_test.go"} {
+		if err := os.MkdirAll(filepath.Join(root, filepath.Dir(f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, f), []byte("package pkg\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	engine := &Engine{repoRoot: root}
+	target := &PrepareChangeTarget{Kind: "function", Path: "pkg/engine.go", ModuleId: "pkg"}
+	item := func(path, name string, distance int) ImpactItem {
+		return ImpactItem{StableId: name, Name: name, Distance: distance, Confidence: 0.9, Location: &LocationInfo{FileId: path}}
+	}
+	consumers := []ImpactItem{
+		item("other/zz_test.go", "TestZ", 1),
+		item("api/handlers_test.go", "TestHandlers", 2), // reaches it through a helper
+		item("api/api_test.go", "TestAPI", 1),
+		item("pkg/engine_test.go", "TestEngine", 1),
+		item("cmd/main.go", "main", 1), // production code is no test
+	}
+
+	got := engine.getPrepareTests(target, consumers)
+
+	want := []PrepareTest{
+		{File: "api/api_test.go", Name: "TestAPI", Relation: "direct"},
+		{File: "other/zz_test.go", Name: "TestZ", Relation: "direct"},
+		{File: "pkg/engine_test.go", Name: "TestEngine", Relation: "direct"},
+		{File: "api/handlers_test.go", Name: "TestHandlers", Relation: "transitive"},
+		{File: "pkg/a_test.go", Relation: "same-module"},
+		{File: "pkg/b_test.go", Relation: "same-module"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d tests %+v, want %+v", len(got), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("test %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// Same-module files only fill up to maxPrepareTests; tests that reference the
+// target are not cut for them.
+func TestPrepareTestList_FillerOnlyUpToCap(t *testing.T) {
+	var referencing []AffectedTest
+	for i := 0; i < maxPrepareTests+5; i++ {
+		referencing = append(referencing, AffectedTest{FilePath: fmt.Sprintf("x/r%02d_test.go", i), Reason: "direct"})
+	}
+	got := prepareTestList(referencing, []string{"pkg/filler_test.go"})
+	if len(got) != maxPrepareTests+5 {
+		t.Fatalf("got %d tests, want all %d referencing ones", len(got), maxPrepareTests+5)
+	}
+	for _, test := range got {
+		if test.Relation == "same-module" {
+			t.Errorf("same-module filler %s listed although the referencing tests filled the list", test.File)
+		}
+	}
+
+	got = prepareTestList(nil, []string{"pkg/a_test.go", "pkg/b_test.go"})
+	if len(got) != 2 || got[0].Relation != "same-module" {
+		t.Errorf("without references, same-module files should be listed as such, got %+v", got)
+	}
+}
+
+func TestIsMemberSymbol(t *testing.T) {
+	const pkg = "scip-go gomod example.com/m v1 `example.com/m/pkg`/"
+	cases := map[string]bool{
+		pkg + "Model#":             false,
+		pkg + "NewModel().":        false,
+		pkg + "DefaultTimeout.":    false,
+		pkg + "Model#Name.":        true,
+		pkg + "Model#Transform().": true,
+	}
+	for sym, want := range cases {
+		if got := isMemberSymbol(sym); got != want {
+			t.Errorf("isMemberSymbol(%q) = %v, want %v", sym, got, want)
+		}
+	}
+}
+
+// A file target used to attribute nothing: prepareChange on a file that
+// declares a widely used type reported zero dependents. It is the sum of the
+// consumers of what the file declares now, its types and their fields and
+// methods included, minus the file's own uses.
+func TestPrepareChange_FileTargetAggregatesDeclaredSymbols(t *testing.T) {
+	fixture := testutil.LoadFixture(t, "go")
+	engine, cleanup := setupGoldenEngine(t, fixture)
+	defer cleanup()
+
+	resp, err := engine.PrepareChange(context.Background(), PrepareChangeOptions{Target: "pkg/model.go", ChangeType: ChangeModify})
+	if err != nil {
+		t.Fatalf("PrepareChange failed: %v", err)
+	}
+	if len(resp.DirectDependents) == 0 {
+		t.Fatal("pkg/model.go declares Model, NewModel and Transform, used by pkg/service.go, but no dependents were reported")
+	}
+	files := make(map[string]bool)
+	for _, d := range resp.DirectDependents {
+		if d.File == "pkg/model.go" {
+			t.Errorf("the file's own use %s:%d listed as a dependent", d.File, d.Line)
+		}
+		files[d.File] = true
+	}
+	if !files["pkg/service.go"] {
+		t.Errorf("pkg/service.go (uses Model and NewModel) missing from dependents: %+v", resp.DirectDependents)
+	}
+	if resp.TransitiveImpact == nil || resp.TransitiveImpact.TotalCallers == 0 {
+		t.Errorf("expected a transitive summary, got %+v", resp.TransitiveImpact)
+	}
 }
