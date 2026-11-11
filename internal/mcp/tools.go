@@ -12,6 +12,7 @@ type Tool struct {
 	Description string                 `json:"description"`
 	InputSchema map[string]interface{} `json:"inputSchema"`
 	Annotations *ToolAnnotations       `json:"annotations,omitempty"`
+	Meta        map[string]interface{} `json:"_meta,omitempty"`
 }
 
 // ToolHandler is a function that handles a tool call and returns an envelope response.

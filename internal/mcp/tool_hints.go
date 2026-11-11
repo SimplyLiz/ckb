@@ -86,9 +86,67 @@ func annotationsFor(name string) *ToolAnnotations {
 	return a
 }
 
-// annotateTools sets the annotations on every tool definition.
+// Claude Code reads two keys from a tool's _meta
+// (https://code.claude.com/docs/en/mcp.md, "MCP output limits and warnings",
+// "Tool search"):
+//
+//   - anthropic/maxResultSizeChars: a text result longer than this (default
+//     50,000, ceiling 500,000) is moved to a file and the model sees a preview.
+//   - anthropic/alwaysLoad: the tool is loaded upfront instead of being
+//     deferred behind tool search.
+const (
+	metaMaxResultSizeChars = "anthropic/maxResultSizeChars"
+	metaAlwaysLoad         = "anthropic/alwaysLoad"
+)
+
+// largeResultChars is the result size up to which the tools in
+// largeResultTools stay inline. Measured on CKB itself with a five-commit
+// diff (2026-11-11): assessChange 101k, reviewPR 60k, findUnwiredModules
+// 47k, summarizeDiff 42k, findDeadCode 39k. A whole-result tool cut to a
+// preview loses the part the agent has to act on.
+//
+// exportForLLM (408k on CKB) is left at the default on purpose: an export
+// that size belongs in a file the agent reads in parts.
+const largeResultChars = 150000
+
+var largeResultTools = map[string]bool{
+	"assessChange":       true,
+	"analyzeChange":      true,
+	"reviewPR":           true,
+	"findUnwiredModules": true,
+	"findDeadCode":       true,
+	"summarizeDiff":      true,
+}
+
+// alwaysLoadTools are the tools the server instructions tell the agent to
+// call before and after every edit. Deferred, they cost a tool search first,
+// and an agent that has not loaded them tends not to call them.
+var alwaysLoadTools = map[string]bool{
+	"prepareChange": true,
+	"assessChange":  true,
+}
+
+func metaFor(name string) map[string]interface{} {
+	var meta map[string]interface{}
+	set := func(k string, v interface{}) {
+		if meta == nil {
+			meta = map[string]interface{}{}
+		}
+		meta[k] = v
+	}
+	if largeResultTools[name] {
+		set(metaMaxResultSizeChars, largeResultChars)
+	}
+	if alwaysLoadTools[name] {
+		set(metaAlwaysLoad, true)
+	}
+	return meta
+}
+
+// annotateTools sets the annotations and _meta on every tool definition.
 func annotateTools(tools []Tool) {
 	for i := range tools {
 		tools[i].Annotations = annotationsFor(tools[i].Name)
+		tools[i].Meta = metaFor(tools[i].Name)
 	}
 }
