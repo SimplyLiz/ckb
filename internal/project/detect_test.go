@@ -881,3 +881,20 @@ func TestLoadConfig_NotFound(t *testing.T) {
 		t.Errorf("LoadConfig() should return error for missing config")
 	}
 }
+
+func TestDetectAllLanguages_SkipsHiddenAndVendoredDirs(t *testing.T) {
+	root := t.TempDir()
+	for _, path := range []string{"go.mod", ".claude/worktrees/x/package.json", "third_party/lib/Cargo.toml", ".github/actions/a/package.json"} {
+		full := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lang, _, all := DetectAllLanguages(root)
+	if lang != LangGo || len(all) != 1 {
+		t.Errorf("detected %v (primary %s), want Go alone: hidden and vendored manifests are not this project's", all, lang)
+	}
+}

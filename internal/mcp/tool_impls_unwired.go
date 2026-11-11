@@ -41,7 +41,7 @@ func (s *MCPServer) toolFindUnwiredModules(params map[string]interface{}) (*enve
 	}
 
 	// Max nodes (reachable set budget)
-	opts.MaxNodes = 10000
+	opts.MaxNodes = 100000
 	if v, ok := params["maxNodes"].(float64); ok {
 		opts.MaxNodes = int(v)
 	}

@@ -193,6 +193,13 @@ func inferSymbolKind(symInfo *SymbolInformation, scipId *SCIPIdentifier) SymbolK
 // findSymbolLocation finds the definition location of a symbol
 // This is the O(n*m) fallback when RefIndex is not available
 func findSymbolLocation(symbolId string, idx *SCIPIndex) *Location {
+	// The loader indexes every definition; the scan below is for an index
+	// built by hand. Per symbol it costs a pass over the whole index, and
+	// FindCallees asks once per callee, which put the unwired walk over CKB at
+	// three minutes, nearly all of it here.
+	if idx.DefinitionIndex != nil || idx.RefIndex != nil {
+		return findSymbolLocationFast(symbolId, idx)
+	}
 	// Search through all documents for the definition occurrence
 	for _, doc := range idx.Documents {
 		for _, occ := range doc.Occurrences {

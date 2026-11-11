@@ -160,6 +160,21 @@ func DetectAllLanguages(root string) (Language, string, []Language) {
 	return primaryLang, primaryManifest, allLangs
 }
 
+// skipManifestDir says whether a directory below the root can hold no manifest
+// of this project: dependencies, vendored code under vendor/ or third_party/,
+// and every hidden directory. Tools keep their own checkouts there (.claude/
+// worktrees, .github/ actions), and those used to add languages to the list.
+func skipManifestDir(name string) bool {
+	if strings.HasPrefix(name, ".") {
+		return true
+	}
+	switch name {
+	case "node_modules", "vendor", "third_party", "__pycache__", "venv":
+		return true
+	}
+	return false
+}
+
 // findManifest searches for an exact filename in root and subdirectories up to maxScanDepth.
 // Returns the relative path to the first match, or empty string.
 // Root is checked first (fast path). Among subdirectories, WalkDir visits in
@@ -191,9 +206,11 @@ func findManifest(root, filename string) string {
 		}
 
 		if d.IsDir() {
+			if skipManifestDir(d.Name()) {
+				return filepath.SkipDir
+			}
 			switch d.Name() {
-			case "node_modules", ".git", "vendor", ".ckb", "__pycache__",
-				".venv", "venv", "dist", "build",
+			case "dist", "build",
 				"examples", "example", "testdata", "fixtures",
 				"docs", "doc", "documentation":
 				return filepath.SkipDir
@@ -258,11 +275,8 @@ func findWithDepth(root, pattern string) []string {
 		}
 
 		// Skip common non-project dirs
-		if d.IsDir() {
-			switch d.Name() {
-			case "node_modules", ".git", "vendor", ".ckb", "__pycache__", ".venv", "venv":
-				return filepath.SkipDir
-			}
+		if d.IsDir() && skipManifestDir(d.Name()) {
+			return filepath.SkipDir
 		}
 
 		if !d.IsDir() {

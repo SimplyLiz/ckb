@@ -66,16 +66,23 @@ func (idx *SCIPIndex) FindCallees(symbolId string) ([]*CallGraphNode, error) {
 	var funcDoc *Document
 	var funcDefLine int = -1
 
-	for _, doc := range idx.Documents {
-		for _, occ := range doc.Occurrences {
-			if occ.Symbol == symbolId && occ.SymbolRoles&SymbolRoleDefinition != 0 {
-				funcDoc = doc
-				funcDefLine = int(occ.Range[0]) // #nosec G115 -- SCIP int32 fits in int
+	if idx.DefinitionIndex != nil {
+		if ref := idx.DefinitionIndex[symbolId]; ref != nil && ref.Doc != nil && len(ref.Occ.Range) > 0 {
+			funcDoc = ref.Doc
+			funcDefLine = int(ref.Occ.Range[0]) // #nosec G115 -- SCIP int32 fits in int
+		}
+	} else {
+		for _, doc := range idx.Documents {
+			for _, occ := range doc.Occurrences {
+				if occ.Symbol == symbolId && occ.SymbolRoles&SymbolRoleDefinition != 0 {
+					funcDoc = doc
+					funcDefLine = int(occ.Range[0]) // #nosec G115 -- SCIP int32 fits in int
+					break
+				}
+			}
+			if funcDoc != nil {
 				break
 			}
-		}
-		if funcDoc != nil {
-			break
 		}
 	}
 

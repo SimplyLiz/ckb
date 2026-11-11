@@ -20,7 +20,7 @@ func (s *Server) handleUnwired(w http.ResponseWriter, r *http.Request) {
 	opts := query.FindUnwiredModulesOptions{
 		MinConfidence: 0.80,
 		Limit:         100,
-		MaxNodes:      10000,
+		MaxNodes:      100000,
 	}
 
 	if scope := q.Get("scope"); scope != "" {

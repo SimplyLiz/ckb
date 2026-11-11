@@ -697,3 +697,27 @@ func BenchmarkDetectModules(b *testing.B) {
 		_, _ = DetectModules(tempDir, nil, nil, "bench-state", logger)
 	}
 }
+
+func TestDetectModules_SkipsHiddenDirectories(t *testing.T) {
+	root := t.TempDir()
+	for _, path := range []string{"api/package.json", ".claude/worktrees/x/package.json", ".github/actions/a/package.json"} {
+		full := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(`{"name":"m"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := DetectModules(root, nil, nil, "state", newTestLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Modules) != 1 || result.Modules[0].RootPath != "api" {
+		var paths []string
+		for _, m := range result.Modules {
+			paths = append(paths, m.RootPath)
+		}
+		t.Errorf("modules = %v, want only api: a manifest in a hidden directory is a tool's, not ours", paths)
+	}
+}

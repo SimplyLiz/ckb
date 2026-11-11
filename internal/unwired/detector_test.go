@@ -15,7 +15,8 @@ import (
 // testdata/ts is a real scip-typescript index (regenerate with
 // `scip-typescript index --output index.scip` in that directory; *.scip is
 // gitignored, so `git add -f` it).
-// src/index.ts calls wired() from src/lib.ts; nothing uses the rest.
+// src/index.ts calls wired() from src/lib.ts and open() on a Door held as an
+// Opener; nothing uses the rest.
 func TestAnalyzeTypeScriptFixture(t *testing.T) {
 	root, err := filepath.Abs("testdata/ts")
 	if err != nil {
@@ -34,7 +35,7 @@ func TestAnalyzeTypeScriptFixture(t *testing.T) {
 	d := NewDetector(adapter, root, logger)
 	reachable, _ := d.BuildReachableSet(context.Background(), []architecture.Entrypoint{
 		{FileId: "src/index.ts", Name: "index.ts", Kind: architecture.EntrypointServer},
-	})
+	}, 0)
 	result, err := d.Analyze(context.Background(), DetectorOptions{}, reachable)
 	if err != nil {
 		t.Fatal(err)
@@ -59,13 +60,17 @@ func TestAnalyzeTypeScriptFixture(t *testing.T) {
 		}
 	}
 	// wired is used; helper and privateUnused are not exported, so the
-	// compiler's unused-code checks own them.
-	for _, name := range []string{"wired", "helper", "privateUnused"} {
+	// compiler's unused-code checks own them. Door#open is only ever called
+	// through Opener, which scip-typescript records as an implementation.
+	for _, name := range []string{"wired", "helper", "privateUnused", "Door#open"} {
 		if _, ok := got[name]; ok {
 			t.Errorf("%s reported as unwired", name)
 		}
 	}
-	if result.Summary.TotalExported != 4 {
-		t.Errorf("TotalExported = %d, want 4 (wired, unwiredFn, arrowUnwired, Box#open)", result.Summary.TotalExported)
+	if result.Summary.TotalExported != 6 {
+		t.Errorf("TotalExported = %d, want 6 (wired, unwiredFn, arrowUnwired, Box#open, Opener#open, Door#open)", result.Summary.TotalExported)
+	}
+	if result.Summary.ViaInterface != 1 {
+		t.Errorf("ViaInterface = %d, want 1 (Door#open)", result.Summary.ViaInterface)
 	}
 }
