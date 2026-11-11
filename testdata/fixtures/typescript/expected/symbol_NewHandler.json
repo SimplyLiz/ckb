@@ -5,7 +5,7 @@
     "file": "src/pkg/handler.ts",
     "kind": "function",
     "line": 43,
-    "moduleId": "",
+    "moduleId": "src/pkg",
     "name": "newHandler"
   }
 }
