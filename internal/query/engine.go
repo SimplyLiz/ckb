@@ -115,6 +115,7 @@ type RepoState struct {
 
 // NewEngine creates a new query engine.
 func NewEngine(repoRoot string, db *storage.DB, logger *slog.Logger, cfg *config.Config) (*Engine, error) {
+	cfg = anchorConfigToRepo(cfg, repoRoot)
 	// Create compressor
 	budget := compression.NewBudgetFromConfig(cfg)
 	limits := compression.NewLimitsFromConfig(cfg)
@@ -748,4 +749,23 @@ func (e *Engine) GetReferenceCount(symbolId string) (int, error) {
 	}
 
 	return e.scipAdapter.GetReferenceCount(symbolId), nil
+}
+
+// anchorConfigToRepo makes cfg.RepoRoot absolute against repoRoot. 'ckb init'
+// writes "." and the default config says "." too, and the SCIP, git and LSP
+// backends read cfg.RepoRoot, so "." meant the process's working directory.
+// That is the repo only when CKB was started inside it: an engine built for
+// another repo (switchProject, switchRepo, a file path from another repo, the
+// MCP repo argument) looked for that repo's index.scip in the start directory
+// and ran git there. cfg is copied, not changed, because callers may share it.
+func anchorConfigToRepo(cfg *config.Config, repoRoot string) *config.Config {
+	if cfg == nil || repoRoot == "" || filepath.IsAbs(cfg.RepoRoot) {
+		return cfg
+	}
+	anchored := *cfg
+	anchored.RepoRoot = filepath.Join(repoRoot, cfg.RepoRoot)
+	if abs, err := filepath.Abs(anchored.RepoRoot); err == nil {
+		anchored.RepoRoot = abs
+	}
+	return &anchored
 }

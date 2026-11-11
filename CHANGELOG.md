@@ -87,6 +87,15 @@ All notable changes to CKB will be documented in this file.
 
 ### Fixed — MCP protocol
 
+- **Switching repositories switches the index and git with them.** `ckb init` writes
+  `"repoRoot": "."`, and the SCIP, git and LSP backends read it as the process's working
+  directory, not the repository. An engine for another repo (`switchProject`,
+  `switchRepo`, a file path from another repo) looked for that repo's `index.scip` in
+  the start directory and ran git there: after "Successfully switched to Lebenslauf",
+  `getStatus` said "Index not found" and `getHotspots` listed CKB's own `CHANGELOG.md`
+  and `internal/query/impact.go`. The same made `ckb status` from a subdirectory report
+  no SCIP index in an indexed repo. The engine now resolves a relative `repoRoot`
+  against its repository.
 - **CKB answers the MCP revision the client asks for.** `initialize` always said
   `2024-11-05`, whatever the client sent. It now agrees on 2025-11-25, 2025-06-18 or
   2024-11-05, and answers 2025-11-25 to anything else. 2025-03-26 is not offered: it
