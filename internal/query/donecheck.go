@@ -430,6 +430,15 @@ func splitFileLines(content string) []string {
 	return strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
 }
 
+// unreadableName names a changed symbol in a note: file:name, and for a file-level
+// entry, whose name is its path, the path once.
+func unreadableName(sym impact.ChangedSymbol) string {
+	if strings.HasPrefix(sym.SymbolID, "file:") || sym.Name == sym.File {
+		return sym.File
+	}
+	return sym.File + ":" + sym.Name
+}
+
 // namedFiles lists the first few files, so a note can be acted on.
 func namedFiles(files []string) string {
 	sorted := append([]string{}, files...)

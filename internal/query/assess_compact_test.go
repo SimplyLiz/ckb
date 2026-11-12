@@ -160,3 +160,67 @@ func TestCompactAssessChangeFor_InvalidOptions(t *testing.T) {
 		}
 	}
 }
+
+// The compact answer is text: sites under their symbol and file, one line each, with
+// no key written twice and nothing escaped.
+func TestCompactAssessChange_Text(t *testing.T) {
+	id := "scip-typescript npm m 1.0.0 src/`schema.ts`/Profile#"
+	r := &AnalyzeChangeSetResponse{
+		Summary:   &ChangeSummary{FilesChanged: 1, SymbolsChanged: 2, DirectlyAffected: 3, EstimatedRisk: "high"},
+		RiskScore: &RiskScore{Level: "high", Score: 0.8},
+		DoneCheck: &DoneCheck{Status: "open", Diff: "36b79ae71709", OpenCount: 4, Note: "Uses the diff didn't touch.", OpenSites: []OpenSite{
+			{Symbol: "ListKind", Change: "changed", File: "src/blocks.tsx", Line: 60, Code: `return <K extends ListKind>(kind: K) => a && b`, Consumer: "useEdit"},
+			{Symbol: "ListKind", Change: "changed", File: "src/blocks.tsx", Line: 91, Code: "function EntryTools({ kind }: { kind: ListKind }) {"},
+			{Symbol: "Profile", Change: "changed", File: "src/sample.ts", Line: 10, Code: "export const sampleProfile: Profile = {", Via: "Profile is typeof profileSchema, whose value changed"},
+			{Symbol: "ListKind", Change: "changed", File: "tests/add.test.ts", Line: 5, Code: "const kinds: ListKind[] = [];", IsTest: true},
+		}},
+		AffectedTests: []AffectedTest{
+			{FilePath: "tests/add.test.ts", TestNames: []string{"adds an entry", "keeps the order"}, AffectedBy: []string{id}, Reason: "direct"},
+			{FilePath: "tests/far.test.ts", TestNames: []string{"renders"}, Reason: "transitive"},
+			{FilePath: "tests/further.test.ts", Reason: "transitive"},
+		},
+		Contracts: []ContractSignal{{Symbol: "blankEntry", File: "src/entries.ts", Kind: "signature-changed", Basis: "heuristic: x",
+			Before: "export function blankEntry(kind: ListKind)", After: "export function blankEntry(kind: ListKind, id: string)"}},
+		ConsumerFiles: &ConsumerFiles{Direct: []string{"src/blocks.tsx", "src/sample.ts"}},
+		CoChangeCheck: &CoChangeCheck{OpenFiles: []CoChangeFile{{File: "src/store.ts"}}},
+	}
+	text := CompactAssessChangeFrom(r).Text()
+
+	sites := "ListKind (changed)\n" +
+		"  src/blocks.tsx\n" +
+		"    60: return <K extends ListKind>(kind: K) => a && b\n" +
+		"    91: function EntryTools({ kind }: { kind: ListKind }) {\n" +
+		"  tests/add.test.ts (test)\n" +
+		"    5: const kinds: ListKind[] = [];\n" +
+		"Profile (changed; Profile is typeof profileSchema, whose value changed)\n" +
+		"  src/sample.ts\n" +
+		"    10: export const sampleProfile: Profile = {\n"
+	if !strings.Contains(text, sites) {
+		t.Errorf("open sites aren't grouped by symbol and file:\n%s", text)
+	}
+	for _, want := range []string{
+		"doneCheck: open, 4 uses left as they were (diff 36b79ae71709)",
+		"signature-changed blankEntry: export function blankEntry(kind: ListKind) -> export function blankEntry(kind: ListKind, id: string)",
+		"tests/add.test.ts: adds an entry, keeps the order",
+		"2 more test files reach the change through other code",
+		"src/store.ts",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text lacks %q:\n%s", want, text)
+		}
+	}
+	for _, not := range []string{`\u003c`, `"at"`, `"symbol"`, "renders", "scip-typescript", "useEdit"} {
+		if strings.Contains(text, not) {
+			t.Errorf("text has %q:\n%s", not, text)
+		}
+	}
+	if strings.Count(text, "src/blocks.tsx") != 2 { // Under its symbol, and as a consumer
+		t.Errorf("a file is named more often than its two sections need:\n%s", text)
+	}
+
+	// With focus tests the page lists every file, however the change reaches it.
+	focused, _ := CompactAssessChangeFor(r, CompactAssessOptions{Focus: AssessFocusTests, RunCommand: "npx vitest run"})
+	if text := focused.Text(); !strings.Contains(text, "tests/far.test.ts: renders") || !strings.Contains(text, "run: npx vitest run") {
+		t.Errorf("focus tests:\n%s", text)
+	}
+}
