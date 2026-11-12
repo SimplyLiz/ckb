@@ -53,3 +53,49 @@ func TestCheckOutsideIndex(t *testing.T) {
 		t.Errorf("no match: outside = %v, failed %d", c.outside, c.failed)
 	}
 }
+
+// A Go file behind a build tag the index wasn't built with is only a doubt if it can
+// reach the changed name: in its package, as a selector, as a method with a receiver,
+// as a literal key, or through a dot import. Its own `func Version()` can't.
+func TestCheckOutsideIndex_GoReach(t *testing.T) {
+	root := t.TempDir()
+	const tag = "//go:build extra\n\n"
+	for path, content := range map[string]string{
+		"lib/types.go":    "package lib\n\ntype Framework interface{ Version() string }\n",
+		"lib/tagged.go":   tag + "package lib\n\nvar _ = Version\n",
+		"other/bridge.go": tag + "package other\n\n// Version is this package's own.\nfunc Version() (string, error) { return \"\", nil }\n",
+		"other/call.go":   tag + "package other\n\nfunc use(fw interface{ Version() string }) { _ = fw.\n\tVersion() }\n",
+		"other/impl.go":   tag + "package other\n\ntype F struct{}\n\nfunc (f *F) Version() string { return \"\" }\n",
+		"other/key.go":    tag + "package other\n\nvar _ = T{Version: 1}\n",
+		"other/assign.go": tag + "package other\n\nfunc g() { Version := 1; _ = Version }\n",
+		"dot/dot.go":      tag + "package dot\n\nimport . \"m/lib\"\n\nvar _ = Version\n",
+	} {
+		full := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit(t, root, "init", "-q")
+	runGit(t, root, "add", ".")
+
+	c := newDoneChecker(root, AnalyzeChangeSetOptions{}, &impact.ParsedDiff{Files: []impact.ChangedFile{{OldPath: "lib/types.go", NewPath: "lib/types.go"}}})
+	c.noteGoDeclaration("Version", "lib/types.go")
+	c.checkOutsideIndex(map[string]string{"Version": "go"}, func(string) bool { return false })
+	got := map[string]bool{}
+	for _, path := range c.outside {
+		got[path] = true
+	}
+	for _, want := range []string{"lib/tagged.go", "other/call.go", "other/impl.go", "other/key.go", "dot/dot.go"} {
+		if !got[want] {
+			t.Errorf("%s can reach Version and should stay a doubt; outside = %v", want, c.outside)
+		}
+	}
+	for _, unwanted := range []string{"other/bridge.go", "other/assign.go"} {
+		if got[unwanted] {
+			t.Errorf("%s can't reach lib's Version; outside = %v", unwanted, c.outside)
+		}
+	}
+}

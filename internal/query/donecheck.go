@@ -119,7 +119,10 @@ type doneChecker struct {
 	unindexed  []string // Changed code files the index doesn't cover, so nothing in them was checked
 	// outside are files the index doesn't cover, of a changed declaration's language,
 	// that name it: a tsconfig `include` of src alone leaves tests/ unseen.
-	outside    []string
+	outside []string
+	// goDirs are the package directories a changed Go name is declared in, which
+	// decide whether a Go file outside the index can reach it.
+	goDirs     map[string]map[string]bool
 	modulePath []string // go.mod files whose module line changed: every import of it did too
 	// dependencies are go.mod changes that put other code behind an import: a major
 	// version, a dropped require, a replace.
@@ -874,7 +877,70 @@ func (c *doneChecker) checkOutsideIndex(names map[string]string, indexed func(st
 	if !ok {
 		c.failed++
 	}
-	c.outside = append(c.outside, paths...)
+	for _, path := range paths {
+		if c.goFileReaches(path, names) {
+			c.outside = append(c.outside, path)
+		}
+	}
+}
+
+// noteGoDeclaration records the package a changed Go name is declared in.
+func (c *doneChecker) noteGoDeclaration(name, file string) {
+	if !strings.HasSuffix(file, ".go") {
+		return
+	}
+	if c.goDirs == nil {
+		c.goDirs = make(map[string]map[string]bool)
+	}
+	if c.goDirs[name] == nil {
+		c.goDirs[name] = make(map[string]bool)
+	}
+	c.goDirs[name][filepath.Dir(file)] = true
+}
+
+// goFileReaches says whether a Go file can use one of the changed names it spells.
+// Outside the declaring package a Go name is only reached as a selector (`pkg.Name`,
+// `x.Name`, which every method and field use is), a method declared with a receiver
+// (an implementation of a changed interface), or a literal key (`Name:`). A file
+// spelling the name only otherwise, such as its own `func Name()` beside a build
+// tag, can't. A dot import, an unreadable file or a name of unknown package keeps it.
+func (c *doneChecker) goFileReaches(path string, names map[string]string) bool {
+	if !strings.HasSuffix(path, ".go") {
+		return true
+	}
+	content, err := os.ReadFile(filepath.Join(c.repoRoot, path))
+	if err != nil || goDotImport.Match(content) {
+		return true
+	}
+	dir := filepath.Dir(path)
+	for name, family := range names {
+		if family != "go" {
+			continue
+		}
+		dirs := c.goDirs[name]
+		if len(dirs) == 0 || dirs[dir] {
+			if wordIndexIn(content, name) {
+				return true
+			}
+			continue
+		}
+		if goMemberUse(name).Match(content) {
+			return true
+		}
+	}
+	return false
+}
+
+var goDotImport = regexp.MustCompile(`(?m)^\s*(?:import\s+)?\.\s+"`)
+
+// goMemberUse matches a selector, a receiver's method or a literal key naming name.
+func goMemberUse(name string) *regexp.Regexp {
+	quoted := regexp.QuoteMeta(name)
+	return regexp.MustCompile(`\.\s*` + quoted + `\b|\)\s*` + quoted + `\s*[\[(]|\b` + quoted + `\s*:[^=]`)
+}
+
+func wordIndexIn(content []byte, name string) bool {
+	return regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`).Match(content)
 }
 
 // filesOutsideIndex lists the tracked files that spell one of names as a word, are of
