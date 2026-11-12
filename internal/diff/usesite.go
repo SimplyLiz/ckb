@@ -99,6 +99,9 @@ func classifyOldSide(blocks []impact.ChangeBlock, oldLines, newLines []string, s
 	if anyNewLineChanged(blocks, newLine, newEnd) {
 		return UseResult{State: UseUpdated, Line: newLine}
 	}
+	if bindingReadChanged(blocks, newLines, newLine, newEnd, site.Name) {
+		return UseResult{State: UseUpdated, Line: newLine}
+	}
 	return openUse(newLines, newLine)
 }
 
@@ -114,7 +117,68 @@ func classifyNewSide(blocks []impact.ChangeBlock, oldLines, newLines []string, s
 			return UseResult{State: UseUpdated, Line: site.Line}
 		}
 	}
+	if bindingReadChanged(blocks, newLines, site.Line, end, site.Name) {
+		return UseResult{State: UseUpdated, Line: site.Line}
+	}
 	return openUse(newLines, site.Line)
+}
+
+// maxBindingSpan bounds how far the reads of a bound result are looked for.
+const maxBindingSpan = 200
+
+// A line that binds a result: `x := `, `x, err = `, `var x = `, `let mut x: T = `,
+// `const x = `. The last character keeps `==` out.
+var bindingLine = regexp.MustCompile(`^\s*(?:(?:var|let|const)\s+(?:mut\s+)?)?([A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*)\s*(?::\s*[^=\s][^=]*?)?\s*:?=[^=]`)
+
+// bindingReadChanged says whether the use binds its result to variables and the diff
+// changed a line that reads one of them, later in the same block. Changing a call's
+// result type is often fixed there, not at the call: `x := f()` stays and `g(x)`
+// becomes `g(&x)`.
+func bindingReadChanged(blocks []impact.ChangeBlock, lines []string, line, end int, name string) bool {
+	text := rawLine(lines, line)
+	match := bindingLine.FindStringSubmatchIndex(text)
+	if match == nil || nameIndex(text, 0, name) < match[1]-1 {
+		return false
+	}
+	var bound []string
+	for _, variable := range strings.Split(text[match[2]:match[3]], ",") {
+		if variable = strings.TrimSpace(variable); variable != "_" && variable != name {
+			bound = append(bound, variable)
+		}
+	}
+	last := blockEnd(lines, end+1)
+	for current := end + 1; current <= last; current++ {
+		if !anyNewLineChanged(blocks, current, current) {
+			continue
+		}
+		for _, variable := range bound {
+			if lineMentions(lines, current, variable) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// blockEnd returns the line that closes the block line is in, counting braces
+// roughly, or the end of the span if none does.
+func blockEnd(lines []string, line int) int {
+	last := min(len(lines), line+maxBindingSpan)
+	depth := 0
+	for current := line; current <= last; current++ {
+		for _, c := range rawLine(lines, current) {
+			switch c {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth < 0 {
+					return current
+				}
+			}
+		}
+	}
+	return last
 }
 
 func openUse(lines []string, line int) UseResult {

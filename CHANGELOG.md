@@ -160,6 +160,11 @@ private, so only aggregates are here.
   of the symbol's language and isn't in the index (a test a tsconfig's `include` leaves
   out, say) is listed as `path: [not in index]`, and as `outsideIndex` in JSON. The same
   search the done check uses for its doubt.
+- **A call whose bound result is fixed where it's read counts as updated.** With
+  `x := f()` and the fix in `g(&x)` below it, the call stayed open after a change of
+  `f`'s result type, which the compiler accepted. A changed line later in the same block
+  that reads a variable the call's line binds (`:=`, `=`, `var`, `let`, `const`, a blank
+  `_` aside) now updates the use. Found changing `NewTruncationInfo` to return a value.
 
 ### Added — MCP tool annotations
 

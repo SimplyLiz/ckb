@@ -221,3 +221,85 @@ func TestIsCodeFile(t *testing.T) {
 		}
 	}
 }
+
+// A changed result type is often fixed where the result is read, not at the call.
+func TestClassifyUse_BoundResult(t *testing.T) {
+	const name = "Save"
+	tests := []struct {
+		name     string
+		block    impact.ChangeBlock
+		old, new string
+		site     int
+		state    UseState
+	}{
+		{
+			name:  "a changed read of the bound result updates the call",
+			block: impact.ChangeBlock{OldLine: 3, NewLine: 3, Removed: []string{"\tuse(info)"}, Added: []string{"\tuse(&info)"}},
+			old:   "func f() {\n\tinfo := lib.Save(1)\n\tuse(info)\n}",
+			new:   "func f() {\n\tinfo := lib.Save(1)\n\tuse(&info)\n}",
+			site:  2, state: UseUpdated,
+		},
+		{
+			name:  "every bound name counts, the blank one doesn't",
+			block: impact.ChangeBlock{OldLine: 3, NewLine: 3, Removed: []string{"\treturn err"}, Added: []string{"\treturn wrap(err)"}},
+			old:   "func f() error {\n\t_, err := lib.Save(1)\n\treturn err\n}",
+			new:   "func f() error {\n\t_, err := lib.Save(1)\n\treturn wrap(err)\n}",
+			site:  2, state: UseUpdated,
+		},
+		{
+			name:  "a typed let binding counts",
+			block: impact.ChangeBlock{OldLine: 3, NewLine: 3, Removed: []string{"  show(info);"}, Added: []string{"  show(info.value);"}},
+			old:   "function f() {\n  const info: Info = lib.Save(1);\n  show(info);\n}",
+			new:   "function f() {\n  const info: Info = lib.Save(1);\n  show(info.value);\n}",
+			site:  2, state: UseUpdated,
+		},
+		{
+			name:  "a changed line that doesn't read the result leaves it open",
+			block: impact.ChangeBlock{OldLine: 3, NewLine: 3, Removed: []string{"\tlog(1)"}, Added: []string{"\tlog(2)"}},
+			old:   "func f() {\n\tinfo := lib.Save(1)\n\tlog(1)\n\tuse(info)\n}",
+			new:   "func f() {\n\tinfo := lib.Save(1)\n\tlog(2)\n\tuse(info)\n}",
+			site:  2, state: UseOpen,
+		},
+		{
+			name:  "a read past the end of the block doesn't count",
+			block: impact.ChangeBlock{OldLine: 6, NewLine: 6, Removed: []string{"\tuse(info)"}, Added: []string{"\tuse(&info)"}},
+			old:   "func f() {\n\tinfo := lib.Save(1)\n\t_ = info\n}\nfunc g() {\n\tuse(info)\n}",
+			new:   "func f() {\n\tinfo := lib.Save(1)\n\t_ = info\n}\nfunc g() {\n\tuse(&info)\n}",
+			site:  2, state: UseOpen,
+		},
+		{
+			name:  "a comparison binds nothing",
+			block: impact.ChangeBlock{OldLine: 3, NewLine: 3, Removed: []string{"\tuse(ok)"}, Added: []string{"\tuse(!ok)"}},
+			old:   "func f() {\n\tif ok == lib.Save(1) {\n\tuse(ok)\n\t}\n}",
+			new:   "func f() {\n\tif ok == lib.Save(1) {\n\tuse(!ok)\n\t}\n}",
+			site:  2, state: UseOpen,
+		},
+		{
+			name:  "the name on the left isn't a bound result",
+			block: impact.ChangeBlock{OldLine: 3, NewLine: 3, Removed: []string{"\tuse(x)"}, Added: []string{"\tuse(&x)"}},
+			old:   "func f() {\n\tSave = x\n\tuse(x)\n}",
+			new:   "func f() {\n\tSave = x\n\tuse(&x)\n}",
+			site:  2, state: UseOpen,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			site := UseSite{Line: tt.site, Name: name}
+			for _, side := range []struct {
+				label string
+				old   string
+			}{{"index before the diff", tt.old}, {"index after the diff", ""}} {
+				oldLines := lines(tt.old)
+				if side.old == "" {
+					// The new side mentions the name on the same line, so this
+					// takes classifyNewSide only when the old side doesn't.
+					oldLines = nil
+				}
+				got := ClassifyUse(changed(tt.block), oldLines, lines(tt.new), site)
+				if got.State != tt.state {
+					t.Errorf("%s: state %v, want %v", side.label, got.State, tt.state)
+				}
+			}
+		})
+	}
+}
