@@ -392,6 +392,8 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 			}
 			literalLines = end - ref.Location.Line
 		default:
+			// Not a literal; or one too long to read, which may lack the new field.
+			c.cut = c.cut || diff.IsLiteralUnread(query.lang, lines, ref.Location.Line, ref.Location.Column, query.name)
 			return
 		}
 		if query.goBroken != nil && !breaksGoLiteral(lines, ref, query) {
@@ -512,10 +514,12 @@ func (c *doneChecker) incompleteMatch(oldLines, newLines []string, ref *backends
 		}
 	}
 	if m, ok := diff.RustMatchAt(lines, ref.Location.Line, ref.Location.Column, query.name); !ok || m.CatchAll {
+		c.cut = c.cut || m.Unread // An arm whose match can't be read is no complete one
 		return false
 	}
 	m, ok := diff.RustMatchAt(newLines, result.Line, 0, query.name)
 	if !ok {
+		c.cut = c.cut || m.Unread
 		return false
 	}
 	// Each arm is a use of the enum; the match is counted once.

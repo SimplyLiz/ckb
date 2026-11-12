@@ -54,10 +54,15 @@ func (c *doneChecker) checkImplementations(adapter referenceFinder) []rustOpen {
 		oldLines := c.readOld(file, filePath)
 		newLines, ok := c.readNew(file, filePath)
 		if oldLines == nil || !ok {
+			c.cut = true
 			continue
 		}
 		before, ok := goInterfaces(oldLines)
-		if !ok || len(before) == 0 {
+		if !ok {
+			c.failed++ // The old side doesn't parse, so what its interfaces needed is unknown
+			continue
+		}
+		if len(before) == 0 {
 			continue
 		}
 		after, ok := goInterfaces(newLines)

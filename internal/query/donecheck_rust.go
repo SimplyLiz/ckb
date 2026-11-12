@@ -56,6 +56,7 @@ func (c *doneChecker) checkRustFiles(ctx context.Context, adapter referenceFinde
 		oldLines := c.readOld(file, path)
 		newLines, ok := c.readNew(file, path)
 		if oldLines == nil || !ok {
+			c.cut = true // Its fields, variants and re-exports go unread
 			continue
 		}
 		open = append(open, c.checkStructFields(ctx, adapter, index, path, oldLines, newLines)...)
@@ -80,12 +81,12 @@ func (c *doneChecker) checkStructFields(ctx context.Context, adapter referenceFi
 		}
 		name := m[1]
 		seen[name] = true
-		before, okBefore := diff.RustStructFields(oldLines, name)
-		after, okAfter := diff.RustStructFields(newLines, name)
-		if !okBefore || !okAfter || slices.Equal(before, after) {
+		before, stateBefore := diff.RustStructFields(oldLines, name)
+		after, stateAfter := diff.RustStructFields(newLines, name)
+		if !c.bothBodiesRead(path, "rust", name, oldLines, newLines, stateBefore, stateAfter) || slices.Equal(before, after) {
 			continue
 		}
-		id := index.TypeSymbolIn(path, name)
+		id := c.changedTypeSymbol(index, path, name)
 		if id == "" {
 			continue
 		}
@@ -110,7 +111,8 @@ var rustEnumNameRe = regexp.MustCompile(`^\s*(?:pub(?:\s*\([^)]*\))?\s+)?enum\s+
 // enum with no arm for the rest and none for the variant. A removed variant is a removed
 // symbol and checked as one. The matches are found from the old variants' references:
 // an arm spelled `Self::A`, or `A` through a glob import, refers to the variant only,
-// not to the enum. An index without variant symbols falls back to the enum's own.
+// not to the enum. A variant the index has no symbol for falls back to the enum's
+// references, which miss those two spellings: a doubt.
 func (c *doneChecker) checkEnumVariants(ctx context.Context, adapter referenceFinder, index rustIndex, path string, oldLines, newLines []string) []rustOpen {
 	var open []rustOpen
 	seen := make(map[string]bool)
@@ -121,9 +123,9 @@ func (c *doneChecker) checkEnumVariants(ctx context.Context, adapter referenceFi
 		}
 		name := m[1]
 		seen[name] = true
-		before, okBefore := diff.RustEnumVariants(oldLines, name)
-		after, okAfter := diff.RustEnumVariants(newLines, name)
-		if !okBefore || !okAfter {
+		before, stateBefore := diff.RustEnumVariants(oldLines, name)
+		after, stateAfter := diff.RustEnumVariants(newLines, name)
+		if !c.bothBodiesRead(path, "rust", name, oldLines, newLines, stateBefore, stateAfter) {
 			continue
 		}
 		var added []string
@@ -135,7 +137,7 @@ func (c *doneChecker) checkEnumVariants(ctx context.Context, adapter referenceFi
 		if len(added) == 0 {
 			continue
 		}
-		id := index.TypeSymbolIn(path, name)
+		id := c.changedTypeSymbol(index, path, name)
 		if id == "" {
 			continue
 		}
@@ -147,8 +149,15 @@ func (c *doneChecker) checkEnumVariants(ctx context.Context, adapter referenceFi
 		}
 		query := useQuery{name: name, change: impact.DeclChanged, via: via, newVariants: added, onlyVariant: len(before) == 1}
 		variants := index.VariantSymbolsIn(path, id)
-		if len(variants) == 0 {
+		missing := false
+		for _, v := range before {
+			missing = missing || variants[v] == ""
+		}
+		if missing {
+			// `E::A` arms refer to the enum as well; `Self::A` and glob arms of a
+			// variant the index doesn't have are found by nothing.
 			c.checkUses(ctx, adapter, sym, query, files)
+			c.failed++
 		}
 		for _, v := range before {
 			if variants[v] == "" {
@@ -163,6 +172,36 @@ func (c *doneChecker) checkEnumVariants(ctx context.Context, adapter referenceFi
 		}
 	}
 	return open
+}
+
+// bothBodiesRead says whether a type's body was read on both sides of the file. One
+// that starts but whose end isn't found is a declaration that can't be compared, a
+// doubt, unless the text from its declaration on is the same on both sides. A unit or
+// tuple type, or one gone from the new side, has its declaration line compared, or is
+// a removed symbol, elsewhere.
+func (c *doneChecker) bothBodiesRead(path, lang, name string, oldLines, newLines []string, before, after diff.Body) bool {
+	if before == diff.BodyUnread || after == diff.BodyUnread {
+		if !sameFrom(oldLines, diff.DeclarationAt(oldLines, lang, name), newLines, diff.DeclarationAt(newLines, lang, name)) {
+			c.unreadable = append(c.unreadable, path+":"+name)
+		}
+		return false
+	}
+	return before == diff.BodyRead && after == diff.BodyRead
+}
+
+// sameFrom says whether two files are the same from the given 1-based lines to the end.
+func sameFrom(a []string, atA int, b []string, atB int) bool {
+	return atA > 0 && atB > 0 && slices.Equal(a[atA-1:], b[atB-1:])
+}
+
+// changedTypeSymbol returns the index's symbol for a type whose body changed. Without
+// one its uses can't be looked up, which is no reason to call them done.
+func (c *doneChecker) changedTypeSymbol(index rustIndex, path, name string) string {
+	id := index.TypeSymbolIn(path, name)
+	if id == "" {
+		c.failed++
+	}
+	return id
 }
 
 var rustFnRe = regexp.MustCompile(`\bfn\s+([A-Za-z_]\w*)`)
@@ -211,6 +250,10 @@ func (c *doneChecker) inSignature(ref *backends.Reference, name, fn string) bool
 		lines = c.readOld(file, ref.Location.Path)
 	} else {
 		lines, _ = c.readNew(nil, ref.Location.Path)
+	}
+	if lines == nil {
+		c.cut = true // A function whose signature can't be read isn't followed
+		return false
 	}
 	line := ref.Location.Line
 	if line < 1 || line > len(lines) {
@@ -314,8 +357,12 @@ func (c *doneChecker) grepReexportUses(definer string, module rustModulePath, na
 	const space = `[[:space:]]` // git grep's -E doesn't know \s on every platform
 	glob := fmt.Sprintf(`^%[1]s*(pub(\(.*\))?%[1]s+)?use%[1]s+(.*%[2]s)?%[3]s::\*`, space, notWord, mod)
 	for _, hit := range c.gitGrep(module.dir, glob) {
+		if hit.path == definer {
+			continue
+		}
 		lines, ok := c.readNew(c.files[hit.path], hit.path)
-		if !ok || hit.path == definer {
+		if !ok {
+			c.cut = true
 			continue
 		}
 		if line := globUseLine(lines, name); line > 0 {

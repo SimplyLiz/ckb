@@ -18,12 +18,12 @@ pub enum DraftError {
     #[error(transparent)]
     Db(#[from] sqlx::Error),
 }`)
-	got, ok := RustEnumVariants(src, "DraftError")
+	got, state := RustEnumVariants(src, "DraftError")
 	want := []string{"NotFound", "Conflict", "Bounds", "Db"}
-	if !ok || !slices.Equal(got, want) {
-		t.Fatalf("got %v %v, want %v", got, ok, want)
+	if state != BodyRead || !slices.Equal(got, want) {
+		t.Fatalf("got %v %v, want %v", got, state, want)
 	}
-	if _, ok := RustEnumVariants(src, "Other"); ok {
+	if _, state := RustEnumVariants(src, "Other"); state != BodyNone {
 		t.Fatal("found an enum that isn't there")
 	}
 	// The `(` of `pub(crate)` is no tuple; a `]` or `//` in an attribute's string is
@@ -35,9 +35,9 @@ pub enum DraftError {
     Moved { x: u8 },
     /* Fatal, */ Fatal(String),
 }`)
-	got, ok = RustEnumVariants(src, "WFMachinesError")
-	if want := []string{"Nondeterminism", "Moved", "Fatal"}; !ok || !slices.Equal(got, want) {
-		t.Fatalf("got %v %v, want %v", got, ok, want)
+	got, state = RustEnumVariants(src, "WFMachinesError")
+	if want := []string{"Nondeterminism", "Moved", "Fatal"}; state != BodyRead || !slices.Equal(got, want) {
+		t.Fatalf("got %v %v, want %v", got, state, want)
 	}
 }
 
@@ -202,8 +202,8 @@ func TestRustEnumVariants_LongBody(t *testing.T) {
 	}
 	b.WriteString("}\n")
 	src := lines(b.String())
-	got, ok := RustEnumVariants(src, "Commands")
-	if !ok || len(got) != 60 || got[59] != "Mode59" || len(src) < 800 {
-		t.Fatalf("%d lines: got %d variants, %v", len(src), len(got), ok)
+	got, state := RustEnumVariants(src, "Commands")
+	if state != BodyRead || len(got) != 60 || got[59] != "Mode59" || len(src) < 800 {
+		t.Fatalf("%d lines: got %d variants, %v", len(src), len(got), state)
 	}
 }

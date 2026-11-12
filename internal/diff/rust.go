@@ -10,18 +10,17 @@ import (
 // struct's braces, and what a module re-exports. Text, not types, like the rest here.
 
 // RustStructFields returns a struct's named fields, each as its name and type with
-// attributes, comments and visibility removed, sorted. False means the file has no
-// struct of that name with braces.
-func RustStructFields(lines []string, name string) ([]string, bool) {
+// attributes, comments and visibility removed, sorted, and whether they could be read.
+func RustStructFields(lines []string, name string) ([]string, Body) {
 	re := regexp.MustCompile(`^\s*(pub(\s*\([^)]*\))?\s+)?struct\s+` + regexp.QuoteMeta(name) + `\b`)
 	for i, text := range lines {
 		m := re.FindStringIndex(text)
 		if m == nil {
 			continue
 		}
-		body, ok := bracedBody(lines, i, m[1])
-		if !ok {
-			return nil, false
+		body, state := bracedBody(lines, i, m[1])
+		if state != BodyRead {
+			return nil, state
 		}
 		// A lifetime's quote would read as the start of a string.
 		body = strings.ReplaceAll(rustBlockCommentRe.ReplaceAllString(body, ""), "'", "")
@@ -34,9 +33,9 @@ func RustStructFields(lines []string, name string) ([]string, bool) {
 			}
 		}
 		sort.Strings(fields)
-		return fields, true
+		return fields, BodyRead
 	}
-	return nil, false
+	return nil, BodyNone
 }
 
 var (
@@ -52,8 +51,8 @@ const maxRustBodyLines = 5000
 // start and its partner, with strings, chars and comments blanked: a `}` or `//` in an
 // attribute's string is no part of the body's structure. A `;` or `(` first, outside
 // generics and a where clause, means a unit or tuple struct, which has none. col is past the name, so the
-// `(` of `pub(crate)` is behind it.
-func bracedBody(lines []string, start, col int) (string, bool) {
+// `(` of `pub(crate)` is behind it. A body whose end isn't found is unread.
+func bracedBody(lines []string, start, col int) (string, Body) {
 	var body strings.Builder
 	code := newRustCode()
 	depth, angle := 0, 0
@@ -75,7 +74,7 @@ func bracedBody(lines []string, start, col int) (string, bool) {
 			case c == '}':
 				depth--
 				if depth == 0 {
-					return body.String(), true
+					return body.String(), BodyRead
 				}
 			case depth == 0 && c == '<':
 				angle++
@@ -84,7 +83,7 @@ func bracedBody(lines []string, start, col int) (string, bool) {
 			case depth == 0 && angle == 0 && strings.HasPrefix(text[j:], "where") && (j == 0 || !isIdentByte(text[j-1])) && (j+5 == len(text) || !isIdentByte(text[j+5])):
 				where = true
 			case depth == 0 && angle == 0 && (c == ';' || c == '(' && !where):
-				return "", false
+				return "", BodyNone
 			}
 			if depth > 0 {
 				body.WriteByte(c)
@@ -94,7 +93,7 @@ func bracedBody(lines []string, start, col int) (string, bool) {
 			body.WriteByte(' ')
 		}
 	}
-	return "", false
+	return "", BodyUnread
 }
 
 var (
@@ -106,8 +105,18 @@ var (
 // IsRustLiteralUse says whether the name on a line builds or destructures a struct by its
 // fields, in a way a changed field set breaks: without `..` to cover the rest.
 func IsRustLiteralUse(lines []string, line, column int, name string) bool {
-	_, hasRest, ok := rustLiteral(lines, line, column, name)
-	return ok && !hasRest
+	_, hasRest, state := rustLiteral(lines, line, column, name)
+	return state == BodyRead && !hasRest
+}
+
+// IsLiteralUnread says whether a literal starts at the name whose end isn't found
+// within the bound: what it sets is unknown. Only Rust's reader has a bound.
+func IsLiteralUnread(lang string, lines []string, line, column int, name string) bool {
+	if lang != "rust" && lang != "" {
+		return false
+	}
+	_, _, state := rustLiteral(lines, line, column, name)
+	return state == BodyUnread
 }
 
 // maxRustLiteralLines bounds how far a struct literal's braces are followed. A call's
@@ -115,29 +124,30 @@ func IsRustLiteralUse(lines []string, line, column int, name string) bool {
 const maxRustLiteralLines = 1000
 
 // rustLiteral finds the literal or pattern starting at the name, and returns its last
-// line and whether it has `..`. `impl Foo {`, `-> Foo {` and `-> &mut Foo {` have a brace
-// after the name too, but what follows them is a body.
-func rustLiteral(lines []string, line, column int, name string) (end int, hasRest, ok bool) {
+// line and whether it has `..`; BodyNone if it isn't one, BodyUnread if its end isn't
+// found. `impl Foo {`, `-> Foo {` and `-> &mut Foo {` have a brace after the name too,
+// but what follows them is a body.
+func rustLiteral(lines []string, line, column int, name string) (end int, hasRest bool, state Body) {
 	text := rawLine(lines, line)
 	start := nameIndex(text, column, name)
 	if start < 0 {
-		return 0, false, false
+		return 0, false, BodyNone
 	}
 	before := strings.TrimSpace(rustPathTailRe.ReplaceAllString(strings.TrimRight(text[:start], " "), ""))
 	if strings.HasPrefix(strings.TrimSpace(text), "impl") || rustReturnArrowRe.MatchString(before) ||
 		strings.HasSuffix(before, " for") || before == "for" {
-		return 0, false, false
+		return 0, false, BodyNone
 	}
 	rest := strings.TrimLeft(text[start+len(name):], " ")
 	if strings.HasPrefix(rest, "::<") {
 		close := strings.Index(rest, ">")
 		if close < 0 {
-			return 0, false, false
+			return 0, false, BodyNone
 		}
 		rest = strings.TrimLeft(rest[close+1:], " ")
 	}
 	if !strings.HasPrefix(rest, "{") {
-		return 0, false, false
+		return 0, false, BodyNone
 	}
 
 	depth := 0
@@ -154,7 +164,7 @@ func rustLiteral(lines []string, line, column int, name string) (end int, hasRes
 			case '}', ')', ']':
 				depth--
 				if depth == 0 {
-					return current, hasRest, true
+					return current, hasRest, BodyRead
 				}
 			case '.':
 				if depth == 1 && i+1 < len(scan) && scan[i+1] == '.' {
@@ -163,7 +173,7 @@ func rustLiteral(lines []string, line, column int, name string) (end int, hasRes
 			}
 		}
 	}
-	return 0, false, false
+	return 0, false, BodyUnread
 }
 
 var (

@@ -141,6 +141,7 @@ func (c *doneChecker) checkDerivedTypes(ctx context.Context, adapter referenceFi
 			path := ref.Location.Path
 			lines := c.indexSide(path)
 			if lines == nil {
+				c.cut = true
 				continue
 			}
 			if alias, ok := diff.TSTypeofAlias(lines, ref.Location.Line, ref.Location.Column, name); ok {
@@ -259,6 +260,7 @@ func (c *doneChecker) zodChange(value *derivedValue) *diff.ZodChange {
 	oldLines := c.readOld(file, path)
 	newLines, ok := c.readNew(file, path)
 	if oldLines == nil || !ok {
+		c.cut = true
 		return nil
 	}
 	change, ok := diff.ZodSchemaChange(oldLines, newLines, value.name())
