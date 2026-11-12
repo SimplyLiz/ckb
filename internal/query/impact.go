@@ -2865,6 +2865,9 @@ func contractSignalFor(sym impact.ChangedSymbol, declaration impact.DeclarationC
 		Before: boundedText(sym.DeclarationBefore),
 		After:  boundedText(sym.DeclarationAfter),
 	}
+	if language == "go" {
+		signal.Detail = goWireKeyChange(sym.DeclarationBefore, sym.DeclarationAfter, declaration == impact.DeclRemoved)
+	}
 	if files := boundedUniqueSorted(consumers); len(files) > 0 {
 		signal.ConsumerCount = len(files)
 		signal.Consumers = files
@@ -2873,6 +2876,47 @@ func contractSignalFor(sym impact.ChangedSymbol, declaration impact.DeclarationC
 		}
 	}
 	return signal
+}
+
+// goWireTagRe reads the key a Go struct tag gives a field in a serialized format.
+var goWireTagRe = regexp.MustCompile(`\b(json|yaml|xml|toml):"([^",]*)`)
+
+// goWireKeyChange names what a field's change does to the keys it is serialized under,
+// which no compiler checks: a client reading `originalCount` finds nothing. Only a
+// field with a tag says it is serialized; an untagged one may never be.
+func goWireKeyChange(before, after string, removed bool) string {
+	keys := func(decl string) map[string]string {
+		found := make(map[string]string)
+		if !strings.Contains(decl, "`") {
+			return found
+		}
+		for _, m := range goWireTagRe.FindAllStringSubmatch(decl[strings.Index(decl, "`"):], -1) {
+			if m[2] != "-" {
+				found[m[1]] = m[2]
+			}
+		}
+		return found
+	}
+	was, now := keys(before), keys(after)
+	var notes []string
+	for _, format := range []string{"json", "yaml", "xml", "toml"} {
+		old, ok := was[format]
+		if !ok || old == "" {
+			continue
+		}
+		switch current, still := now[format]; {
+		case removed:
+			notes = append(notes, fmt.Sprintf("%s key %q gone", format, old))
+		case !still:
+			notes = append(notes, fmt.Sprintf("%s key %q now the format's default", format, old))
+		case current != old && current != "":
+			notes = append(notes, fmt.Sprintf("%s key %q -> %q", format, old, current))
+		}
+	}
+	if len(notes) == 0 {
+		return ""
+	}
+	return strings.Join(notes, ", ") + " (serialized: readers outside the code don't compile)"
 }
 
 // maxContractConsumers bounds the files named on each signal; ConsumerFiles has them all.
