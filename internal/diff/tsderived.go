@@ -175,8 +175,17 @@ func TSLiteralKeyLine(lines []string, first, last int, key string) int {
 	}
 	text := strings.Join(lines[first-1:last], "\n")
 	found, foundDepth := 0, 0
+	var before byte // Last byte of code ahead of the one visited: comments don't count
 	tsScan(text, func(i, depth int) bool {
-		if depth < 1 || (found > 0 && depth >= foundDepth) || !strings.HasPrefix(text[i:], key) || (i > 0 && isWordByte(text[i-1])) {
+		previous := before
+		if c := text[i]; c != ' ' && c != '\t' && c != '\r' && c != '\n' {
+			before = c
+		}
+		// A key follows `{` or `,`; anything else is a value, a ternary or a type.
+		if depth < 1 || (previous != '{' && previous != ',') || (found > 0 && depth >= foundDepth) {
+			return true
+		}
+		if !strings.HasPrefix(text[i:], key) || (i > 0 && isWordByte(text[i-1])) {
 			return true
 		}
 		rest := text[i+len(key):]
@@ -184,18 +193,257 @@ func TSLiteralKeyLine(lines []string, first, last int, key string) int {
 			return true
 		}
 		rest = strings.TrimLeft(rest, " \t")
-		if rest == "" || rest[0] != ':' {
-			if rest != "" && rest[0] != ',' && rest[0] != '\n' && rest[0] != '}' {
-				return true
-			}
-		}
-		// A key follows `{` or `,`; anything else is a value, a ternary or a type.
-		previous := strings.TrimRight(text[:i], " \t\n\r")
-		if previous == "" || strings.IndexByte("{,", previous[len(previous)-1]) < 0 {
+		if rest != "" && strings.IndexByte(":,\n}", rest[0]) < 0 {
 			return true
 		}
 		found, foundDepth = first+strings.Count(text[:i], "\n"), depth
 		return true
 	})
 	return found
+}
+
+// maxTSConstructionLines bounds how far the construction of a value is read.
+const maxTSConstructionLines = 2000
+
+// TSLiteralsMissing looks at the object literals that build a value of the named type
+// at this place: the one assigned or returned, each element of an array of them. With a
+// path, it goes on to the literal each of them holds under those keys. It returns the
+// lines of the literals that set none of the given keys and have no spread that could.
+// read is false if nothing is built here in a way that can be read; a cast is read, and
+// has nothing missing: the compiler accepts it short of a key.
+func TSLiteralsMissing(lines []string, line, column int, name string, path, keys []string) (at []int, read bool) {
+	first := rawLine(lines, line)
+	start := nameIndex(first, column, name)
+	if start < 0 || line < 1 {
+		return nil, false
+	}
+	last := min(len(lines), line+maxTSConstructionLines)
+	text := strings.Join(lines[line-1:last], "\n")
+	before := strings.TrimRight(first[:start], " \t")
+	switch lastWordOf(before) {
+	case "as":
+		return nil, true
+	case "satisfies", "interface", "class", "type", "enum", "extends", "implements", "import", "typeof", "keyof", "new":
+		return nil, false
+	}
+
+	i := start + len(name)
+	skip := func() {
+		for i < len(text) && (text[i] == ' ' || text[i] == '\t') {
+			i++
+		}
+	}
+	if i < len(text) && text[i] == '<' {
+		close := matchingBracket(text[i:], '<', '>')
+		if close < 0 {
+			return nil, false
+		}
+		i += close + 1
+	}
+	for strings.HasPrefix(text[i:], "[]") {
+		i += 2
+	}
+	// A Record keyed by the name: on to the end of its type arguments.
+	if strings.HasSuffix(before, "Record<") {
+		for depth := 1; i < len(text) && depth > 0; i++ {
+			switch text[i] {
+			case '<':
+				depth++
+			case '>':
+				if text[i-1] != '=' {
+					depth--
+				}
+			}
+		}
+	}
+	skip()
+
+	var literals []int // Offsets of the `{` of each literal built here
+	body := -1         // Offset of a function body's `{`
+	switch {
+	case strings.HasPrefix(text[i:], "=>"):
+		i += 2
+		skip()
+		paren := false
+		for i < len(text) && text[i] == '(' {
+			paren = true
+			i++
+			skip()
+		}
+		switch {
+		case i < len(text) && text[i] == '{' && !paren:
+			body = i
+		case i < len(text) && (text[i] == '{' || text[i] == '['):
+			literals = tsLiteralsAt(text, i)
+		default:
+			return nil, false
+		}
+	case strings.HasPrefix(text[i:], "=") && !strings.HasPrefix(text[i:], "=="):
+		i++
+		for i < len(text) && strings.IndexByte(" \t\r\n", text[i]) >= 0 {
+			i++
+		}
+		if i >= len(text) || (text[i] != '{' && text[i] != '[') {
+			return nil, false
+		}
+		literals = tsLiteralsAt(text, i)
+	case strings.HasPrefix(text[i:], "{") && strings.HasSuffix(before, ":") && strings.HasSuffix(strings.TrimRight(before[:len(before)-1], " \t"), ")"):
+		body = i
+	case strings.HasPrefix(text[i:], ">") && strings.HasSuffix(before, "<"):
+		i++
+		skip()
+		if i >= len(text) || text[i] != '{' {
+			return nil, false
+		}
+		literals = []int{i}
+	default:
+		return nil, false
+	}
+	if body >= 0 {
+		literals = tsReturnedLiterals(text, body)
+	}
+
+	for _, key := range path {
+		var inner []int
+		for _, open := range literals {
+			props, _ := tsObjectProps(text, open)
+			if value, ok := props[key]; ok && value >= 0 {
+				inner = append(inner, tsLiteralsAt(text, value)...)
+			}
+		}
+		literals = inner
+	}
+	for _, open := range literals {
+		props, spread := tsObjectProps(text, open)
+		if spread {
+			continue
+		}
+		for _, key := range keys {
+			if _, ok := props[key]; !ok {
+				at = append(at, line+strings.Count(text[:open], "\n"))
+				break
+			}
+		}
+	}
+	return at, true
+}
+
+// tsLiteralsAt returns the object literals at an offset: the one that starts there, or
+// each one that is an element of the array that does.
+func tsLiteralsAt(text string, at int) []int {
+	if at >= len(text) {
+		return nil
+	}
+	switch text[at] {
+	case '{':
+		return []int{at}
+	case '[':
+		var elements []int
+		rest := text[at:]
+		var before byte
+		tsScan(rest, func(i, depth int) bool {
+			previous := before
+			if c := rest[i]; c != ' ' && c != '\t' && c != '\r' && c != '\n' {
+				before = c
+			}
+			if depth == 1 && rest[i] == ']' {
+				return false
+			}
+			if depth == 1 && rest[i] == '{' && (previous == '[' || previous == ',') {
+				elements = append(elements, at+i)
+			}
+			return true
+		})
+		return elements
+	}
+	return nil
+}
+
+// tsReturnedLiterals returns the object literals a function body returns, the body
+// opening at the given offset.
+func tsReturnedLiterals(text string, open int) []int {
+	var literals []int
+	rest := text[open:]
+	tsScan(rest, func(i, depth int) bool {
+		if depth == 1 && rest[i] == '}' {
+			return false
+		}
+		if !strings.HasPrefix(rest[i:], "return") || (i > 0 && isWordByte(rest[i-1])) {
+			return true
+		}
+		j := i + len("return")
+		if j < len(rest) && isWordByte(rest[j]) {
+			return true
+		}
+		for j < len(rest) && strings.IndexByte(" \t\r\n(", rest[j]) >= 0 {
+			j++
+		}
+		literals = append(literals, tsLiteralsAt(text, open+j)...)
+		return true
+	})
+	return literals
+}
+
+// tsObjectProps reads the object literal opening at the given offset: each key it sets
+// with the offset its value starts at (-1 for a shorthand or a method), and whether it
+// spreads another object into itself.
+func tsObjectProps(text string, open int) (props map[string]int, spread bool) {
+	props = make(map[string]int)
+	rest := text[open:]
+	var before byte
+	tsScan(rest, func(i, depth int) bool {
+		previous := before
+		if c := rest[i]; c != ' ' && c != '\t' && c != '\r' && c != '\n' {
+			before = c
+		}
+		if depth == 1 && rest[i] == '}' {
+			return false
+		}
+		if depth != 1 || (previous != '{' && previous != ',') {
+			return true
+		}
+		if strings.HasPrefix(rest[i:], "...") {
+			spread = true
+			return true
+		}
+		name := tsIdentRe.FindString(rest[i:])
+		if name == "" {
+			return true
+		}
+		j := i + len(name)
+		for j < len(rest) && (rest[j] == ' ' || rest[j] == '\t') {
+			j++
+		}
+		if j < len(rest) && rest[j] == ':' {
+			j++
+			for j < len(rest) && strings.IndexByte(" \t\r\n", rest[j]) >= 0 {
+				j++
+			}
+			props[name] = open + j
+		} else {
+			props[name] = -1
+		}
+		return true
+	})
+	return props, spread
+}
+
+// TSIsPropertyWrite says whether the name on a line is a key an object literal sets,
+// `key: value` or the shorthand `key,`, and not a read such as `x.key`. A destructuring
+// pattern looks the same and counts as a write.
+func TSIsPropertyWrite(lines []string, line int, name string) bool {
+	text := rawLine(lines, line)
+	at := wordIndex(text, name)
+	if at < 0 {
+		return false
+	}
+	before := strings.TrimRight(text[:at], " \t")
+	if strings.HasSuffix(before, ".") || strings.HasSuffix(before, "[\"") || strings.HasSuffix(before, "['") {
+		return false
+	}
+	if before != "" && strings.IndexByte("{,", before[len(before)-1]) < 0 {
+		return false
+	}
+	after := strings.TrimLeft(text[at+len(name):], " \t")
+	return after == "" || strings.IndexByte(":,}", after[0]) >= 0
 }

@@ -394,6 +394,35 @@ func (s *SCIPAdapter) ValueSymbolIn(path, name string) string {
 	return ""
 }
 
+// KeySymbolAt returns the symbol of the object key defined under a name on a line
+// (1-based) of a file, or "". scip-typescript names such a key `name0:`, and the
+// places that read or set it through the object's type refer to it.
+func (s *SCIPAdapter) KeySymbolAt(path string, line int, name string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.index == nil {
+		return ""
+	}
+	doc := s.index.DocumentsByPath[path]
+	if doc == nil {
+		return ""
+	}
+	for _, occ := range doc.Occurrences {
+		if occ.SymbolRoles&SymbolRoleDefinition == 0 || len(occ.Range) == 0 || int(occ.Range[0]) != line-1 {
+			continue
+		}
+		at := strings.LastIndexByte(occ.Symbol, '/')
+		descriptor := occ.Symbol[at+1:]
+		if !strings.HasSuffix(descriptor, ":") || !strings.HasPrefix(descriptor, name) {
+			continue
+		}
+		if strings.Trim(descriptor[len(name):len(descriptor)-1], "0123456789") == "" {
+			return occ.Symbol
+		}
+	}
+	return ""
+}
+
 // GeneratedMethods returns the given method of a type where the index has calls but no
 // definition: a macro wrote it, so nothing in the source declares it. Rust-analyzer's
 // symbols name the impl, as in `mod/impl#[`Foo<'a>`]new().`.

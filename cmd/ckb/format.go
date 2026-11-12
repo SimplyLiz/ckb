@@ -1445,6 +1445,9 @@ func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 				}
 				b.WriteString(line + "\n")
 			}
+			if c.Detail != "" {
+				b.WriteString("    " + c.Detail + "\n")
+			}
 			if verbose && c.Before != "" {
 				b.WriteString(fmt.Sprintf("    - %s\n", c.Before))
 			}

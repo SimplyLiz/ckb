@@ -91,6 +91,8 @@ type CompactContract struct {
 	// Before and After are the declarations compared, where both could be read.
 	Before string `json:"before,omitempty"`
 	After  string `json:"after,omitempty"`
+	// Detail says what changed where the declaration didn't.
+	Detail string `json:"detail,omitempty"`
 }
 
 // CompactTest is an affected test file and the test functions seen in it.
@@ -186,7 +188,7 @@ func CompactAssessChangeFor(r *AnalyzeChangeSetResponse, opts CompactAssessOptio
 
 	if want(AssessFocusRisk) {
 		for _, k := range r.Contracts {
-			c.Contracts = append(c.Contracts, CompactContract{Kind: k.Kind, Symbol: k.Symbol, Before: k.Before, After: k.After})
+			c.Contracts = append(c.Contracts, CompactContract{Kind: k.Kind, Symbol: k.Symbol, Before: k.Before, After: k.After, Detail: k.Detail})
 		}
 		if cf := r.ConsumerFiles; cf != nil {
 			c.Consumers = cf.Direct
@@ -336,7 +338,9 @@ func (c *CompactAssessChange) Text() string {
 		b.WriteString("\ncontracts:\n")
 		for _, k := range c.Contracts {
 			b.WriteString("  " + k.Kind + " " + k.Symbol)
-			if k.Before != "" && k.After != "" {
+			if k.Detail != "" {
+				b.WriteString(": " + k.Detail)
+			} else if k.Before != "" && k.After != "" {
 				b.WriteString(": " + oneLine(k.Before) + " -> " + oneLine(k.After))
 			} else if k.Before != "" {
 				b.WriteString(": " + oneLine(k.Before))

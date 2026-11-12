@@ -86,12 +86,13 @@ type doneChecker struct {
 	sites      []OpenSite
 	updated    int
 	filesRead  int
-	cut        bool           // A reference list or the file limit stopped the check short
-	failed     int            // Changed declarations whose uses couldn't be looked up
-	unreadable []string       // Changed symbols whose declaration couldn't be compared, as file:name
-	unindexed  []string       // Changed code files the index doesn't cover, so nothing in them was checked
-	modulePath []string       // go.mod files whose module line changed: every import of it did too
-	compared   []comparedSpan // Type bodies read on both sides, which explain lines no symbol names
+	cut        bool             // A reference list or the file limit stopped the check short
+	failed     int              // Changed declarations whose uses couldn't be looked up
+	unreadable []string         // Changed symbols whose declaration couldn't be compared, as file:name
+	unindexed  []string         // Changed code files the index doesn't cover, so nothing in them was checked
+	modulePath []string         // go.mod files whose module line changed: every import of it did too
+	compared   []comparedSpan   // Type bodies read on both sides, which explain lines no symbol names
+	shapes     []ContractSignal // Types read off a value whose keys or members changed
 }
 
 func newDoneChecker(repoRoot string, opts AnalyzeChangeSetOptions, parsed *impact.ParsedDiff) *doneChecker {
@@ -180,6 +181,21 @@ type useQuery struct {
 	// key is listed there.
 	derived bool
 	keyVia  map[string]string // Key to the reason a literal setting it counts
+	// recordOnly leaves the Record keyed by the type as the only literal of it: a
+	// union that gained a member breaks nothing else that is built.
+	recordOnly bool
+	// missing, with keys, narrows a literal to the ones that set none of them: the
+	// keys the type now requires. path leads from the literal to the one that has to
+	// have them, through the keys that hold it.
+	missing *missingKeys
+	// readsOnly skips a key where an object literal sets it: what was written still
+	// fits a type that got wider.
+	readsOnly bool
+}
+
+// missingKeys is what a literal has to set since the change, and where in it.
+type missingKeys struct {
+	path, keys []string
 }
 
 // checkUses classifies a symbol's references into openFiles. False means they couldn't
@@ -234,6 +250,12 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 			lines = oldLines
 		}
 		switch {
+		case query.recordOnly:
+			end, ok := diff.TSRecordLiteral(lines, ref.Location.Line, ref.Location.Column, query.name)
+			if !ok {
+				return
+			}
+			literalLines = end - ref.Location.Line
 		case diff.IsLiteralUse(query.lang, lines, ref.Location.Line, ref.Location.Column, query.name):
 			literalLines = diff.LiteralEnd(query.lang, lines, ref.Location.Line, ref.Location.Column, query.name) - ref.Location.Line
 		case query.derived:
@@ -270,6 +292,20 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 		return
 	}
 
+	if query.readsOnly && diff.TSIsPropertyWrite(newLines, result.Line, query.name) {
+		return
+	}
+	// Only the literals that lack what the type now requires are open, each at its
+	// own line. One that can't be read stays listed as it is.
+	var missingAt []int
+	if query.missing != nil {
+		at, read := diff.TSLiteralsMissing(newLines, result.Line, 0, query.name, query.missing.path, query.missing.keys)
+		if read && len(at) == 0 {
+			return
+		}
+		missingAt = at
+	}
+
 	openFiles[path] = true
 	if file != nil && file.NewPath != "" {
 		path = file.NewPath // A use in a renamed file is reported where it is now
@@ -293,6 +329,12 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 
 			literalLines: literalLines,
 		})
+	}
+	if len(missingAt) > 0 {
+		for _, at := range missingAt {
+			add(at, strings.TrimSpace(newLines[at-1]), query.via, 0)
+		}
+		return
 	}
 	// A literal that holds the changed type under a key is listed at that key: that
 	// is the place to look at.

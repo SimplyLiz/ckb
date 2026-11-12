@@ -612,6 +612,7 @@ type ContractSignalCLI struct {
 
 	Before        string   `json:"before,omitempty"`
 	After         string   `json:"after,omitempty"`
+	Detail        string   `json:"detail,omitempty"`
 	ConsumerCount int      `json:"consumerCount,omitempty"`
 	Consumers     []string `json:"consumers,omitempty"`
 }
@@ -857,6 +858,7 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 
 				Before:        c.Before,
 				After:         c.After,
+				Detail:        c.Detail,
 				ConsumerCount: c.ConsumerCount,
 				Consumers:     c.Consumers,
 			})
