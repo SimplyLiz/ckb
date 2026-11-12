@@ -357,6 +357,22 @@ Rust-A 62969bad49 goes from one false open to clear. 50/50 error lines exact bef
 after, open sites 215 → 214. Nothing else moves, so on these 44 the nested and `pub(crate)`
 fixes show no effect; they rest on tests and the probe only.
 
+### `pub(crate)` types on real commits (`scoped`, rule at 1861c4d)
+
+85b49bc made the body of a `pub(crate)`/`pub(super)` struct or enum readable at all;
+before it every such type had no fields or variants, a false clear. `select_replay.py
+--rule scoped` looks for the case: such a type gains a named field or a variant, and
+another non-test file of its crate names it. Each candidate stores `check_dir`, the crate
+`cargo check` runs in, which `replay_repo.py` takes unless `--check-dir` is given.
+
+Over all 23 local repos with Rust files, whole history (`--scan 2000`): **0 candidates**.
+At HEAD those repos hold 8 crate-scoped structs or enums in all, and none of them gained
+a member after the commit that created it. A probe repo with one such commit is found
+(`check_dir` and users right), so the zero is the corpus, not the rule. The binary run
+at HEAD and the comparison binary at 0fc1276 had nothing to measure. The `pub(crate)`
+fix still rests on tests only; measuring it needs repos that use crate visibility, which
+none here does.
+
 ### The probe, scripted (`replay.py --drop-arms`)
 
 The arms probe above was done by hand twice. `replay.py --drop-arms V` does it: after the
