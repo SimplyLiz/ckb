@@ -1,6 +1,7 @@
 package query
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -87,8 +88,9 @@ type doneChecker struct {
 	filesRead  int
 	cut        bool           // A reference list or the file limit stopped the check short
 	failed     int            // Changed declarations whose uses couldn't be looked up
-	unreadable int            // Changed symbols whose declaration couldn't be compared
+	unreadable []string       // Changed symbols whose declaration couldn't be compared, as file:name
 	unindexed  []string       // Changed code files the index doesn't cover, so nothing in them was checked
+	modulePath []string       // go.mod files whose module line changed: every import of it did too
 	compared   []comparedSpan // Type bodies read on both sides, which explain lines no symbol names
 }
 
@@ -110,8 +112,37 @@ func newDoneChecker(repoRoot string, opts AnalyzeChangeSetOptions, parsed *impac
 		if file.NewPath != "" {
 			c.files[file.NewPath] = file
 		}
+		if changesGoModulePath(file) {
+			c.modulePath = append(c.modulePath, cmp.Or(file.NewPath, file.OldPath))
+		}
 	}
 	return c
+}
+
+// changesGoModulePath says whether a diff changes a go.mod's module line, or removes
+// it with the file. A new go.mod starts a module: nothing imported it yet.
+func changesGoModulePath(file *impact.ChangedFile) bool {
+	if file.IsNew || filepath.Base(cmp.Or(file.NewPath, file.OldPath)) != "go.mod" {
+		return false
+	}
+	isModuleLine := func(text []string, start, line int) bool {
+		i := line - start
+		return i >= 0 && i < len(text) && strings.HasPrefix(strings.TrimSpace(text[i]), "module ")
+	}
+	for i := range file.Hunks {
+		hunk := &file.Hunks[i]
+		for _, line := range hunk.Removed {
+			if isModuleLine(hunk.OldText, hunk.OldStart, line) {
+				return true
+			}
+		}
+		for _, line := range hunk.Added {
+			if isModuleLine(hunk.NewText, hunk.NewStart, line) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 var lastIdentifier = regexp.MustCompile(`[\p{L}_$][\p{L}\p{N}_$]*`)
@@ -430,6 +461,9 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 	if indexDoubt != "" {
 		doubts = append(doubts, indexDoubt)
 	}
+	if len(c.modulePath) > 0 {
+		doubts = append(doubts, fmt.Sprintf("the module path in %s changed, and the imports of it aren't checked", namedFiles(c.modulePath)))
+	}
 	if len(c.unindexed) > 0 {
 		doubts = append(doubts, fmt.Sprintf("%d changed file(s) aren't in the index (%s)", len(c.unindexed), namedFiles(c.unindexed)))
 	}
@@ -439,8 +473,8 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 	if c.failed > 0 {
 		doubts = append(doubts, fmt.Sprintf("the uses of %d changed declaration(s) could not be looked up", c.failed))
 	}
-	if c.unreadable > 0 {
-		doubts = append(doubts, fmt.Sprintf("%d changed symbol(s) have a declaration that can't be compared here", c.unreadable))
+	if len(c.unreadable) > 0 {
+		doubts = append(doubts, fmt.Sprintf("%d changed symbol(s) have a declaration that can't be compared here (%s)", len(c.unreadable), namedFiles(c.unreadable)))
 	}
 	doubt := strings.Join(doubts, "; ")
 

@@ -212,6 +212,8 @@ func TestIsCodeFile(t *testing.T) {
 	for path, want := range map[string]bool{
 		"main.go": true, "scripts/gen.py": true, "a.vue": true, "Makefile": true,
 		"README.md": false, "docs/a.MD": false, ".ckb/config.json": false, "ci.yml": false,
+		"LICENSE": false, ".gitignore": false, "sub/.gitignore": false, "go.mod": false, "go.sum": false,
+		"license.go": true, "notice.go": true,
 	} {
 		if got := isCodeFile(path); got != want {
 			t.Errorf("isCodeFile(%q) = %v, want %v", path, got, want)

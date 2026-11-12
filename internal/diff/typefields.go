@@ -11,9 +11,6 @@ import (
 // range, so a field added to its body reaches no symbol, and a declaration compared by
 // its first line reads as unchanged. Text, not types, like rust.go.
 
-// maxLiteralSpan bounds how far a literal's braces are followed.
-const maxLiteralSpan = 300
-
 // TypeLanguage says which of these parsers a file gets: "go", "typescript", or "".
 func TypeLanguage(path string) string {
 	switch {
@@ -425,7 +422,8 @@ func matchingBracket(text string, open, close byte) int {
 }
 
 // braceEnd returns the line on which the bracket at text[offset] of line closes, skipping
-// strings and line comments, or the last line looked at.
+// strings and line comments, or line itself if the file ends first. It reads as far as
+// the literal goes: a tool table of thousands of lines is one literal all the same.
 func braceEnd(lines []string, line, offset int) int {
 	text := rawLine(lines, line)
 	if offset >= len(text) {
@@ -446,7 +444,7 @@ func braceEnd(lines []string, line, offset int) int {
 	depth := 0
 	var quote byte
 	scan := text[offset:]
-	for current := line; current <= line+maxLiteralSpan; current++ {
+	for current := line; current <= len(lines); current++ {
 		if current != line {
 			scan = rawLine(lines, current)
 		}
@@ -591,7 +589,8 @@ func GoLiteralKeys(lines []string, line, column int, name string) (keys []string
 }
 
 // goScan walks Go source outside strings, runes and comments, calling visit with each
-// byte's index and the bracket depth before it. visit returns false to stop.
+// byte's index and the bracket depth before it. visit returns false to stop. A newline
+// is visited unless a string or block comment holds it.
 func goScan(s string, visit func(i, depth int) bool) {
 	depth := 0
 	for i := 0; i < len(s); i++ {
@@ -608,10 +607,10 @@ func goScan(s string, visit func(i, depth int) bool) {
 			}
 			continue
 		case c == '/' && i+1 < len(s) && s[i+1] == '/':
-			for i < len(s) && s[i] != '\n' {
+			for i+1 < len(s) && s[i+1] != '\n' {
 				i++
 			}
-			continue
+			continue // The newline ending the comment is visited
 		case c == '/' && i+1 < len(s) && s[i+1] == '*':
 			if end := strings.Index(s[i+2:], "*/"); end >= 0 {
 				i += end + 3

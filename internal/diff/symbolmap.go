@@ -136,6 +136,7 @@ func (m *DiffSymbolMapper) MapToSymbols(diff *impact.ParsedDiff) ([]impact.Chang
 
 	texts := newDiffTexts(m, diff)
 	resolveGoMoves(texts, result)
+	resolveRustMoves(texts, result)
 	resolveGoTypeRenames(texts, result)
 
 	// Sort by confidence descending, then by name
@@ -197,7 +198,22 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 		return []impact.ChangedSymbol{entry}, nil
 	}
 
+	var text *fileText // Read once, for the first thing that needs it
+	readText := func() *fileText {
+		if text == nil {
+			text = readFileText(file, m.wholeFile(file))
+		}
+		return text
+	}
+
 	defs := changeableDefinitions(doc)
+	if declarationLanguage(filePath) == "go" {
+		indexAll := readText().oldAll
+		if side == indexMatchesNew {
+			indexAll = readText().newAll
+		}
+		defs = withGoValueExtents(defs, indexAll)
+	}
 	found := make(map[string]*attributedSymbol)
 	var unresolvedLines []int
 	var unresolvedRemoved []string
@@ -239,7 +255,6 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 
 	wholeChanges := wholeDefinitionChanges(file, defs, side)
 	changeType := fileChangeType(file)
-	var text *fileText // Read once, for the first declaration to compare
 	result := make([]impact.ChangedSymbol, 0, len(found)+1)
 	for symbolID, sym := range found {
 		entry := impact.ChangedSymbol{
@@ -268,11 +283,8 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 			if name == "" {
 				name = sym.def.Name
 			}
-			if text == nil && !file.IsNew && declarationLanguage(filePath) != "" {
-				text = readFileText(file, m.wholeFile(file))
-			}
-			if text != nil {
-				entry.Declaration, entry.DeclarationBefore, entry.DeclarationAfter = classifyDeclarationIn(text, file.Deleted, sym.def, name, side, entry.ChangeType, filePath)
+			if !file.IsNew && declarationLanguage(filePath) != "" {
+				entry.Declaration, entry.DeclarationBefore, entry.DeclarationAfter = classifyDeclarationIn(readText(), file.Deleted, sym.def, name, side, entry.ChangeType, filePath)
 			}
 		}
 		result = append(result, entry)
@@ -396,16 +408,26 @@ func mentions(lines []string, name string) bool {
 }
 
 // codeLines drops the lines whose removal or addition changes no definition:
-// blank lines, comments, stray closing brackets, imports.
+// blank lines, comments, stray closing brackets, imports, a Rust inherent impl's header.
 func codeLines(path string, lines []string) []string {
+	isGo, isRust := strings.HasSuffix(path, ".go"), strings.HasSuffix(path, ".rs")
 	var code []string
 	for _, line := range lines {
-		if !isCommentOrBlank(path, line) && !isStructuralLine(line) {
-			code = append(code, line)
+		if isCommentOrBlank(path, line) || isStructuralLine(line) {
+			continue
 		}
+		if isGo && goImportSpecRe.MatchString(strings.TrimSpace(line)) || isRust && isRustInherentImplHeader(line) {
+			continue
+		}
+		code = append(code, line)
 	}
 	return code
 }
+
+// goImportSpecRe is a line of a Go import block that names the package: `f "fmt"`,
+// `_ "embed"`, `. "strings"`. Elsewhere only an embedded field with a quoted tag looks
+// like this, and that line is the field's own definition, so it never gets here.
+var goImportSpecRe = regexp.MustCompile(`^(?:import\s+)?(?:[A-Za-z_]\w*|\.)\s+"[^"]*"$`)
 
 func isStructuralLine(line string) bool {
 	trimmed := strings.TrimSpace(line)
@@ -694,7 +716,10 @@ func resolveIndexSide(file *impact.ChangedFile, doc *DocumentInfo, docPath strin
 		return indexMatchesNew // Built by hand: no text, and Added is all there is
 	}
 
-	var oldScore, newScore, defsSeen, defsMatched int
+	// A definition on a line a side shows, with its name not there, says the index
+	// isn't that side. Only the side that shows the line: a hunk that gained lines
+	// reaches further on the new side, often to the index's next definition.
+	var oldScore, newScore, oldDefs, oldDefHits, newDefs, newDefHits int
 	names := make(map[string]string)
 	for _, occ := range doc.Occurrences {
 		if strings.HasPrefix(occ.Symbol, "local ") {
@@ -724,15 +749,35 @@ func resolveIndexSide(file *impact.ChangedFile, doc *DocumentInfo, docPath strin
 			newScore++
 		}
 		if occ.IsDefinition && scip.IsChangeableDefinition(occ.Symbol) {
-			defsSeen++
-			if oldHit || newHit {
-				defsMatched++
+			if inOld {
+				oldDefs++
+				if oldHit {
+					oldDefHits++
+				}
+			}
+			if inNew {
+				newDefs++
+				if newHit {
+					newDefHits++
+				}
 			}
 		}
 	}
 
+	notOld := oldDefs > 0 && oldDefHits == 0
+	notNew := newDefs > 0 && newDefHits == 0
 	switch {
-	case defsSeen > 0 && defsMatched == 0:
+	case notOld && notNew:
+		return indexMatchesNeither
+	case notOld:
+		if newScore > 0 {
+			return indexMatchesNew
+		}
+		return indexMatchesNeither // Nothing on the new side says it is that one either
+	case notNew:
+		if oldScore > 0 {
+			return indexMatchesOld
+		}
 		return indexMatchesNeither
 	case newScore > oldScore:
 		return indexMatchesNew
@@ -819,8 +864,20 @@ var nonCodeExtensions = map[string]bool{
 	".ico": true, ".pdf": true, ".snap": true, ".golden": true, ".css": true,
 }
 
+// nonCodeNames are files whose name, not extension, says they hold no use: legal text,
+// ignore lists, and the module files a SCIP index has no symbols for. A go.mod that
+// changes the module path breaks imports all the same; the done check says so itself.
+var nonCodeNames = map[string]bool{
+	"license": true, "licence": true, "copying": true, "notice": true, "authors": true,
+	"contributors": true, "codeowners": true, "changelog": true, "readme": true,
+	".gitignore": true, ".gitattributes": true, ".gitmodules": true, ".dockerignore": true,
+	".editorconfig": true, ".npmignore": true, ".prettierignore": true, ".eslintignore": true, ".mailmap": true,
+	"go.mod": true, "go.sum": true, "go.work": true, "go.work.sum": true,
+}
+
 func isCodeFile(path string) bool {
-	return !nonCodeExtensions[strings.ToLower(filepath.Ext(path))]
+	base := strings.ToLower(filepath.Base(path))
+	return !nonCodeNames[base] && !nonCodeExtensions[strings.ToLower(filepath.Ext(path))]
 }
 
 // mapFileWithoutIndex creates low-confidence entries for files not in the index
@@ -850,7 +907,7 @@ func (m *DiffSymbolMapper) mapFileWithoutIndex(file *impact.ChangedFile) ([]impa
 	// Create a single entry for the file with low confidence
 	if file.Deleted {
 		entry := fileLevelEntry(file, filePath, allLines, "deleted file is not in the index, so what used it is not resolved")
-		entry.DeletionUnresolved = true
+		entry.DeletionUnresolved = isCodeFile(filePath) // A deleted README had no uses
 		return []impact.ChangedSymbol{entry}, nil
 	}
 	entry := fileLevelEntry(file, filePath, allLines, "file is not in the index")

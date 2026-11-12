@@ -284,15 +284,62 @@ func TestMapToSymbols_InferredBoundsHaveLowerConfidence(t *testing.T) {
 
 // A line no definition contains is not attributed to anything.
 func TestMapToSymbols_NoEnclosingDefinitionIsLowConfidence(t *testing.T) {
-	got := mapDoc(t, goDoc(), fileDiff("lib/lib.go", "@@ -13,3 +13,3 @@\n var Table = map[string]int{\n-\t\"a\": 1,\n+\t\"a\": 2,\n }\n"))
+	got := mapDoc(t, goDoc(), fileDiff("lib/lib.go", "@@ -11,3 +11,3 @@\n }\n-\n+var Extra = 1\n var Table = map[string]int{\n"))
 	if len(got) != 1 || got[0].SymbolID != "file:lib/lib.go" {
 		t.Fatalf("got %+v, want one file-level entry", got)
 	}
 	if got[0].Confidence >= 0.5 || got[0].Note == "" {
 		t.Errorf("want low confidence with a note, got %v %q", got[0].Confidence, got[0].Note)
 	}
-	if len(got[0].Lines) != 1 || got[0].Lines[0] != 14 {
-		t.Errorf("lines = %v, want [14]", got[0].Lines)
+	if len(got[0].Lines) != 1 || got[0].Lines[0] != 12 {
+		t.Errorf("lines = %v, want [12]", got[0].Lines)
+	}
+}
+
+// scip-go gives a var no range, only the line of its name. A line further into its
+// initializer belongs to it all the same: the declaration is unchanged, not unknown.
+func TestMapToSymbols_GoValueInitializerBelongsToTheValue(t *testing.T) {
+	t.Run("from the hunk", func(t *testing.T) {
+		got := mapDoc(t, goDoc(), fileDiff("lib/lib.go", "@@ -13,3 +13,3 @@\n var Table = map[string]int{\n-\t\"a\": 1,\n+\t\"a\": 2,\n }\n"))
+		if len(got) != 1 || got[0].Name != "Table" || got[0].Declaration != impact.DeclUnchanged {
+			t.Fatalf("got %+v, want Table with its declaration unchanged", got)
+		}
+	})
+	t.Run("declaration line outside the hunk", func(t *testing.T) {
+		old := strings.Split("package lib\n\nimport \"fmt\"\n\nconst Limit = 10\n\nfunc Target(x int) int {\n\ty := x + 1\n\tfmt.Println(y)\n\treturn y\n}\n\nvar Table = map[string]int{\n\t\"a\": 1,\n}\n\ntype Point struct {\n\tX int\n}\n\nfunc After() {}", "\n")
+		reader := func(path string, isOld bool) []string {
+			if !isOld {
+				return append(append(append([]string{}, old[:13]...), "\t\"a\": 2,"), old[14:]...)
+			}
+			return old
+		}
+		got := mapDocWith(t, goDoc(), fileDiff("lib/lib.go", "@@ -14,2 +14,2 @@\n-\t\"a\": 1,\n+\t\"a\": 2,\n }\n"), reader)
+		if len(got) != 1 || got[0].Name != "Table" || got[0].Declaration != impact.DeclUnchanged || got[0].DeletionUnresolved {
+			t.Fatalf("got %+v, want Table with its declaration unchanged", got)
+		}
+	})
+	t.Run("without the declaration line nothing says whose it is", func(t *testing.T) {
+		got := mapDoc(t, goDoc(), fileDiff("lib/lib.go", "@@ -14,2 +14,2 @@\n-\t\"a\": 1,\n+\t\"a\": 2,\n }\n"))
+		if len(got) != 1 || got[0].SymbolID != "file:lib/lib.go" || !got[0].DeletionUnresolved {
+			t.Fatalf("got %+v, want the file-level entry", got)
+		}
+	})
+}
+
+// An aliased import is an import, not code whose uses went unresolved.
+func TestMapToSymbols_GoAliasedImportIsNotCode(t *testing.T) {
+	lines := []string{"import (", "\tf \"fmt\"", "\t_ \"embed\"", "\t. \"strings\"", "\t\"os\"", ")"}
+	if code := codeLines("a.go", lines); len(code) != 0 {
+		t.Errorf("codeLines kept %q, want no code in an import block", code)
+	}
+	if code := codeLines("a.ts", []string{"f \"fmt\""}); len(code) != 1 {
+		t.Errorf("codeLines dropped %q outside Go", code)
+	}
+	got := mapDoc(t, goDoc(), fileDiff("lib/lib.go", "@@ -1,4 +1,4 @@\n package lib\n \n-import f \"fmt\"\n+import \"fmt\"\n \n"))
+	for _, s := range got {
+		if s.DeletionUnresolved {
+			t.Fatalf("got %+v, a removed import is no unresolved code", got)
+		}
 	}
 }
 
@@ -333,6 +380,17 @@ func TestMapToSymbols_IndexMatchesNeitherSide(t *testing.T) {
 	}
 	if !strings.Contains(got[0].Note, "ckb index") {
 		t.Errorf("note %q should say how to fix it", got[0].Note)
+	}
+}
+
+// Lines inserted make the new side of a hunk longer than the old. Where only the new
+// side reaches the index's next definition, the line there is another one: that says
+// the index isn't the new side, not that it is neither.
+func TestMapToSymbols_DefinitionOnlyTheLongerSideReaches(t *testing.T) {
+	diffText := fileDiff("lib/lib.go", "@@ -8,4 +8,7 @@\n \ty := x + 1\n+\ta := 1\n+\tb := 2\n+\tc := 3\n \tfmt.Println(y)\n \treturn y\n }\n")
+	got := mapDoc(t, goDoc(), diffText)
+	if names(got) != "Target" {
+		t.Fatalf("got %+v, want Target: the index is the old side", got)
 	}
 }
 
@@ -675,5 +733,103 @@ func TestMapToSymbols_GoTypeRenameCarriesItsMethods(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// rust-analyzer names a method by the module its impl is in. Moving the impl to another
+// file of the crate removes no method a caller reaches through the type, unless the
+// method is visible by module.
+func TestMapToSymbols_RustImplMovedWithinCrate(t *testing.T) {
+	removeImpl := func(fn string) string {
+		return fileDiff("src/lib.rs", "@@ -5,8 +5,2 @@\n }\n \n-impl Point {\n-    "+fn+"(&self) -> i32 {\n-        let total = self.x;\n-        total\n-    }\n-}\n")
+	}
+	addImpl := func(path, header, fn string) string {
+		return "diff --git a/" + path + " b/" + path + "\nnew file mode 100644\n--- /dev/null\n+++ b/" + path + "\n" +
+			"@@ -0,0 +1,8 @@\n+use crate::Point;\n+\n+" + header + " {\n+    " + fn + "(&self) -> i32 {\n+        let total = self.x;\n+        total\n+    }\n+}\n"
+	}
+	tests := []struct {
+		name  string
+		diff  string
+		want  impact.DeclarationChange
+		moved bool
+	}{
+		{"pub, to another module", removeImpl("pub fn sum") + addImpl("src/moved.rs", "impl Point", "pub fn sum"), impact.DeclUnchanged, true},
+		{"pub(crate) widened to pub", removeImpl("pub(crate) fn sum") + addImpl("src/moved.rs", "impl Point", "pub fn sum"), impact.DeclCompatible, true},
+		{"pub narrowed to pub(crate)", removeImpl("pub fn sum") + addImpl("src/moved.rs", "impl Point", "pub(crate) fn sum"), impact.DeclChanged, true},
+		{"private: visible by module", removeImpl("fn sum") + addImpl("src/moved.rs", "impl Point", "fn sum"), impact.DeclRemoved, false},
+		{"pub(super): visible by module", removeImpl("pub(super) fn sum") + addImpl("src/moved.rs", "impl Point", "pub(super) fn sum"), impact.DeclRemoved, false},
+		{"into another crate", removeImpl("pub fn sum") + addImpl("tests/moved.rs", "impl Point", "pub fn sum"), impact.DeclRemoved, false},
+		{"into a binary", removeImpl("pub fn sum") + addImpl("src/bin/tool.rs", "impl Point", "pub fn sum"), impact.DeclRemoved, false},
+		{"into another type's impl", removeImpl("pub fn sum") + addImpl("src/moved.rs", "impl Other", "pub fn sum"), impact.DeclRemoved, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sum *impact.ChangedSymbol
+			got := mapDoc(t, rustDoc(), tt.diff)
+			for i := range got {
+				if got[i].Name == "sum" {
+					sum = &got[i]
+				}
+				if got[i].DeletionUnresolved {
+					t.Errorf("an inherent impl's header is structure, got %+v", got[i])
+				}
+			}
+			if sum == nil {
+				t.Fatalf("no sum in %+v", got)
+			}
+			if sum.Declaration != tt.want || strings.Contains(sum.Note, "moved") != tt.moved {
+				t.Errorf("sum = %s %q, want %s, moved %v", sum.Declaration, sum.Note, tt.want, tt.moved)
+			}
+		})
+	}
+}
+
+func TestIsRustInherentImplHeader(t *testing.T) {
+	for line, want := range map[string]bool{
+		"impl Point {":                      true,
+		"impl<T: Clone> Stack<T> {":         true,
+		"impl<T> Stack<T> where T: Clone {": true,
+		"unsafe impl Point {":               true,
+		"impl Display for Point {":          false,
+		"impl<'a> From<&'a str> for Name {": false,
+		"impl Point { fn f() {} }":          false,
+		"let x = 1;":                        false,
+	} {
+		if got := isRustInherentImplHeader(line); got != want {
+			t.Errorf("isRustInherentImplHeader(%q) = %v, want %v", line, got, want)
+		}
+	}
+}
+
+func TestRustCrateRoot(t *testing.T) {
+	for path, want := range map[string]string{
+		"src/a.rs": "", "src/a/b.rs": "", "crates/x/src/a.rs": "crates/x",
+		"tests/a.rs": "-", "src/bin/tool.rs": "-", "crates/x/src/bin/t.rs": "-", "build.rs": "-",
+	} {
+		root, ok := rustCrateRoot(path)
+		if !ok {
+			root = "-"
+		}
+		if root != want {
+			t.Errorf("rustCrateRoot(%q) = %q, want %q", path, root, want)
+		}
+	}
+}
+
+func TestRustImplOfMethod(t *testing.T) {
+	m := rustImplMethodRe.FindStringSubmatch("rust-analyzer cargo demo 0.1.0 a/impl#[Point][Display]fmt().")
+	if m == nil || m[1] != "Point" || m[2] != "Display" || m[3] != "fmt" {
+		t.Fatalf("trait impl method read as %q", m)
+	}
+	lines := linesOf("use std::fmt;\n\nimpl<T> fmt::Display for Point<T> {\n    // why\n    #[inline]\n    fn fmt(&self) {}\n}\n\nfn free() {}")
+	if trait, typ, ok := rustEnclosingImpl(lines, 6); !ok || trait != "Display" || typ != "Point" {
+		t.Errorf("enclosing impl = %q %q %v, want Display for Point", trait, typ, ok)
+	}
+	if _, _, ok := rustEnclosingImpl(lines, 9); ok {
+		t.Error("a free function is in no impl")
+	}
+	nested := linesOf("mod inner {\n    fn f() {}\n}")
+	if _, _, ok := rustEnclosingImpl(nested, 2); ok {
+		t.Error("a function in a mod is in no impl")
 	}
 }
