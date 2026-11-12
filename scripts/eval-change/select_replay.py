@@ -20,6 +20,13 @@ line naming it as a word, so the commit edited a user along with it. Only the fi
 such a declaration are applied, and the users stay at the parent: the change is made where
 the agent starts and the users are what it still has to do. The default rule takes every
 changed declaration that is named elsewhere, and most of those break nothing.
+
+`--rule variants` is `--rule users` narrowed to Rust enums that gained a variant: a
+`pub enum` of a modified file has a variant at the commit that it lacks at the parent,
+and another non-test source file of the commit, not applied, has a removed or added line
+naming the enum. Only the files with such an enum are applied. It looks for the case the
+done-check's enum variant check is for, so that check is measured on commits it wasn't
+built from.
 """
 
 import argparse
@@ -136,6 +143,38 @@ def edited_users(repo, lang, sha, parent, status, names, applied):
     return out
 
 
+RUST_ENUM = re.compile(r"^\s*pub(?:\([^)]*\))?\s+enum\s+([A-Za-z_]\w*)[^{;]*\{", re.M)
+
+
+def enum_variants(text):
+    """name -> variant names of each `pub enum` in a Rust file. Text, not a parser."""
+    out = {}
+    for m in RUST_ENUM.finditer(text):
+        i, depth = m.end(), 1
+        j = i
+        while j < len(text) and depth:
+            depth += {"{": 1, "}": -1}.get(text[j], 0)
+            j += 1
+        body = re.sub(r"//[^\n]*|/\*.*?\*/|#\[[^\]]*\]", "", text[i:j - 1], flags=re.S)
+        parts, level, cur = [], 0, ""
+        for ch in body:
+            level += 1 if ch in "({[<" else -1 if ch in ")}]>" else 0
+            if ch == "," and level == 0:
+                parts.append(cur)
+                cur = ""
+            else:
+                cur += ch
+        parts.append(cur)
+        out[m[1]] = [v[1] for v in (re.match(r"\s*([A-Za-z_]\w*)", p) for p in parts) if v]
+    return out
+
+
+def gained_variant(repo, parent, sha, path, name):
+    old = enum_variants(git(repo, "show", f"{parent}:{path}", check=False)).get(name)
+    new = enum_variants(git(repo, "show", f"{sha}:{path}", check=False)).get(name)
+    return old is not None and new is not None and any(v not in old for v in new)
+
+
 def candidate(repo, lang, sha, parent, max_files, rule="declaration"):
     status = git(repo, "diff", "--name-status", "--no-renames", parent, sha).splitlines()
     if not status or len(status) > max_files:
@@ -156,7 +195,12 @@ def candidate(repo, lang, sha, parent, max_files, rule="declaration"):
             decls.extend((path, k, name) for k, name in hit)
     if not files:
         return None
-    if rule == "users":
+    if rule == "variants":
+        decls = [d for d in decls if d[1] == "enum" and gained_variant(repo, parent, sha, d[0], d[2])]
+        files = sorted({d[0] for d in decls})
+        if not files:
+            return None
+    if rule in ("users", "variants"):
         # A file that both defines and uses is applied, so it can't be the user that
         # breaks. Drop the definers whose names nobody else edited, then look again.
         while True:
@@ -185,8 +229,9 @@ def main():
     ap.add_argument("--count", type=int, default=20, help="candidates to keep, in order; the driver takes the first that build")
     ap.add_argument("--scan", type=int, default=400, help="commits to look at from HEAD back")
     ap.add_argument("--max-files", type=int, default=30)
-    ap.add_argument("--rule", choices=["declaration", "users"], default="declaration",
-                    help="users: the commit also edits a file that names the declaration")
+    ap.add_argument("--rule", choices=["declaration", "users", "variants"], default="declaration",
+                    help="users: the commit also edits a file that names the declaration; "
+                         "variants: users, for a Rust enum that gained a variant")
     a = ap.parse_args()
 
     head = git(a.repo, "rev-parse", a.head).strip()
@@ -203,7 +248,7 @@ def main():
                 break
     a.out.write_text(json.dumps({"repo": str(a.repo.resolve()), "lang": a.lang, "head": head,
                                  "scanned": len(log), "rule_name": a.rule,
-                                 "rule": __doc__.split("\n\n")[1 if a.rule == "declaration" else 4],
+                                 "rule": __doc__.split("\n\n")[{"declaration": 1, "users": 4, "variants": 5}[a.rule]],
                                  "sample": picked}, indent=1) + "\n")
     print(f"{a.repo.name}: {len(log)} commits scanned, {len(picked)} candidates -> {a.out}")
 
