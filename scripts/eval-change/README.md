@@ -253,3 +253,38 @@ to open with one site, exactly on the error line; none of the other 26 commits c
 12 exact, 99 listed sites (15 on an error line), no clear while the compiler reports errors.
 That fix was written for the case it is measured on, so it shows the case is covered, not
 that recall is 12 of 12 elsewhere.
+
+### A fresh Rust sample (`users3`, `variants`, rules at daebc62)
+
+Rust repos of the same machine that were in no eval before, chosen by the rule in the
+private PLAN: the three with the most `--rule users` candidates (Rust-D 20, Rust-E 8,
+Rust-F 7). To measure the enum variant check on commits it wasn't built from,
+`select_replay.py --rule variants` takes the users rule for a `pub enum` that gains a
+variant; over all eight new repos it finds six, two of them with a broken parent. Binary
+built at daebc62 (done-check code at 47eefef, with `Self::`/glob arms and nested patterns),
+nothing changed during the run.
+
+| | Rust-D | Rust-E | Rust-F | all |
+|---|---|---|---|---|
+| candidates (parent broken, skipped) | 20 (6) | 8 | 7 | 35 (6) |
+| commits measured / that break a line | 14 / 10 | 8 / 2 | 7 / 5 | 29 / 17 |
+| broken lines | 11 | 2 | 21 | 34 |
+| exact, within 3, missed, file not named | 7, 7, 4, 4 | 2, 2, 0, 0 | 21, 21, 0, 0 | 30, 30, 4, 4 |
+| clear / open | 5 / 9 | 4 / 4 | 1 / 6 | 10 / 19 |
+| listed sites (on an error line) | 44 (7) | 72 (2) | 59 (21) | 175 (30) |
+| **clear while the compiler reports errors** | **2** | 0 | 0 | **2** |
+| compact answer, mean bytes | 1416 | 1895 | 2387 | |
+| `ckb index` seconds | 5–15 | 4–17 | 4–10 | |
+
+All four misses in Rust-D are one cause: a field added to a struct, and a literal of it in
+another file without `..` (E0063). The literal runs 48 to 61 lines, and the Rust literal
+reader gives up after 40 (`maxCallSpan`), so the use isn't a literal and the check says
+nothing; in two commits that is the only broken line, so they are false clears. 30 of 34
+is one sample; 21 of the 30 come from one repo.
+
+`variants`: four commits measured, two break a line. Only one new error is a
+non-exhaustive match (E0004), spelled `E::A` at the top of the arms; it is listed exactly.
+No `Self::`, glob or nested arm occurs in the sample, so those three paths are covered by
+tests only. One miss: `let E::A { .. } = x;` over an enum that had one variant becomes
+refutable (E0005) when it gains another, and the check doesn't look at `let` patterns.
+The other broken commit's four lines are struct literals, all exact.
