@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -65,6 +66,12 @@ func resolveRustMoves(texts *diffTexts, result []impact.ChangedSymbol) {
 			}
 			decl := readDeclaration(text.newAll, line, "rust")
 			if trait == "" && !rustCrateVisible(decl.text) {
+				continue
+			}
+			// A new file is in the crate once a `mod` declares it. Where the parent
+			// module can be read and has no such line, the impl isn't compiled.
+			if declared, known := rustModuleDeclared(texts, file); known && !declared {
+				sym.Note = "an impl with this method is in " + file.NewPath + ", which no `mod` line declares"
 				continue
 			}
 			sym.ChangeType = impact.ChangeModified
@@ -149,4 +156,60 @@ func rustEnclosingImpl(lines map[int]string, line int) (trait, typ string, ok bo
 
 func leadingSpace(text string) int {
 	return len(text) - len(strings.TrimLeft(text, " \t"))
+}
+
+// rustModuleParents returns the module name a Rust file stands for and the files that
+// can declare it: for src/a/b.rs, b in src/a.rs or src/a/mod.rs; at the top, the crate
+// roots.
+func rustModuleParents(path string) (name string, parents []string) {
+	dir, base := filepath.ToSlash(filepath.Dir(path)), strings.TrimSuffix(filepath.Base(path), ".rs")
+	if base == "mod" {
+		dir, base = filepath.ToSlash(filepath.Dir(dir)), filepath.Base(dir)
+	}
+	if dir == "src" || strings.HasSuffix(dir, "/src") {
+		return base, []string{dir + "/lib.rs", dir + "/main.rs"}
+	}
+	return base, []string{dir + ".rs", dir + "/mod.rs"}
+}
+
+// rustModuleDeclared says whether a `mod` line declares a file the diff adds. known is
+// false if no parent module could be read whole: then the hunks may just not show it.
+// A file that was there before is taken as declared.
+func rustModuleDeclared(texts *diffTexts, file *impact.ChangedFile) (declared, known bool) {
+	if !file.IsNew {
+		return true, true
+	}
+	name, parents := rustModuleParents(file.NewPath)
+	modLine := regexp.MustCompile(`^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+` + regexp.QuoteMeta(name) + `\s*;`)
+	has := func(lines map[int]string) bool {
+		for _, text := range lines {
+			if modLine.MatchString(text) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, parent := range parents {
+		if changed := texts.byPath[parent]; changed != nil && !changed.Deleted {
+			if has(texts.read(changed).newAll) {
+				return true, true
+			}
+			if sides := texts.m.wholeFile(changed); sides != nil && sides.new != nil {
+				known = true
+			}
+			continue
+		}
+		if texts.m.files == nil {
+			continue
+		}
+		if lines := texts.m.files(parent, false); lines != nil {
+			known = true
+			for _, text := range lines {
+				if modLine.MatchString(text) {
+					return true, true
+				}
+			}
+		}
+	}
+	return false, known
 }

@@ -6,10 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -93,13 +95,16 @@ type doneChecker struct {
 	sites      []OpenSite
 	updated    int
 	filesRead  int
-	cut        bool             // A reference list or the file limit stopped the check short
-	failed     int              // Changed declarations whose uses couldn't be looked up
-	unreadable []string         // Changed symbols whose declaration couldn't be compared, as file:name
-	unindexed  []string         // Changed code files the index doesn't cover, so nothing in them was checked
-	modulePath []string         // go.mod files whose module line changed: every import of it did too
-	compared   []comparedSpan   // Type bodies read on both sides, which explain lines no symbol names
-	shapes     []ContractSignal // Types read off a value whose keys or members changed
+	cut        bool     // A reference list or the file limit stopped the check short
+	failed     int      // Changed declarations whose uses couldn't be looked up
+	unreadable []string // Changed symbols whose declaration couldn't be compared, as file:name
+	unindexed  []string // Changed code files the index doesn't cover, so nothing in them was checked
+	modulePath []string // go.mod files whose module line changed: every import of it did too
+	// dependencies are go.mod changes that put other code behind an import: a major
+	// version, a dropped require, a replace.
+	dependencies []string
+	compared     []comparedSpan   // Type bodies read on both sides, which explain lines no symbol names
+	shapes       []ContractSignal // Types read off a value whose keys or members changed
 }
 
 func newDoneChecker(repoRoot string, opts AnalyzeChangeSetOptions, parsed *impact.ParsedDiff) *doneChecker {
@@ -123,6 +128,7 @@ func newDoneChecker(repoRoot string, opts AnalyzeChangeSetOptions, parsed *impac
 		if changesGoModulePath(file) {
 			c.modulePath = append(c.modulePath, cmp.Or(file.NewPath, file.OldPath))
 		}
+		c.dependencies = append(c.dependencies, goModDoubts(file)...)
 	}
 	return c
 }
@@ -151,6 +157,71 @@ func changesGoModulePath(file *impact.ChangedFile) bool {
 		}
 	}
 	return false
+}
+
+var (
+	goModRequireRe = regexp.MustCompile(`^(?:require\s+)?(\S+)\s+(v\d\S*)\s*(//.*)?$`)
+	goModReplaceRe = regexp.MustCompile(`^(?:replace\s+)?(\S+)(?:\s+v\S+)?\s+=>\s+\S+`)
+	goModMajorRe   = regexp.MustCompile(`/v(\d+)$`)
+)
+
+// goModDoubts names what a go.mod change does to the code behind an import, where the
+// check can't follow: a require whose major version changed, with v0 to v1 and the /vN
+// of the path counted, a require that is gone, and a replace that came, went or points
+// elsewhere. A minor or patch bump promises compatibility, an indirect require isn't
+// imported here, and a new require has no uses yet: none of those is a doubt.
+func goModDoubts(file *impact.ChangedFile) []string {
+	path := cmp.Or(file.NewPath, file.OldPath)
+	if file.IsNew || file.Deleted || filepath.Base(path) != "go.mod" {
+		return nil
+	}
+	type require struct{ major, version string }
+	before, after := make(map[string]require), make(map[string]require)
+	replaced := make(map[string]bool)
+	read := func(text []string, start int, lines []int, into map[string]require) {
+		for _, line := range lines {
+			i := line - start
+			if i < 0 || i >= len(text) {
+				continue
+			}
+			entry := strings.TrimSpace(text[i])
+			if m := goModReplaceRe.FindStringSubmatch(entry); m != nil {
+				replaced[m[1]] = true
+				continue
+			}
+			m := goModRequireRe.FindStringSubmatch(entry)
+			if m == nil || strings.Contains(m[3], "indirect") {
+				continue
+			}
+			module, major := m[1], "0"
+			if v := goModMajorRe.FindStringSubmatch(module); v != nil {
+				module, major = strings.TrimSuffix(module, v[0]), v[1]
+			} else if strings.HasPrefix(m[2], "v1.") {
+				major = "1"
+			}
+			into[module] = require{major: major, version: m[2]}
+		}
+	}
+	for i := range file.Hunks {
+		hunk := &file.Hunks[i]
+		read(hunk.OldText, hunk.OldStart, hunk.Removed, before)
+		read(hunk.NewText, hunk.NewStart, hunk.Added, after)
+	}
+
+	var doubts []string
+	for _, module := range slices.Sorted(maps.Keys(before)) {
+		was := before[module]
+		switch now, kept := after[module]; {
+		case !kept:
+			doubts = append(doubts, fmt.Sprintf("%s no longer requires %s", path, module))
+		case now.major != was.major:
+			doubts = append(doubts, fmt.Sprintf("%s changes the major version of %s (%s to %s)", path, module, was.version, now.version))
+		}
+	}
+	for _, module := range slices.Sorted(maps.Keys(replaced)) {
+		doubts = append(doubts, fmt.Sprintf("%s changes the replace of %s", path, module))
+	}
+	return doubts
 }
 
 var lastIdentifier = regexp.MustCompile(`[\p{L}_$][\p{L}\p{N}_$]*`)
@@ -600,6 +671,9 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 	}
 	if len(c.modulePath) > 0 {
 		doubts = append(doubts, fmt.Sprintf("the module path in %s changed, and the imports of it aren't checked", namedFiles(c.modulePath)))
+	}
+	if len(c.dependencies) > 0 {
+		doubts = append(doubts, strings.Join(c.dependencies, ", ")+", and what uses it isn't checked")
 	}
 	if len(c.unindexed) > 0 {
 		doubts = append(doubts, fmt.Sprintf("%d changed file(s) aren't in the index (%s)", len(c.unindexed), namedFiles(c.unindexed)))
