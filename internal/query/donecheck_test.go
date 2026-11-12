@@ -421,3 +421,53 @@ func TestDoneCheck_OrdersSitesByLikelihood(t *testing.T) {
 		t.Errorf("rarely = %d, note %q: want the two that rarely break counted and said", check.RarelyCount, check.Note)
 	}
 }
+
+// A dependency whose major version changes, a require that goes, and a replace that
+// changes all put other code behind the same imports. What uses it isn't checked, so
+// the check doesn't say clear. A minor or patch bump promises compatibility and stays
+// silent.
+func TestGoModDoubts(t *testing.T) {
+	mod := func(removed, added []string) impact.ChangedFile {
+		h := impact.ChangedHunk{OldStart: 1, NewStart: 1, OldText: append([]string{"require ("}, removed...), NewText: append([]string{"require ("}, added...)}
+		for i := range removed {
+			h.Removed = append(h.Removed, i+2)
+		}
+		for i := range added {
+			h.Added = append(h.Added, i+2)
+		}
+		return impact.ChangedFile{OldPath: "go.mod", NewPath: "go.mod", Hunks: []impact.ChangedHunk{h}}
+	}
+	for _, tt := range []struct {
+		name           string
+		removed, added []string
+		want           string
+	}{
+		{"a patch bump", []string{"\tgolang.org/x/term v0.45.0"}, []string{"\tgolang.org/x/term v0.45.1"}, ""},
+		{"a minor bump", []string{"\tgithub.com/a/b v1.2.0"}, []string{"\tgithub.com/a/b v1.3.0"}, ""},
+		{"v0 to v1", []string{"\tgithub.com/a/b v0.9.0"}, []string{"\tgithub.com/a/b v1.0.0"}, "major version of github.com/a/b (v0.9.0 to v1.0.0)"},
+		{"v1 to v2 by path", []string{"\tgithub.com/a/b v1.9.0"}, []string{"\tgithub.com/a/b/v2 v2.0.0"}, "major version of github.com/a/b (v1.9.0 to v2.0.0)"},
+		{"v2 to v3 by path", []string{"require github.com/a/b/v2 v2.1.0"}, []string{"require github.com/a/b/v3 v3.0.0"}, "major version of github.com/a/b (v2.1.0 to v3.0.0)"},
+		{"a require removed", []string{"\tgithub.com/a/b v1.9.0"}, nil, "no longer requires github.com/a/b"},
+		{"an indirect one", []string{"\tgithub.com/a/b v1.9.0 // indirect"}, []string{"\tgithub.com/a/b/v2 v2.0.0 // indirect"}, ""},
+		{"a require added", nil, []string{"\tgithub.com/a/b v1.9.0"}, ""},
+		{"a replace added", nil, []string{"replace github.com/a/b => ../b"}, "replace of github.com/a/b"},
+		{"a replace retargeted", []string{"\tgithub.com/a/b => github.com/c/b v1.0.0"}, []string{"\tgithub.com/a/b => github.com/c/b v1.1.0"}, "replace of github.com/a/b"},
+		{"the go line", []string{"go 1.25"}, []string{"go 1.26"}, ""},
+	} {
+		file := mod(tt.removed, tt.added)
+		got := strings.Join(goModDoubts(&file), "; ")
+		if (tt.want == "") != (got == "") || !strings.Contains(got, tt.want) {
+			t.Errorf("%s: doubts = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+	other := mod([]string{"\tgithub.com/a/b v1.9.0"}, nil)
+	other.OldPath, other.NewPath = "deps.txt", "deps.txt"
+	if got := goModDoubts(&other); len(got) != 0 {
+		t.Errorf("not a go.mod: %v", got)
+	}
+
+	check := (&doneChecker{seen: map[string]bool{}, dependencies: []string{"go.mod no longer requires github.com/a/b"}}).result("d", true, false, "")
+	if check.Status != DoneCheckNotAssessed || !strings.Contains(check.Note, "no longer requires github.com/a/b") {
+		t.Errorf("check = %s %q, want not_assessed naming the dependency", check.Status, check.Note)
+	}
+}

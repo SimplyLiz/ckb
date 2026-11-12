@@ -335,6 +335,12 @@ func TestMapToSymbols_GoAliasedImportIsNotCode(t *testing.T) {
 	if code := codeLines("a.ts", []string{"f \"fmt\""}); len(code) != 1 {
 		t.Errorf("codeLines dropped %q outside Go", code)
 	}
+	// A keyword and a string is a statement, not an import.
+	for _, line := range []string{"\treturn \"x\"", "goto \"x\"", "\tdefer \"x\""} {
+		if code := codeLines("a.go", []string{line}); len(code) != 1 {
+			t.Errorf("codeLines dropped %q: it is code", line)
+		}
+	}
 	got := mapDoc(t, goDoc(), fileDiff("lib/lib.go", "@@ -1,4 +1,4 @@\n package lib\n \n-import f \"fmt\"\n+import \"fmt\"\n \n"))
 	for _, s := range got {
 		if s.DeletionUnresolved {
@@ -781,6 +787,70 @@ func TestMapToSymbols_RustImplMovedWithinCrate(t *testing.T) {
 				t.Errorf("sum = %s %q, want %s, moved %v", sum.Declaration, sum.Note, tt.want, tt.moved)
 			}
 		})
+	}
+}
+
+// A new file is part of the crate only once a `mod` line declares it. Without one the
+// impl in it isn't compiled, and the method is gone for every caller.
+func TestMapToSymbols_RustImplMovedNeedsItsMod(t *testing.T) {
+	removeImpl := "@@ -5,8 +5,2 @@\n }\n \n-impl Point {\n-    pub fn sum(&self) -> i32 {\n-        let total = self.x;\n-        total\n-    }\n-}\n"
+	added := "diff --git a/src/moved.rs b/src/moved.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/moved.rs\n" +
+		"@@ -0,0 +1,8 @@\n+use crate::Point;\n+\n+impl Point {\n+    pub fn sum(&self) -> i32 {\n+        let total = self.x;\n+        total\n+    }\n+}\n"
+	libOld := "pub const LIMIT: i32 = 10;\n\npub struct Point {\n    pub x: i32,\n}\n\nimpl Point {\n    pub fn sum(&self) -> i32 {\n        let total = self.x;\n        total\n    }\n}"
+	libNew := "pub const LIMIT: i32 = 10;\n\npub struct Point {\n    pub x: i32,\n}\n"
+	reader := func(lib string) FileReader {
+		return func(path string, isOld bool) []string {
+			switch {
+			case path == "src/lib.rs" && isOld:
+				return strings.Split(libOld, "\n")
+			case path == "src/lib.rs":
+				return strings.Split(lib, "\n")
+			}
+			return nil
+		}
+	}
+	tests := []struct {
+		name  string
+		diff  string
+		files FileReader
+		moved bool
+	}{
+		{"the diff adds the mod line", fileDiff("src/lib.rs", "@@ -1,2 +1,3 @@\n pub const LIMIT: i32 = 10;\n+mod moved;\n \n"+strings.Replace(removeImpl, "+5,2", "+6,2", 1)) + added, nil, true},
+		{"the tree has no mod line", fileDiff("src/lib.rs", removeImpl) + added, reader(libNew), false},
+		{"the tree has it", fileDiff("src/lib.rs", strings.Replace(removeImpl, "+5,2", "+6,2", 1)) + added, reader("pub mod moved;\n" + libNew), true},
+		{"nothing to read: as before", fileDiff("src/lib.rs", removeImpl) + added, nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, s := range mapDocWith(t, rustDoc(), tt.diff, tt.files) {
+				if s.Name != "sum" {
+					continue
+				}
+				if moved := s.Declaration != impact.DeclRemoved; moved != tt.moved {
+					t.Errorf("sum = %s %q, want moved %v", s.Declaration, s.Note, tt.moved)
+				}
+				if !tt.moved && !strings.Contains(s.Note, "mod") {
+					t.Errorf("note = %q, want it to say no mod declares the file", s.Note)
+				}
+				return
+			}
+			t.Fatal("no sum")
+		})
+	}
+}
+
+func TestRustModuleParents(t *testing.T) {
+	for path, want := range map[string]string{
+		"src/moved.rs":          "moved: src/lib.rs src/main.rs",
+		"src/a/b.rs":            "b: src/a.rs src/a/mod.rs",
+		"src/a/mod.rs":          "a: src/lib.rs src/main.rs",
+		"crates/x/src/a/b/c.rs": "c: crates/x/src/a/b.rs crates/x/src/a/b/mod.rs",
+		"crates/x/src/a/mod.rs": "a: crates/x/src/lib.rs crates/x/src/main.rs",
+	} {
+		name, parents := rustModuleParents(path)
+		if got := name + ": " + strings.Join(parents, " "); got != want {
+			t.Errorf("rustModuleParents(%q) = %q, want %q", path, got, want)
+		}
 	}
 }
 

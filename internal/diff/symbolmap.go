@@ -2,6 +2,7 @@ package diff
 
 import (
 	"fmt"
+	"go/token"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -420,7 +421,7 @@ func codeLines(path string, lines []string) []string {
 		if isCommentOrBlank(path, line) || isStructuralLine(line) {
 			continue
 		}
-		if isGo && goImportSpecRe.MatchString(strings.TrimSpace(line)) || isRust && isRustInherentImplHeader(line) {
+		if isGo && isGoImportSpec(line) || isRust && isRustInherentImplHeader(line) {
 			continue
 		}
 		code = append(code, line)
@@ -429,9 +430,16 @@ func codeLines(path string, lines []string) []string {
 }
 
 // goImportSpecRe is a line of a Go import block that names the package: `f "fmt"`,
-// `_ "embed"`, `. "strings"`. Elsewhere only an embedded field with a quoted tag looks
-// like this, and that line is the field's own definition, so it never gets here.
-var goImportSpecRe = regexp.MustCompile(`^(?:import\s+)?(?:[A-Za-z_]\w*|\.)\s+"[^"]*"$`)
+// `_ "embed"`, `. "strings"`. An embedded field with a quoted tag looks like this too,
+// and that line is the field's own definition, so it never gets here.
+var goImportSpecRe = regexp.MustCompile(`^(?:import\s+)?([A-Za-z_]\w*|\.)\s+"[^"]*"$`)
+
+// isGoImportSpec says whether a line is an import spec with a package name. A keyword
+// in the name's place makes it a statement: `return "x"` is code.
+func isGoImportSpec(line string) bool {
+	m := goImportSpecRe.FindStringSubmatch(strings.TrimSpace(line))
+	return m != nil && !token.IsKeyword(m[1])
+}
 
 func isStructuralLine(line string) bool {
 	trimmed := strings.TrimSpace(line)
