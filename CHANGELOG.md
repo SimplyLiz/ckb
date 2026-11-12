@@ -182,6 +182,12 @@ private, so only aggregates are here.
   `!cartographer` stub. Outside its package a Go name is reached as a selector, a
   receiver's method or a literal key, so a file that spells it only otherwise, and
   doesn't dot-import, no longer stops a clear check.
+- **A Go field's serialized key is named when it changes.** Renaming `OriginalCount
+  int \`json:"originalCount"\`` broke every client reading `originalCount` from MCP and
+  the HTTP API, which neither the compiler nor the contract said. A tagged field's
+  `json`, `yaml`, `xml` and `toml` keys are compared, and a key gone, changed or left to
+  the format's default is the contract's `detail`. The compact text now shows a
+  declaration and its detail together.
 
 ### Added — MCP tool annotations
 

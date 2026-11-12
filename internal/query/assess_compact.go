@@ -397,12 +397,19 @@ func (c *CompactAssessChange) Text() string {
 		b.WriteString("\ncontracts:\n")
 		for _, k := range c.Contracts {
 			b.WriteString("  " + k.Kind + " " + k.Symbol)
-			if k.Detail != "" {
-				b.WriteString(": " + k.Detail)
-			} else if k.Before != "" && k.After != "" {
+			switch {
+			case k.Before != "" && k.After != "":
 				b.WriteString(": " + oneLine(k.Before) + " -> " + oneLine(k.After))
-			} else if k.Before != "" {
+			case k.Before != "":
 				b.WriteString(": " + oneLine(k.Before))
+			}
+			if k.Detail != "" {
+				if k.Before != "" {
+					b.WriteString(";")
+				} else {
+					b.WriteString(":")
+				}
+				b.WriteString(" " + k.Detail)
 			}
 			b.WriteByte('\n')
 		}
