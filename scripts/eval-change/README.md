@@ -331,7 +331,10 @@ applied, and each commit gave them the new variant; the two nested arms in other
 have an `Err(e)` arm that covers them. So the frozen run shows no false open at these
 paths, and nothing about whether they find an open match. Three commits break other
 lines (E0061, E0609, struct literals); those are listed as before. One false open from
-another check: a `static` whose initializer grew, its type unchanged.
+another check: a `static` whose initializer grew, its type unchanged. The declaration
+reader took the `> =` after `LazyLock<Vec<…>>` for `>=` and read on into the
+initializer; fixed, Rust-A 62969bad49 is clear now, and the TypeScript replay
+(`const X: Record<K, string> = {`) moves no number.
 
 Afterwards, as a probe and not part of the measurement: the commit's defining file at
 the parent with the new variant's arms deleted, one commit per shape. `Self::` (Rust-B,
