@@ -362,13 +362,20 @@ func (s *SCIPAdapter) TypeSymbolIn(path, name string) string {
 	if doc == nil {
 		return ""
 	}
-	suffix := "/" + name + "#"
 	for _, occ := range doc.Occurrences {
-		if occ.SymbolRoles&SymbolRoleDefinition != 0 && strings.HasSuffix(occ.Symbol, suffix) {
+		if occ.SymbolRoles&SymbolRoleDefinition != 0 && endsWithDescriptor(occ.Symbol, name+"#") {
 			return occ.Symbol
 		}
 	}
 	return ""
+}
+
+// endsWithDescriptor says whether a symbol's last descriptor is the given one. It
+// follows a module, `m/Foo#`, or for a name at a crate's root the version, as in
+// `rust-analyzer cargo app 1.0.0 Foo#`.
+func endsWithDescriptor(symbol, descriptor string) bool {
+	rest, ok := strings.CutSuffix(symbol, descriptor)
+	return ok && (strings.HasSuffix(rest, "/") || strings.HasSuffix(rest, " "))
 }
 
 // VariantSymbolsIn returns the symbols of the variants a file defines for an enum, by
@@ -414,7 +421,7 @@ func (s *SCIPAdapter) ValueSymbolIn(path, name string) string {
 		if occ.SymbolRoles&SymbolRoleDefinition == 0 {
 			continue
 		}
-		if strings.HasSuffix(occ.Symbol, "/"+name+".") || strings.HasSuffix(occ.Symbol, "/"+name+"().") {
+		if endsWithDescriptor(occ.Symbol, name+".") || endsWithDescriptor(occ.Symbol, name+"().") {
 			return occ.Symbol
 		}
 	}
