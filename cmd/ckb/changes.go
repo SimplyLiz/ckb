@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 
@@ -51,7 +50,7 @@ Examples:
   ckb changes --verbose          # Show full lists instead of capped summaries
   ckb changes --repo=my-service  # Assess changes in a registered repo
   ckb changes --format=json
-  ckb changes --format=compact   # JSON with what to act on: open uses, tests, contracts
+  ckb changes --format=compact   # Text with what to act on: open uses, tests, contracts
   ckb changes --check            # Exit 0 clear, 2 open uses, 3 not assessed, 1 error
 
 --check is a text comparison and compiles nothing. "clear" means no use of a
@@ -109,12 +108,7 @@ func runChanges(cmd *cobra.Command, args []string) {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		out, err := json.MarshalIndent(compact, "", "  ")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error formatting output: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println(string(out))
+		fmt.Print(compact.Text())
 	} else if changesFormat == "human" {
 		fmt.Println(formatChangesHuman(cliResp, changesVerbose))
 	} else {

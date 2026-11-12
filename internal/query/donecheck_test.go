@@ -378,3 +378,15 @@ func TestChangesGoModulePath(t *testing.T) {
 		}
 	}
 }
+
+// A file-level entry is named by its path, which is also its name: once is enough.
+func TestUnreadableName(t *testing.T) {
+	file := impact.ChangedSymbol{SymbolID: "file:src/schema.ts", Name: "src/schema.ts", File: "src/schema.ts"}
+	if got := unreadableName(file); got != "src/schema.ts" {
+		t.Errorf("file-level entry = %q, want the path once", got)
+	}
+	sym := impact.ChangedSymbol{SymbolID: "x", Name: "F", File: "a.go"}
+	if got := unreadableName(sym); got != "a.go:F" {
+		t.Errorf("symbol = %q", got)
+	}
+}

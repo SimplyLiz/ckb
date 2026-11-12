@@ -1520,7 +1520,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		}
 
 		if sym.DeletionUnresolved && !done.explains(sym) {
-			done.unreadable = append(done.unreadable, sym.File+":"+sym.Name)
+			done.unreadable = append(done.unreadable, unreadableName(sym))
 		}
 		if sym.NotInIndex {
 			done.unindexed = append(done.unindexed, sym.File)
@@ -1545,7 +1545,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 
 		declaration := symbolDeclarationChange(sym)
 		if declaration == "" && sym.ChangeType != impact.ChangeAdded && !done.explains(sym) {
-			done.unreadable = append(done.unreadable, sym.File+":"+sym.Name)
+			done.unreadable = append(done.unreadable, unreadableName(sym))
 		}
 		var contractConsumers []string
 		if declaration == impact.DeclChanged || declaration == impact.DeclRemoved {

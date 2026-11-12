@@ -46,9 +46,12 @@ type CompactAssessChange struct {
 	// CoChangeOpen are files that usually change with the touched ones and didn't.
 	CoChangeOpen []string          `json:"coChangeOpen,omitempty"`
 	Contracts    []CompactContract `json:"contracts,omitempty"`
-	// Tests are the affected test files, most certain first; TestsTotal counts all.
-	Tests      []CompactTest `json:"tests,omitempty"`
-	TestsTotal int           `json:"testsTotal"`
+	// Tests are the test files that use a changed symbol themselves, or with focus
+	// tests one page of all of them. TestsTotal counts all, TestsIndirect those that
+	// reach the change through other code and aren't listed.
+	Tests         []CompactTest `json:"tests,omitempty"`
+	TestsTotal    int           `json:"testsTotal"`
+	TestsIndirect int           `json:"testsIndirect,omitempty"`
 	// RunTests is a command that runs all affected tests (focus tests only).
 	RunTests string `json:"runTests,omitempty"`
 	// Consumers are the files referencing a changed symbol themselves.
@@ -78,12 +81,16 @@ type CompactOpenSite struct {
 	Consumer string `json:"consumer,omitempty"`
 	Via      string `json:"via,omitempty"`
 	Test     bool   `json:"test,omitempty"`
+	Change   string `json:"change,omitempty"` // changed, removed
 }
 
 // CompactContract is a possible contract change: its kind and the symbol.
 type CompactContract struct {
 	Kind   string `json:"kind"`
 	Symbol string `json:"symbol"`
+	// Before and After are the declarations compared, where both could be read.
+	Before string `json:"before,omitempty"`
+	After  string `json:"after,omitempty"`
 }
 
 // CompactTest is an affected test file and the test functions seen in it.
@@ -157,6 +164,7 @@ func CompactAssessChangeFor(r *AnalyzeChangeSetResponse, opts CompactAssessOptio
 				Consumer: s.Consumer,
 				Via:      s.Via,
 				Test:     s.IsTest,
+				Change:   s.Change,
 			})
 		}
 		if rest > 0 {
@@ -178,7 +186,7 @@ func CompactAssessChangeFor(r *AnalyzeChangeSetResponse, opts CompactAssessOptio
 
 	if want(AssessFocusRisk) {
 		for _, k := range r.Contracts {
-			c.Contracts = append(c.Contracts, CompactContract{Kind: k.Kind, Symbol: k.Symbol})
+			c.Contracts = append(c.Contracts, CompactContract{Kind: k.Kind, Symbol: k.Symbol, Before: k.Before, After: k.After})
 		}
 		if cf := r.ConsumerFiles; cf != nil {
 			c.Consumers = cf.Direct
@@ -197,13 +205,30 @@ func CompactAssessChangeFor(r *AnalyzeChangeSetResponse, opts CompactAssessOptio
 			offset = opts.Offset
 			c.RunTests = opts.RunCommand
 		}
-		page, rest := pageRange(len(r.AffectedTests), offset, limit)
-		for _, t := range r.AffectedTests[page[0]:page[1]] {
+		// Without the focus only the files that use a changed symbol themselves are
+		// named: those are the ones to run first, and the rest is a number.
+		tests := r.AffectedTests
+		if opts.Focus != AssessFocusTests {
+			tests = nil
+			for _, t := range r.AffectedTests {
+				if t.Reason == "direct" {
+					tests = append(tests, t)
+				}
+			}
+			if len(tests) == 0 {
+				tests = r.AffectedTests // A lookup that gives no reasons: list what there is
+			}
+			c.TestsIndirect = len(r.AffectedTests) - len(tests)
+		}
+		page, rest := pageRange(len(tests), offset, limit)
+		for _, t := range tests[page[0]:page[1]] {
 			c.Tests = append(c.Tests, CompactTest{File: t.FilePath, Names: t.TestNames})
 		}
 		if rest > 0 {
 			more = append(more, fmt.Sprintf("test files %d-%d of %d shown; the next with focus %q, offset %d",
 				page[0]+1, page[1], len(r.AffectedTests), AssessFocusTests, page[1]))
+		} else if c.TestsIndirect > 0 {
+			more = append(more, fmt.Sprintf("every test file with focus %q", AssessFocusTests))
 		}
 	}
 
@@ -268,4 +293,144 @@ func plural(n int, noun string) string {
 // reports it; "" when there are none or the language has no known runner.
 func (e *Engine) TestRunCommand(tests []AffectedTest) string {
 	return generateTestRunCommand(e.repoRoot, tests)
+}
+
+// maxCompactCode bounds a line of code in the text: past it the line is cut, and the
+// position still says where to read the rest.
+const maxCompactCode = 240
+
+// Text renders the compact view as the text an agent reads: no keys, no quoting, each
+// file named once per section. Open sites come under their symbol, then their file,
+// one `line: code` each, in the order the check gave them.
+func (c *CompactAssessChange) Text() string {
+	var b strings.Builder
+	b.WriteString(c.Summary)
+	b.WriteByte('\n')
+	for _, f := range c.RiskFactors {
+		b.WriteString("  risk: " + f + "\n")
+	}
+
+	if d := c.DoneCheck; d != nil {
+		b.WriteString("\ndoneCheck: " + d.Status)
+		if d.OpenCount > 0 {
+			b.WriteString(", " + plural(d.OpenCount, "use") + " left as they were")
+		}
+		if d.Diff != "" {
+			b.WriteString(" (diff " + d.Diff + ")")
+		}
+		b.WriteByte('\n')
+		if d.Note != "" {
+			b.WriteString(d.Note + "\n")
+		}
+		writeOpenSites(&b, d.OpenSites)
+	}
+
+	if len(c.CoChangeOpen) > 0 {
+		b.WriteString("\nusually changed together with these files, and left alone:\n")
+		for _, f := range c.CoChangeOpen {
+			b.WriteString("  " + f + "\n")
+		}
+	}
+
+	if len(c.Contracts) > 0 {
+		b.WriteString("\ncontracts:\n")
+		for _, k := range c.Contracts {
+			b.WriteString("  " + k.Kind + " " + k.Symbol)
+			if k.Before != "" && k.After != "" {
+				b.WriteString(": " + oneLine(k.Before) + " -> " + oneLine(k.After))
+			} else if k.Before != "" {
+				b.WriteString(": " + oneLine(k.Before))
+			}
+			b.WriteByte('\n')
+		}
+	}
+
+	if len(c.Tests) > 0 || c.TestsTotal > 0 {
+		b.WriteString("\ntests:\n")
+		for _, t := range c.Tests {
+			b.WriteString("  " + t.File)
+			if len(t.Names) > 0 {
+				b.WriteString(": " + strings.Join(t.Names, ", "))
+			}
+			b.WriteByte('\n')
+		}
+		if c.TestsIndirect > 0 {
+			b.WriteString("  " + plural(c.TestsIndirect, "more test file") + " reach the change through other code\n")
+		}
+		if c.RunTests != "" {
+			b.WriteString("  run: " + c.RunTests + "\n")
+		}
+	}
+
+	if len(c.Consumers) > 0 {
+		fmt.Fprintf(&b, "\nconsumers (%s using a changed symbol):\n", plural(c.ConsumersTotal, "file"))
+		for _, f := range c.Consumers {
+			b.WriteString("  " + f + "\n")
+		}
+	}
+
+	if c.Stale != "" {
+		b.WriteString("\nstale: " + c.Stale + "\n")
+	}
+	if c.More != "" {
+		b.WriteString("\nmore: " + c.More + "\n")
+	}
+	return b.String()
+}
+
+// writeOpenSites writes the sites grouped by symbol and reason, then by file.
+func writeOpenSites(b *strings.Builder, sites []CompactOpenSite) {
+	type group struct {
+		head  string
+		files []string
+		lines map[string][]string
+	}
+	var groups []*group
+	byHead := make(map[string]*group)
+	for _, s := range sites {
+		head := s.Symbol
+		switch {
+		case s.Change != "" && s.Via != "":
+			head += " (" + s.Change + "; " + s.Via + ")"
+		case s.Change != "":
+			head += " (" + s.Change + ")"
+		case s.Via != "":
+			head += " (" + s.Via + ")"
+		}
+		g := byHead[head]
+		if g == nil {
+			g = &group{head: head, lines: make(map[string][]string)}
+			byHead[head] = g
+			groups = append(groups, g)
+		}
+		file, line := s.At, ""
+		if at := strings.LastIndexByte(s.At, ':'); at >= 0 {
+			file, line = s.At[:at], s.At[at+1:]
+		}
+		if s.Test {
+			file += " (test)"
+		}
+		if _, ok := g.lines[file]; !ok {
+			g.files = append(g.files, file)
+		}
+		code := oneLine(s.Code)
+		if len(code) > maxCompactCode {
+			code = strings.ToValidUTF8(code[:maxCompactCode], "") + " …"
+		}
+		g.lines[file] = append(g.lines[file], line+": "+code)
+	}
+	for _, g := range groups {
+		b.WriteString(g.head + "\n")
+		for _, file := range g.files {
+			b.WriteString("  " + file + "\n")
+			for _, line := range g.lines[file] {
+				b.WriteString("    " + line + "\n")
+			}
+		}
+	}
+}
+
+// oneLine folds a declaration or a line of code that spans lines into one.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }

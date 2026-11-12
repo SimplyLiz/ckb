@@ -1,9 +1,11 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/envelope"
@@ -369,7 +371,7 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 	if streamResp, err := s.wrapForStreaming(toolName, toolParams); streamResp != nil || err != nil {
 		if err != nil {
 			errResp := envelope.New().Data(nil).Error(err).Build()
-			jsonBytes, _ := json.Marshal(errResp)
+			jsonBytes, _ := marshalForAgent(errResp)
 			return map[string]interface{}{
 				"content": []map[string]interface{}{
 					{
@@ -381,7 +383,7 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 			}, nil
 		}
 		// Return streaming initial response
-		jsonBytes, err := json.Marshal(streamResp)
+		jsonBytes, err := marshalForAgent(streamResp)
 		if err != nil {
 			return nil, errors.NewOperationError("marshal streaming response", err)
 		}
@@ -401,7 +403,7 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 		// Wrap error in envelope format
 		errResp := envelope.New().Data(nil).Error(err).Build()
 		s.markStaleServer(errResp)
-		jsonBytes, _ := json.Marshal(errResp)
+		jsonBytes, _ := marshalForAgent(errResp)
 		s.recordActivity(toolName, toolParams, toolStart, jsonBytes, nil, err)
 		return map[string]interface{}{
 			"content": []map[string]interface{}{
@@ -417,8 +419,8 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 	result = withWarnings(result, remapWarnings)
 	s.markStaleServer(result)
 
-	// Marshal the envelope response to JSON
-	jsonBytes, err := json.Marshal(result)
+	// The envelope as JSON, or for a result with a text form, that text
+	jsonBytes, err := toolResultText(result)
 	if err != nil {
 		return nil, errors.NewOperationError("marshal response", err)
 	}
@@ -433,6 +435,54 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 			},
 		},
 	}, nil
+}
+
+// marshalForAgent is json.Marshal without HTML escaping: a reader of code needs `<`,
+// `>` and `&` as they are, not as \u003c.
+func marshalForAgent(v interface{}) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// textResult is a tool result written for reading rather than parsing.
+type textResult interface {
+	Text() string
+}
+
+// toolResultText returns what a tool call sends back. A result with a text form goes
+// out as that text, followed by what the envelope would have said next to it; any
+// other as the envelope's JSON.
+func toolResultText(result *envelope.Response) ([]byte, error) {
+	var data textResult
+	if result != nil {
+		data, _ = result.Data.(textResult)
+	}
+	if data == nil {
+		return marshalForAgent(result)
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(data.Text(), "\n"))
+	b.WriteByte('\n')
+	if m := result.Meta; m != nil {
+		if m.Confidence != nil && m.Confidence.Tier != "" {
+			fmt.Fprintf(&b, "\nconfidence: %s (%.2f)\n", m.Confidence.Tier, m.Confidence.Score)
+		}
+		if m.StaleServer != "" {
+			b.WriteString("stale server: " + m.StaleServer + "\n")
+		}
+	}
+	for _, w := range result.Warnings {
+		b.WriteString("warning: " + w.Message + "\n")
+	}
+	if result.Error != nil {
+		b.WriteString("error: " + *result.Error + "\n")
+	}
+	return []byte(b.String()), nil
 }
 
 // handleListResources returns the list of available resources
