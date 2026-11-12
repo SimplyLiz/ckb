@@ -175,6 +175,11 @@ type useQuery struct {
 	// Non-nil means only literals the compiler rejects count: positional ones, and keyed
 	// ones setting one of these.
 	goBroken map[string]bool
+	// derived is set for a TypeScript type read off a changed value with typeof. A
+	// Record keyed by it is a literal of it too, and with key, a literal that sets the
+	// key is listed there.
+	derived bool
+	keyVia  map[string]string // Key to the reason a literal setting it counts
 }
 
 // checkUses classifies a symbol's references into openFiles. False means they couldn't
@@ -228,10 +233,18 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 		if oldLines != nil {
 			lines = oldLines
 		}
-		if !diff.IsLiteralUse(query.lang, lines, ref.Location.Line, ref.Location.Column, query.name) {
+		switch {
+		case diff.IsLiteralUse(query.lang, lines, ref.Location.Line, ref.Location.Column, query.name):
+			literalLines = diff.LiteralEnd(query.lang, lines, ref.Location.Line, ref.Location.Column, query.name) - ref.Location.Line
+		case query.derived:
+			end, ok := diff.TSRecordLiteral(lines, ref.Location.Line, ref.Location.Column, query.name)
+			if !ok {
+				return
+			}
+			literalLines = end - ref.Location.Line
+		default:
 			return
 		}
-		literalLines = diff.LiteralEnd(query.lang, lines, ref.Location.Line, ref.Location.Column, query.name) - ref.Location.Line
 		if query.goBroken != nil && !breaksGoLiteral(lines, ref, query) {
 			return
 		}
@@ -261,24 +274,47 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 	if file != nil && file.NewPath != "" {
 		path = file.NewPath // A use in a renamed file is reported where it is now
 	}
-	key := fmt.Sprintf("%s:%s:%d", sym.SymbolID, path, result.Line)
-	if c.seen[key] {
-		return
-	}
-	c.seen[key] = true
-	c.sites = append(c.sites, OpenSite{
-		Symbol:     sym.Name,
-		Change:     string(query.change),
-		File:       path,
-		Line:       result.Line,
-		Code:       result.Code,
-		Consumer:   ref.FromSymbolName,
-		IsTest:     isTestFilePath(path),
-		Unverified: result.Unverified,
-		Via:        query.via,
+	add := func(line int, code, via string, literalLines int) {
+		key := fmt.Sprintf("%s:%s:%d", sym.SymbolID, path, line)
+		if c.seen[key] {
+			return
+		}
+		c.seen[key] = true
+		c.sites = append(c.sites, OpenSite{
+			Symbol:     sym.Name,
+			Change:     string(query.change),
+			File:       path,
+			Line:       line,
+			Code:       code,
+			Consumer:   ref.FromSymbolName,
+			IsTest:     isTestFilePath(path),
+			Unverified: result.Unverified,
+			Via:        via,
 
-		literalLines: literalLines,
-	})
+			literalLines: literalLines,
+		})
+	}
+	// A literal that holds the changed type under a key is listed at that key: that
+	// is the place to look at.
+	atKey := false
+	for _, name := range sortedKeys(query.keyVia) {
+		if at := diff.TSLiteralKeyLine(newLines, result.Line, result.Line+literalLines, name); at > 0 {
+			add(at, strings.TrimSpace(newLines[at-1]), query.keyVia[name], 0)
+			atKey = true
+		}
+	}
+	if !atKey {
+		add(result.Line, result.Code, query.via, literalLines)
+	}
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // breaksGoLiteral says whether a Go composite literal stops compiling: it is

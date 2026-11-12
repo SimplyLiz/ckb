@@ -371,6 +371,29 @@ func (s *SCIPAdapter) TypeSymbolIn(path, name string) string {
 	return ""
 }
 
+// ValueSymbolIn returns the symbol of the variable, constant or function a file
+// defines under a name at its top level, or "".
+func (s *SCIPAdapter) ValueSymbolIn(path, name string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.index == nil {
+		return ""
+	}
+	doc := s.index.DocumentsByPath[path]
+	if doc == nil {
+		return ""
+	}
+	for _, occ := range doc.Occurrences {
+		if occ.SymbolRoles&SymbolRoleDefinition == 0 {
+			continue
+		}
+		if strings.HasSuffix(occ.Symbol, "/"+name+".") || strings.HasSuffix(occ.Symbol, "/"+name+"().") {
+			return occ.Symbol
+		}
+	}
+	return ""
+}
+
 // GeneratedMethods returns the given method of a type where the index has calls but no
 // definition: a macro wrote it, so nothing in the source declares it. Rust-analyzer's
 // symbols name the impl, as in `mod/impl#[`Foo<'a>`]new().`.
