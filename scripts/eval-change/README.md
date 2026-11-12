@@ -356,3 +356,22 @@ struct or enum is read at all, with its strings skipped (85b49bc). One commit mo
 Rust-A 62969bad49 goes from one false open to clear. 50/50 error lines exact before and
 after, open sites 215 → 214. Nothing else moves, so on these 44 the nested and `pub(crate)`
 fixes show no effect; they rest on tests and the probe only.
+
+### The probe, scripted (`replay.py --drop-arms`)
+
+The arms probe above was done by hand twice. `replay.py --drop-arms V` does it: after the
+commit's files are written, every arm over the variant V in them is deleted (the
+alternative only, if the arm has others; guarded arms are left), the deleted arms are
+listed in `dropped_arms`, and the new E0004 lines in the applied files, which `score()`
+counts apart as the change's own, are scored against the listed sites
+(`probe_e0004_lines`, `_listed`, `_missed`). A probe, not a measurement: the case is built.
+Binary at 60618b0, `--name probe`:
+
+| commit | shape | variants dropped | arms deleted | E0004 lines | listed exactly | other sites |
+|---|---|---|---|---|---|---|
+| Rust-B a5faa2ee89 | `Self::` | Lorentz | 6 | 4 | 4 | 0 |
+| Rust-B 578eeab2bb | `Self::` | DotProduct | 4 | 4 | 4 | 0 |
+| Rust-F b3ba83500c | glob | SetMarkers | 2 | 2 | 2 | 25 (the commit's other changes) |
+| Rust-G cab4ddbda4 | nested | Answer, Reach | 2 | 1 | 1 | 0 |
+
+Each deleted arm that leaves no E0004 sits in a match with a `_` arm.
