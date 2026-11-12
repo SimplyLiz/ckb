@@ -55,20 +55,10 @@ func (m *parsedRustMatch) text(from, to rustPos) string {
 func armPatterns(text string) (alts []string, offsets []int, guardAt int) {
 	guardAt = -1
 	depth, from := 0, 0
-	var quote byte
-	for i := 0; i < len(text); i++ {
-		c := text[i]
-		if quote != 0 {
-			if c == '\\' {
-				i++
-			} else if c == quote {
-				quote = 0
-			}
-			continue
-		}
+	code := rustCodeText(text) // Read for structure; the pieces are cut from text
+	for i := 0; i < len(code); i++ {
+		c := code[i]
 		switch {
-		case c == '"' || c == '\'' && isRustCharLiteral(text, i):
-			quote = c
 		case c == '(' || c == '[' || c == '{':
 			depth++
 		case c == ')' || c == ']' || c == '}':
@@ -76,7 +66,7 @@ func armPatterns(text string) (alts []string, offsets []int, guardAt int) {
 		case depth == 0 && c == '|':
 			alts, offsets = append(alts, text[from:i]), append(offsets, from)
 			from = i + 1
-		case depth == 0 && strings.HasPrefix(text[i:], "if") && (i == 0 || !isIdentByte(text[i-1])) && (i+2 == len(text) || !isIdentByte(text[i+2])):
+		case depth == 0 && strings.HasPrefix(code[i:], "if") && (i == 0 || !isIdentByte(code[i-1])) && (i+2 == len(code) || !isIdentByte(code[i+2])):
 			guardAt = i
 			return append(alts, text[from:i]), append(offsets, from), guardAt
 		}

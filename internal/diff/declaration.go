@@ -258,6 +258,7 @@ func readDeclaration(lines map[int]string, start int, lang string) declaration {
 	seenAssign := false
 	isTypeDecl := false
 	lineCount := 0
+	rust := newRustCode() // Rust's strings, raw strings, chars and comments, across lines
 
 	finish := func(complete bool) declaration {
 		return declaration{text: strings.TrimSpace(out.String()), lines: lineCount, complete: complete}
@@ -274,9 +275,22 @@ func readDeclaration(lines map[int]string, start int, lang string) declaration {
 		}
 
 		var quote byte
+		var kinds []byte
+		if lang == "rust" {
+			_, kinds = rust.kinds(text)
+		}
 		for i := 0; i < len(text); i++ {
 			c := text[i]
-			if inBlockComment {
+			if kinds != nil {
+				// A comment is left out; a string's text is kept but read as nothing.
+				if kinds[i] == rustKindComment {
+					continue
+				}
+				if kinds[i] == rustKindString {
+					out.WriteByte(c)
+					continue
+				}
+			} else if inBlockComment {
 				if c == '*' && i+1 < len(text) && text[i+1] == '/' {
 					inBlockComment = false
 					i++

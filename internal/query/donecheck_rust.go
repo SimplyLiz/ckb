@@ -379,10 +379,7 @@ func globUseLine(lines []string, name string) int {
 	re := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`)
 	first := 0
 	for i, text := range lines {
-		code := text
-		if at := strings.Index(code, "//"); at >= 0 {
-			code = code[:at]
-		}
+		code := diff.RustCodeLine(text) // Not a mention in a comment or string
 		if !re.MatchString(code) {
 			continue
 		}

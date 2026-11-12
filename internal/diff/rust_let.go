@@ -20,7 +20,7 @@ func RustLetAt(lines []string, line, column int, name string) (int, bool) {
 	}
 	ref := rustPos{line, at}
 	for l := line; l >= 1 && l > line-maxRustLetLines; l-- {
-		text := rawLine(lines, l)
+		text := rustCodeLine(rawLine(lines, l))
 		found := rustLetKeywordRe.FindAllStringIndex(text, -1)
 		for k := len(found) - 1; k >= 0; k-- {
 			start := rustPos{l, found[k][0]}
@@ -56,13 +56,9 @@ var rustLetKeywordRe = regexp.MustCompile(`\blet\b`)
 // rustStatementStart says whether what comes before the keyword ends a statement or
 // opens a block, which a `let` that is a statement of its own follows.
 func rustStatementStart(lines []string, at rustPos) bool {
-	text := strings.TrimRight(rawLine(lines, at.line)[:at.col], " \t")
+	text := strings.TrimRight(rustCodeLine(rawLine(lines, at.line))[:at.col], " \t")
 	for l := at.line - 1; text == "" && l >= 1 && l > at.line-maxRustLetLines; l-- {
-		text = rawLine(lines, l)
-		if i := strings.Index(text, "//"); i >= 0 {
-			text = text[:i]
-		}
-		text = strings.TrimRight(text, " \t")
+		text = strings.TrimRight(rustCodeLine(rawLine(lines, l)), " \t")
 	}
 	if text == "" {
 		return true
@@ -74,17 +70,15 @@ func rustStatementStart(lines []string, at rustPos) bool {
 // False for a statement this doesn't read to its end.
 func rustLetPattern(lines []string, after rustPos) (rustPos, bool) {
 	depth := 0
+	code := newRustCode()
 	for l := after.line; l <= len(lines) && l < after.line+maxRustLetLines; l++ {
-		text := lines[l-1]
+		text := code.line(lines[l-1])
 		from := 0
 		if l == after.line {
 			from = after.col
 		}
 		for i := from; i < len(text); i++ {
 			c := text[i]
-			if c == '/' && i+1 < len(text) && text[i+1] == '/' {
-				break
-			}
 			next := byte(0)
 			if i+1 < len(text) {
 				next = text[i+1]
@@ -111,30 +105,17 @@ func rustLetPattern(lines []string, after rustPos) (rustPos, bool) {
 // an `else` at its own depth that doesn't follow a block, which `if … else` does.
 func rustLetElse(lines []string, from rustPos) bool {
 	depth := 0
-	var quote byte
+	code := newRustCode()
 	last := byte(0) // The last byte that isn't space, at the statement's own depth
 	for l := from.line; l <= len(lines) && l < from.line+maxRustMatchLines; l++ {
-		text := lines[l-1]
+		text := code.line(lines[l-1])
 		i := 0
 		if l == from.line {
 			i = from.col
 		}
 		for ; i < len(text); i++ {
 			c := text[i]
-			if quote != 0 {
-				if c == '\\' {
-					i++
-				} else if c == quote {
-					quote = 0
-				}
-				continue
-			}
-			if c == '/' && i+1 < len(text) && text[i+1] == '/' {
-				break
-			}
 			switch {
-			case c == '"' || c == '\'' && isRustCharLiteral(text, i):
-				quote = c
 			case c == '(' || c == '[' || c == '{':
 				depth++
 			case c == ')' || c == ']' || c == '}':
