@@ -21,6 +21,8 @@ func TestCheckOutsideIndex(t *testing.T) {
 		"tools/post.rs":       "fn post() {}\n",
 		"vite.config.js":      "post(1);\n",
 		"testdata/x/post.ts":  "post(1);\n",
+		"example.go":          "//go:build ignore\n\npackage main\n\nfunc main() { post(1) }\n",
+		"win.go":              "//go:build windows\n\npackage main\n\nfunc init() { post(1) }\n",
 	} {
 		full := filepath.Join(root, path)
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
@@ -38,6 +40,11 @@ func TestCheckOutsideIndex(t *testing.T) {
 	c.checkOutsideIndex(map[string]string{"post": "ts"}, func(path string) bool { return indexed[path] })
 	if len(c.outside) != 1 || c.outside[0] != "tests/board.test.ts" || c.failed != 0 {
 		t.Errorf("outside = %v, failed %d; want only tests/board.test.ts", c.outside, c.failed)
+	}
+	c = newDoneChecker(root, AnalyzeChangeSetOptions{}, &impact.ParsedDiff{})
+	c.checkOutsideIndex(map[string]string{"post": "go"}, func(string) bool { return false })
+	if len(c.outside) != 1 || c.outside[0] != "win.go" {
+		t.Errorf("go: outside = %v, want only win.go", c.outside)
 	}
 
 	c = newDoneChecker(root, AnalyzeChangeSetOptions{}, &impact.ParsedDiff{})
