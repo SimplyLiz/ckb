@@ -253,3 +253,32 @@ func TestArrayLengthChange(t *testing.T) {
 		t.Error("SpellsArrayLength")
 	}
 }
+
+// Strings, raw strings, chars and comments inside a literal say nothing about its
+// braces or its `..`. Each case is shaped after a literal in a repo of the eval.
+func TestRustLiteralSkipsStrings(t *testing.T) {
+	cases := []struct {
+		name, src string
+		literal   bool // A use a changed field set breaks: no `..`
+		end       int
+	}{
+		{"dots in a string", `Foo { id: "game".into(), dir: "../game".into(), extra: Default::default() }`, true, 1},
+		{"dots in a continued string", "Foo {\n    description: \"Defaults to \\\n        HEAD~1..HEAD.\"\n        .to_string(),\n    title: None,\n}", true, 6},
+		{"slashes in a string", "Foo { url: \"http://x\".into() }\nlet y = Bar { a, .. };", true, 1},
+		{"brackets in a raw string", "Foo {\n    re: Regex::new(r\"^(?:pub(?:\\([^)]+\\))?\\s+)?trait\").unwrap(),\n    scope: true,\n}", true, 4},
+		{"hashes around a raw string", "Foo {\n    re: r#\"a\"}\"#,\n    b: '{',\n    c: 'x', // ..\n}", true, 5},
+		{"block comment", "Foo {\n    a /* } .. */ ,\n}", true, 3},
+		{"rest after a string", "Foo { a: \"x{\", ..Default::default() }\n}", false, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := lines(tc.src)
+			if got := IsRustLiteralUse(src, 1, 0, "Foo"); got != tc.literal {
+				t.Errorf("literal = %v, want %v", got, tc.literal)
+			}
+			if end := LiteralEnd("rust", src, 1, 0, "Foo"); end != tc.end {
+				t.Errorf("end = %d, want %d", end, tc.end)
+			}
+		})
+	}
+}
