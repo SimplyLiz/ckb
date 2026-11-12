@@ -371,6 +371,33 @@ func (s *SCIPAdapter) TypeSymbolIn(path, name string) string {
 	return ""
 }
 
+// VariantSymbolsIn returns the symbols of the variants a file defines for an enum, by
+// name. Rust-analyzer names them under the enum, `mod/E#A#`, and a pattern refers to
+// one however it is spelled: `E::A`, `Self::A`, or a bare `A` through `use E::*`, the
+// last two without a reference to the enum itself.
+func (s *SCIPAdapter) VariantSymbolsIn(path, typeSymbol string) map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.index == nil || !strings.HasSuffix(typeSymbol, "#") {
+		return nil
+	}
+	doc := s.index.DocumentsByPath[path]
+	if doc == nil {
+		return nil
+	}
+	variants := make(map[string]string)
+	for _, occ := range doc.Occurrences {
+		if occ.SymbolRoles&SymbolRoleDefinition == 0 || !strings.HasPrefix(occ.Symbol, typeSymbol) {
+			continue
+		}
+		name, ok := strings.CutSuffix(occ.Symbol[len(typeSymbol):], "#")
+		if ok && name != "" && !strings.ContainsAny(name, "#/.()[]`") {
+			variants[name] = occ.Symbol
+		}
+	}
+	return variants
+}
+
 // ValueSymbolIn returns the symbol of the variable, constant or function a file
 // defines under a name at its top level, or "".
 func (s *SCIPAdapter) ValueSymbolIn(path, name string) string {

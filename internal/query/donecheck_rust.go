@@ -24,6 +24,7 @@ import (
 type rustIndex interface {
 	TypeSymbolIn(path, name string) string
 	GeneratedMethods(typeSymbol, method string) []string
+	VariantSymbolsIn(path, typeSymbol string) map[string]string
 }
 
 // rustOpen is the outcome for one declaration: the files with a use left open.
@@ -107,8 +108,9 @@ var rustEnumNameRe = regexp.MustCompile(`^\s*(?:pub(?:\s*\([^)]*\))?\s+)?enum\s+
 
 // checkEnumVariants lists the matches a new variant leaves incomplete: those over the
 // enum with no arm for the rest and none for the variant. A removed variant is a removed
-// symbol and checked as one; a match that names the enum only through `Self::` or a
-// glob import has no reference to it and isn't found.
+// symbol and checked as one. The matches are found from the old variants' references:
+// an arm spelled `Self::A`, or `A` through a glob import, refers to the variant only,
+// not to the enum. An index without variant symbols falls back to the enum's own.
 func (c *doneChecker) checkEnumVariants(ctx context.Context, adapter referenceFinder, index rustIndex, path string, oldLines, newLines []string) []rustOpen {
 	var open []rustOpen
 	seen := make(map[string]bool)
@@ -140,7 +142,19 @@ func (c *doneChecker) checkEnumVariants(ctx context.Context, adapter referenceFi
 		sym := impact.ChangedSymbol{SymbolID: id, Name: name, File: path}
 		via := fmt.Sprintf("%s gained %s; a match without it or `_` is incomplete", name, strings.Join(added, ", "))
 		files := make(map[string]bool)
-		c.checkUses(ctx, adapter, sym, useQuery{name: name, change: impact.DeclChanged, via: via, newVariants: added}, files)
+		query := useQuery{name: name, change: impact.DeclChanged, via: via, newVariants: added}
+		variants := index.VariantSymbolsIn(path, id)
+		if len(variants) == 0 {
+			c.checkUses(ctx, adapter, sym, query, files)
+		}
+		for _, v := range before {
+			if variants[v] == "" {
+				continue
+			}
+			// Listed under the enum; each reference is found by the variant's name.
+			query.name = v
+			c.checkUses(ctx, adapter, impact.ChangedSymbol{SymbolID: variants[v], Name: name, File: path}, query, files)
+		}
 		if len(files) > 0 {
 			open = append(open, rustOpen{name: name, change: impact.DeclChanged, files: files})
 		}

@@ -8,7 +8,7 @@ import (
 // A variant added to a Rust enum breaks every `match` over it that has no arm for the
 // rest. The index has no symbol to show that: the new variant has no uses yet, and the
 // enum's own declaration line may be outside every hunk. So both sides of the file are
-// read whole, and the matches are found from the enum's references.
+// read whole, and the matches are found from the references of the old variants.
 
 // RustEnumVariants returns the names of an enum's variants, in order. False means the
 // file has no enum of that name with braces.
