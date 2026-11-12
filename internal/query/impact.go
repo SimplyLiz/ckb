@@ -1506,6 +1506,8 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	rustOpens := done.checkTypeFiles(ctx, usesFinder)
 	// Interfaces whose method set changed: their implementations don't refer to them.
 	rustOpens = append(rustOpens, done.checkImplementations(usesFinder)...)
+	// TypeScript types read off a changed value with typeof: their declaration didn't move.
+	rustOpens = append(rustOpens, done.checkDerivedTypes(ctx, usesFinder, changedSymbols)...)
 
 	// Confidence input: average symbol-mapping confidence across changed symbols.
 	var totalMappingConfidence float64
