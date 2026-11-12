@@ -81,3 +81,22 @@ show: 4 references, 1 in tests; 2 imports not listed
 		t.Errorf("summary =\n%s", got)
 	}
 }
+
+// A constructor is spelled `new Board(` where it's used and `constructor(` where it's
+// declared; neither line is stale for naming no `<constructor>`.
+func TestReferenceLinesConstructor(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "board.ts"), []byte("export class Board {\n  constructor(path: string) {}\n}\nconst b = new Board(\"x\");\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	at := func(line int, kind string) ReferenceInfo {
+		return ReferenceInfo{Location: &LocationInfo{FileId: "board.ts", StartLine: line}, Kind: kind}
+	}
+	got := BuildReferenceLines(root, "scip-typescript npm m 1.0.0 `board.ts`/Board#`<constructor>`().", &FindReferencesResponse{
+		TotalCount: 2, References: []ReferenceInfo{at(2, "definition"), at(4, "read")},
+	}).Text(false)
+	want := "board.ts:2: [def] constructor(path: string) {}\nboard.ts:4: [call] const b = new Board(\"x\");\n<constructor>: 2 references\n"
+	if got != want {
+		t.Errorf("text =\n%s\nwant\n%s", got, want)
+	}
+}

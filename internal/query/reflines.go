@@ -53,7 +53,12 @@ func BuildReferenceLines(repoRoot, symbolID string, resp *FindReferencesResponse
 	if name == "" {
 		name = leafName(symbolID)
 	}
+	// A constructor's uses spell its type; in TypeScript its declaration says `constructor`.
 	out := &ReferenceLines{Symbol: name, Total: resp.TotalCount, Truncated: resp.Truncated}
+	declared := name
+	if class := scip.ConstructorType(symbolID); class != "" {
+		name, declared = class, "constructor"
+	}
 	isType := strings.HasSuffix(symbolID, "#")
 	files := make(map[string][]string)
 	seen := make(map[string]bool)
@@ -87,7 +92,7 @@ func BuildReferenceLines(repoRoot, symbolID string, resp *FindReferencesResponse
 			code = strings.TrimSpace(lines[r.Location.StartLine-1])
 		}
 		// The file moved on since the index was built: the line is no longer the use.
-		if lines != nil && !strings.Contains(code, name) {
+		if lines != nil && !strings.Contains(code, name) && !(r.Kind == "definition" && strings.Contains(code, declared)) {
 			use = refStale
 			out.Stale++
 		}

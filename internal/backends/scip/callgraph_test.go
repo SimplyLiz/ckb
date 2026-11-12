@@ -874,3 +874,16 @@ func TestFunctionValuedTerms(t *testing.T) {
 		t.Error("a term with a stated non-callable Kind must not become a function")
 	}
 }
+
+func TestConstructorType(t *testing.T) {
+	for id, want := range map[string]string{
+		"scip-typescript npm m 1.0.0 src/`board.ts`/Board#`<constructor>`().": "Board",
+		"semanticdb maven m 1.0 com/x/Board#`<init>`().":                      "Board",
+		"scip-typescript npm m 1.0.0 src/`board.ts`/Board#post().":            "",
+		"scip-typescript npm m 1.0.0 src/`board.ts`/Board#":                   "",
+	} {
+		if got := ConstructorType(id); got != want {
+			t.Errorf("ConstructorType(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
