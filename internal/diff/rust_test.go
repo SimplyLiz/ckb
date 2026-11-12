@@ -224,3 +224,21 @@ fn f() {
 		t.Errorf("ts re-export entry dropped")
 	}
 }
+
+func TestArrayLengthChange(t *testing.T) {
+	if got, ok := ArrayLengthChange("pub const KNOWN: [&str; 10]", "pub const KNOWN: [&str; 12]"); !ok || len(got) != 1 || got[0] != "10" {
+		t.Errorf("length only: %v %v", got, ok)
+	}
+	for _, pair := range [][2]string{
+		{"pub const KNOWN: [&str; 10]", "pub const KNOWN: [String; 12]"},
+		{"pub const KNOWN: [&str; 10]", "pub const KNOWN: [&str; 10]"},
+		{"pub fn f(x: u8)", "pub fn f(x: u16)"},
+	} {
+		if _, ok := ArrayLengthChange(pair[0], pair[1]); ok {
+			t.Errorf("%q -> %q taken for a length change", pair[0], pair[1])
+		}
+	}
+	if !SpellsArrayLength("fn f(x: &[&str; 10]) {", []string{"10"}) || SpellsArrayLength("KNOWN.contains(&op)", []string{"10"}) || SpellsArrayLength("let a: [u8; 4] = x;", []string{"10"}) {
+		t.Error("SpellsArrayLength")
+	}
+}
