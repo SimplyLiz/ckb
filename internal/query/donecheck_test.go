@@ -245,7 +245,8 @@ func TestDoneResult(t *testing.T) {
 		{name: "a stale index", hasGraph: true, doubt: "stale", status: DoneCheckNotAssessed, note: "stale"},
 		{name: "a cut list", checker: doneChecker{cut: true}, hasGraph: true, status: DoneCheckNotAssessed, note: "not every use"},
 		{name: "a failed lookup", checker: doneChecker{failed: 2}, hasGraph: true, status: DoneCheckNotAssessed, note: "2 changed declaration"},
-		{name: "an unreadable declaration", checker: doneChecker{unreadable: 1}, hasGraph: true, status: DoneCheckNotAssessed, note: "can't be compared"},
+		{name: "an unreadable declaration", checker: doneChecker{unreadable: []string{"a.go:F"}}, hasGraph: true, status: DoneCheckNotAssessed, note: "can't be compared"},
+		{name: "a changed module path", checker: doneChecker{modulePath: []string{"go.mod"}}, hasGraph: true, status: DoneCheckNotAssessed, note: "module path in go.mod changed"},
 		{name: "open wins and keeps the doubt", checker: doneChecker{sites: open, cut: true}, hasGraph: true, status: DoneCheckOpen, note: "There may be more: not every use"},
 	}
 	for _, tt := range tests {
@@ -349,6 +350,31 @@ func TestLeafName(t *testing.T) {
 	for in, want := range map[string]string{"Save": "Save", "Store.Put()": "Put", "a::b::c": "c", "Foo#bar().": "bar", "": ""} {
 		if got := leafName(in); got != want {
 			t.Errorf("leafName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestChangesGoModulePath(t *testing.T) {
+	hunk := func(removed, added string) impact.ChangedHunk {
+		return impact.ChangedHunk{
+			OldStart: 1, NewStart: 1, Removed: []int{3}, Added: []int{3},
+			OldText: []string{"", "go 1.26", removed}, NewText: []string{"", "go 1.26", added},
+		}
+	}
+	for _, tt := range []struct {
+		name string
+		file impact.ChangedFile
+		want bool
+	}{
+		{"module renamed", impact.ChangedFile{OldPath: "go.mod", NewPath: "go.mod", Hunks: []impact.ChangedHunk{hunk("module a.com/x", "module a.com/y")}}, true},
+		{"nested module", impact.ChangedFile{OldPath: "tools/go.mod", NewPath: "tools/go.mod", Hunks: []impact.ChangedHunk{hunk("module a.com/x", "module a.com/y")}}, true},
+		{"a dependency bump", impact.ChangedFile{OldPath: "go.mod", NewPath: "go.mod", Hunks: []impact.ChangedHunk{hunk("\tgolang.org/x/term v0.45.0", "\tgolang.org/x/term v0.46.0")}}, false},
+		{"go.mod deleted", impact.ChangedFile{OldPath: "go.mod", Deleted: true, Hunks: []impact.ChangedHunk{{OldStart: 1, Removed: []int{1}, OldText: []string{"module a.com/x"}}}}, true},
+		{"go.mod new", impact.ChangedFile{NewPath: "go.mod", IsNew: true, Hunks: []impact.ChangedHunk{{NewStart: 1, Added: []int{1}, NewText: []string{"module a.com/x"}}}}, false},
+		{"not a go.mod", impact.ChangedFile{OldPath: "a.go", NewPath: "a.go", Hunks: []impact.ChangedHunk{hunk("module a.com/x", "module a.com/y")}}, false},
+	} {
+		if got := changesGoModulePath(&tt.file); got != tt.want {
+			t.Errorf("%s: changesGoModulePath = %v, want %v", tt.name, got, tt.want)
 		}
 	}
 }

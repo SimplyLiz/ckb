@@ -229,10 +229,11 @@ Three changes with known breakage, checked against the compiler: a new parameter
 - **Done-check false alarms, measured.** The last 80 commits of `develop`, each indexed
   at its parent with the whole commit applied: every one builds and vets, so every open
   site is a false alarm. Before the fixes below: 279 open sites in 22 commits, 273 of
-  them struct literals and 6 from one type rename. After: 2, both a 2,799-line
-  `[]Tool{...}` that runs past the 300 lines a literal is followed and so counts as
-  open. Six commits that were `open` are `not_assessed` now: the declaration they
-  couldn't compare was there before, hidden by the false open sites.
+  them struct literals and 6 from one type rename; 14 commits `not_assessed`. After: 0
+  open sites, 71 commits `clear`, 9 `not_assessed`, each for a file the Go index can't
+  have (Python, TypeScript testdata, a `_windows.go` file). A literal is now read to
+  its end: the 2,799-line `[]Tool{...}` ran past the 300 lines it was followed and
+  counted as open. `scripts/eval-change/sweep.py` repeats the measurement.
 - **A declaration is read from the whole file, not only the hunks.** A constant moved
   out of a long `const (` block whose opening line the hunk doesn't reach was still
   `removed`: the block's keyword was invisible. Both sides of each changed file are
@@ -270,6 +271,29 @@ Three changes with known breakage, checked against the compiler: a new parameter
   compared against the merge base since `ckb review` learned it, but the check read each
   file's old text at the base branch's tip. Once that branch moved on, the lines were
   elsewhere and an updated use wasn't recognized as one.
+- **A line inside a Go var's initializer belongs to the var.** scip-go gives vars and
+  constants only the line of their name, so a changed line further into `var cmd =
+  &cobra.Command{...}`, a preset table or a multi-line string belonged to no definition
+  and counted as a declaration that can't be compared: `not_assessed` for 7 of the 80
+  commits. The initializer is now read to its end on the index's side of the file. The
+  declaration compared is still `var cmd`: a changed initializer whose inferred type
+  changes reads as unchanged, as before.
+- **The index's side of a file is found when lines were inserted.** With 12 lines of
+  context, a hunk that gained lines reaches further on its new side, often onto the
+  index's next definition. That name isn't on the new line there, and the file was put
+  down as matching neither side, with every change in it unattributed and the check
+  `not_assessed`. A definition now only counts against the side that shows its line.
+- **What holds no code is no doubt.** `LICENSE`, `.gitignore`, `go.mod`, `go.sum` and the
+  like were "changed files that aren't in the index"; an aliased Go import (`f "fmt"`)
+  and a Rust `impl Point {` header were code no definition explained. A `go.mod` whose
+  `module` line changes is a doubt of its own, since every import of the module changed.
+  The declarations that can't be compared are named in the note.
+- **A Rust impl moved to another module of its crate is not removed.** rust-analyzer
+  names a method by the module of its impl, so moving `impl Point` from `a.rs` to `c.rs`
+  listed every `p.sum()` as a use of a removed method. The method is now looked for in an
+  impl of the same type and trait in the diff's other files of the crate, and compared
+  there. One visible only by module (private, `pub(super)`, `pub(in ...)`) stays
+  `removed`: moving it is a change of its own.
 - **A server older than its binary says so in every answer.** `meta.staleServer`, checked
   at most every 30 s, instead of only in `getStatus`. Both now say to reconnect the
   server (`/mcp` in Claude Code); `getStatus` said `/clear`, which doesn't restart it.

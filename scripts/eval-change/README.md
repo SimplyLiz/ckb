@@ -116,3 +116,22 @@ Results from an older binary still report, without the `consumerFiles` rows.
   predictions can include consumers of other symbols.
 - **Nothing here is about agents.** It measures what the output contains, not whether
   an agent reads it or acts on it.
+
+## False alarms: `sweep.py`
+
+`eval.py` asks whether the done check finds what a change breaks. `sweep.py` asks the
+opposite: what it reports that isn't broken. It replays commits that build: each is
+indexed at its parent, applied to the working tree whole, and checked with `ckb
+changes`. A commit that builds (for Go, also vets) broke no use, so each open site is a
+false alarm, and each `not_assessed` note names a doubt to read.
+
+```bash
+git clone . /tmp/sweep-clone          # A scratch clone: it is reset for every commit
+python3 scripts/eval-change/sweep.py --ckb ./ckb --repo /tmp/sweep-clone \
+    --out /tmp/sweep.jsonl $(git rev-list --first-parent -80 develop)
+python3 scripts/eval-change/sweep.py --report /tmp/sweep.jsonl
+```
+
+It finds false alarms only, never a missed break: the commits compile, so there is
+nothing to miss. The 9.4.0 numbers in the CHANGELOG come from this, over the last 80
+commits of `develop`.

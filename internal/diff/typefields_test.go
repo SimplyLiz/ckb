@@ -242,6 +242,20 @@ func TestBraceEnd_SkipsStringsAndComments(t *testing.T) {
 	}
 }
 
+// A table of a few thousand lines is still one literal: the elements past the first
+// few hundred lines are read like the rest.
+func TestGoLiteralKeys_LongHolder(t *testing.T) {
+	lines := []string{"var Tools = []Tool{"}
+	for i := 0; i < 1500; i++ {
+		lines = append(lines, "\t{", "\t\tName: \"t\",", "\t},")
+	}
+	lines = append(lines, "\t{Name: \"last\", Extra: 1},", "}")
+	keys, positional, ok := GoLiteralKeys(lines, 1, 15, "Tool")
+	if !ok || positional || strings.Join(keys, ",") != "Extra,Name" {
+		t.Errorf("got %v %v %v, want keys Extra,Name from the whole table", keys, positional, ok)
+	}
+}
+
 func TestGoLiteralKeys(t *testing.T) {
 	tests := []struct {
 		name       string
