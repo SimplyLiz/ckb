@@ -288,3 +288,9 @@ No `Self::`, glob or nested arm occurs in the sample, so those three paths are c
 tests only. One miss: `let E::A { .. } = x;` over an enum that had one variant becomes
 refutable (E0005) when it gains another, and the check doesn't look at `let` patterns.
 The other broken commit's four lines are struct literals, all exact.
+
+After 13f6bb6 (`--name users3fix`, same sample): a Rust struct literal is followed up to
+1000 lines. The four misses are exact, both false clears are open, 34 of 34; one listed
+site goes away, a 46-line literal in the defining file whose new field the diff added
+(the compiler agrees). Nothing else moves, `variants` included. As with users2, the fix is
+fitted to the case it is measured on.
