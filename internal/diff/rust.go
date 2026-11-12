@@ -93,6 +93,10 @@ func IsRustLiteralUse(lines []string, line, column int, name string) bool {
 	return ok && !hasRest
 }
 
+// maxRustLiteralLines bounds how far a struct literal's braces are followed. A call's
+// 40 lines are too few: a struct of fifty fields is built in as many lines.
+const maxRustLiteralLines = 1000
+
 // rustLiteral finds the literal or pattern starting at the name, and returns its last
 // line and whether it has `..`. `impl Foo {`, `-> Foo {` and `-> &mut Foo {` have a brace
 // after the name too, but what follows them is a body.
@@ -121,7 +125,7 @@ func rustLiteral(lines []string, line, column int, name string) (end int, hasRes
 
 	depth := 0
 	scan := rest
-	for current := line; current <= line+maxCallSpan; current++ {
+	for current := line; current <= line+maxRustLiteralLines; current++ {
 		if current != line {
 			scan = rawLine(lines, current)
 		}
