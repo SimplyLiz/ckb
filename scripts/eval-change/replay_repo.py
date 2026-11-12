@@ -30,6 +30,7 @@ def main():
     ap.add_argument("--check-dir", default="")
     ap.add_argument("--name", default="frozen")
     ap.add_argument("--timeout", type=int, default=3600)
+    ap.add_argument("--undo-compiler-writes", action="store_true")
     a = ap.parse_args()
 
     sample = json.loads(a.sample.read_text())
@@ -51,6 +52,8 @@ def main():
                "--name", a.name, "--top", "20", "--require-clean-parent"]
         if a.check:
             cmd += ["--check", a.check]
+        if a.undo_compiler_writes:
+            cmd.append("--undo-compiler-writes")
         if a.check_dir:
             cmd += ["--check-dir", a.check_dir]
         cmd += c["files"]

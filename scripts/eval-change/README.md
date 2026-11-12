@@ -159,3 +159,44 @@ app keep it outside this repo. `node_modules` is linked from the app's checkout.
 
 The 9.4.0 numbers for value-derived types come from two commits of one app, picked
 because they showed the gap. That is a reproduction, not a holdout.
+
+## Five other repos: `select_replay.py` and `replay_repo.py`
+
+`select_replay.py` picks a repo's commits from git alone: from HEAD back, a commit that
+changes an exported declaration (a function's head, any line of a type or const) named
+in another file. `replay_repo.py` runs `replay.py` on them in order and skips, before CKB
+runs, a commit whose parent the compiler rejects. `replay.py --lang rust` takes `cargo
+check` as truth; `--undo-compiler-writes` restores tracked files the compiler wrote.
+
+Measured 2026-11-12 with the rules frozen at f2c74dc: two TypeScript and three Rust repos
+of one machine, chosen by a written rule (commits in the last three months, HEAD builds,
+20 source files or more; no Go repo qualified), five commits each.
+
+| | TS-A | TS-B | Rust-A | Rust-B | Rust-C | all |
+|---|---|---|---|---|---|---|
+| commits measured (parent broken, skipped) | 5 | 5 (1) | 5 (1) | 5 | 5 | 25 (2) |
+| commits that break a line | 0 | 1 | 1 | 0 | 1 | 3 |
+| broken lines / files | 0 | 1 / 1 | 1 / 1 | 0 | 1 / 1 | 3 / 3 |
+| exact, within 3, no site, file not named | – | 1, 1, 0, 0 | 1, 1, 0, 0 | – | 1, 1, 0, 0 | 3, 3, 0, 0 |
+| listed sites (rarely counted) | 0 | 36 (6) | 1 | 0 | 8 | 45 (6) |
+| listed sites the compiler doesn't flag | – | 32 | 0 | – | 7 | 39 (87%) |
+| clear / open / not assessed | 0 / 0 / 5 | 2 / 2 / 1 | 3 / 1 / 1 | 5 / 0 / 0 | 1 / 4 / 0 | 11 / 7 / 7 |
+| **clear while the compiler reports errors** | 0 | 0 | 0 | 0 | 0 | **0** |
+| compact answer, mean bytes | 359 | 2654 | 1554 | 746 | 1613 | 1385 |
+| `ckb index` seconds | 3 | 1–2 | 17–50 | 2–3 | 4–5 | |
+
+TS-A's five `not_assessed` come from a tracked `tsconfig.tsbuildinfo` that `tsc` rewrites
+and the check takes for an unindexed code file; with that write undone all five are
+`clear`, as the compiler agrees. Three broken lines are too few to say much about recall.
+Of the four open checks the compiler finds nothing in, two stopped at name resolution
+(rustc then type-checks nothing, so the truth is missing) and one has unresolved imports
+of files the commit added.
+
+`ckb refs` against `git grep -n -w`, 21 symbols: 157 lines against 402, 17 KB against
+39 KB, 0.11 s against 0.007 s (median). No line CKB lists is missing from grep. Of grep's
+245 extra lines 22 are imports (counted by CKB), 29 comments or strings, 194 other; read
+by sample, those are mostly other symbols of the same name, plus two kinds of real miss:
+files outside the tsconfig's `include`, and TypeScript lines the import heuristic takes
+for part of an import block.
+
+These repos and commits are no holdout any more.

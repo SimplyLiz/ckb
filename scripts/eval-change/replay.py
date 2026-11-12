@@ -144,6 +144,8 @@ def main():
     ap.add_argument("--reuse-index", action="store_true", help="keep the index of an earlier run")
     ap.add_argument("--refresh-tsc", action="store_true", help="run the compiler again instead of reading the cached output")
     ap.add_argument("--expect-clear", action="store_true", help="exit 1 unless the done check is clear")
+    ap.add_argument("--undo-compiler-writes", action="store_true",
+                    help="restore tracked files the compiler wrote (tsconfig.tsbuildinfo) before ckb looks")
     ap.add_argument("--require-clean-parent", action="store_true",
                     help="exit 3 before indexing when the compiler reports errors at the parent")
     ap.add_argument("--show", action="store_true", help="print the missed error lines (names of the app)")
@@ -192,6 +194,12 @@ def main():
     key = "+".join(sorted(Path(f).name for f in args.files))
     after = compiler_errors(compiler(clone, cmd, args.check_dir, work / f"{label}-{case}-{key}.txt", args.refresh_tsc, cenv), args.check_dir)
 
+    if args.undo_compiler_writes:
+        # Tracked files changed that the commit's files aren't: the compiler wrote them.
+        dirty = git(clone, "diff", "--name-only").split()
+        written = [p for p in dirty if p not in args.files]
+        if written:
+            git(clone, "checkout", "--", *written)
     rc, out, err, changes_seconds = sh([ckb, "changes", "--format", "json"], clone, env, 1200)
     if rc != 0:
         sys.exit("ckb changes failed: " + err[-800:])
