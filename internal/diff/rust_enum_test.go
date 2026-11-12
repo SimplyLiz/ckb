@@ -72,7 +72,7 @@ fn body(e: DraftError) {
 		{"after a block arm", 9, true, 3, false},
 		{"second alternative", 5, true, 3, false},
 		{"function signature", 2, false, 0, false},
-		{"nested in Some", 16, false, 0, false},
+		{"nested in Some", 16, true, 15, true},
 		{"binding catches all", 23, true, 22, true},
 		{"in an arm's body", 31, false, 0, false},
 	}
@@ -92,5 +92,80 @@ fn body(e: DraftError) {
 	m, _ := RustMatchAt(src, 4, 0, "DraftError")
 	if !m.Names("Invalid") || !m.Names("Db") || m.Names("Unbelegt") || m.Names("StatusCode") {
 		t.Fatalf("Names reads the wrong text: %+v", m)
+	}
+}
+
+func TestRustMatchAt_Nested(t *testing.T) {
+	cases := []struct {
+		name            string
+		src             string
+		ok              bool
+		nested, covered bool
+	}{
+		{"in Some, None beside", `match x {
+    Some(E::A) => 1,
+    None => 0,
+}`, true, true, false},
+		{"Some(_) takes the rest", `match x {
+    Some(E::A) => 1,
+    Some(_) => 2,
+    None => 0,
+}`, true, true, true},
+		{"a binding takes the rest", `match x {
+    Some(E::A) => 1,
+    Some(other) => other.code(),
+    None => 0,
+}`, true, true, true},
+		{"an arm with a guard takes nothing", `match x {
+    Some(E::A) => 1,
+    Some(y) if y.big() => 2,
+    None => 0,
+}`, true, true, false},
+		{"another constructor takes nothing", `match r {
+    Ok(E::A) => 1,
+    Err(_) => 0,
+}`, true, true, false},
+		{"a tuple, the other place wild", `match (e, n) {
+    (E::A, 1) => 1,
+    (_, 2) => 2,
+    (E::B, _) => 3,
+}`, true, true, true},
+		{"a tuple, its place never wild", `match (e, n) {
+    (E::A, _) => 1,
+    (E::B, _) => 2,
+}`, true, true, false},
+		{"a struct field, the field left to ..", `match f {
+    Foo { kind: E::A, .. } => 1,
+    Foo { n: 0, .. } => 2,
+}`, true, true, true},
+		{"a struct field bound by shorthand", `match f {
+    Foo { kind: E::A, n } => n,
+    Foo { kind, n: 0 } => 0,
+}`, true, true, true},
+		{"a struct field, never left open", `match f {
+    Foo { kind: E::A, n } => n,
+    Foo { kind: E::B, .. } => 0,
+}`, true, true, false},
+		{"alternatives inside Some", `match x {
+    Some(E::B | E::A) => 1,
+    None => 0,
+}`, true, true, false},
+		{"a reference is the arm itself", `match &e {
+    &E::A => 1,
+    &E::B => 2,
+}`, true, false, false},
+		{"in a guard", `match x {
+    Some(y) if y == E::A => 1,
+    _ => 0,
+}`, false, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := lines(tc.src)
+			m, ok := RustMatchAt(src, 2, 0, "A")
+			if ok != tc.ok || ok && (m.Line != 1 || m.Nested != tc.nested || m.Covered != tc.covered || m.CatchAll) {
+				t.Fatalf("got %+v %v, want nested %v covered %v ok %v", m, ok, tc.nested, tc.covered, tc.ok)
+			}
+		})
 	}
 }
