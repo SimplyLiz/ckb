@@ -374,4 +374,5 @@ Binary at 60618b0, `--name probe`:
 | Rust-F b3ba83500c | glob | SetMarkers | 2 | 2 | 2 | 25 (the commit's other changes) |
 | Rust-G cab4ddbda4 | nested | Answer, Reach | 2 | 1 | 1 | 0 |
 
-Each deleted arm that leaves no E0004 sits in a match with a `_` arm.
+Why the other deleted arms leave no E0004 (Rust-B: 6 and 4 arms, 4 errors each) is not
+looked at here.
