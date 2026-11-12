@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Replay one TypeScript change and score the done check against `tsc`.
+"""Replay one change and score the done check against the compiler.
 
 A throwaway clone is put at the parent of a commit and indexed there. Then only the
 named files are written from the commit, the way an agent has edited the model and not
-yet its users. `ckb changes` answers, and `npx tsc --noEmit` before and after is the
-truth: every error line that is new is a use the change broke.
+yet its users. `ckb changes` answers, and the compiler before and after is the truth:
+every error line that is new is a use the change broke. TypeScript runs
+`npx tsc --noEmit`, Rust `cargo check`; `--check` sets another command.
 
     replay.py --ckb BIN --repo APP --parent SHA --commit SHA --work DIR FILE...
     replay.py ... --expect-clear      # a change that breaks nothing: exit 1 unless clear
+    replay.py --lang rust --check-dir engine ...   # a manifest below the root
+
+Rust truth is a lower bound: cargo checks no crate that depends on one with errors.
 
 The work dir keeps the clone, both tsc outputs (they don't depend on the ckb binary and
 are reused) and one result per run. It holds symbol and file names of the app: for a
@@ -24,6 +28,12 @@ import time
 from pathlib import Path
 
 TSC_LINE = re.compile(r"^(?P<file>[^\s(][^(]*)\((?P<line>\d+),(?P<col>\d+)\): error (?P<code>TS\d+): (?P<msg>.*)$")
+# cargo --message-format=short: `src/a.rs:3:5: error[E0061]: this function takes …`
+CARGO_LINE = re.compile(r"^(?P<file>[^\s:][^:]*\.rs):(?P<line>\d+):(?P<col>\d+): error(?:\[(?P<code>E\d+)\])?: (?P<msg>.*)$")
+CHECKS = {
+    "ts": ["npx", "tsc", "--noEmit", "--pretty", "false"],
+    "rust": ["cargo", "check", "--workspace", "--all-targets", "--keep-going", "--message-format=short"],
+}
 NEAR = 3
 
 
@@ -37,28 +47,42 @@ def git(repo, *args):
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout
 
 
-def tsc_errors(text):
-    """One entry per error line: (file, line, code, message)."""
+def compiler_errors(text, prefix=""):
+    """One entry per error line: (file, line, code, message), the file relative to the
+    clone. `prefix` is the directory the compiler ran in."""
     found = set()
     for line in text.splitlines():
-        m = TSC_LINE.match(line)
+        m = TSC_LINE.match(line) or CARGO_LINE.match(line)
         if m:
-            found.add((m["file"], int(m["line"]), m["code"], m["msg"]))
+            path = os.path.normpath(os.path.join(prefix, m["file"]))
+            found.add((path, int(m["line"]), m["code"] or "error", m["msg"]))
     return found
 
 
-def tsc(clone, cache, refresh):
+def compiler(clone, cmd, prefix, cache, refresh, env):
+    """The compiler's output, cached: it doesn't depend on the ckb binary."""
     if cache.exists() and not refresh:
         return cache.read_text()
-    _, out, err, _ = sh(["npx", "tsc", "--noEmit", "--pretty", "false"], clone)
+    _, out, err, seconds = sh(cmd, clone / prefix, env)
     cache.write_text(out + err)
+    (cache.parent / (cache.name + ".seconds")).write_text(str(round(seconds)))
     return out + err
+
+
+def link_node_modules(src, clone):
+    """Link every node_modules of the checkout up to three levels down, so a workspace
+    package resolves its own dependencies."""
+    for nm in [src / "node_modules", *src.glob("*/node_modules"), *src.glob("*/*/node_modules")]:
+        rel = nm.relative_to(src)
+        target = clone / rel
+        if nm.is_dir() and target.parent.exists() and not target.exists():
+            target.symlink_to(nm)
 
 
 def reset(clone, parent):
     git(clone, "checkout", "-qf", parent)
     # Not -x: the linked node_modules and the index stay.
-    git(clone, "clean", "-qfd", "-e", "node_modules", "-e", ".ckb", "-e", "index.scip")
+    git(clone, "clean", "-qfd", "-e", "node_modules", "-e", ".ckb", "-e", "index.scip", "-e", "target")
 
 
 def apply(clone, commit, files):
@@ -113,11 +137,15 @@ def main():
     ap.add_argument("--commit", required=True, help="commit the files are taken from")
     ap.add_argument("--work", required=True, type=Path, help="work dir, outside any repo you care about")
     ap.add_argument("--name", default="run", help="label for this run's result files")
-    ap.add_argument("--lang", default="ts")
+    ap.add_argument("--lang", default="ts", choices=sorted(CHECKS))
+    ap.add_argument("--check", help="compiler command, run through the shell (default per --lang)")
+    ap.add_argument("--check-dir", default="", help="directory below the root the compiler runs in")
     ap.add_argument("--top", type=int, default=20, help="how many leading sites to score for ranking")
     ap.add_argument("--reuse-index", action="store_true", help="keep the index of an earlier run")
-    ap.add_argument("--refresh-tsc", action="store_true", help="run tsc again instead of reading the cached output")
+    ap.add_argument("--refresh-tsc", action="store_true", help="run the compiler again instead of reading the cached output")
     ap.add_argument("--expect-clear", action="store_true", help="exit 1 unless the done check is clear")
+    ap.add_argument("--require-clean-parent", action="store_true",
+                    help="exit 3 before indexing when the compiler reports errors at the parent")
     ap.add_argument("--show", action="store_true", help="print the missed error lines (names of the app)")
     ap.add_argument("files", nargs="+")
     args = ap.parse_args()
@@ -136,26 +164,33 @@ def main():
         subprocess.run(["git", "clone", "-q", str(src), str(clone)], check=True)
     else:
         subprocess.run(["git", "-C", str(clone), "fetch", "-q", "origin"], check=False)
-    if (src / "node_modules").exists() and not (clone / "node_modules").exists():
-        (clone / "node_modules").symlink_to(src / "node_modules")
+    link_node_modules(src, clone)
+    cmd = ["sh", "-c", args.check] if args.check else CHECKS[args.lang]
+    # Rust builds into the work dir, so a run in the clone never touches the checkout's target.
+    cenv = dict(os.environ, CARGO_TARGET_DIR=str(work / "target"))
+    label = "tsc" if args.lang == "ts" and not args.check else "check"
 
-    # One heavy job at a time: tsc, then the index, then tsc again.
+    # One heavy job at a time: the compiler, then the index, then the compiler again.
     reset(clone, parent)
-    before = tsc_errors(tsc(clone, work / f"tsc-{parent}.txt", args.refresh_tsc))
+    before = compiler_errors(compiler(clone, cmd, args.check_dir, work / f"{label}-{parent}.txt", args.refresh_tsc, cenv), args.check_dir)
+    if args.require_clean_parent and before:
+        print(json.dumps({"case": case, "skipped": "parent has compiler errors", "parent_errors": len(before)}))
+        sys.exit(3)
 
     marker = work / "indexed-at"
     indexed = marker.read_text().strip() if marker.exists() else ""
     index_seconds = None
     if not (args.reuse_index and indexed == parent):
         sh([ckb, "init", "--force"], clone, env, 120)
-        rc, _, err, index_seconds = sh([ckb, "index", "--force", "--lang", args.lang], clone, env)
+        rc, out, err, index_seconds = sh([ckb, "index", "--force", "--lang", args.lang], clone, env)
+        (work / f"index-{parent}.log").write_text(f"rc {rc}, {round(index_seconds)}s\n{out}\n{err}")
         if rc != 0:
             sys.exit("index failed: " + err[-800:])
         marker.write_text(parent)
 
     apply(clone, commit, args.files)
     key = "+".join(sorted(Path(f).name for f in args.files))
-    after = tsc_errors(tsc(clone, work / f"tsc-{case}-{key}.txt", args.refresh_tsc))
+    after = compiler_errors(compiler(clone, cmd, args.check_dir, work / f"{label}-{case}-{key}.txt", args.refresh_tsc, cenv), args.check_dir)
 
     rc, out, err, changes_seconds = sh([ckb, "changes", "--format", "json"], clone, env, 1200)
     if rc != 0:
@@ -166,8 +201,16 @@ def main():
     (work / f"{args.name}-{case}.compact.txt").write_text(compact)
 
     done = full.get("doneCheck") or {}
+    # The listed sites are the ones likely to break; the rare ones are counted per
+    # symbol and kept apart. Both are scored: what an agent is shown, and everything.
     sites = done.get("openSites") or []
+    rarely = done.get("rarelySites") or []
     summary, detail = score(after - before, sites, set(args.files), args.top)
+    every, _ = score(after - before, sites + rarely, set(args.files), args.top)
+    summary.update({f"with_rarely_{k}": every[k] for k in (
+        "open_sites", "error_lines_exact", "error_lines_near", "error_lines_missed", "error_files_not_named")})
+    summary["rarely_count"] = done.get("rarelyCount", 0)
+    summary["rarely_groups"] = len(done.get("rarely") or [])
     changed = full.get("changedSymbols") or []
     summary.update({
         "case": case,
