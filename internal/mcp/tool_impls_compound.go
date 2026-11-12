@@ -18,8 +18,10 @@ type CompactPrepareChange struct {
 	TestsNeeded   []string `json:"tests_needed"`   // top 5
 	OwnerSuggest  string   `json:"owner_suggest,omitempty"`
 	Summary       string   `json:"summary"`
-	Backend       string   `json:"backend"`
-	Accuracy      string   `json:"accuracy"`
+	// Hint says how to narrow a file or module target down to the change made.
+	Hint     string `json:"hint,omitempty"`
+	Backend  string `json:"backend"`
+	Accuracy string `json:"accuracy"`
 }
 
 // buildMCPCompactPrepareChange converts a PrepareChangeResponse into compact form.
@@ -60,9 +62,21 @@ func buildMCPCompactPrepareChange(target string, r *query.PrepareChangeResponse,
 		testsNeeded = append(testsNeeded, name)
 	}
 
-	summary := fmt.Sprintf("Changing %s affects %d files with %s risk.", target, len(affectedFiles), risk)
+	// The target is echoed in full above; a symbol ID is too long to repeat.
+	label := target
+	var hint string
+	if r.Target != nil {
+		if r.Target.Name != "" {
+			label = r.Target.Name
+		}
+		if r.Target.Kind == "file" || r.Target.Kind == "module" {
+			hint = "A " + r.Target.Kind + " target counts the uses of every symbol in it. " +
+				"For what one change reaches, pass the symbol's ID from searchSymbols."
+		}
+	}
+	summary := fmt.Sprintf("Changing %s affects %d files with %s risk.", label, len(affectedFiles), risk)
 	if risk == query.RiskLevelNotAssessed {
-		summary = fmt.Sprintf("Changing %s: what depends on it was not assessed (no SCIP index).", target)
+		summary = fmt.Sprintf("Changing %s: what depends on it was not assessed (no SCIP index).", label)
 	}
 
 	return CompactPrepareChange{
@@ -72,6 +86,7 @@ func buildMCPCompactPrepareChange(target string, r *query.PrepareChangeResponse,
 		AffectedFiles: affectedFiles,
 		TestsNeeded:   testsNeeded,
 		Summary:       summary,
+		Hint:          hint,
 		Backend:       activeBackend,
 		Accuracy:      envelope.AccuracyForBackend(activeBackend),
 	}

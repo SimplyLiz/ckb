@@ -165,6 +165,10 @@ private, so only aggregates are here.
   `f`'s result type, which the compiler accepted. A changed line later in the same block
   that reads a variable the call's line binds (`:=`, `=`, `var`, `let`, `const`, a blank
   `_` aside) now updates the use. Found changing `NewTruncationInfo` to return a value.
+- **`prepareChange` on a file or directory says it sums every symbol in it.** Asked
+  about `truncation.go`, it gave 49 affected uses and high risk; asked about the one
+  function changed, 4 and low. The compact answer now has a `hint` pointing at a symbol
+  target, and its summary names a symbol target instead of repeating the full SCIP ID.
 
 ### Added — MCP tool annotations
 
