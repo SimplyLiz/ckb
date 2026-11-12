@@ -338,8 +338,10 @@ func tsConstruction(lines []string, line, column int, name string) (end int, ok 
 		}
 		rest = rest[close+1:]
 	}
+	array := false
 	for strings.HasPrefix(rest, "[]") {
 		rest = rest[2:]
+		array = true
 	}
 	rest = strings.TrimLeft(rest, " \t")
 	offset := len(text) - len(rest)
@@ -354,6 +356,11 @@ func tsConstruction(lines []string, line, column int, name string) (end int, ok 
 		return 0, false
 	case strings.HasPrefix(rest, "=") && !strings.HasPrefix(rest, "=="):
 		after := strings.TrimLeft(rest[1:], " \t")
+		// `: Name[] = []` holds no Name, so no change to Name breaks it. An empty
+		// `{}` stays: a field Name gains without a default is missing from it.
+		if array && strings.HasPrefix(after, "[") && strings.HasPrefix(strings.TrimLeft(after[1:], " \t"), "]") {
+			return 0, false
+		}
 		if strings.HasPrefix(after, "{") || strings.HasPrefix(after, "[") {
 			at := len(text) - len(after)
 			return braceEnd(lines, line, at), true

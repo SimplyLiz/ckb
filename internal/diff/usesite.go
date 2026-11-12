@@ -286,19 +286,39 @@ func isImportLine(lines []string, line int) bool {
 	if hasImportPrefix(text) {
 		return true
 	}
-	if !bareListEntry.MatchString(text) && !useTreeLine.MatchString(text) {
+	if !bareListEntry.MatchString(text) && !isUseTreeLine(text) {
 		return false
 	}
 	for current := line - 1; current >= 1 && current >= line-maxCallSpan; current-- {
 		previous := strings.TrimSpace(rawLine(lines, current))
 		if hasImportPrefix(previous) {
-			return strings.Contains(previous, "{") || strings.Contains(previous, "(")
+			// Only an import that stays open can own the lines below it: after
+			// `import { A } from './a'` the next line is code again.
+			return strings.Count(previous, "{") > strings.Count(previous, "}") ||
+				strings.Count(previous, "(") > strings.Count(previous, ")")
 		}
-		if previous != "" && !useTreeLine.MatchString(previous) {
+		if previous != "" && !isUseTreeLine(previous) {
 			return false
 		}
 	}
 	return false
+}
+
+// isUseTreeLine says whether a line can be part of an import list. The characters
+// alone let `ledger: BudgetLedger` and `export interface Foo {` through, so a single
+// colon rules a line out (a path has `::`), and between the commas and braces each
+// entry is one path or `path as name`.
+func isUseTreeLine(text string) bool {
+	if !useTreeLine.MatchString(text) || strings.Contains(strings.ReplaceAll(text, "::", ""), ":") {
+		return false
+	}
+	for _, entry := range strings.FieldsFunc(text, func(r rune) bool { return r == ',' || r == '{' || r == '}' }) {
+		words := strings.Fields(entry)
+		if len(words) > 1 && (len(words) != 3 || words[1] != "as") {
+			return false
+		}
+	}
+	return true
 }
 
 func hasImportPrefix(text string) bool {
