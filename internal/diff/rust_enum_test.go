@@ -148,6 +148,10 @@ func TestRustMatchAt_Nested(t *testing.T) {
     Foo { kind: E::A, n } => n,
     Foo { kind: E::B, .. } => 0,
 }`, true, true, false},
+		{"Self(_) in an impl takes the rest", `match self {
+    Foo(E::A) => 1,
+    Self(_) => 0,
+}`, true, true, true},
 		{"alternatives inside Some", `match x {
     Some(E::B | E::A) => 1,
     None => 0,

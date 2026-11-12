@@ -338,7 +338,8 @@ fn f(k: crate::kind::Kind) -> u8 {
 }
 
 // A variant nested in another pattern leaves the match open too, unless an arm takes
-// whatever is at its place; such a match is counted with the uses that rarely break.
+// whatever is at its place. Such a match breaks as surely as one over the enum itself,
+// so it is listed like one, not counted with the uses that rarely break.
 func TestRustEnumVariants_NestedPatterns(t *testing.T) {
 	const useSrc = `fn a(x: Option<E>) -> u8 {
     match x {
@@ -368,8 +369,8 @@ fn b(x: Option<E>) -> u8 {
 	if got := siteLines(c); len(got) != 1 || got[0] != "src/use.rs:match x {" || c.sites[0].Line != 2 {
 		t.Fatalf("sites = %+v", c.sites)
 	}
-	if c.sites[0].Use != diff.RustUseNested || useRank(c.sites[0].Use) != rankRarely {
-		t.Errorf("use = %q, want it among the rare ones", c.sites[0].Use)
+	if useRank(c.sites[0].Use) == rankRarely {
+		t.Errorf("use = %q: a match nesting the enum is listed, not counted as rare", c.sites[0].Use)
 	}
 	if len(open) != 1 || c.updated != 1 {
 		t.Errorf("open = %+v, updated = %d: the match with Some(_) is done", open, c.updated)

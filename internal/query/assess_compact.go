@@ -274,7 +274,7 @@ func CompactAssessChangeFor(r *AnalyzeChangeSetResponse, opts CompactAssessOptio
 // to see them: `sectionSchema.key (changed; …): 128 in 30 files, 120 read, 8 annotation`.
 func rarelyLine(g RarelyGroup) string {
 	uses := make([]string, 0, len(g.Uses))
-	for _, use := range []string{diff.TSUseRead, diff.TSUseAnnotation, diff.RustUseNested} {
+	for _, use := range []string{diff.TSUseRead, diff.TSUseAnnotation} {
 		if n := g.Uses[use]; n > 0 {
 			uses = append(uses, fmt.Sprintf("%d %s", n, use))
 		}

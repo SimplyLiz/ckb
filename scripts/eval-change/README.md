@@ -340,5 +340,8 @@ match. Nested (Rust-G) said clear, from two bugs: `bracedBody` stopped after 500
 and the enum, a clap `Commands` of 590, had no variants (f1fe922); and `TypeSymbolIn`
 wanted `/Commands#`, but a name at a crate's root is `… 1.5.0 Commands#`, so no struct or
 enum of a `lib.rs` or `main.rs` was found at all (0fc1276). After both the nested match is
-counted, as `nested` under rarely. A rerun of users3, variants and arms with both fixes
+counted, as `nested` under rarely. That match (`Some(Commands::X)` arms and `None`, no
+`Some(_)`) can't compile, so a nested match no unguarded arm covers is now listed at its
+`match` line like any other, and the probe rerun lists `match cli.command {`; a `Self(_)`
+arm counts as covering whatever type it is in. A rerun of users3, variants and arms with both fixes
 (`--name users3root` etc.) moves none of the 44 commits.
