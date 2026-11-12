@@ -36,10 +36,6 @@ func RustEnumVariants(lines []string, name string) ([]string, bool) {
 
 var rustVariantRe = regexp.MustCompile(`^\s*([A-Za-z_]\w*)`)
 
-// RustUseNested is the use of an enum nested in another pattern, `Some(E::A) =>`: a new
-// variant leaves that match incomplete too, unless an arm takes whatever is there.
-const RustUseNested = "nested"
-
 // RustMatch is a `match` expression one of whose arms names a type.
 type RustMatch struct {
 	Line     int  // The line with the `match` keyword, 1-based

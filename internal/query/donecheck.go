@@ -413,12 +413,8 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 		c.updated++
 		return
 	}
-	nested := false
-	if query.newVariants != nil {
-		var open bool
-		if open, nested = c.incompleteMatch(oldLines, newLines, ref, query, &result); !open {
-			return
-		}
+	if query.newVariants != nil && !c.incompleteMatch(oldLines, newLines, ref, query, &result) {
+		return
 	}
 	// An import of a name whose signature changed is still valid. Of a name that went
 	// away, it is exactly what has to go too.
@@ -449,9 +445,6 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 	use := tsUse(sym, query, cmp.Or(ref.Location.Path, path), newLines, result.Line, len(missingAt) > 0)
 	if query.arrayLengths != nil && !diff.SpellsArrayLength(result.Code, query.arrayLengths) {
 		use = diff.TSUseRead // Counted with the reads that rarely break, not listed
-	}
-	if nested {
-		use = diff.RustUseNested
 	}
 	add := func(line int, code, via string, literalLines int) {
 		key := fmt.Sprintf("%s:%s:%d", sym.SymbolID, path, line)
@@ -496,11 +489,11 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 
 // incompleteMatch says whether the use is in an arm of a match that misses one of the
 // new variants, and moves the result to the match's line. A match given an arm for them,
-// or one for the rest, counts as updated. nested says the use sits inside another
-// pattern, `Some(E::A)`, and no arm takes whatever is there; it is counted with the
-// uses that rarely break. A plain `let` over what was the enum's only variant is open
+// or one for the rest, counts as updated. So does a match that nests the enum in
+// another pattern, `Some(E::A)`, when an arm takes whatever is there; without one it
+// is open like any other. A plain `let` over what was the enum's only variant is open
 // at the `let`: it can no longer match every value.
-func (c *doneChecker) incompleteMatch(oldLines, newLines []string, ref *backends.Reference, query useQuery, result *diff.UseResult) (open, nested bool) {
+func (c *doneChecker) incompleteMatch(oldLines, newLines []string, ref *backends.Reference, query useQuery, result *diff.UseResult) bool {
 	lines := newLines
 	if oldLines != nil {
 		lines = oldLines
@@ -511,24 +504,24 @@ func (c *doneChecker) incompleteMatch(oldLines, newLines []string, ref *backends
 			line, ok := diff.RustLetAt(newLines, result.Line, 0, query.name)
 			if !ok {
 				c.updated++
-				return false, false
+				return false
 			}
 			result.Line = line
 			result.Code = strings.TrimSpace(newLines[line-1])
-			return true, false
+			return true
 		}
 	}
 	if m, ok := diff.RustMatchAt(lines, ref.Location.Line, ref.Location.Column, query.name); !ok || m.CatchAll {
-		return false, false
+		return false
 	}
 	m, ok := diff.RustMatchAt(newLines, result.Line, 0, query.name)
 	if !ok {
-		return false, false
+		return false
 	}
 	// Each arm is a use of the enum; the match is counted once.
 	key := fmt.Sprintf("match:%s:%d", ref.Location.Path, m.Line)
 	if c.seen[key] {
-		return false, false
+		return false
 	}
 	c.seen[key] = true
 	complete := true
@@ -537,11 +530,11 @@ func (c *doneChecker) incompleteMatch(oldLines, newLines []string, ref *backends
 	}
 	if m.CatchAll || m.Covered || complete {
 		c.updated++
-		return false, false
+		return false
 	}
 	result.Line = m.Line
 	result.Code = strings.TrimSpace(newLines[m.Line-1])
-	return true, m.Nested
+	return true
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -587,7 +580,7 @@ func useRank(use string) int {
 		return 2
 	case diff.TSUseSwitch:
 		return 3
-	case diff.TSUseAnnotation, diff.TSUseRead, diff.RustUseNested:
+	case diff.TSUseAnnotation, diff.TSUseRead:
 		return rankRarely
 	}
 	return 1
@@ -842,7 +835,7 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 		check.Status = DoneCheckOpen
 		check.Note = "Uses of a changed declaration the diff didn't touch. Text comparison, nothing compiled: some may need no edit."
 		if check.RarelyCount > 0 {
-			check.Note += fmt.Sprintf(" %d of them only annotate with a changed type, read a changed key, read an array whose length changed or match an enum nested in another pattern, which rarely breaks: they are counted per symbol, not listed.", check.RarelyCount)
+			check.Note += fmt.Sprintf(" %d of them only annotate with a changed type, read a changed key or read an array whose length changed, which rarely breaks: they are counted per symbol, not listed.", check.RarelyCount)
 		}
 		if doubt != "" {
 			check.Note += " There may be more: " + doubt + "."

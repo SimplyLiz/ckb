@@ -241,7 +241,7 @@ func (p *rustPat) takes(steps []rustStep) bool {
 		return false
 	}
 	step := steps[0]
-	if p.kind != step.kind || lastSegment(p.head) != step.ctor {
+	if p.kind != step.kind || !sameCtor(lastSegment(p.head), step.ctor) {
 		return false
 	}
 	if p.kind == '{' {
@@ -262,6 +262,11 @@ func (p *rustPat) takes(steps []rustStep) bool {
 	}
 	return p.parts[step.index].takes(steps[1:])
 }
+
+// sameCtor says whether two constructors may be the same one. `Self` in an impl is
+// the type's own name, which the text doesn't tell: it is taken for any, so that a
+// `Self(_)` arm still covers `Foo(E::A)`.
+func sameCtor(a, b string) bool { return a == b || a == "Self" || b == "Self" }
 
 // nestedPath returns the steps from an arm's top-level alternative to the pattern the
 // position is in. False when it isn't in a pattern, as in a guard.
