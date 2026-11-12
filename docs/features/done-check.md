@@ -22,6 +22,10 @@ ckb changes --check    # the same, and the exit code: 0 clear, 2 open, 3 not ass
 }
 ```
 
+`openCount` counts every use left as it was. `openSites` lists those likely to break, at
+most 100; the TypeScript annotations and reads that rarely break are counted per symbol
+in `rarely` and listed in `rarelySites` (see below).
+
 It decides per use, not per file. A file the diff touched only in a comment keeps its open
 call, and `consumerFiles.contractChanged` and the risk floor follow the same answer. A call
 counts as touched if the diff changed any line of it, including an argument on a later line.
@@ -110,8 +114,21 @@ so the edit used to be a file-level entry and the check said `clear`. Now:
   what stopped it.
 - Sites of a changed TypeScript type or key carry `use` and are ordered by it: `key`
   (`Record<T, …>`, `[K in T]`, `K extends T`) and `index` (`x[y.key]`) first, then
-  `literal`, then `switch`, then `annotation` and `read`. The last two rarely break;
-  `rarelyCount` counts them and nothing is dropped.
+  `literal`, then `switch`, then `annotation` and `read`.
+- The last two rarely break, so they aren't in `openSites`. Each changed symbol or key
+  with such uses gets one line instead: how many, in how many files, by use. They are
+  still open: a symbol with nothing else keeps the check `open`, and `openCount`
+  counts them.
+
+| Where | Listed sites | Rare ones |
+|---|---|---|
+| compact (`assessChange`, `ckb changes --format=compact`) | `openSites`, 50 a page | one line per symbol under "rarely break"; focus `rarely` lists them, 50 a page, with `offset` |
+| full JSON (`format: "full"`, `--format=json`) | `openSites`, cut at 100, `truncated` | `rarely` (the counts) and `rarelySites` (each one, uncut), `rarelyCount` |
+| `ckb changes` | the first 20, `--verbose` all | one line per symbol; `--verbose` lists them |
+
+  The rare ones are a list of their own under a focus because `offset` already pages
+  the focused list: they page the same way as open sites and tests, and need no second
+  paging parameter.
 
 Text, like everything here. Four kinds of break stay out of reach: an index access with a
 variable of a changed type, a callback whose parameter type is inferred from one, an

@@ -1270,19 +1270,33 @@ func writeDoneCheck(b *strings.Builder, check *query.DoneCheck, verbose bool) {
 	if !verbose && shown > 20 {
 		shown = 20
 	}
-	for i := range check.OpenSites[:shown] {
-		site := &check.OpenSites[i]
-		b.WriteString(fmt.Sprintf("  %s:%d  %s", site.File, site.Line, site.Code))
-		if site.Via != "" {
-			b.WriteString(fmt.Sprintf("  (%s)", site.Via))
+	writeSites := func(sites []query.OpenSite) {
+		for i := range sites {
+			site := &sites[i]
+			b.WriteString(fmt.Sprintf("  %s:%d  %s", site.File, site.Line, site.Code))
+			if site.Via != "" {
+				b.WriteString(fmt.Sprintf("  (%s)", site.Via))
+			}
+			if site.Unverified {
+				b.WriteString("  (index out of date here, line may be off)")
+			}
+			b.WriteString(fmt.Sprintf("  [%s %s]\n", site.Symbol, site.Change))
 		}
-		if site.Unverified {
-			b.WriteString("  (index out of date here, line may be off)")
-		}
-		b.WriteString(fmt.Sprintf("  [%s %s]\n", site.Symbol, site.Change))
 	}
-	if more := check.OpenCount - shown; more > 0 {
+	writeSites(check.OpenSites[:shown])
+	if more := check.OpenCount - check.RarelyCount - shown; more > 0 {
 		b.WriteString(fmt.Sprintf("  … and %d more (--verbose, or --format=json up to %d)\n", more, query.MaxOpenSites))
+	}
+	if check.RarelyCount > 0 {
+		if verbose {
+			b.WriteString(fmt.Sprintf("  These %d rarely break:\n", check.RarelyCount))
+			writeSites(check.RarelySites)
+		} else {
+			b.WriteString(fmt.Sprintf("  %d more rarely break, counted per symbol (--verbose lists them):\n", check.RarelyCount))
+			for _, g := range check.Rarely {
+				b.WriteString(fmt.Sprintf("    %s: %d in %s\n", g.Symbol, g.Count, countNoun(g.Files, "file", "files")))
+			}
+		}
 	}
 	if check.Note != "" {
 		b.WriteString("  " + check.Note + "\n")
