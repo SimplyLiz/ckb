@@ -58,6 +58,7 @@ func (c *doneChecker) checkRustFiles(ctx context.Context, adapter referenceFinde
 			continue
 		}
 		open = append(open, c.checkStructFields(ctx, adapter, index, path, oldLines, newLines)...)
+		open = append(open, c.checkEnumVariants(ctx, adapter, index, path, oldLines, newLines)...)
 		open = append(open, c.checkReexports(ctx, path, oldLines, newLines)...)
 	}
 	return open
@@ -95,6 +96,51 @@ func (c *doneChecker) checkStructFields(ctx context.Context, adapter referenceFi
 			ctorSym := impact.ChangedSymbol{SymbolID: ctor, Name: name + "::new", File: path}
 			c.checkUses(ctx, adapter, ctorSym, useQuery{name: "new", change: impact.DeclChanged, via: via}, files)
 		}
+		if len(files) > 0 {
+			open = append(open, rustOpen{name: name, change: impact.DeclChanged, files: files})
+		}
+	}
+	return open
+}
+
+var rustEnumNameRe = regexp.MustCompile(`^\s*(?:pub(?:\s*\([^)]*\))?\s+)?enum\s+([A-Za-z_]\w*)`)
+
+// checkEnumVariants lists the matches a new variant leaves incomplete: those over the
+// enum with no arm for the rest and none for the variant. A removed variant is a removed
+// symbol and checked as one; a match that names the enum only through `Self::` or a
+// glob import has no reference to it and isn't found.
+func (c *doneChecker) checkEnumVariants(ctx context.Context, adapter referenceFinder, index rustIndex, path string, oldLines, newLines []string) []rustOpen {
+	var open []rustOpen
+	seen := make(map[string]bool)
+	for _, text := range oldLines {
+		m := rustEnumNameRe.FindStringSubmatch(text)
+		if m == nil || seen[m[1]] {
+			continue
+		}
+		name := m[1]
+		seen[name] = true
+		before, okBefore := diff.RustEnumVariants(oldLines, name)
+		after, okAfter := diff.RustEnumVariants(newLines, name)
+		if !okBefore || !okAfter {
+			continue
+		}
+		var added []string
+		for _, v := range after {
+			if !slices.Contains(before, v) {
+				added = append(added, v)
+			}
+		}
+		if len(added) == 0 {
+			continue
+		}
+		id := index.TypeSymbolIn(path, name)
+		if id == "" {
+			continue
+		}
+		sym := impact.ChangedSymbol{SymbolID: id, Name: name, File: path}
+		via := fmt.Sprintf("%s gained %s; a match without it or `_` is incomplete", name, strings.Join(added, ", "))
+		files := make(map[string]bool)
+		c.checkUses(ctx, adapter, sym, useQuery{name: name, change: impact.DeclChanged, via: via, newVariants: added}, files)
 		if len(files) > 0 {
 			open = append(open, rustOpen{name: name, change: impact.DeclChanged, files: files})
 		}
