@@ -214,6 +214,7 @@ func TestIsCodeFile(t *testing.T) {
 		"README.md": false, "docs/a.MD": false, ".ckb/config.json": false, "ci.yml": false,
 		"LICENSE": false, ".gitignore": false, "sub/.gitignore": false, "go.mod": false, "go.sum": false,
 		"license.go": true, "notice.go": true,
+		"tsconfig.tsbuildinfo": false, "dist/app.js.map": false, "Cargo.lock": false, "yarn.lock": false, "bun.lockb": false,
 	} {
 		if got := isCodeFile(path); got != want {
 			t.Errorf("isCodeFile(%q) = %v, want %v", path, got, want)

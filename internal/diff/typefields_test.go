@@ -180,6 +180,8 @@ export interface CV {
 }
 const loaded: CV = await load();
 const p: Promise<CV> = fetchIt();
+const none: CV[] = [];
+const blank: CV = {};
 `, "\n")
 	cases := map[int]struct {
 		ok  bool
@@ -199,6 +201,8 @@ const p: Promise<CV> = fetchIt();
 		29: {false, 0}, // the declaration
 		32: {false, 0}, // = await load()
 		33: {false, 0}, // Promise<CV>
+		34: {false, 0}, // : CV[] = [] holds no CV
+		35: {true, 35}, // : CV = {} misses a new required field
 	}
 	for line, want := range cases {
 		end, ok := tsConstruction(lines, line, 0, "CV")

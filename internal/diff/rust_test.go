@@ -133,6 +133,34 @@ func TestClassifyUseLiteralSpansItsBraces(t *testing.T) {
 	}
 }
 
+// A declaration right after the imports is code, not the tail of the import list.
+func TestIsImportLine_DeclarationAfterImports(t *testing.T) {
+	lines := rustLines(`import { A } from './a';
+export interface Foo {
+  ledger: BudgetLedger
+  other,
+}
+import {
+  B,
+  C as D,
+} from './b';
+use crate::{x, y};
+pub struct Bar {
+    lookup: Lookup,
+}
+use crate::{
+    z,
+};
+pub struct Baz {
+    z,
+}`)
+	for line, want := range map[int]bool{2: false, 3: false, 4: false, 7: true, 8: true, 11: false, 12: false, 15: true, 17: false, 18: false} {
+		if got := isImportLine(lines, line); got != want {
+			t.Errorf("line %d (%q): %v, want %v", line, lines[line-1], got, want)
+		}
+	}
+}
+
 func TestIsImportLine_RustUseTree(t *testing.T) {
 	lines := rustLines(`use crate::{
     place::{Place, lookup},

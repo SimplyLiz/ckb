@@ -874,6 +874,8 @@ var nonCodeExtensions = map[string]bool{
 	".json": true, ".yaml": true, ".yml": true, ".toml": true, ".ini": true, ".env": true,
 	".csv": true, ".tsv": true, ".svg": true, ".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
 	".ico": true, ".pdf": true, ".snap": true, ".golden": true, ".css": true,
+	// Build output and lockfiles: tsc writes .tsbuildinfo on every incremental run.
+	".tsbuildinfo": true, ".map": true, ".lock": true, ".lockb": true,
 }
 
 // nonCodeNames are files whose name, not extension, says they hold no use: legal text,
