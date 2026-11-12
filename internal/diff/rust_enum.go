@@ -36,11 +36,18 @@ func RustEnumVariants(lines []string, name string) ([]string, bool) {
 
 var rustVariantRe = regexp.MustCompile(`^\s*([A-Za-z_]\w*)`)
 
+// RustUseNested is the use of an enum nested in another pattern, `Some(E::A) =>`: a new
+// variant leaves that match incomplete too, unless an arm takes whatever is there.
+const RustUseNested = "nested"
+
 // RustMatch is a `match` expression one of whose arms names a type.
 type RustMatch struct {
 	Line     int  // The line with the `match` keyword, 1-based
 	CatchAll bool // An arm such as `_ =>` or `other =>` takes whatever the others don't
-	patterns []string
+	// Nested says the name sits inside another pattern, as in `Some(E::A)`. Covered
+	// says an arm without a guard takes whatever is at that place: `Some(_)`, `Some(x)`.
+	Nested, Covered bool
+	patterns        []string
 }
 
 // Names says whether an arm's pattern spells the word.
@@ -54,8 +61,8 @@ func (m RustMatch) Names(word string) bool {
 }
 
 // RustMatchAt returns the match whose arm pattern the name on a line starts, as in
-// `DraftError::Conflict(m) =>`. A name nested deeper, `Some(E::A) =>`, or in an arm's
-// body, isn't one: a new variant doesn't make that match incomplete by itself.
+// `DraftError::Conflict(m) =>`, or sits in, as in `Some(E::A) =>`, which is Nested. A
+// name in an arm's guard or body isn't one.
 func RustMatchAt(lines []string, line, column int, name string) (RustMatch, bool) {
 	at := nameIndex(rawLine(lines, line), column, name)
 	if at < 0 {
@@ -73,10 +80,18 @@ func RustMatchAt(lines []string, line, column int, name string) (RustMatch, bool
 			if !ok || !parsed.end.after(ref) {
 				continue // Ends before the name: not the match it is in
 			}
-			if !parsed.armAt(ref) {
+			found := RustMatch{Line: l, CatchAll: parsed.catchAll(), patterns: parsed.patterns()}
+			if parsed.armAt(ref) {
+				return found, true
+			}
+			path, ok := parsed.nestedPath(ref)
+			if !ok {
 				return RustMatch{}, false
 			}
-			return RustMatch{Line: l, CatchAll: parsed.catchAll(), patterns: parsed.patterns()}, true
+			// `&E::A` and `x @ E::A` start the arm all the same.
+			found.Nested = len(path) > 0
+			found.Covered = found.Nested && parsed.covers(path)
+			return found, true
 		}
 	}
 	return RustMatch{}, false
