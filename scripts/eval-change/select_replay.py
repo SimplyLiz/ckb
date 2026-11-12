@@ -37,6 +37,15 @@ regex over the line: `Self::A … =>`, `A … =>` in a glob-importing file, `(E:
 No user has to be edited: an arm in the applied file shows whether the check sees it
 updated, one elsewhere whether it sees it open. Only the files with such an enum are
 applied. The arms are listed with each candidate, so every one can be looked up.
+
+`--rule scoped` is for types visible to their crate only: a modified non-test file has a
+`pub(crate)`, `pub(super)` or `pub(in …)` struct that gains a named field, or enum that
+gains a variant, at the commit, and at the parent another non-test Rust file of the same
+crate names it as a word. Its users don't have to be edited (`users_edited` says which
+were); unedited ones show false opens, edited ones what breaks. Only the files with such
+a type are applied. The crate is the nearest directory above the file with a
+`Cargo.toml` at the parent; it is stored as `check_dir`, where the compiler runs, and a
+commit whose types sit in two crates is left out.
 """
 
 import argparse
@@ -230,7 +239,102 @@ def arms_candidate(repo, sha, parent, max_files):
             "files_in_commit": len(status)}
 
 
+RUST_SCOPED = re.compile(r"^\s*pub\s*\((?:crate|super|in\s+[^)]*)\)\s+(struct|enum)\s+([A-Za-z_]\w*)[^{;(]*\{", re.M)
+
+
+def braced_entries(text, start):
+    """The top-level comma-separated entries of the braces opened just before start,
+    without comments, attributes and strings."""
+    i, depth = start, 1
+    while i < len(text) and depth:
+        depth += {"{": 1, "}": -1}.get(text[i], 0)
+        i += 1
+    body = re.sub(r'//[^\n]*|/\*.*?\*/|#\[[^\]]*\]|"(?:\\.|[^"\\])*"', "", text[start:i - 1], flags=re.S)
+    parts, level, cur = [], 0, ""
+    for ch in body:
+        level += 1 if ch in "({[<" else -1 if ch in ")}]>" else 0
+        if ch == "," and level == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    return parts
+
+
+def scoped_types(text):
+    """(kind, name) -> field or variant names of each crate-visible struct or enum."""
+    out = {}
+    for m in RUST_SCOPED.finditer(text):
+        names = []
+        for part in braced_entries(text, m.end()):
+            part = re.sub(r"^\s*pub(\s*\([^)]*\))?\s+", "", part)
+            if m[1] == "struct":
+                f = re.match(r"\s*([A-Za-z_]\w*)\s*:", part)
+            else:
+                f = re.match(r"\s*([A-Za-z_]\w*)", part)
+            if f:
+                names.append(f[1])
+        out[(m[1], m[2])] = names
+    return out
+
+
+def crate_dir(repo, rev, path):
+    """The nearest directory above path with a Cargo.toml at rev, "" for the root, None
+    if there is none."""
+    manifests = {Path(p).parent.as_posix() for p in git(repo, "ls-tree", "-r", "--name-only", rev).splitlines()
+                 if Path(p).name == "Cargo.toml"}
+    d = Path(path).parent
+    while True:
+        key = d.as_posix()
+        if key in manifests:
+            return "" if key == "." else key
+        if key in (".", ""):
+            return None
+        d = d.parent
+
+
+def scoped_candidate(repo, sha, parent, max_files):
+    status = git(repo, "diff", "--name-status", "--no-renames", parent, sha).splitlines()
+    if not status or len(status) > max_files:
+        return None
+    files, decls, users, crates = [], [], {}, set()
+    for row in status:
+        kind, path = row.split("\t", 1)
+        if kind != "M" or not is_source(path, "rust"):
+            continue
+        old = scoped_types(git(repo, "show", f"{parent}:{path}", check=False))
+        new = scoped_types(git(repo, "show", f"{sha}:{path}", check=False))
+        for (k, name), members in new.items():
+            gained = [m for m in members if (k, name) in old and m not in old[(k, name)]]
+            if not gained:
+                continue
+            crate = crate_dir(repo, parent, path)
+            if crate is None:
+                continue
+            pathspec = [f"{crate}/*.rs"] if crate else ["*.rs"]
+            named = git(repo, "grep", "-l", "-w", "-F", name, parent, "--", *pathspec, check=False)
+            others = sorted({line.split(":", 1)[1] for line in named.splitlines()} - {path})
+            others = [o for o in others if not TESTS["rust"].search(o) and not GENERATED.search(o)]
+            if not others:
+                continue
+            decls.append(f"{path}: {k} {name} gains {', '.join(gained)}")
+            users[name] = others
+            crates.add(crate)
+            if path not in files:
+                files.append(path)
+    if not files or len(crates) != 1:
+        return None
+    changed = {row.split("\t", 1)[1] for row in status}
+    edited = {n: [u for u in us if u in changed and u not in files] for n, us in users.items()}
+    return {"sha": sha, "parent": parent, "files": files, "decls": decls, "check_dir": crates.pop(),
+            "users": users, "users_edited": {n: e for n, e in edited.items() if e},
+            "files_in_commit": len(status)}
+
+
 def candidate(repo, lang, sha, parent, max_files, rule="declaration"):
+    if rule == "scoped":
+        return scoped_candidate(repo, sha, parent, max_files) if lang == "rust" else None
     if rule == "arms":
         return arms_candidate(repo, sha, parent, max_files) if lang == "rust" else None
     status = git(repo, "diff", "--name-status", "--no-renames", parent, sha).splitlines()
@@ -286,10 +390,11 @@ def main():
     ap.add_argument("--count", type=int, default=20, help="candidates to keep, in order; the driver takes the first that build")
     ap.add_argument("--scan", type=int, default=400, help="commits to look at from HEAD back")
     ap.add_argument("--max-files", type=int, default=30)
-    ap.add_argument("--rule", choices=["declaration", "users", "variants", "arms"], default="declaration",
+    ap.add_argument("--rule", choices=["declaration", "users", "variants", "arms", "scoped"], default="declaration",
                     help="users: the commit also edits a file that names the declaration; "
                          "variants: users, for a Rust enum that gained a variant; "
-                         "arms: a Rust enum that gained a variant, with Self::, glob or nested arms over it")
+                         "arms: a Rust enum that gained a variant, with Self::, glob or nested arms over it; "
+                         "scoped: a pub(crate)/pub(super) struct or enum that gained a field or variant, used elsewhere in its crate")
     a = ap.parse_args()
 
     head = git(a.repo, "rev-parse", a.head).strip()
@@ -306,7 +411,7 @@ def main():
                 break
     a.out.write_text(json.dumps({"repo": str(a.repo.resolve()), "lang": a.lang, "head": head,
                                  "scanned": len(log), "rule_name": a.rule,
-                                 "rule": __doc__.split("\n\n")[{"declaration": 1, "users": 4, "variants": 5, "arms": 6}[a.rule]],
+                                 "rule": __doc__.split("\n\n")[{"declaration": 1, "users": 4, "variants": 5, "arms": 6, "scoped": 7}[a.rule]],
                                  "sample": picked}, indent=1) + "\n")
     print(f"{a.repo.name}: {len(log)} commits scanned, {len(picked)} candidates -> {a.out}")
 

@@ -55,8 +55,9 @@ def main():
             cmd += ["--check", a.check]
         if a.undo_compiler_writes:
             cmd.append("--undo-compiler-writes")
-        if a.check_dir:
-            cmd += ["--check-dir", a.check_dir]
+        check_dir = a.check_dir or c.get("check_dir", "")  # The flag wins over the sample
+        if check_dir:
+            cmd += ["--check-dir", check_dir]
         cmd += c["files"]
         start = time.time()
         try:
