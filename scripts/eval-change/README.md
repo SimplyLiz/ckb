@@ -200,3 +200,24 @@ files outside the tsconfig's `include`, and TypeScript lines the import heuristi
 for part of an import block.
 
 These repos and commits are no holdout any more.
+
+### After the fixes from that run (c066d78)
+
+Same 25 commits, `replay_repo.py --name fix2` (each name keeps its own runs file), TS-A
+without `--undo-compiler-writes`:
+
+| | TS-A | TS-B | Rust-A | Rust-B | Rust-C | all |
+|---|---|---|---|---|---|---|
+| exact, within 3, no site, file not named | – | 1, 1, 0, 0 | 1, 1, 0, 0 | – | 1, 1, 0, 0 | 3, 3, 0, 0 |
+| listed sites (rarely counted) | 0 | 30 (6) | 1 | 0 | 4 (4) | 35 (10) |
+| clear / open / not assessed | 5 / 0 / 0 | 2 / 2 / 1 | 4 / 1 / 0 | 5 / 0 / 0 | 1 / 4 / 0 | 17 / 7 / 1 |
+| **clear while the compiler reports errors** | 0 | 0 | 0 | 0 | 0 | **0** |
+
+The six `not_assessed` that went `clear` (tsbuildinfo, a TypeScript constructor, a
+removed entry of a Rust `use` list) have no compiler error either. TS-B's remaining one
+is new: six test files outside the tsconfig's `include` name a changed declaration,
+which no index and no `tsc` with that tsconfig looks at. TS-B lost six empty `X[] = []`,
+Rust-C moved four reads of an array whose length changed to the counted sites; the
+compiler flagged none of them. The Lebenslauf replay is unchanged, the Go sample stays at
+9/9, and `sweep.py` over the last 30 commits of `develop` shows the outside-index doubt
+once, on a `//go:build ignore` file that is now skipped.

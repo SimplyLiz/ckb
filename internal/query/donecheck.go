@@ -818,7 +818,7 @@ func (c *doneChecker) checkOutsideIndex(names map[string]string, indexed func(st
 		return
 	}
 	for _, path := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if path == "" || !languages[sourceFamily(path)] || indexed(path) || c.files[path] != nil || ignoredByBuild(path) {
+		if path == "" || !languages[sourceFamily(path)] || indexed(path) || c.files[path] != nil || ignoredByBuild(path) || c.goBuildIgnored(path) {
 			continue
 		}
 		c.outside = append(c.outside, path)
@@ -843,6 +843,29 @@ func ignoredByBuild(path string) bool {
 		switch segment {
 		case "testdata", "vendor", "node_modules":
 			return true
+		}
+	}
+	return false
+}
+
+// goBuildIgnored says whether a Go file opts out of every build with `//go:build
+// ignore`, the way examples and generators do. Another constraint, such as windows,
+// still builds somewhere, so its file stays a doubt.
+func (c *doneChecker) goBuildIgnored(path string) bool {
+	if !strings.HasSuffix(path, ".go") {
+		return false
+	}
+	content, err := os.ReadFile(filepath.Join(c.repoRoot, path))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.SplitN(string(content), "\n", 40) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "package ") {
+			break
+		}
+		if constraint, ok := strings.CutPrefix(line, "//go:build "); ok {
+			return strings.TrimSpace(constraint) == "ignore"
 		}
 	}
 	return false
