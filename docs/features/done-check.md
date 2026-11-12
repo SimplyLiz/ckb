@@ -81,6 +81,43 @@ is whether the field was handled where the type is built. An edit to an existing
 no longer makes the check `not_assessed` for "a declaration that can't be compared": the
 type's body was compared, and that explains the line.
 
+## TypeScript: a type that takes its shape from a value
+
+`type Profile = z.infer<typeof profileSchema>` changes when a key is added to the schema,
+and no line of `Profile` moves. scip-typescript gives a const only the line of its name,
+so the edit used to be a file-level entry and the check said `clear`. Now:
+
+- A changed line inside a module-level `const`, `let` or `var` belongs to it.
+- `typeof` carries the change to the alias or interface that reads it, whatever wraps
+  it: `z.infer<…>`, `ReturnType<…>`, `(typeof KEYS)[number]`, `typeof table.$inferSelect`.
+  It also reaches the values whose initializer holds the changed one, four levels deep
+  (a schema inside a schema), but not a function that merely uses it.
+- For a zod schema the text says what changed, and that decides what is open:
+
+| Change to a key | Contract line | Open |
+|---|---|---|
+| added with `.default(…)`, or added required | `+ custom (required in output, default [])` | literals of the type that lack the key and have no spread, also under the key of a type that holds it |
+| added `.optional()` | `+ note (optional)` | nothing |
+| a validator changed (`.max`, `.regex`) | none | nothing |
+| removed | `- nick` | every place that names the key |
+| retyped | `~ kind: A -> B`, with `(wider)` if B holds A | the places that name it; for a wider type only the reads |
+| `.optional()` added to an existing key | `~ name: now optional` | the reads |
+
+  `z.enum`, `z.union` and `z.discriminatedUnion` are compared by member: one added opens
+  the `Record` keyed by the type, one removed every literal. A chain the reader can't
+  follow, such as `.transform(…)` or a base schema from another file, and any value that
+  isn't a zod schema, lists every literal of the type as before; the site's `via` says
+  what stopped it.
+- Sites of a changed TypeScript type or key carry `use` and are ordered by it: `key`
+  (`Record<T, …>`, `[K in T]`, `K extends T`) and `index` (`x[y.key]`) first, then
+  `literal`, then `switch`, then `annotation` and `read`. The last two rarely break;
+  `rarelyCount` counts them and nothing is dropped.
+
+Text, like everything here. Four kinds of break stay out of reach: an index access with a
+variable of a changed type, a callback whose parameter type is inferred from one, an
+alias of an alias (`Partial<Profile>`), and a key set under a quoted name, which reads as
+missing.
+
 ## Files that usually change together
 
 References reach a use of a changed declaration. They don't reach an importer that

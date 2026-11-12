@@ -397,8 +397,7 @@ func TestUnreadableName(t *testing.T) {
 // page both keep it: a use keyed by a changed type before a literal of it, a switch
 // after that, and a parameter merely annotated with it last.
 func TestDoneCheck_OrdersSitesByLikelihood(t *testing.T) {
-	c := doneChecker{seen: map[string]bool{}}
-	for _, s := range []OpenSite{
+	c := doneChecker{seen: map[string]bool{}, sites: []OpenSite{
 		{Symbol: "Kind", File: "a.ts", Line: 1, Use: diff.TSUseAnnotation},
 		{Symbol: "Kind", File: "a.ts", Line: 2, Use: diff.TSUseSwitch},
 		{Symbol: "Kind", File: "a.ts", Line: 3, Use: diff.TSUseLiteral},
@@ -406,9 +405,7 @@ func TestDoneCheck_OrdersSitesByLikelihood(t *testing.T) {
 		{Symbol: "run", File: "b.go", Line: 5},
 		{Symbol: "Kind", File: "a.test.ts", Line: 6, Use: diff.TSUseIndex, IsTest: true},
 		{Symbol: "s.key", File: "a.ts", Line: 7, Use: diff.TSUseRead},
-	} {
-		c.sites = append(c.sites, s)
-	}
+	}}
 	check := c.result("diff", true, false, "")
 	var got []int
 	for _, s := range check.OpenSites {
