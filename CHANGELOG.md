@@ -145,6 +145,22 @@ private, so only aggregates are here.
   replace that comes, goes or changes make the check `not_assessed` and are named. Minor
   and patch bumps, indirect requires and new requires stay silent.
 
+### Fixed — found replaying other repos and CKB's own history
+
+- **A Go function moved into a test file of its package is gone for the package's code
+  only.** It counted as removed, and every caller in the tests beside it was open: 13
+  sites on a commit that builds. The tests of its directory are now compared with where
+  it went; callers in the package's code stay open. A test helper moved into the
+  package's code is a plain move.
+- **A constructor is found in text by what spells it.** The indexer names it
+  `<constructor>` or `<init>`, which no line contains, so a reference to one had no
+  context line, and a TypeScript constructor rewritten line by line counted as deleted.
+  Both now look for the type and `constructor`.
+- **`ckb refs` names the files the index doesn't cover.** A file that spells the name, is
+  of the symbol's language and isn't in the index (a test a tsconfig's `include` leaves
+  out, say) is listed as `path: [not in index]`, and as `outsideIndex` in JSON. The same
+  search the done check uses for its doubt.
+
 ### Added — MCP tool annotations
 
 - **Every MCP tool says whether it changes anything.** `tools/list` now carries

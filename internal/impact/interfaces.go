@@ -37,6 +37,10 @@ type ChangedSymbol struct {
 	// DeclarationBefore and DeclarationAfter are the text compared, where known.
 	DeclarationBefore string
 	DeclarationAfter  string
+	// TestsSee is set on a Go declaration that moved into an internal test file of its
+	// package: removed for the package's code, and for the test files of its directory,
+	// which still see it, what comparing it with where it went says.
+	TestsSee DeclarationChange
 }
 
 // DeclarationChange is what a change did to a definition's declaration, for code

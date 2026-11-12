@@ -675,6 +675,69 @@ func TestMapToSymbols_GoMoveBetweenTestFiles(t *testing.T) {
 	}
 }
 
+// Moved out of the package's code into one of its test files, a declaration is gone for
+// the code and still there for the tests beside it. Out of a test file into the code,
+// it is there for everyone who saw it. lib_test is another package either way.
+func TestMapToSymbols_GoMoveIntoAndOutOfTests(t *testing.T) {
+	oldFile := []string{"package lib", "", "import \"fmt\"", "", "const Limit = 10", "", "func Target(x int) int {",
+		"\ty := x + 1", "\tfmt.Println(y)", "\treturn y", "}", "", "func After() {}"}
+	newFile := append(append([]string{}, oldFile[:6]...), oldFile[12:]...)
+	remove := func(path string) string {
+		return "diff --git a/" + path + " b/" + path + "\n--- a/" + path + "\n+++ b/" + path + "\n" +
+			"@@ -6,8 +6,2 @@\n \n-func Target(x int) int {\n-\ty := x + 1\n-\tfmt.Println(y)\n-\treturn y\n-}\n-\n func After() {}\n"
+	}
+	for _, c := range []struct {
+		name, from, to, pkg string
+		wantType            impact.ChangeType
+		want, tests         impact.DeclarationChange
+	}{
+		{"into the package's tests", "lib/lib.go", "lib/target_test.go", "lib", impact.ChangeDeleted, impact.DeclRemoved, impact.DeclUnchanged},
+		{"into the external tests", "lib/lib.go", "lib/target_test.go", "lib_test", impact.ChangeDeleted, impact.DeclRemoved, ""},
+		{"out of the tests", "lib/lib_test.go", "lib/target.go", "lib", impact.ChangeModified, impact.DeclUnchanged, ""},
+		{"out of the external tests", "lib/lib_test.go", "lib/target.go", "lib_test", impact.ChangeDeleted, impact.DeclRemoved, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			doc := goDoc()
+			doc.RelativePath = c.from
+			source := append([]string{}, oldFile...)
+			target := []string{"package lib", "", "func Target(x int) int {", "\treturn x + 1", "}"}
+			if c.from == "lib/lib.go" {
+				target[0] = "package " + c.pkg
+			} else {
+				source[0] = "package " + c.pkg
+			}
+			add := "diff --git a/" + c.to + " b/" + c.to + "\nnew file mode 100644\n--- /dev/null\n+++ b/" + c.to + "\n@@ -0,0 +1,5 @@\n"
+			for _, l := range target {
+				add += "+" + l + "\n"
+			}
+			reader := func(path string, old bool) []string {
+				switch {
+				case path == c.from && old:
+					return source
+				case path == c.from:
+					return append([]string{source[0]}, newFile[1:]...)
+				case path == c.to && !old:
+					return target
+				}
+				return nil
+			}
+			found := false
+			for _, sym := range mapDocWith(t, doc, remove(c.from)+add, reader) {
+				if sym.Name != "Target" {
+					continue
+				}
+				found = true
+				if sym.ChangeType != c.wantType || sym.Declaration != c.want || sym.TestsSee != c.tests {
+					t.Errorf("got %s/%q, tests see %q; want %s/%q, %q", sym.ChangeType, sym.Declaration, sym.TestsSee, c.wantType, c.want, c.tests)
+				}
+			}
+			if !found {
+				t.Fatal("Target not reported")
+			}
+		})
+	}
+}
+
 // renameDoc is lib/rules.go, a type with a method and a function taking it:
 //
 //	1 package lib
@@ -902,4 +965,34 @@ func TestRustImplOfMethod(t *testing.T) {
 	if _, _, ok := rustEnclosingImpl(nested, 2); ok {
 		t.Error("a function in a mod is in no impl")
 	}
+}
+
+// A TypeScript constructor rewritten line for line is still there: the other side
+// spells it `constructor`, not the indexer's `<constructor>`.
+func TestMapToSymbols_TSConstructorRewritten(t *testing.T) {
+	cls := "scip-typescript npm m 1.0.0 src/`board.ts`/Board#"
+	ctor := cls + "`<constructor>`()."
+	doc := &scip.Document{
+		RelativePath: "src/board.ts",
+		Occurrences: []*scip.Occurrence{
+			def(cls, 0, 0, 0, 4, 1),
+			def(ctor, 1, 1, 2, 3, 3),
+		},
+		Symbols: []*scip.SymbolInformation{
+			{Symbol: cls, DisplayName: "Board", Kind: 7},
+			{Symbol: ctor, DisplayName: "constructor", Kind: 9},
+		},
+	}
+	diff := "diff --git a/src/board.ts b/src/board.ts\n--- a/src/board.ts\n+++ b/src/board.ts\n" +
+		"@@ -1,5 +1,5 @@\n export class Board {\n-  constructor(a: number) {\n-    this.a = a\n-  }\n+  constructor(a: number, b: string) {\n+    this.a = a + b\n+  }\n }\n"
+	for _, sym := range mapDoc(t, doc, diff) {
+		if sym.SymbolID != ctor {
+			continue
+		}
+		if sym.ChangeType != impact.ChangeModified || sym.Declaration != impact.DeclChanged {
+			t.Errorf("got %s/%q, want modified/changed", sym.ChangeType, sym.Declaration)
+		}
+		return
+	}
+	t.Fatal("constructor not reported")
 }

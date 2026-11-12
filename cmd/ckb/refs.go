@@ -107,19 +107,26 @@ func runRefs(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	// What the index never saw, grep still finds: tell the reader which files.
+	outside := engine.FilesOutsideIndex(symbolID)
 	if refsFormat == "human" && !refsCompact {
-		fmt.Print(query.BuildReferenceLines(repoRoot, symbolID, response).Text(refsBySymbol))
+		lines := query.BuildReferenceLines(repoRoot, symbolID, response)
+		lines.OutsideIndex = outside
+		fmt.Print(lines.Text(refsBySymbol))
 		return
 	}
 
 	// Convert to CLI response format
-	var cliResponse interface{} = convertRefsResponse(symbolID, response)
+	full := convertRefsResponse(symbolID, response)
+	full.OutsideIndex = outside
+	var cliResponse interface{} = full
 	if refsCompact {
 		cliResponse = &CompactReferencesResponseCLI{
 			SymbolID:        symbolID,
 			TotalReferences: response.TotalCount,
 			Truncated:       response.Truncated,
 			Files:           query.GroupReferencesByFile(response.References),
+			OutsideIndex:    outside,
 		}
 	}
 
@@ -147,6 +154,9 @@ type ReferencesResponseCLI struct {
 	References      []ReferenceCLI        `json:"references"`
 	ByModule        []ModuleReferencesCLI `json:"byModule,omitempty"`
 	Provenance      *ProvenanceCLI        `json:"provenance,omitempty"`
+	// OutsideIndex are files of the symbol's language the index doesn't cover that
+	// spell its name.
+	OutsideIndex []string `json:"outsideIndex,omitempty"`
 }
 
 // CompactReferencesResponseCLI is the --compact form: one entry per file.
@@ -155,6 +165,7 @@ type CompactReferencesResponseCLI struct {
 	TotalReferences int                    `json:"totalReferences"`
 	Truncated       bool                   `json:"truncated,omitempty"`
 	Files           []query.FileReferences `json:"files"`
+	OutsideIndex    []string               `json:"outsideIndex,omitempty"`
 }
 
 // ReferenceCLI represents a single reference to a symbol

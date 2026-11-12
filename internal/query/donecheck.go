@@ -345,6 +345,13 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 	if path == "" {
 		return
 	}
+	if sym.TestsSee != "" && strings.HasSuffix(path, "_test.go") && filepath.Dir(path) == filepath.Dir(sym.File) {
+		// Moved into a test file: the tests beside it still see the declaration.
+		if sym.TestsSee != impact.DeclChanged {
+			return
+		}
+		query.change = impact.DeclChanged
+	}
 	file := c.files[path]
 	newLines, ok := c.readNew(file, path)
 	if !ok {
@@ -799,6 +806,17 @@ func (c *doneChecker) checkOutsideIndex(names map[string]string, indexed func(st
 	if len(names) == 0 || indexed == nil {
 		return
 	}
+	paths, ok := filesOutsideIndex(c.repoRoot, names, func(path string) bool { return indexed(path) || c.files[path] != nil })
+	if !ok {
+		c.failed++
+	}
+	c.outside = append(c.outside, paths...)
+}
+
+// filesOutsideIndex lists the tracked files that spell one of names as a word, are of
+// the language given for that name, and that a build reads but known says the index
+// doesn't have. False means git grep failed.
+func filesOutsideIndex(repoRoot string, names map[string]string, known func(string) bool) ([]string, bool) {
 	languages := make(map[string]bool)
 	args := []string{"grep", "-l", "-w", "-F"}
 	for _, name := range sortedKeys(names) {
@@ -808,21 +826,24 @@ func (c *doneChecker) checkOutsideIndex(names map[string]string, indexed func(st
 		args = append(args, "-e", name)
 		languages[names[name]] = true
 	}
+	if len(languages) == 0 {
+		return nil, true
+	}
 	cmd := exec.Command("git", args...)
-	cmd.Dir = c.repoRoot
+	cmd.Dir = repoRoot
 	out, err := cmd.Output()
 	if err != nil {
-		if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
-			c.failed++
-		}
-		return
+		exit, isExit := err.(*exec.ExitError)
+		return nil, isExit && exit.ExitCode() == 1 // 1: no file names any of them
 	}
+	var outside []string
 	for _, path := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if path == "" || !languages[sourceFamily(path)] || indexed(path) || c.files[path] != nil || ignoredByBuild(path) || c.goBuildIgnored(path) {
+		if path == "" || !languages[sourceFamily(path)] || known(path) || ignoredByBuild(path) || goBuildIgnored(repoRoot, path) {
 			continue
 		}
-		c.outside = append(c.outside, path)
+		outside = append(outside, path)
 	}
+	return outside, true
 }
 
 // sourceFamily is the language a file is compiled as for checkOutsideIndex. JavaScript
@@ -851,11 +872,11 @@ func ignoredByBuild(path string) bool {
 // goBuildIgnored says whether a Go file opts out of every build with `//go:build
 // ignore`, the way examples and generators do. Another constraint, such as windows,
 // still builds somewhere, so its file stays a doubt.
-func (c *doneChecker) goBuildIgnored(path string) bool {
+func goBuildIgnored(repoRoot, path string) bool {
 	if !strings.HasSuffix(path, ".go") {
 		return false
 	}
-	content, err := os.ReadFile(filepath.Join(c.repoRoot, path))
+	content, err := os.ReadFile(filepath.Join(repoRoot, path))
 	if err != nil {
 		return false
 	}

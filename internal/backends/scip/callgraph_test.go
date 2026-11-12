@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SimplyLiz/CodeMCP/internal/config"
@@ -885,5 +886,34 @@ func TestConstructorType(t *testing.T) {
 		if got := ConstructorType(id); got != want {
 			t.Errorf("ConstructorType(%q) = %q, want %q", id, got, want)
 		}
+	}
+}
+
+func TestSpelledNames(t *testing.T) {
+	for id, want := range map[string]string{
+		"scip-typescript npm m 1.0.0 src/`board.ts`/Board#`<constructor>`().": "Board constructor",
+		"semanticdb maven m 1.0 com/x/Board#`<init>`().":                      "Board constructor",
+		"scip-typescript npm m 1.0.0 src/`board.ts`/Board#post().":            "post",
+		"not a symbol": "",
+	} {
+		if got := strings.Join(SpelledNames(id), " "); got != want {
+			t.Errorf("SpelledNames(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// A reference to a constructor spells its type: the line is still its context.
+func TestContextReader_Constructor(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.ts"), []byte("const b = new Board(1)\nlet x = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := newContextReader(root)
+	names := SpelledNames("scip-typescript npm m 1.0.0 src/`board.ts`/Board#`<constructor>`().")
+	if got := c.line("a.ts", 0, names); got != "const b = new Board(1)" {
+		t.Errorf("constructor use: %q", got)
+	}
+	if got := c.line("a.ts", 1, names); got != "" {
+		t.Errorf("a line that doesn't spell it: %q", got)
 	}
 }
