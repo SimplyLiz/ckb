@@ -35,7 +35,8 @@ def main():
 
     sample = json.loads(a.sample.read_text())
     a.work.mkdir(parents=True, exist_ok=True)
-    runs = a.work / "runs.jsonl"
+    # Each --name resumes its own runs: a later binary measures the commits again.
+    runs = a.work / ("runs.jsonl" if a.name == "frozen" else f"runs-{a.name}.jsonl")
     done = {}
     if runs.exists():
         for line in runs.read_text().splitlines():

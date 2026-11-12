@@ -20,6 +20,9 @@ const DeclarationContextLines = 12
 const maxDeclarationLines = 40
 
 // declarationLanguage returns the syntax to read a file with, or "".
+// DeclarationLanguage is the language whose declarations are compared: go, ts or rust.
+func DeclarationLanguage(path string) string { return declarationLanguage(path) }
+
 func declarationLanguage(path string) string {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".go":
@@ -793,4 +796,37 @@ func withGoGroupKeyword(lines map[int]string, line int, text, lang string) strin
 			return text // Left the block, or never was in one
 		}
 	}
+}
+
+// arrayLengthRe is the length of a Rust array type: `; 10]`, `; N]`.
+var arrayLengthRe = regexp.MustCompile(`;\s*([0-9_]+|[A-Z][A-Z0-9_]*)\s*\]`)
+
+// ArrayLengthChange says whether two Rust declarations differ only in the length of
+// an array type, `[&str; 10]` to `[&str; 12]`, and returns the old lengths. Reading
+// such a value, `KNOWN.contains(x)` or `KNOWN.iter()`, compiles as before; a place
+// that spells `[&str; 10]` does not.
+func ArrayLengthChange(before, after string) ([]string, bool) {
+	if before == after || before == "" || after == "" {
+		return nil, false
+	}
+	if arrayLengthRe.ReplaceAllString(before, "; _]") != arrayLengthRe.ReplaceAllString(after, "; _]") {
+		return nil, false
+	}
+	var lengths []string
+	for _, m := range arrayLengthRe.FindAllStringSubmatch(before, -1) {
+		lengths = append(lengths, m[1])
+	}
+	return lengths, len(lengths) > 0
+}
+
+// SpellsArrayLength says whether a line writes an array type of one of the lengths.
+func SpellsArrayLength(line string, lengths []string) bool {
+	for _, m := range arrayLengthRe.FindAllStringSubmatch(line, -1) {
+		for _, length := range lengths {
+			if m[1] == length {
+				return true
+			}
+		}
+	}
+	return false
 }

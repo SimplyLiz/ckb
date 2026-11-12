@@ -1505,6 +1505,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		usesFinder = e.scipAdapter
 	}
 	publicContractChanges := 0
+	outsideNames := make(map[string]string) // Changed declarations' names, to their language
 	// Go and TypeScript types whose members changed, read from the files before the
 	// symbols are looked at: a changed line inside one is explained by it.
 	rustOpens := done.checkTypeFiles(ctx, usesFinder)
@@ -1555,6 +1556,9 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		if declaration == impact.DeclChanged || declaration == impact.DeclRemoved {
 			// A file in the diff only counts as handled if the diff touched its uses.
 			handled := changedFilePaths
+			if name := useName(sym); name != "" {
+				outsideNames[name] = sourceFamily(sym.File)
+			}
 			if openFiles, ok := done.checkSymbol(ctx, usesFinder, sym, declaration); ok {
 				handled = withoutFiles(changedFilePaths, openFiles)
 			}
@@ -1653,6 +1657,11 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	// What the changed symbols' own references can't reach. Risk and consumerFiles follow
 	// the same answer as the check does for those.
 	rustOpens = append(rustOpens, done.checkRustFiles(ctx, usesFinder)...)
+	if usesFinder != nil {
+		if index := e.scipAdapter.GetIndex(); index != nil {
+			done.checkOutsideIndex(outsideNames, func(path string) bool { return index.GetDocument(path) != nil })
+		}
+	}
 	for _, open := range rustOpens {
 		var files []string
 		for path := range open.files {

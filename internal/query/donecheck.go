@@ -116,6 +116,9 @@ type doneChecker struct {
 	failed     int      // Changed declarations whose uses couldn't be looked up
 	unreadable []string // Changed symbols whose declaration couldn't be compared, as file:name
 	unindexed  []string // Changed code files the index doesn't cover, so nothing in them was checked
+	// outside are files the index doesn't cover, of a changed declaration's language,
+	// that name it: a tsconfig `include` of src alone leaves tests/ unseen.
+	outside    []string
 	modulePath []string // go.mod files whose module line changed: every import of it did too
 	// dependencies are go.mod changes that put other code behind an import: a major
 	// version, a dropped require, a replace.
@@ -256,12 +259,20 @@ func leafName(name string) string {
 // It returns the files with an open use, and false if the uses couldn't be looked up.
 func (c *doneChecker) checkSymbol(ctx context.Context, adapter referenceFinder, sym impact.ChangedSymbol, change impact.DeclarationChange) (map[string]bool, bool) {
 	openFiles := make(map[string]bool)
-	name := leafName(sym.Name)
-	if class := scip.ConstructorType(sym.SymbolID); class != "" {
-		name = class // `new Foo(x)` is the use of Foo's constructor
+	query := useQuery{name: useName(sym), change: change}
+	if change == impact.DeclChanged && strings.HasSuffix(sym.File, ".rs") {
+		query.arrayLengths, _ = diff.ArrayLengthChange(sym.DeclarationBefore, sym.DeclarationAfter)
 	}
-	ok := c.checkUses(ctx, adapter, sym, useQuery{name: name, change: change}, openFiles)
+	ok := c.checkUses(ctx, adapter, sym, query, openFiles)
 	return openFiles, ok
+}
+
+// useName is what a use of a changed symbol spells.
+func useName(sym impact.ChangedSymbol) string {
+	if class := scip.ConstructorType(sym.SymbolID); class != "" {
+		return class // `new Foo(x)` is the use of Foo's constructor
+	}
+	return leafName(sym.Name)
 }
 
 // useQuery says how to read the uses of a symbol. name is what a use spells out.
@@ -290,6 +301,9 @@ type useQuery struct {
 	// readsOnly skips a key where an object literal sets it: what was written still
 	// fits a type that got wider.
 	readsOnly bool
+	// arrayLengths holds the old lengths of a Rust declaration that only changed the
+	// length of its array type. A use that doesn't spell one of them rarely breaks.
+	arrayLengths []string
 }
 
 // missingKeys is what a literal has to set since the change, and where in it.
@@ -412,6 +426,9 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 	// Classified where the reference is: a site listed at a key further down is
 	// still the literal found here.
 	use := tsUse(sym, query, cmp.Or(ref.Location.Path, path), newLines, result.Line, len(missingAt) > 0)
+	if query.arrayLengths != nil && !diff.SpellsArrayLength(result.Code, query.arrayLengths) {
+		use = diff.TSUseRead // Counted with the reads that rarely break, not listed
+	}
 	add := func(line int, code, via string, literalLines int) {
 		key := fmt.Sprintf("%s:%s:%d", sym.SymbolID, path, line)
 		if c.seen[key] {
@@ -729,6 +746,9 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 	if len(c.unindexed) > 0 {
 		doubts = append(doubts, fmt.Sprintf("%d changed file(s) aren't in the index (%s)", len(c.unindexed), namedFiles(c.unindexed)))
 	}
+	if len(c.outside) > 0 {
+		doubts = append(doubts, fmt.Sprintf("%d file(s) the index doesn't cover name a changed declaration (%s)", len(c.outside), namedFiles(c.outside)))
+	}
 	if c.cut {
 		doubts = append(doubts, "not every use could be looked at")
 	}
@@ -748,7 +768,7 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 		check.Status = DoneCheckOpen
 		check.Note = "Uses of a changed declaration the diff didn't touch. Text comparison, nothing compiled: some may need no edit."
 		if check.RarelyCount > 0 {
-			check.Note += fmt.Sprintf(" %d of them only annotate with a changed type or read a changed key, which rarely breaks: they are counted per symbol, not listed.", check.RarelyCount)
+			check.Note += fmt.Sprintf(" %d of them only annotate with a changed type, read a changed key or read an array whose length changed, which rarely breaks: they are counted per symbol, not listed.", check.RarelyCount)
 		}
 		if doubt != "" {
 			check.Note += " There may be more: " + doubt + "."
@@ -767,4 +787,63 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 		check.Note = "No use of a changed declaration was left untouched. This is not a proof: nothing was compiled, and behaviour and other repos weren't checked."
 	}
 	return check
+}
+
+// maxOutsideNames bounds the names searched for outside the index.
+const maxOutsideNames = 64
+
+// checkOutsideIndex looks for the changed declarations' names in tracked files of
+// their language that the index has no document for. Their uses were never seen, so
+// a clear check would be a guess there. indexed says whether the index has a path.
+func (c *doneChecker) checkOutsideIndex(names map[string]string, indexed func(string) bool) {
+	if len(names) == 0 || indexed == nil {
+		return
+	}
+	languages := make(map[string]bool)
+	args := []string{"grep", "-l", "-w", "-F"}
+	for _, name := range sortedKeys(names) {
+		if len(args) >= 4+2*maxOutsideNames {
+			break
+		}
+		args = append(args, "-e", name)
+		languages[names[name]] = true
+	}
+	cmd := exec.Command("git", args...)
+	cmd.Dir = c.repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+			c.failed++
+		}
+		return
+	}
+	for _, path := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if path == "" || !languages[sourceFamily(path)] || indexed(path) || c.files[path] != nil || ignoredByBuild(path) {
+			continue
+		}
+		c.outside = append(c.outside, path)
+	}
+}
+
+// sourceFamily is the language a file is compiled as for checkOutsideIndex. JavaScript
+// is apart from TypeScript: a TypeScript index leaves out the repo's .js config files,
+// and a JavaScript index has them.
+func sourceFamily(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".js", ".jsx", ".mjs", ".cjs":
+		return "js"
+	}
+	return diff.DeclarationLanguage(path)
+}
+
+// ignoredByBuild says whether no build reads the file: Go skips testdata, and vendored
+// and installed packages aren't the repo's code.
+func ignoredByBuild(path string) bool {
+	for _, segment := range strings.Split(filepath.ToSlash(path), "/") {
+		switch segment {
+		case "testdata", "vendor", "node_modules":
+			return true
+		}
+	}
+	return false
 }
