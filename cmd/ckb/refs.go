@@ -29,12 +29,18 @@ var (
 	refsLimit       int
 	refsFormat      string
 	refsCompact     bool
+	refsBySymbol    bool
 )
 
 var refsCmd = &cobra.Command{
 	Use:   "refs <symbolId>",
 	Short: "Find all references to a symbol",
 	Long: `Find all references to a symbol across the codebase.
+
+Prints one line per reference, the way grep does, with what the line does
+with the symbol: def, call, literal, write, type or read. Lines that only
+import it are counted, not listed. --by-symbol puts each under the definition
+it sits in.
 
 References in tests are always included. Past --limit, every file's first
 reference comes before any file's second, so a cut drops repeats, not files.
@@ -44,7 +50,8 @@ totalCount) and truncated says whether references were left out.
 Examples:
   ckb refs symbol-123
   ckb refs symbol-123 --scope=api-module
-  ckb refs symbol-123 --limit=300`,
+  ckb refs symbol-123 --limit=300
+  ckb refs NewEngine --by-symbol`,
 	Args: cobra.ExactArgs(1),
 	Run:  runRefs,
 }
@@ -55,6 +62,7 @@ func init() {
 	refsCmd.Flags().IntVar(&refsLimit, "limit", 100, "Maximum number of references")
 	refsCmd.Flags().StringVar(&refsFormat, "format", "human", "Output format (human, json)")
 	refsCmd.Flags().BoolVar(&refsCompact, "compact", false, "One entry per file with its lines, instead of one per reference")
+	refsCmd.Flags().BoolVar(&refsBySymbol, "by-symbol", false, "Group the lines by the definition each reference sits in")
 	rootCmd.AddCommand(refsCmd)
 }
 
@@ -97,6 +105,11 @@ func runRefs(cmd *cobra.Command, args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error finding references: %v\n", err)
 		os.Exit(1)
+	}
+
+	if refsFormat == "human" && !refsCompact {
+		fmt.Print(query.BuildReferenceLines(repoRoot, symbolID, response).Text(refsBySymbol))
+		return
 	}
 
 	// Convert to CLI response format

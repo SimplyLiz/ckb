@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SimplyLiz/CodeMCP/internal/envelope"
+	"github.com/SimplyLiz/CodeMCP/internal/query"
 )
 
 func callToolRaw(t *testing.T, s *MCPServer, name string) string {
@@ -47,5 +48,17 @@ func TestCallTool_TextResultIsSentAsText(t *testing.T) {
 	}
 	if !strings.Contains(text, "warning: the index is 2 commits behind") {
 		t.Errorf("the warning is lost: %q", text)
+	}
+}
+
+// findReferences answers as text by default and still marshals where JSON is asked of it.
+func TestReferenceText(t *testing.T) {
+	r := referenceText{lines: &query.ReferenceLines{Symbol: "show", Total: 1, Lines: []query.ReferenceLine{{File: "a.ts", Line: 4, Use: "call", Code: `show("a")`}}}}
+	if got := r.Text(); got != "a.ts:4: [call] show(\"a\")\nshow: 1 reference\n" {
+		t.Errorf("text = %q", got)
+	}
+	out, err := marshalForAgent(r)
+	if err != nil || !strings.Contains(string(out), `"file":"a.ts"`) {
+		t.Errorf("json = %s, %v", out, err)
 	}
 }

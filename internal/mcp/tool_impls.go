@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -723,13 +724,17 @@ func (s *MCPServer) toolFindReferences(params map[string]interface{}) (*envelope
 		refs = append(refs, ref)
 	}
 
-	data := map[string]interface{}{
-		"totalCount": refsResp.TotalCount,
-	}
-	if detail, _ := params["detail"].(string); detail == "full" {
-		data["references"] = refs
-	} else {
-		data["files"] = query.GroupReferencesByFile(refsResp.References)
+	var data interface{}
+	switch detail, _ := params["detail"].(string); detail {
+	case "full":
+		data = map[string]interface{}{"totalCount": refsResp.TotalCount, "references": refs}
+	case "files":
+		data = map[string]interface{}{"totalCount": refsResp.TotalCount, "files": query.GroupReferencesByFile(refsResp.References)}
+	case "", "lines":
+		bySymbol, _ := params["bySymbol"].(bool)
+		data = referenceText{lines: query.BuildReferenceLines(s.engine().GetRepoRoot(), symbolId, refsResp), bySymbol: bySymbol}
+	default:
+		return nil, errors.NewInvalidParameterError("detail", "must be 'lines', 'files' or 'full'")
 	}
 
 	// Record wide-result metrics
@@ -758,6 +763,17 @@ func (s *MCPServer) toolFindReferences(params map[string]interface{}) (*envelope
 		WithIndexFreshness(s.engine().IndexFreshnessFor(ctx, refFiles)).
 		Build(), nil
 }
+
+// referenceText is findReferences' answer as text: see query.ReferenceLines.
+type referenceText struct {
+	lines    *query.ReferenceLines
+	bySymbol bool
+}
+
+func (r referenceText) Text() string { return r.lines.Text(r.bySymbol) }
+
+// MarshalJSON keeps the answer readable where the envelope is sent as JSON.
+func (r referenceText) MarshalJSON() ([]byte, error) { return json.Marshal(r.lines) }
 
 // toolGetArchitecture implements the getArchitecture tool
 func (s *MCPServer) toolGetArchitecture(params map[string]interface{}) (*envelope.Response, error) {
