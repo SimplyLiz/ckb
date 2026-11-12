@@ -916,6 +916,8 @@ type ReferenceInfo struct {
 	Kind     string        `json:"kind"`
 	Context  string        `json:"context,omitempty"`
 	IsTest   bool          `json:"isTest,omitempty"`
+	// From is the name of the definition the reference sits in, where the index says.
+	From string `json:"from,omitempty"`
 }
 
 // FileReferences is every reference in one file, by line.
@@ -1015,6 +1017,7 @@ func (e *Engine) FindReferences(ctx context.Context, opts FindReferencesOptions)
 					},
 					Kind:    ref.Kind,
 					Context: ref.Context,
+					From:    ref.FromSymbolName,
 				})
 			}
 			backendContribs = append(backendContribs, BackendContribution{

@@ -475,6 +475,16 @@ func toolResultText(result *envelope.Response) ([]byte, error) {
 		if m.StaleServer != "" {
 			b.WriteString("stale server: " + m.StaleServer + "\n")
 		}
+		if f := m.IndexFreshness; f != nil && f.AffectsResult {
+			b.WriteString("index: files in this answer changed since it was built, so lines may be off")
+			if f.Hint != "" {
+				b.WriteString(". " + f.Hint)
+			}
+			b.WriteByte('\n')
+		}
+		if t := m.Truncation; t != nil && t.IsTruncated {
+			fmt.Fprintf(&b, "truncated: %d of %d shown\n", t.Shown, t.Total)
+		}
 	}
 	for _, w := range result.Warnings {
 		b.WriteString("warning: " + w.Message + "\n")

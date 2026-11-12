@@ -372,3 +372,51 @@ func lineAt(lines []string, line int) string {
 	}
 	return text
 }
+
+// Kinds of use ReferenceUse tells apart.
+const (
+	RefDef     = "def"
+	RefImport  = "import"
+	RefCall    = "call"
+	RefLiteral = "literal"
+	RefWrite   = "write"
+	RefType    = "type"
+	RefRead    = "read"
+)
+
+var (
+	refCallRe  = regexp.MustCompile(`^(?:::)?(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>)?\(`)
+	refWriteRe = regexp.MustCompile(`^\s*(?:=[^=>]|=$|\+=|-=|\*=|/=|\|=|&=|:=|\+\+|--)`)
+)
+
+// ReferenceUse says what a line does with the name it refers to: declares it, imports
+// it, calls it, builds a value of it, assigns to it, names it as a type, or reads it.
+// lang is TypeLanguage's; isType says the symbol is a type. Text only: nothing here
+// knows more than the line and the lines around an import.
+func ReferenceUse(lang string, lines []string, line, column int, name string, isType, isDefinition bool) string {
+	if isDefinition {
+		return RefDef
+	}
+	if isImportLine(lines, line) {
+		return RefImport
+	}
+	text := rawLine(lines, line)
+	at := nameIndex(text, column, name)
+	if at < 0 {
+		return RefRead
+	}
+	after := text[at+len(name):]
+	if isType && lang != "" && IsLiteralUse(lang, lines, line, column, name) {
+		return RefLiteral
+	}
+	if refCallRe.MatchString(after) {
+		return RefCall
+	}
+	if isType {
+		return RefType
+	}
+	if refWriteRe.MatchString(after) {
+		return RefWrite
+	}
+	return RefRead
+}

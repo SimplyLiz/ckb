@@ -268,7 +268,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		},
 		{
 			Name:        "findReferences",
-			Description: "Find all references to a symbol with completeness information",
+			Description: "Find all references to a symbol. Returns text like grep's, one `file:line: [use] code` per reference, so the line itself says whether it is a call, a type, a literal, a write or a read",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -293,9 +293,14 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 					},
 					"detail": map[string]interface{}{
 						"type":        "string",
-						"enum":        []string{"files", "full"},
-						"default":     "files",
-						"description": "files: lines grouped per file. full: one entry per reference with columns and reference kind",
+						"enum":        []string{"lines", "files", "full"},
+						"default":     "lines",
+						"description": "lines: text like grep's, `file:line: [use] code` per reference, where use is def, call, literal, write, type or read; imports are counted, not listed. files: JSON, line numbers grouped per file. full: JSON, one entry per reference with columns and reference kind",
+					},
+					"bySymbol": map[string]interface{}{
+						"type":        "boolean",
+						"default":     false,
+						"description": "With detail lines: put each reference under the definition it sits in",
 					},
 				},
 				"required": []string{"symbolId"},
