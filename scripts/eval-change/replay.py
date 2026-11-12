@@ -10,6 +10,14 @@ every error line that is new is a use the change broke. TypeScript runs
     replay.py --ckb BIN --repo APP --parent SHA --commit SHA --work DIR FILE...
     replay.py ... --expect-clear      # a change that breaks nothing: exit 1 unless clear
     replay.py --lang rust --check-dir engine ...   # a manifest below the root
+    replay.py --lang rust --drop-arms Moved ...    # the probe: the new variant's arms deleted
+
+`--drop-arms V` is a probe, not a measurement: after the files are written, every match
+arm over the variant V in them (`E::V`, `Self::V` or a bare `V`, with or without a
+payload, on one line up to its `=>`) is deleted, or only its alternative if the arm has
+others. That leaves the matches the commit completed incomplete again, so the compiler
+reports E0004 there and the done check should list them. The arms deleted are printed
+and stored as `dropped_arms`; none is an error.
 
 Rust truth is a lower bound: cargo checks no crate that depends on one with errors.
 
@@ -96,6 +104,105 @@ def apply(clone, commit, files):
             subprocess.run(["git", "-C", str(clone), "add", "-N", "-f", path], capture_output=True)
 
 
+def split_alternatives(pattern):
+    """(start, end) of each top-level `|` alternative of a pattern."""
+    out, depth, start = [], 0, 0
+    for i, c in enumerate(pattern):
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif c == "|" and depth == 0 and pattern[i + 1:i + 2] != "|" and pattern[i - 1:i] != "|":
+            out.append((start, i))
+            start = i + 1
+    out.append((start, len(pattern)))
+    return out
+
+
+def arm_body_end(text, at):
+    """Index just past an arm whose body starts at text[at] (after `=>`): its `,` at
+    depth 0, or the `}` closing a block body and a `,` after it. Stops before the
+    match's own `}`."""
+    depth, i, block = 0, at, None
+    while i < len(text) and text[i] in " \t\n":
+        i += 1
+    block = i < len(text) and text[i] == "{"
+    quote = None
+    while i < len(text):
+        c = text[i]
+        if quote:
+            if c == "\\":
+                i += 1
+            elif c == quote:
+                quote = None
+        elif c == '"':
+            quote = c
+        elif text.startswith("//", i):
+            i = text.find("\n", i)
+            if i < 0:
+                return len(text)
+            continue
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            if depth == 0:
+                return i  # The match's `}`: a last arm without a comma
+            depth -= 1
+            if depth == 0 and block:
+                j = i + 1
+                while j < len(text) and text[j] in " \t":
+                    j += 1
+                return j + 1 if text[j:j + 1] == "," else i + 1
+        elif c == "," and depth == 0:
+            return i + 1
+        i += 1
+    return len(text)
+
+
+def blank_rust(text):
+    """The text with strings, chars and comments blanked to spaces, offsets kept."""
+    keep = lambda m: re.sub(r"[^\n]", " ", m[0])
+    return re.sub(r'r(#*)"(?:.|\n)*?"\1|"(?:\\.|[^"\\])*"|//[^\n]*|/\*(?:.|\n)*?\*/|\'(?:\\.|[^\\\'\n])\'', keep, text)
+
+
+def drop_arms(path, variant):
+    """Delete the arms over a variant in a Rust file, or their alternatives. Returns the
+    1-based lines they started on."""
+    text = path.read_text()
+    code = blank_rust(text)  # Arms are found and measured here, cut from text
+    # At the top of an alternative or nested in it, `Some(Commands::V)`.
+    alt_re = re.compile(rf"(?<![\w:])(?:(?:[A-Za-z_]\w*|Self)::)*{re.escape(variant)}\b")
+    arm_re = re.compile(r"^([ \t]*)([^\n]*?)=>", re.M)
+    dropped, pos, out = [], 0, []
+    for m in arm_re.finditer(code):
+        if m.start() < pos:
+            continue
+        pattern = m[2]
+        alts = split_alternatives(pattern)
+        hits = [a for a in alts if alt_re.search(pattern[a[0]:a[1]])]
+        if not hits or re.search(r"\bif\b", pattern):
+            continue  # A guarded arm covers nothing for sure
+        line = code.count("\n", 0, m.start()) + 1
+        dropped.append(line)
+        if len(hits) < len(alts):
+            keep = [text[m.start(2) + a:m.start(2) + b].strip() for a, b in alts if (a, b) not in hits]
+            out.append(text[pos:m.start(2)] + " | ".join(k for k in keep if k) + " ")
+            pos = m.end() - 2
+            continue
+        end = arm_body_end(code, m.end())
+        if code[end:end + 1] == "}":
+            end = code.rfind("\n", m.start(), end) + 1 or end  # Keep the match's `}` line
+        else:
+            nl = code.find("\n", end)
+            if nl >= 0 and not code[end:nl].strip():
+                end = nl + 1  # The rest of the line was the arm's too
+        out.append(text[pos:m.start()])
+        pos = end
+    out.append(text[pos:])
+    path.write_text("".join(out))
+    return dropped
+
+
 def score(errors, sites, applied, top):
     """Error lines against open sites. Errors inside the applied files are the change's
     own and no use site, so they are counted apart."""
@@ -149,6 +256,8 @@ def main():
     ap.add_argument("--require-clean-parent", action="store_true",
                     help="exit 3 before indexing when the compiler reports errors at the parent")
     ap.add_argument("--show", action="store_true", help="print the missed error lines (names of the app)")
+    ap.add_argument("--drop-arms", action="append", default=[], metavar="VARIANT",
+                    help="probe: delete the arms over this variant in the written files (repeatable)")
     ap.add_argument("files", nargs="+")
     args = ap.parse_args()
 
@@ -191,7 +300,19 @@ def main():
         marker.write_text(parent)
 
     apply(clone, commit, args.files)
+    dropped = {}
+    for variant in args.drop_arms:
+        for f in args.files:
+            if f.endswith(".rs"):
+                for line in drop_arms(clone / f, variant):
+                    dropped.setdefault(variant, []).append(f"{f}:{line}")
+        if variant not in dropped:
+            reset(clone, parent)
+            sys.exit(f"--drop-arms {variant}: no arm over it in {', '.join(args.files)}")
+        print(f"dropped arms over {variant}: {', '.join(dropped[variant])}", file=sys.stderr)
     key = "+".join(sorted(Path(f).name for f in args.files))
+    if args.drop_arms:
+        key += "-drop-" + "+".join(sorted(args.drop_arms))
     after = compiler_errors(compiler(clone, cmd, args.check_dir, work / f"{label}-{case}-{key}.txt", args.refresh_tsc, cenv), args.check_dir)
 
     if args.undo_compiler_writes:
@@ -230,6 +351,15 @@ def main():
         "index_seconds": None if index_seconds is None else round(index_seconds),
         "changes_seconds": round(changes_seconds, 1),
     })
+    if dropped:
+        # The probe's breaks are in the applied files, which score() counts apart:
+        # each new E0004 line there against the listed sites.
+        listed = {(x.get("file"), x.get("line")) for x in sites}
+        e0004 = sorted({(e[0], e[1]) for e in after - before if e[0] in args.files and e[2] == "E0004"})
+        summary["dropped_arms"] = dropped
+        summary["probe_e0004_lines"] = len(e0004)
+        summary["probe_e0004_listed"] = sum(1 for e in e0004 if e in listed)
+        summary["probe_e0004_missed"] = [f"{f}:{l}" for f, l in e0004 if (f, l) not in listed]
     (work / f"{args.name}-{case}.summary.json").write_text(json.dumps({"summary": summary, "detail": detail}, indent=1))
     print(json.dumps(summary, indent=1))
     if args.show:
