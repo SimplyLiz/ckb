@@ -21,25 +21,29 @@ pub struct CallableType<'db> {
 }
 struct Unit;
 struct Tuple(u32, u32);`)
-	got, ok := RustStructFields(before, "CallableType")
+	got, state := RustStructFields(before, "CallableType")
 	want := []string{"is_function_like:bool", "signatures:CallableSignature<db>"}
-	if !ok || !slices.Equal(got, want) {
+	if ok := state == BodyRead; !ok || !slices.Equal(got, want) {
 		t.Errorf("fields = %v, %v, want %v", got, ok, want)
 	}
 	// Visibility and a where clause have parentheses of their own.
 	scoped := rustLines("pub(crate) struct P<F: Fn(u8) -> u8> {\n  f: F,\n}\npub(super) struct W<F>\nwhere\n  F: Fn(u8),\n{\n  #[serde(rename = \"a//b}\")]\n  f: F,\n}\npub(crate) struct T<F>(F) where F: Fn(u8);")
 	for name, want := range map[string]string{"P": "f:F", "W": "f:F"} {
-		if got, ok := RustStructFields(scoped, name); !ok || !slices.Equal(got, []string{want}) {
-			t.Errorf("%s: fields = %v, %v, want [%s]", name, got, ok, want)
+		if got, state := RustStructFields(scoped, name); state != BodyRead || !slices.Equal(got, []string{want}) {
+			t.Errorf("%s: fields = %v, %v, want [%s]", name, got, state, want)
 		}
 	}
-	if _, ok := RustStructFields(scoped, "T"); ok {
+	if _, state := RustStructFields(scoped, "T"); state != BodyNone {
 		t.Error("T is a tuple struct")
 	}
 	for _, name := range []string{"Unit", "Tuple", "Missing"} {
-		if _, ok := RustStructFields(before, name); ok {
+		if _, state := RustStructFields(before, name); state != BodyNone {
 			t.Errorf("%s has no braced fields", name)
 		}
+	}
+	// A body that doesn't end is unread, not missing: the caller can't call it unchanged.
+	if _, state := RustStructFields(rustLines("pub(crate) struct Open {\n  a: u8,"), "Open"); state != BodyUnread {
+		t.Errorf("unterminated body: %v, want unread", state)
 	}
 	// A comment or reformat isn't a change; a generic in a field type doesn't split it.
 	a, _ := RustStructFields(rustLines("struct S {\n  a: Map<K, V>,\n  b: u8\n}"), "S")

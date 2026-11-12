@@ -37,12 +37,13 @@ func (c *doneChecker) checkTypeFiles(ctx context.Context, adapter referenceFinde
 		oldLines := c.readOld(file, path)
 		newLines, ok := c.readNew(file, path)
 		if oldLines == nil || !ok {
+			c.cut = true
 			continue
 		}
 		for _, name := range diff.DeclaredTypes(oldLines, lang) {
-			before, okBefore := diff.TypeFields(oldLines, lang, name)
-			after, okAfter := diff.TypeFields(newLines, lang, name)
-			if !okBefore || !okAfter {
+			before, stateBefore := diff.TypeFields(oldLines, lang, name)
+			after, stateAfter := diff.TypeFields(newLines, lang, name)
+			if !c.bothBodiesRead(path, lang, name, oldLines, newLines, stateBefore, stateAfter) {
 				continue
 			}
 			if first, last, ok := diff.TypeSpan(newLines, lang, name); ok {
@@ -51,7 +52,7 @@ func (c *doneChecker) checkTypeFiles(ctx context.Context, adapter referenceFinde
 			if slices.Equal(before, after) {
 				continue
 			}
-			id := index.TypeSymbolIn(path, name)
+			id := c.changedTypeSymbol(index, path, name)
 			if id == "" {
 				continue
 			}

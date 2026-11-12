@@ -64,16 +64,73 @@ func DeclaredTypes(lines []string, lang string) []string {
 	return names
 }
 
-// TypeFields returns a type's members as the language's parser reads them, sorted. False
-// means the file has no braced type of that name.
-func TypeFields(lines []string, lang, name string) ([]string, bool) {
+// Body is what a reader found where it looked for a braced body.
+type Body int
+
+const (
+	BodyRead Body = iota // Read whole
+	// BodyNone means there is nothing to read: no item of that name, or a unit or
+	// tuple Rust struct, whose declaration line is compared like any other.
+	BodyNone
+	// BodyUnread means the item is there and its body starts, but its end wasn't
+	// found within the bound. What is in it is unknown, which is no "unchanged".
+	BodyUnread
+)
+
+// TypeFields returns a type's members as the language's parser reads them, sorted, and
+// whether they could be read: a declaration whose body doesn't end within 500 lines is
+// unread, not missing.
+func TypeFields(lines []string, lang, name string) ([]string, Body) {
+	var fields []string
+	var ok bool
 	switch lang {
 	case "go":
-		return GoStructFields(lines, name)
+		fields, ok = GoStructFields(lines, name)
 	case "typescript":
-		return TSTypeFields(lines, name)
+		fields, ok = TSTypeFields(lines, name)
+	default:
+		return nil, BodyNone
 	}
-	return nil, false
+	switch {
+	case ok:
+		return fields, BodyRead
+	case typeDeclared(lines, lang, name):
+		return nil, BodyUnread
+	}
+	return nil, BodyNone
+}
+
+// typeDeclared says whether a line declares the type as the field readers look for it.
+func typeDeclared(lines []string, lang, name string) bool {
+	return DeclarationAt(lines, lang, name) > 0
+}
+
+// DeclarationAt returns the 1-based line declaring a braced type as the field readers
+// look for it, a Rust struct or enum included, or 0.
+func DeclarationAt(lines []string, lang, name string) int {
+	re := bracedTypeRe(lang, name)
+	if re == nil {
+		return 0
+	}
+	for i, text := range lines {
+		if re.MatchString(text) {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+func bracedTypeRe(lang, name string) *regexp.Regexp {
+	quoted := regexp.QuoteMeta(name)
+	switch lang {
+	case "go":
+		return regexp.MustCompile(`^\s*(?:type\s+)?` + quoted + `(?:\[[^\]]*\])?\s+struct\s*\{`)
+	case "typescript":
+		return regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:(?:interface|class)\s+` + quoted + `\b|type\s+` + quoted + `(?:<[^=]*>)?\s*=\s*\{)`)
+	case "rust":
+		return regexp.MustCompile(`^\s*(pub(\s*\([^)]*\))?\s+)?(struct|enum)\s+` + quoted + `\b`)
+	}
+	return nil
 }
 
 // GoStructFields returns a struct's fields, each as its names and type without the tag
@@ -136,16 +193,10 @@ func TSTypeFields(lines []string, name string) ([]string, bool) {
 // TypeSpan returns the 1-based first and last line of a type's declaration and body in
 // the language, or false if the file has no braced type of that name.
 func TypeSpan(lines []string, lang, name string) (first, last int, ok bool) {
-	quoted := regexp.QuoteMeta(name)
-	var re *regexp.Regexp
-	switch lang {
-	case "go":
-		re = regexp.MustCompile(`^\s*(?:type\s+)?` + quoted + `(?:\[[^\]]*\])?\s+struct\s*\{`)
-	case "typescript":
-		re = regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:(?:interface|class)\s+` + quoted + `\b|type\s+` + quoted + `(?:<[^=]*>)?\s*=\s*\{)`)
-	default:
+	if lang != "go" && lang != "typescript" {
 		return 0, 0, false
 	}
+	re := bracedTypeRe(lang, name)
 	for i, text := range lines {
 		if !re.MatchString(text) {
 			continue
@@ -258,7 +309,9 @@ func literalEnd(lang string, lines []string, line, column int, name string) int 
 	case "typescript":
 		end, ok = tsConstruction(lines, line, column, name)
 	default:
-		end, _, ok = rustLiteral(lines, line, column, name)
+		var state Body
+		end, _, state = rustLiteral(lines, line, column, name)
+		ok = state == BodyRead
 	}
 	if !ok {
 		return line

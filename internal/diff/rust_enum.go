@@ -10,18 +10,18 @@ import (
 // enum's own declaration line may be outside every hunk. So both sides of the file are
 // read whole, and the matches are found from the references of the old variants.
 
-// RustEnumVariants returns the names of an enum's variants, in order. False means the
-// file has no enum of that name with braces.
-func RustEnumVariants(lines []string, name string) ([]string, bool) {
+// RustEnumVariants returns the names of an enum's variants, in order, and whether they
+// could be read.
+func RustEnumVariants(lines []string, name string) ([]string, Body) {
 	re := regexp.MustCompile(`^\s*(pub(\s*\([^)]*\))?\s+)?enum\s+` + regexp.QuoteMeta(name) + `\b`)
 	for i, text := range lines {
 		m := re.FindStringIndex(text)
 		if m == nil {
 			continue
 		}
-		body, ok := bracedBody(lines, i, m[1])
-		if !ok {
-			return nil, false
+		body, state := bracedBody(lines, i, m[1])
+		if state != BodyRead {
+			return nil, state
 		}
 		body = rustBlockCommentRe.ReplaceAllString(body, "")
 		var variants []string
@@ -30,9 +30,9 @@ func RustEnumVariants(lines []string, name string) ([]string, bool) {
 				variants = append(variants, m[1])
 			}
 		}
-		return variants, true
+		return variants, BodyRead
 	}
-	return nil, false
+	return nil, BodyNone
 }
 
 var rustVariantRe = regexp.MustCompile(`^\s*([A-Za-z_]\w*)`)
@@ -44,7 +44,10 @@ type RustMatch struct {
 	// Nested says the name sits inside another pattern, as in `Some(E::A)`. Covered
 	// says an arm without a guard takes whatever is at that place: `Some(_)`, `Some(x)`.
 	Nested, Covered bool
-	patterns        []string
+	// Unread, with false, says the name looks like it is in an arm, but its match
+	// couldn't be read: it runs past the bound, or its keyword is further up than that.
+	Unread   bool
+	patterns []string
 }
 
 // Names says whether an arm's pattern spells the word.
@@ -66,6 +69,7 @@ func RustMatchAt(lines []string, line, column int, name string) (RustMatch, bool
 		return RustMatch{}, false
 	}
 	ref := rustPos{line, at}
+	unread := false
 	for l := line; l >= 1 && l > line-maxRustMatchLines; l-- {
 		text := rawLine(lines, l)
 		for _, m := range rustMatchKeywordRe.FindAllStringIndex(text, -1) {
@@ -73,8 +77,12 @@ func RustMatchAt(lines []string, line, column int, name string) (RustMatch, bool
 			if !start.before(ref) {
 				continue
 			}
-			parsed, ok := parseRustMatch(lines, start)
-			if !ok || !parsed.end.after(ref) {
+			parsed, state := parseRustMatch(lines, start)
+			if state == BodyUnread {
+				unread = true // It may be the one; an outer match that reads decides
+				continue
+			}
+			if state != BodyRead || !parsed.end.after(ref) {
 				continue // Ends before the name: not the match it is in
 			}
 			found := RustMatch{Line: l, CatchAll: parsed.catchAll(), patterns: parsed.patterns()}
@@ -91,8 +99,13 @@ func RustMatchAt(lines []string, line, column int, name string) (RustMatch, bool
 			return found, true
 		}
 	}
-	return RustMatch{}, false
+	// An arm's `=>` after the name, and no match found for it, is a match out of reach.
+	unread = unread || strings.Contains(rustCodeOf(rawLine(lines, line))[at:], "=>")
+	return RustMatch{Unread: unread}, false
 }
+
+// rustCodeOf is one line with its strings and comments blanked, read on its own.
+func rustCodeOf(text string) string { return newRustCode().line(text) }
 
 const maxRustMatchLines = 300
 
@@ -168,8 +181,9 @@ func isRustCharLiteral(text string, i int) bool {
 }
 
 // parseRustMatch reads the match starting at its keyword: each arm's pattern and where it
-// is, and where the match ends. Strings and comments are skipped.
-func parseRustMatch(lines []string, start rustPos) (*parsedRustMatch, bool) {
+// is, and where the match ends. Strings and comments are skipped. BodyNone means the
+// keyword is a word, not an expression; BodyUnread that the end wasn't found.
+func parseRustMatch(lines []string, start rustPos) (*parsedRustMatch, Body) {
 	m := &parsedRustMatch{lines: lines}
 	depth := 0
 	inBody := false   // Past the match's `{`
@@ -235,7 +249,7 @@ func parseRustMatch(lines []string, start rustPos) (*parsedRustMatch, bool) {
 					}
 				case ';':
 					if depth == 0 {
-						return nil, false // `match` as a word, not an expression
+						return nil, BodyNone // `match` as a word, not an expression
 					}
 				}
 				continue
@@ -252,7 +266,7 @@ func parseRustMatch(lines []string, start rustPos) (*parsedRustMatch, bool) {
 				}
 				if c == '}' {
 					m.end = pos
-					return m, true
+					return m, BodyRead
 				}
 				if arm == nil && !space && c != ',' {
 					arm = &rustArm{start: pos}
@@ -278,7 +292,7 @@ func parseRustMatch(lines []string, start rustPos) (*parsedRustMatch, bool) {
 				depth--
 				if depth == 0 {
 					m.end = pos
-					return m, true
+					return m, BodyRead
 				}
 				if depth == 1 && c == '}' && blockArm && !inPattern {
 					newArm()
@@ -298,5 +312,5 @@ func parseRustMatch(lines []string, start rustPos) (*parsedRustMatch, bool) {
 			arm.pattern.WriteByte(' ')
 		}
 	}
-	return nil, false
+	return nil, BodyUnread
 }
