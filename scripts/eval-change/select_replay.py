@@ -27,6 +27,16 @@ and another non-test source file of the commit, not applied, has a removed or ad
 naming the enum. Only the files with such an enum are applied. It looks for the case the
 done-check's enum variant check is for, so that check is measured on commits it wasn't
 built from.
+
+`--rule arms` looks for the arms the variant check finds through the variants' own
+references: `Self::A` in an impl of the enum, a bare `A` in a file that imports `E::*`,
+and `E::A` nested in another pattern, `Some(E::A)`. A modified non-test file has an
+enum, public or not, with a variant at the commit that it lacks at the parent, and at
+the parent a line of any Rust file holds such an arm over one of the old variants (a
+regex over the line: `Self::A … =>`, `A … =>` in a glob-importing file, `(E::A … =>`).
+No user has to be edited: an arm in the applied file shows whether the check sees it
+updated, one elsewhere whether it sees it open. Only the files with such an enum are
+applied. The arms are listed with each candidate, so every one can be looked up.
 """
 
 import argparse
@@ -144,12 +154,13 @@ def edited_users(repo, lang, sha, parent, status, names, applied):
 
 
 RUST_ENUM = re.compile(r"^\s*pub(?:\([^)]*\))?\s+enum\s+([A-Za-z_]\w*)[^{;]*\{", re.M)
+RUST_ANY_ENUM = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?enum\s+([A-Za-z_]\w*)[^{;]*\{", re.M)
 
 
-def enum_variants(text):
+def enum_variants(text, pattern=RUST_ENUM):
     """name -> variant names of each `pub enum` in a Rust file. Text, not a parser."""
     out = {}
-    for m in RUST_ENUM.finditer(text):
+    for m in pattern.finditer(text):
         i, depth = m.end(), 1
         j = i
         while j < len(text) and depth:
@@ -175,7 +186,53 @@ def gained_variant(repo, parent, sha, path, name):
     return old is not None and new is not None and any(v not in old for v in new)
 
 
+def grep_at(repo, rev, pattern):
+    """path:line:text hits of a Perl regex in the Rust files of a commit."""
+    out = git(repo, "grep", "-n", "-P", "-e", pattern, rev, "--", "*.rs", check=False)
+    return [line.split(":", 1)[1] for line in out.splitlines() if line]
+
+
+def enum_arms(repo, parent, enum, old):
+    """The arms over the old variants spelled Self::A, A through a glob, or nested."""
+    alt = "|".join(map(re.escape, old))
+    globbing = {h.split(":", 1)[0] for h in grep_at(repo, parent, rf"\buse\b.*\b{enum}::\*")}
+    arms = {
+        "self": grep_at(repo, parent, rf"\bSelf::({alt})\b[^=]*=>|\|\s*Self::({alt})\b"),
+        "glob": [h for h in grep_at(repo, parent, rf"^\s*\|?\s*({alt})\b[^=:]*=>") if h.split(":", 1)[0] in globbing],
+        "nested": grep_at(repo, parent, rf"[(,\[{{]\s*&?\s*(\w+::)*{enum}::({alt})\b[^;]*=>"),
+    }
+    return {kind: [":".join(h.split(":", 2)[:2]) for h in hits] for kind, hits in arms.items() if hits}
+
+
+def arms_candidate(repo, sha, parent, max_files):
+    status = git(repo, "diff", "--name-status", "--no-renames", parent, sha).splitlines()
+    if not status or len(status) > max_files:
+        return None
+    files, decls, arms = [], [], {}
+    for row in status:
+        kind, path = row.split("\t", 1)
+        if kind != "M" or not is_source(path, "rust"):
+            continue
+        old = enum_variants(git(repo, "show", f"{parent}:{path}", check=False), RUST_ANY_ENUM)
+        new = enum_variants(git(repo, "show", f"{sha}:{path}", check=False), RUST_ANY_ENUM)
+        for name, variants in new.items():
+            if not old.get(name) or all(v in old[name] for v in variants):
+                continue
+            found = enum_arms(repo, parent, name, old[name])
+            if found:
+                decls.append(f"{path}: enum {name}")
+                arms[name] = found
+                if path not in files:
+                    files.append(path)
+    if not files:
+        return None
+    return {"sha": sha, "parent": parent, "files": files, "decls": decls, "arms": arms,
+            "files_in_commit": len(status)}
+
+
 def candidate(repo, lang, sha, parent, max_files, rule="declaration"):
+    if rule == "arms":
+        return arms_candidate(repo, sha, parent, max_files) if lang == "rust" else None
     status = git(repo, "diff", "--name-status", "--no-renames", parent, sha).splitlines()
     if not status or len(status) > max_files:
         return None
@@ -229,9 +286,10 @@ def main():
     ap.add_argument("--count", type=int, default=20, help="candidates to keep, in order; the driver takes the first that build")
     ap.add_argument("--scan", type=int, default=400, help="commits to look at from HEAD back")
     ap.add_argument("--max-files", type=int, default=30)
-    ap.add_argument("--rule", choices=["declaration", "users", "variants"], default="declaration",
+    ap.add_argument("--rule", choices=["declaration", "users", "variants", "arms"], default="declaration",
                     help="users: the commit also edits a file that names the declaration; "
-                         "variants: users, for a Rust enum that gained a variant")
+                         "variants: users, for a Rust enum that gained a variant; "
+                         "arms: a Rust enum that gained a variant, with Self::, glob or nested arms over it")
     a = ap.parse_args()
 
     head = git(a.repo, "rev-parse", a.head).strip()
@@ -248,7 +306,7 @@ def main():
                 break
     a.out.write_text(json.dumps({"repo": str(a.repo.resolve()), "lang": a.lang, "head": head,
                                  "scanned": len(log), "rule_name": a.rule,
-                                 "rule": __doc__.split("\n\n")[{"declaration": 1, "users": 4, "variants": 5}[a.rule]],
+                                 "rule": __doc__.split("\n\n")[{"declaration": 1, "users": 4, "variants": 5, "arms": 6}[a.rule]],
                                  "sample": picked}, indent=1) + "\n")
     print(f"{a.repo.name}: {len(log)} commits scanned, {len(picked)} candidates -> {a.out}")
 
