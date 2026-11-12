@@ -294,3 +294,12 @@ After 13f6bb6 (`--name users3fix`, same sample): a Rust struct literal is follow
 site goes away, a 46-line literal in the defining file whose new field the diff added
 (the compiler agrees). Nothing else moves, `variants` included. As with users2, the fix is
 fitted to the case it is measured on.
+
+The E0005 miss (`--name variantsfix2`, `variants` sample only): a plain `let` whose
+pattern names a variant of an enum that had exactly one is open at the `let`; `if let`,
+`while let` and `let … else` aren't. The commit's two broken lines are both exact now, no
+miss. One more site is listed, a `let` over the same variant in an integration test: cargo
+never checks that target, because the library it depends on has errors, and the commit
+itself turned exactly that line into a `let … else`. So it is a break the compiler's lower
+bound hides, not a false open. The other three `variants` commits don't move. Fitted to
+its case as well; the rule only reaches enums that had one variant.

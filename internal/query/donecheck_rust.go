@@ -142,7 +142,10 @@ func (c *doneChecker) checkEnumVariants(ctx context.Context, adapter referenceFi
 		sym := impact.ChangedSymbol{SymbolID: id, Name: name, File: path}
 		via := fmt.Sprintf("%s gained %s; a match without it or `_` is incomplete", name, strings.Join(added, ", "))
 		files := make(map[string]bool)
-		query := useQuery{name: name, change: impact.DeclChanged, via: via, newVariants: added}
+		if len(before) == 1 {
+			via += ", a `let` over the only old one refutable"
+		}
+		query := useQuery{name: name, change: impact.DeclChanged, via: via, newVariants: added, onlyVariant: len(before) == 1}
 		variants := index.VariantSymbolsIn(path, id)
 		if len(variants) == 0 {
 			c.checkUses(ctx, adapter, sym, query, files)

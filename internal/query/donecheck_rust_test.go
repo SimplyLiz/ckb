@@ -375,3 +375,59 @@ fn b(x: Option<E>) -> u8 {
 		t.Errorf("open = %+v, updated = %d: the match with Some(_) is done", open, c.updated)
 	}
 }
+
+// A plain `let` over an enum's only variant stops compiling when it gets a second one;
+// `if let`, `let … else` and a `let` the diff turned into one stay as they are.
+func TestRustEnumVariants_IrrefutableLet(t *testing.T) {
+	const useSrc = `fn a(p: P) -> u8 {
+    let P::Admit { id } = p;
+    id
+}
+fn b(w: W) -> u8 {
+    let W(P::Admit { id }, _) = w;
+    id
+}
+fn c(p: P) -> u8 {
+    let P::Admit { id } = p else { return 0 };
+    id
+}
+fn d(p: P) -> u8 {
+    if let P::Admit { id } = p { id } else { 0 }
+}
+fn e(p: P) -> u8 {
+    let P::Admit { id } = p;
+    id
+}
+`
+	fixed := strings.Replace(useSrc, "fn e(p: P) -> u8 {\n    let P::Admit { id } = p;", "fn e(p: P) -> u8 {\n    let P::Admit { id } = p else { return 0 };", 1)
+	refs := map[string][]backends.Reference{"m/P#Admit#": {
+		rustRef("src/use.rs", 2), rustRef("src/use.rs", 6), rustRef("src/use.rs", 10), rustRef("src/use.rs", 14), rustRef("src/use.rs", 17),
+	}}
+	adapter := rustFixture{typ: "m/P#", variants: map[string]string{"Admit": "m/P#Admit#"}, refs: refs}
+
+	root := rustRepo(t, map[string]string{"src/p.rs": "pub enum P {\n    Admit { id: u8 },\n}\n", "src/use.rs": useSrc})
+	writeRepoFile(t, root, "src/p.rs", "pub enum P {\n    Admit { id: u8 },\n    Forget,\n}\n")
+	writeRepoFile(t, root, "src/use.rs", fixed)
+
+	c := rustDiffChecker(t, root)
+	open := c.checkRustFiles(context.Background(), adapter)
+	want := []string{"src/use.rs:let P::Admit { id } = p;", "src/use.rs:let W(P::Admit { id }, _) = w;"}
+	if got := siteLines(c); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("sites = %q, want %q", got, want)
+	}
+	if c.sites[0].Line != 2 || c.sites[1].Line != 6 || c.sites[0].Use != "" {
+		t.Errorf("sites = %+v, want lines 2 and 6, listed as they are", c.sites)
+	}
+	if len(open) != 1 || c.updated != 1 {
+		t.Errorf("open = %+v, updated = %d: the let given an else is done", open, c.updated)
+	}
+
+	// With two variants before, the same lets didn't compile then; nothing to list.
+	root = rustRepo(t, map[string]string{"src/p.rs": "pub enum P {\n    Admit { id: u8 },\n    Hold,\n}\n", "src/use.rs": useSrc})
+	writeRepoFile(t, root, "src/p.rs", "pub enum P {\n    Admit { id: u8 },\n    Hold,\n    Forget,\n}\n")
+	c = rustDiffChecker(t, root)
+	adapter.variants["Hold"] = "m/P#Hold#"
+	if open := c.checkRustFiles(context.Background(), adapter); len(open) != 0 || len(c.sites) != 0 {
+		t.Errorf("two variants before: open = %+v, sites = %+v", open, c.sites)
+	}
+}

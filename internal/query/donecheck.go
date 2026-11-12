@@ -308,6 +308,9 @@ type useQuery struct {
 	// newVariants holds the variants a Rust enum gained. Only a match over it counts,
 	// one with no arm for the rest and none for them, listed at its `match`.
 	newVariants []string
+	// onlyVariant says the enum had one variant before: a plain `let` over it was
+	// irrefutable and is refutable now.
+	onlyVariant bool
 }
 
 // missingKeys is what a literal has to set since the change, and where in it.
@@ -495,11 +498,25 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 // new variants, and moves the result to the match's line. A match given an arm for them,
 // or one for the rest, counts as updated. nested says the use sits inside another
 // pattern, `Some(E::A)`, and no arm takes whatever is there; it is counted with the
-// uses that rarely break.
+// uses that rarely break. A plain `let` over what was the enum's only variant is open
+// at the `let`: it can no longer match every value.
 func (c *doneChecker) incompleteMatch(oldLines, newLines []string, ref *backends.Reference, query useQuery, result *diff.UseResult) (open, nested bool) {
 	lines := newLines
 	if oldLines != nil {
 		lines = oldLines
+	}
+	if query.onlyVariant {
+		if _, ok := diff.RustLetAt(lines, ref.Location.Line, ref.Location.Column, query.name); ok {
+			// Still a plain `let` since the change: no `else`, no `if let`.
+			line, ok := diff.RustLetAt(newLines, result.Line, 0, query.name)
+			if !ok {
+				c.updated++
+				return false, false
+			}
+			result.Line = line
+			result.Code = strings.TrimSpace(newLines[line-1])
+			return true, false
+		}
 	}
 	if m, ok := diff.RustMatchAt(lines, ref.Location.Line, ref.Location.Column, query.name); !ok || m.CatchAll {
 		return false, false
