@@ -303,3 +303,12 @@ never checks that target, because the library it depends on has errors, and the 
 itself turned exactly that line into a `let … else`. So it is a break the compiler's lower
 bound hides, not a false open. The other three `variants` commits don't move. Fitted to
 its case as well; the rule only reaches enums that had one variant.
+
+The Rust literal reader skips strings, raw strings, chars and comments since then. A scan
+of every `Name {` in the eval clones found real literals it misread: a `..` in a string
+(`"../game"`, `"HEAD~1..HEAD"`) taken for the rest, which makes a literal without one look
+covered, a `//` in a string cutting the line, and brackets in a raw-string regex ending
+the literal on its first line. One of them is a struct whose fields did change in its
+history, but in that commit every literal sat in the defining file and was updated. So no
+measured number depends on it: `users3strfix` is the same as `users3fix` in all 29
+commits.

@@ -124,13 +124,11 @@ func rustLiteral(lines []string, line, column int, name string) (end int, hasRes
 	}
 
 	depth := 0
-	scan := rest
+	code := newRustCode()
+	scan := code.line(rest)
 	for current := line; current <= line+maxRustLiteralLines; current++ {
 		if current != line {
-			scan = rawLine(lines, current)
-		}
-		if at := strings.Index(scan, "//"); at >= 0 {
-			scan = scan[:at]
+			scan = code.line(rawLine(lines, current))
 		}
 		for i := 0; i < len(scan); i++ {
 			switch scan[i] {
