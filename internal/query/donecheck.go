@@ -48,9 +48,12 @@ type DoneCheck struct {
 	OpenSites []OpenSite `json:"openSites,omitempty"`
 	OpenCount int        `json:"openCount"`
 	// UpdatedCount is the uses the diff touched.
-	UpdatedCount int    `json:"updatedCount"`
-	Truncated    bool   `json:"truncated,omitempty"`
-	Note         string `json:"note,omitempty"`
+	UpdatedCount int `json:"updatedCount"`
+	// RarelyCount is how many open sites only name a changed type in an annotation
+	// or read a key whose type changed. Those rarely break, and come last.
+	RarelyCount int    `json:"rarelyCount,omitempty"`
+	Truncated   bool   `json:"truncated,omitempty"`
+	Note        string `json:"note,omitempty"`
 }
 
 // OpenSite is one use of a changed declaration that the diff left as it was.
@@ -67,6 +70,10 @@ type OpenSite struct {
 	Via string `json:"via,omitempty"`
 	// Unverified means the index no longer matches the file, so the line may be off.
 	Unverified bool `json:"unverified,omitempty"`
+	// Use says how a TypeScript line uses a changed type or object key: key, index,
+	// literal, switch, annotation or read. The sites are ordered by it, the first
+	// being the ones a change is likely to break. Empty for any other site.
+	Use string `json:"use,omitempty"`
 
 	// literalLines is how many lines past Line a literal site's braces reach; zero
 	// for any other site.
@@ -310,6 +317,9 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 	if file != nil && file.NewPath != "" {
 		path = file.NewPath // A use in a renamed file is reported where it is now
 	}
+	// Classified where the reference is: a site listed at a key further down is
+	// still the literal found here.
+	use := tsUse(sym, query, cmp.Or(ref.Location.Path, path), newLines, result.Line, len(missingAt) > 0)
 	add := func(line int, code, via string, literalLines int) {
 		key := fmt.Sprintf("%s:%s:%d", sym.SymbolID, path, line)
 		if c.seen[key] {
@@ -317,6 +327,7 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 		}
 		c.seen[key] = true
 		c.sites = append(c.sites, OpenSite{
+			Use:        use,
 			Symbol:     sym.Name,
 			Change:     string(query.change),
 			File:       path,
@@ -357,6 +368,37 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// rankRarely is the rank of a use that rarely breaks.
+const rankRarely = 4
+
+// useRank orders the sites: what a change is likely to break first. A site without a
+// use, which is every site outside TypeScript types and keys, is as likely as any.
+func useRank(use string) int {
+	switch use {
+	case diff.TSUseLiteral:
+		return 2
+	case diff.TSUseSwitch:
+		return 3
+	case diff.TSUseAnnotation, diff.TSUseRead:
+		return rankRarely
+	}
+	return 1
+}
+
+// tsUse classifies an open site by how it uses a changed TypeScript type or object
+// key. Empty for anything else: a call of a changed function, a use of something that
+// is gone, a literal known to lack a key, a site in another language.
+func tsUse(sym impact.ChangedSymbol, query useQuery, path string, lines []string, line int, exact bool) string {
+	if diff.TypeLanguage(path) != "typescript" || query.change == impact.DeclRemoved || exact {
+		return ""
+	}
+	isKey := strings.HasSuffix(sym.SymbolID, ":")
+	if !isKey && !strings.HasSuffix(sym.SymbolID, "#") {
+		return ""
+	}
+	return diff.TSUseKind(lines, line, query.name, isKey)
 }
 
 // breaksGoLiteral says whether a Go composite literal stops compiling: it is
@@ -528,8 +570,16 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 		UpdatedCount: c.updated,
 	}
 
+	for i := range c.sites {
+		if useRank(c.sites[i].Use) == rankRarely {
+			check.RarelyCount++
+		}
+	}
 	sort.SliceStable(c.sites, func(i, j int) bool {
 		a, b := &c.sites[i], &c.sites[j]
+		if ra, rb := useRank(a.Use), useRank(b.Use); ra != rb {
+			return ra < rb
+		}
 		if a.IsTest != b.IsTest {
 			return !a.IsTest
 		}
@@ -572,6 +622,9 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 	case len(c.sites) > 0:
 		check.Status = DoneCheckOpen
 		check.Note = "Uses of a changed declaration the diff didn't touch. Text comparison, nothing compiled: some may need no edit."
+		if check.RarelyCount > 0 {
+			check.Note += fmt.Sprintf(" The likely ones come first; %d of them only annotate with a changed type or read a changed key, which rarely breaks, and come last.", check.RarelyCount)
+		}
 		if doubt != "" {
 			check.Note += " There may be more: " + doubt + "."
 		}

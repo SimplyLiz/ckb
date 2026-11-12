@@ -447,3 +447,76 @@ func TSIsPropertyWrite(lines []string, line int, name string) bool {
 	after := strings.TrimLeft(text[at+len(name):], " \t")
 	return after == "" || strings.IndexByte(":,}", after[0]) >= 0
 }
+
+// How a TypeScript line uses a type or an object key, in the order a change to it is
+// likely to break the line. A type that got wider breaks what is keyed by it and what
+// indexes with it; it rarely breaks a parameter annotated with it.
+const (
+	TSUseKey        = "key"        // Record<T, …>, [K in T], K extends T, keyof T
+	TSUseIndex      = "index"      // x[y.key]
+	TSUseLiteral    = "literal"    // An object literal of the type, or one that sets the key
+	TSUseSwitch     = "switch"     // switch (y.key)
+	TSUseAnnotation = "annotation" // Anything else that names the type
+	TSUseRead       = "read"       // Anything else that reads the key
+)
+
+var tsSwitchRe = regexp.MustCompile(`\bswitch\s*\(`)
+
+// TSUseKind classifies the use of a name on a line: of a type, or with isKey of an
+// object key.
+func TSUseKind(lines []string, line int, name string, isKey bool) string {
+	text := rawLine(lines, line)
+	at := wordIndex(text, name)
+	if at < 0 {
+		if isKey {
+			return TSUseRead
+		}
+		return TSUseAnnotation
+	}
+	before := strings.TrimRight(text[:at], " \t")
+	if !isKey {
+		if strings.HasSuffix(before, "Record<") {
+			return TSUseKey
+		}
+		switch lastWordOf(before) {
+		case "in", "extends", "keyof":
+			return TSUseKey
+		case "as", "satisfies":
+			return TSUseAnnotation
+		}
+		if _, ok := tsConstruction(lines, line, 0, name); ok {
+			return TSUseLiteral
+		}
+		return TSUseAnnotation
+	}
+	if TSIsPropertyWrite(lines, line, name) {
+		return TSUseLiteral
+	}
+	// Inside the brackets of an element access: x[y.key], not [y.key] or f([y.key]).
+	depth := 0
+	for i := at - 1; i >= 0; i-- {
+		switch text[i] {
+		case ']', ')':
+			depth++
+		case '(':
+			depth--
+		case '[':
+			if depth > 0 {
+				depth--
+				continue
+			}
+			opener := strings.TrimRight(text[:i], " \t")
+			if opener != "" && (isWordByte(opener[len(opener)-1]) || strings.IndexByte(")]", opener[len(opener)-1]) >= 0) {
+				return TSUseIndex
+			}
+			i = -1
+		}
+		if depth < 0 {
+			break
+		}
+	}
+	if m := tsSwitchRe.FindStringIndex(text); m != nil && m[0] < at {
+		return TSUseSwitch
+	}
+	return TSUseRead
+}

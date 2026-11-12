@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends"
+	"github.com/SimplyLiz/CodeMCP/internal/diff"
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
 	"github.com/SimplyLiz/CodeMCP/internal/index"
 )
@@ -388,5 +390,34 @@ func TestUnreadableName(t *testing.T) {
 	sym := impact.ChangedSymbol{SymbolID: "x", Name: "F", File: "a.go"}
 	if got := unreadableName(sym); got != "a.go:F" {
 		t.Errorf("symbol = %q", got)
+	}
+}
+
+// What is likely to break comes first, so the cut at MaxOpenSites and an agent's first
+// page both keep it: a use keyed by a changed type before a literal of it, a switch
+// after that, and a parameter merely annotated with it last.
+func TestDoneCheck_OrdersSitesByLikelihood(t *testing.T) {
+	c := doneChecker{seen: map[string]bool{}}
+	for _, s := range []OpenSite{
+		{Symbol: "Kind", File: "a.ts", Line: 1, Use: diff.TSUseAnnotation},
+		{Symbol: "Kind", File: "a.ts", Line: 2, Use: diff.TSUseSwitch},
+		{Symbol: "Kind", File: "a.ts", Line: 3, Use: diff.TSUseLiteral},
+		{Symbol: "Kind", File: "z.ts", Line: 4, Use: diff.TSUseKey},
+		{Symbol: "run", File: "b.go", Line: 5},
+		{Symbol: "Kind", File: "a.test.ts", Line: 6, Use: diff.TSUseIndex, IsTest: true},
+		{Symbol: "s.key", File: "a.ts", Line: 7, Use: diff.TSUseRead},
+	} {
+		c.sites = append(c.sites, s)
+	}
+	check := c.result("diff", true, false, "")
+	var got []int
+	for _, s := range check.OpenSites {
+		got = append(got, s.Line)
+	}
+	if fmt.Sprint(got) != "[5 4 6 3 2 1 7]" {
+		t.Errorf("order = %v, want the call and the keyed uses, then the literal, the switch, and the annotation and read last", got)
+	}
+	if check.RarelyCount != 2 || !strings.Contains(check.Note, "2 of them") {
+		t.Errorf("rarely = %d, note %q: want the two that rarely break counted and said", check.RarelyCount, check.Note)
 	}
 }
