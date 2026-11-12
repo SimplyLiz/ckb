@@ -28,6 +28,10 @@ type ReferenceLines struct {
 	// Stale counts the lines that no longer name the symbol: the file changed since
 	// the index was built, and the use is somewhere else in it now.
 	Stale int `json:"stale,omitempty"`
+	// OutsideIndex are files of the symbol's language that spell its name and that the
+	// index doesn't cover, such as ones a tsconfig leaves out: whether they use it, only
+	// reading them says.
+	OutsideIndex []string `json:"outsideIndex,omitempty"`
 }
 
 // refStale marks a line the index points at that doesn't name the symbol anymore.
@@ -139,6 +143,9 @@ func (r *ReferenceLines) Text(bySymbol bool) string {
 		}
 	}
 
+	for _, path := range r.OutsideIndex {
+		fmt.Fprintf(&b, "%s: [not in index]\n", path)
+	}
 	summary := r.Symbol + ": " + plural(r.Total, "reference")
 	if r.Tests > 0 {
 		summary += fmt.Sprintf(", %d in tests", r.Tests)
@@ -152,6 +159,36 @@ func (r *ReferenceLines) Text(bySymbol bool) string {
 	if r.Stale > 0 {
 		summary += fmt.Sprintf("; %d marked stale no longer name it, the file changed since the index was built: run 'ckb index'", r.Stale)
 	}
+	if n := len(r.OutsideIndex); n > 0 {
+		summary += fmt.Sprintf("; %s the index doesn't cover name it, marked [not in index]: only reading them says whether they use it", plural(n, "file"))
+	}
 	b.WriteString(summary + "\n")
 	return b.String()
+}
+
+// FilesOutsideIndex lists the files of the symbol's language that spell its name and
+// that the index doesn't cover. Nil without an index or a definition to take the
+// language from.
+func (e *Engine) FilesOutsideIndex(symbolID string) []string {
+	if e.scipAdapter == nil {
+		return nil
+	}
+	index := e.scipAdapter.GetIndex()
+	if index == nil || index.DefinitionIndex == nil {
+		return nil
+	}
+	def := index.DefinitionIndex[symbolID]
+	names := scip.SpelledNames(symbolID)
+	if def == nil || def.Doc == nil || len(names) == 0 {
+		return nil
+	}
+	family := sourceFamily(def.Doc.RelativePath)
+	if family == "" {
+		return nil
+	}
+	// The first is what a use spells: the type, for a constructor.
+	outside, _ := filesOutsideIndex(e.repoRoot, map[string]string{names[0]: family}, func(path string) bool {
+		return index.GetDocument(path) != nil
+	})
+	return outside
 }

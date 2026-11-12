@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"cmp"
 	"fmt"
 	"go/token"
 	"path/filepath"
@@ -398,7 +399,7 @@ func wholeDefinitionChanges(file *impact.ChangedFile, defs []*SymbolDefInfo, sid
 		if len(lines) != end-start+1 {
 			continue
 		}
-		if name := scip.SymbolSimpleName(def.Symbol); name != "" && mentions(otherSide, name) {
+		if slices.ContainsFunc(scip.SpelledNames(def.Symbol), func(name string) bool { return mentions(otherSide, name) }) {
 			continue
 		}
 		whole[def.Symbol] = wholeChange{changeType: changeType, lines: lines}
@@ -759,17 +760,17 @@ func resolveIndexSide(file *impact.ChangedFile, doc *DocumentInfo, docPath strin
 	// isn't that side. Only the side that shows the line: a hunk that gained lines
 	// reaches further on the new side, often to the index's next definition.
 	var oldScore, newScore, oldDefs, oldDefHits, newDefs, newDefHits int
-	names := make(map[string]string)
+	names := make(map[string][]string)
 	for _, occ := range doc.Occurrences {
 		if strings.HasPrefix(occ.Symbol, "local ") {
 			continue
 		}
-		name, known := names[occ.Symbol]
+		spelled, known := names[occ.Symbol]
 		if !known {
-			name = scip.SymbolSimpleName(occ.Symbol)
-			names[occ.Symbol] = name
+			spelled = scip.SpelledNames(occ.Symbol)
+			names[occ.Symbol] = spelled
 		}
-		if name == "" {
+		if len(spelled) == 0 {
 			continue
 		}
 		oldText, inOld := oldLines[occ.StartLine]
@@ -779,8 +780,8 @@ func resolveIndexSide(file *impact.ChangedFile, doc *DocumentInfo, docPath strin
 		}
 		// Only hits count: an occurrence whose name isn't on its line, like
 		// rust-analyzer's "add" for a "+", says nothing about either side.
-		oldHit := inOld && containsWord(oldText, name)
-		newHit := inNew && containsWord(newText, name)
+		oldHit := inOld && slices.ContainsFunc(spelled, func(name string) bool { return containsWord(oldText, name) })
+		newHit := inNew && slices.ContainsFunc(spelled, func(name string) bool { return containsWord(newText, name) })
 		if oldHit {
 			oldScore++
 		}
@@ -1057,12 +1058,15 @@ func resolveGoMoves(texts *diffTexts, result []impact.ChangedSymbol) {
 			continue
 		}
 		for _, file := range texts.files {
-			if file.Deleted || file.NewPath == "" || file.NewPath == sym.File || !samePackageFile(sym.File, file.NewPath) {
+			if file.Deleted || file.NewPath == "" || file.NewPath == sym.File || filepath.Dir(sym.File) != filepath.Dir(file.NewPath) {
 				continue
 			}
 			text := texts.read(file)
-			if strings.HasSuffix(file.NewPath, "_test.go") {
-				// Two test files of one directory may be the package and its external tests.
+			// Into a test file of its own package, the package's code no longer sees it.
+			// Out of one into the package's code, everyone who saw it still does.
+			intoTests := !strings.HasSuffix(sym.File, "_test.go") && strings.HasSuffix(file.NewPath, "_test.go")
+			if strings.HasSuffix(sym.File, "_test.go") || strings.HasSuffix(file.NewPath, "_test.go") {
+				// A test file of one directory may be the package or its external tests.
 				source := texts.byPath[sym.File]
 				if source == nil || goPackage(texts.read(source).oldAll) == "" || goPackage(texts.read(source).oldAll) != goPackage(text.newAll) {
 					continue
@@ -1074,12 +1078,20 @@ func resolveGoMoves(texts *diffTexts, result []impact.ChangedSymbol) {
 			}
 			decl := readDeclaration(text.newAll, line, "go")
 			decl.text = withGoGroupKeyword(text.newAll, line, decl.text, "go")
-			sym.ChangeType = impact.ChangeModified
-			sym.DeclarationAfter = decl.text
-			sym.Declaration = ""
+			var change impact.DeclarationChange
 			if decl.complete {
-				sym.Declaration = compareDeclarations(sym.DeclarationBefore, decl.text, name, "go")
+				change = compareDeclarations(sym.DeclarationBefore, decl.text, name, "go")
 			}
+			sym.DeclarationAfter = decl.text
+			if intoTests {
+				// Still removed for the package's code. Empty TestsSee would read as
+				// no comparison, so an unreadable one counts as changed.
+				sym.TestsSee = cmp.Or(change, impact.DeclChanged)
+				sym.Note = "moved to " + file.NewPath + ", which only the tests of its directory see"
+				break
+			}
+			sym.ChangeType = impact.ChangeModified
+			sym.Declaration = change
 			sym.Note = "moved to " + file.NewPath
 			break
 		}
@@ -1096,12 +1108,6 @@ func leafSymbolName(sym *impact.ChangedSymbol) string {
 		name = name[i+1:]
 	}
 	return name
-}
-
-// samePackageFile reports whether two Go files are in one package: one directory,
-// and both tests or neither, since a _test.go file may be the external test package.
-func samePackageFile(a, b string) bool {
-	return filepath.Dir(a) == filepath.Dir(b) && strings.HasSuffix(a, "_test.go") == strings.HasSuffix(b, "_test.go")
 }
 
 var goPackageRe = regexp.MustCompile(`^package\s+([A-Za-z_]\w*)`)

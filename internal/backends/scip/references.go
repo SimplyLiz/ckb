@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -270,7 +271,7 @@ func newContextReader(repoRoot string) *contextReader {
 // line returns a reference's source line, 0-indexed like an occurrence's location, or
 // nothing if the file can't be read or no longer has the name on that line. The index
 // can be older than the file, and a wrong line is worse than none.
-func (c *contextReader) line(relativePath string, line int, name string) string {
+func (c *contextReader) line(relativePath string, line int, names []string) string {
 	if c.repoRoot == "" || !filepath.IsLocal(relativePath) {
 		return ""
 	}
@@ -283,7 +284,7 @@ func (c *contextReader) line(relativePath string, line int, name string) string 
 		return ""
 	}
 	text := lines[line]
-	if name != "" && !containsWord(text, name) {
+	if len(names) > 0 && !slices.ContainsFunc(names, func(name string) bool { return containsWord(text, name) }) {
 		return ""
 	}
 	text = strings.TrimSpace(text)

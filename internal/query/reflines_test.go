@@ -100,3 +100,13 @@ func TestReferenceLinesConstructor(t *testing.T) {
 		t.Errorf("text =\n%s\nwant\n%s", got, want)
 	}
 }
+
+// Files the index doesn't cover are listed apart: grep's shape, and the count says why.
+func TestReferenceLinesText_OutsideIndex(t *testing.T) {
+	r := &ReferenceLines{Symbol: "post", Total: 1, Lines: []ReferenceLine{{File: "a.ts", Line: 3, Use: "call", Code: "post(1)"}},
+		OutsideIndex: []string{"e2e/b.spec.ts"}}
+	got := r.Text(false)
+	if !strings.Contains(got, "e2e/b.spec.ts: [not in index]\n") || !strings.Contains(got, "1 file the index doesn't cover name it") {
+		t.Errorf("text:\n%s", got)
+	}
+}

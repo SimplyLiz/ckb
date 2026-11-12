@@ -382,6 +382,20 @@ func ConstructorType(symbolID string) string {
 	return ""
 }
 
+// SpelledNames are the words source text spells a symbol with. Mostly its name; a
+// compiler-named constructor is spelled as its type where it is used (`new Foo(x)`,
+// Java's `Foo(x)`) and as `constructor` where TypeScript declares it. Nil if the
+// identifier can't be parsed.
+func SpelledNames(symbolID string) []string {
+	if class := ConstructorType(symbolID); class != "" {
+		return []string{class, "constructor"}
+	}
+	if name := SymbolSimpleName(symbolID); name != "" {
+		return []string{name}
+	}
+	return nil
+}
+
 func SymbolSimpleName(symbolID string) string {
 	sym, err := bindingscip.ParseSymbol(symbolID)
 	if err != nil || len(sym.Descriptors) == 0 {

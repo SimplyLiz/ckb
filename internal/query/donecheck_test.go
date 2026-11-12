@@ -503,3 +503,35 @@ func TestGoModDoubts(t *testing.T) {
 		t.Errorf("check = %s %q, want not_assessed naming the dependency", check.Status, check.Note)
 	}
 }
+
+// A Go declaration moved into a test file of its package is removed for the package's
+// code, and for the tests of its directory only as far as they see it changed.
+func TestCheckSymbol_MovedIntoTests(t *testing.T) {
+	root := t.TempDir()
+	writeRepoFile(t, root, "lib/use.go", "package lib\n\nfunc use() { target(1) }\n")
+	writeRepoFile(t, root, "lib/lib_test.go", "package lib\n\nfunc TestT(t *testing.T) { target(1) }\n")
+	writeRepoFile(t, root, "other/other_test.go", "package other\n\nfunc TestO(t *testing.T) { target(1) }\n")
+	refs := &backends.ReferencesResult{TotalReferences: 3, References: []backends.Reference{
+		{Kind: "reference", Location: backends.Location{Path: "lib/use.go", Line: 3}},
+		{Kind: "reference", Location: backends.Location{Path: "lib/lib_test.go", Line: 3}},
+		{Kind: "reference", Location: backends.Location{Path: "other/other_test.go", Line: 3}},
+	}}
+	for _, c := range []struct {
+		tests impact.DeclarationChange
+		want  []string
+	}{
+		{impact.DeclUnchanged, []string{"lib/use.go:removed", "other/other_test.go:removed"}},
+		{impact.DeclChanged, []string{"lib/use.go:removed", "lib/lib_test.go:changed", "other/other_test.go:removed"}},
+	} {
+		sym := impact.ChangedSymbol{SymbolID: "s", Name: "lib.target", File: "lib/lib.go", TestsSee: c.tests}
+		checker := newDoneChecker(root, AnalyzeChangeSetOptions{}, &impact.ParsedDiff{})
+		checker.checkSymbol(context.Background(), fakeReferences{result: refs}, sym, impact.DeclRemoved)
+		var got []string
+		for _, s := range checker.sites {
+			got = append(got, s.File+":"+s.Change)
+		}
+		if strings.Join(got, " ") != strings.Join(c.want, " ") {
+			t.Errorf("tests see %q: sites %v, want %v", c.tests, got, c.want)
+		}
+	}
+}
