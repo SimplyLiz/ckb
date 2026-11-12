@@ -204,3 +204,38 @@ func fmtInts(v []int) string {
 	}
 	return "[" + strings.Join(parts, " ") + "]"
 }
+
+func TestTSUseKind(t *testing.T) {
+	typeUses := map[string]string{
+		`const LABELS: Record<Kind, string> = { a: "A" };`:   TSUseKey,
+		`type Flags = { [K in Kind]: boolean };`:             TSUseKey,
+		`return <K extends Kind>(kind: K) => profile[kind];`: TSUseKey,
+		`type Keys = keyof Kind;`:                            TSUseKey,
+		`const first: Kind = "a";`:                           TSUseAnnotation,
+		`function show(kind: Kind) {`:                        TSUseAnnotation,
+		`const kind = value as Kind;`:                        TSUseAnnotation,
+		`const sample: Kind = { a: 1 };`:                     TSUseLiteral,
+		`export function make(): Kind {`:                     TSUseLiteral,
+		`type Part = Kind["a"];`:                             TSUseAnnotation,
+	}
+	for line, want := range typeUses {
+		if got := TSUseKind([]string{line}, 1, "Kind", false); got != want {
+			t.Errorf("type in %q = %s, want %s", line, got, want)
+		}
+	}
+	keyUses := map[string]string{
+		`const title = TITLES[s.key];`:                 TSUseIndex,
+		`return profile[section.key].length;`:          TSUseIndex,
+		`switch (s.key) {`:                             TSUseSwitch,
+		`if (s.key === "a") return;`:                   TSUseRead,
+		`out.push({ key, title: "", visible: true });`: TSUseLiteral,
+		`  key: "a",`:                                  TSUseLiteral,
+		`const keys = list.map((s) => s.key);`:         TSUseRead,
+		`const [first] = rows.filter((r) => r.key);`:   TSUseRead,
+	}
+	for line, want := range keyUses {
+		if got := TSUseKind([]string{line}, 1, "key", true); got != want {
+			t.Errorf("key in %q = %s, want %s", line, got, want)
+		}
+	}
+}
