@@ -388,6 +388,13 @@ func TestFindDeclaration_NameAsParameter(t *testing.T) {
 		{"ts", "file", "function file(p: string)", []string{"function open(file: string) {", "export function file(p: string) {"}, 2},
 		{"rust", "COUNT", "static mut COUNT: u32 = 0", []string{"static mut COUNT: u64 = 0;"}, 1},
 		{"rust", "file", "pub fn file(p: &str)", []string{"fn open(file: &str) {", "pub(crate) fn file(p: &str) {"}, 2},
+		// The field's name keying a literal of another type is a use, not the field.
+		{"go", "OriginalCount", "OriginalCount int `json:\"originalCount\"`",
+			[]string{"\t\tOriginalCount: truncationInfo.TotalCount,"}, 0},
+		{"go", "Count", "Count int", []string{"\tCount, Total int"}, 1},
+		{"go", "Reader", "Reader", []string{"\tReader // embedded"}, 1},
+		{"go", "Save", "Save(x int) error", []string{"\tSave(x int64) error"}, 1},
+		{"go", "Count", "Count int", []string{"\tCount = Count + 1", "\tCount.Add(1)", "Count:"}, 0},
 	}
 	for _, c := range cases {
 		lines := make(map[int]string)

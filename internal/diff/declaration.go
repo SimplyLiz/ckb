@@ -451,7 +451,23 @@ func declaresSame(text, like, name, lang string) bool {
 		return false // `return name(x)`: a use, not a declaration
 	}
 	rest := strings.TrimSpace(text[len(prefix)+len(name):])
-	return rest != "" && strings.IndexByte("(<:=?,", rest[0]) >= 0 || lang == "go"
+	if lang == "go" {
+		return goDeclaresBareName(rest)
+	}
+	return rest != "" && strings.IndexByte("(<:=?,", rest[0]) >= 0
+}
+
+// goDeclaresBareName says whether what follows a name at the start of a Go line can
+// make it a declaration: a field (`Name int`, `A, B int`, an embedded `Name`), an
+// interface method (`Name(x int)`) or an entry of a grouped const or var. A keyed
+// literal element (`Name: x,`), an assignment, a label or a selector can't.
+func goDeclaresBareName(rest string) bool {
+	if rest == "" || strings.HasPrefix(rest, "<-") || strings.HasPrefix(rest, "//") {
+		return true
+	}
+	c := rest[0]
+	// A grouped `Name = iota` isn't here: withGoGroupKeyword gives it its keyword.
+	return isIdentByte(c) || strings.IndexByte("*[(,`\"", c) >= 0
 }
 
 var (

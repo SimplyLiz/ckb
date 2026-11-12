@@ -169,6 +169,12 @@ private, so only aggregates are here.
   about `truncation.go`, it gave 49 affected uses and high risk; asked about the one
   function changed, 4 and low. The compact answer now has a `hint` pointing at a symbol
   target, and its summary names a symbol target instead of repeating the full SCIP ID.
+- **A Go literal's key isn't the field's new declaration.** Renaming
+  `query.TruncationInfo.OriginalCount` reported `signature-changed` with an "after" of
+  `OriginalCount: truncationInfo.TotalCount,`, the key of a `compression.TruncationInfo`
+  literal in the same file. Any Go line starting with the name passed as a declaration;
+  now only what can follow a field, method or grouped entry does, so the rename is
+  `definition-removed`. The done check had it right.
 
 ### Added — MCP tool annotations
 
