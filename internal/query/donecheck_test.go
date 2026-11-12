@@ -395,7 +395,8 @@ func TestUnreadableName(t *testing.T) {
 
 // What is likely to break comes first, so the cut at MaxOpenSites and an agent's first
 // page both keep it: a use keyed by a changed type before a literal of it, a switch
-// after that, and a parameter merely annotated with it last.
+// after that. A parameter merely annotated with it, or a read of a wider key, is no
+// listed site but counted per symbol, and kept apart.
 func TestDoneCheck_OrdersSitesByLikelihood(t *testing.T) {
 	c := doneChecker{seen: map[string]bool{}, sites: []OpenSite{
 		{Symbol: "Kind", File: "a.ts", Line: 1, Use: diff.TSUseAnnotation},
@@ -411,11 +412,45 @@ func TestDoneCheck_OrdersSitesByLikelihood(t *testing.T) {
 	for _, s := range check.OpenSites {
 		got = append(got, s.Line)
 	}
-	if fmt.Sprint(got) != "[5 4 6 3 2 1 7]" {
-		t.Errorf("order = %v, want the call and the keyed uses, then the literal, the switch, and the annotation and read last", got)
+	if fmt.Sprint(got) != "[5 4 6 3 2]" {
+		t.Errorf("order = %v, want the call and the keyed uses, then the literal and the switch", got)
 	}
-	if check.RarelyCount != 2 || !strings.Contains(check.Note, "2 of them") {
-		t.Errorf("rarely = %d, note %q: want the two that rarely break counted and said", check.RarelyCount, check.Note)
+	if fmt.Sprint(siteKeys(check.RarelySites)) != "[a.ts:1 a.ts:7]" || check.RarelyCount != 2 || !strings.Contains(check.Note, "2 of them") {
+		t.Errorf("rarely %v, count %d, note %q: want the annotation and the read kept apart, counted and said", siteKeys(check.RarelySites), check.RarelyCount, check.Note)
+	}
+	if check.OpenCount != 7 || check.Status != DoneCheckOpen {
+		t.Errorf("openCount %d, status %s: the count is every untouched use", check.OpenCount, check.Status)
+	}
+	if fmt.Sprintf("%+v", check.Rarely) != "[{Symbol:Kind Change: Via: Count:1 Files:1 Uses:map[annotation:1]} {Symbol:s.key Change: Via: Count:1 Files:1 Uses:map[read:1]}]" {
+		t.Errorf("rarely groups = %+v", check.Rarely)
+	}
+}
+
+// The cut at MaxOpenSites is for the sites likely to break. The ones that rarely break
+// are counted in full, whatever their number, and a check with nothing else stays open.
+func TestDoneCheck_RarelySitesAreCountedNotCut(t *testing.T) {
+	var sites []OpenSite
+	for i := range MaxOpenSites + 1 {
+		sites = append(sites, OpenSite{Symbol: "Kind", Change: "changed", File: "a.ts", Line: i + 1, Use: diff.TSUseLiteral})
+	}
+	for i := range 3 * MaxOpenSites {
+		sites = append(sites, OpenSite{Symbol: "s.key", Change: "changed", File: fmt.Sprintf("r%d.ts", i%7), Line: i + 1, Use: diff.TSUseRead})
+	}
+	c := doneChecker{seen: map[string]bool{}, sites: sites}
+	check := c.result("diff", true, false, "")
+	if len(check.OpenSites) != MaxOpenSites || !check.Truncated {
+		t.Errorf("likely sites = %d, truncated %v: want the cut at %d", len(check.OpenSites), check.Truncated, MaxOpenSites)
+	}
+	if len(check.RarelySites) != 3*MaxOpenSites || check.RarelyCount != 3*MaxOpenSites || check.OpenCount != 4*MaxOpenSites+1 {
+		t.Errorf("rarely sites %d, count %d, open %d: nothing that rarely breaks is cut", len(check.RarelySites), check.RarelyCount, check.OpenCount)
+	}
+	if len(check.Rarely) != 1 || check.Rarely[0].Count != 3*MaxOpenSites || check.Rarely[0].Files != 7 {
+		t.Errorf("groups = %+v, want one per key with all of them and their files", check.Rarely)
+	}
+
+	only := doneChecker{seen: map[string]bool{}, sites: []OpenSite{{Symbol: "Kind", File: "a.ts", Line: 1, Use: diff.TSUseAnnotation}}}
+	if check := only.result("diff", true, false, ""); check.Status != DoneCheckOpen || len(check.OpenSites) != 0 || len(check.Rarely) != 1 {
+		t.Errorf("only a rare site: status %s, sites %d, groups %d; want open with the count line", check.Status, len(check.OpenSites), len(check.Rarely))
 	}
 }
 

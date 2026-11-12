@@ -3,11 +3,12 @@
 Status: built 2026-11-12, all seven steps, on `develop`. The numbers are in the
 CHANGELOG under 9.4.0, and `scripts/eval-change/replay.py` repeats them. Left open:
 
-- The replay's open sites went from 61 to 208. The first 20 and 50 are better than
-  before (7 and 12 on a broken line, from 5 and 8), the whole list is longer, and the
-  cut at 100 costs two hits that sit among the sites that rarely break.
-- A wider key lists every read of it (128 in the replay). They come last and are
-  counted, as planned; whether an agent is better off not being shown them is unmeasured.
+- The replay's open sites went from 61 to 212. Since 2026-11-12 the 165 that rarely
+  break (annotations, reads of a wider key; 128 of them one key) are counted per symbol
+  and not listed, so 47 are listed, with 13 exact hits (9 before) and 34 on lines `tsc`
+  accepts (52 before). Listing them would add one line within three of a break and one
+  file, both by coincidence. Whether an agent does better with the counts than with the
+  list is unmeasured.
 - Four broken lines have no site: an index access with a variable of a changed type, and
   callbacks whose parameter type is inferred from one. Nothing on the line names what
   changed, so text can't find them.

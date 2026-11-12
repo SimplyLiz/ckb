@@ -46,16 +46,33 @@ type DoneCheck struct {
 	// Diff identifies the exact diff this describes. Any edit changes it, so a result
 	// from before the last edit can be told from a current one.
 	Diff string `json:"diff"`
-	// OpenSites are the untouched uses, production code first.
+	// OpenSites are the untouched uses likely to break, production code first, at most
+	// MaxOpenSites of them.
 	OpenSites []OpenSite `json:"openSites,omitempty"`
-	OpenCount int        `json:"openCount"`
+	// OpenCount counts every untouched use: OpenSites before the cut, and RarelyCount.
+	OpenCount int `json:"openCount"`
 	// UpdatedCount is the uses the diff touched.
 	UpdatedCount int `json:"updatedCount"`
-	// RarelyCount is how many open sites only name a changed type in an annotation
-	// or read a key whose type changed. Those rarely break, and come last.
-	RarelyCount int    `json:"rarelyCount,omitempty"`
-	Truncated   bool   `json:"truncated,omitempty"`
-	Note        string `json:"note,omitempty"`
+	// RarelyCount is how many untouched uses only name a changed type in an annotation
+	// or read a key whose type changed. Those rarely break, so they aren't in OpenSites:
+	// Rarely counts them per symbol, and RarelySites has each one, uncut.
+	RarelyCount int           `json:"rarelyCount,omitempty"`
+	Rarely      []RarelyGroup `json:"rarely,omitempty"`
+	RarelySites []OpenSite    `json:"rarelySites,omitempty"`
+	// Truncated says OpenSites was cut at MaxOpenSites.
+	Truncated bool   `json:"truncated,omitempty"`
+	Note      string `json:"note,omitempty"`
+}
+
+// RarelyGroup counts the uses of one changed symbol or key that rarely break.
+type RarelyGroup struct {
+	Symbol string `json:"symbol"`
+	Change string `json:"change"`
+	Via    string `json:"via,omitempty"`
+	Count  int    `json:"count"`
+	Files  int    `json:"files"`
+	// Uses counts them by use: annotation, read.
+	Uses map[string]int `json:"uses"`
 }
 
 // OpenSite is one use of a changed declaration that the diff left as it was.
@@ -441,6 +458,29 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
+// groupRarely counts the sites that rarely break per symbol, change and reason, in the
+// order they first appear.
+func groupRarely(sites []OpenSite) []RarelyGroup {
+	var groups []RarelyGroup
+	at := make(map[[3]string]int)
+	files := make(map[[3]string]map[string]bool)
+	for _, s := range sites {
+		key := [3]string{s.Symbol, s.Change, s.Via}
+		i, ok := at[key]
+		if !ok {
+			i = len(groups)
+			at[key] = i
+			files[key] = make(map[string]bool)
+			groups = append(groups, RarelyGroup{Symbol: s.Symbol, Change: s.Change, Via: s.Via, Uses: make(map[string]int)})
+		}
+		groups[i].Count++
+		groups[i].Uses[s.Use]++
+		files[key][s.File] = true
+		groups[i].Files = len(files[key])
+	}
+	return groups
+}
+
 // rankRarely is the rank of a use that rarely breaks.
 const rankRarely = 4
 
@@ -511,7 +551,9 @@ func coversUse(sites []OpenSite, lit int) bool {
 	l := &sites[lit]
 	for j := range sites {
 		s := &sites[j]
-		if j == lit || s.File != l.File || isLiteralVia(s.Via) {
+		// A use that rarely breaks is only counted, not listed, so it can't stand in
+		// for the literal: `Record<Changed, Other> = {` names Other on the literal's line.
+		if j == lit || s.File != l.File || isLiteralVia(s.Via) || useRank(s.Use) == rankRarely {
 			continue
 		}
 		if s.Line >= l.Line && s.Line <= l.Line+l.literalLines {
@@ -641,11 +683,6 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 		UpdatedCount: c.updated,
 	}
 
-	for i := range c.sites {
-		if useRank(c.sites[i].Use) == rankRarely {
-			check.RarelyCount++
-		}
-	}
 	sort.SliceStable(c.sites, func(i, j int) bool {
 		a, b := &c.sites[i], &c.sites[j]
 		if ra, rb := useRank(a.Use), useRank(b.Use); ra != rb {
@@ -659,7 +696,17 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 		}
 		return a.Line < b.Line
 	})
-	check.OpenSites = c.sites
+	// The sort puts the rare ones last: everything from the first of them on.
+	likely := len(c.sites)
+	for likely > 0 && useRank(c.sites[likely-1].Use) == rankRarely {
+		likely--
+	}
+	check.OpenSites = c.sites[:likely]
+	if rarely := c.sites[likely:]; len(rarely) > 0 {
+		check.RarelySites = rarely
+		check.RarelyCount = len(rarely)
+		check.Rarely = groupRarely(rarely)
+	}
 	if len(check.OpenSites) > MaxOpenSites {
 		check.OpenSites = check.OpenSites[:MaxOpenSites]
 		check.Truncated = true
@@ -697,7 +744,7 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 		check.Status = DoneCheckOpen
 		check.Note = "Uses of a changed declaration the diff didn't touch. Text comparison, nothing compiled: some may need no edit."
 		if check.RarelyCount > 0 {
-			check.Note += fmt.Sprintf(" The likely ones come first; %d of them only annotate with a changed type or read a changed key, which rarely breaks, and come last.", check.RarelyCount)
+			check.Note += fmt.Sprintf(" %d of them only annotate with a changed type or read a changed key, which rarely breaks: they are counted per symbol, not listed.", check.RarelyCount)
 		}
 		if doubt != "" {
 			check.Note += " There may be more: " + doubt + "."

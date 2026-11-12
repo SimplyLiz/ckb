@@ -349,6 +349,26 @@ func TestWriteDoneCheck(t *testing.T) {
 		t.Errorf("the check must not call anything safe:\n%s", out)
 	}
 
+	// The ones that rarely break are a count per symbol, and --verbose lists them.
+	rarely := &query.DoneCheck{
+		Status: query.DoneCheckOpen, OpenCount: 2, RarelyCount: 2,
+		RarelySites: []query.OpenSite{
+			{Symbol: "s.key", Change: "changed", File: "a.ts", Line: 3, Code: "s.key", Use: "read"},
+			{Symbol: "s.key", Change: "changed", File: "b.ts", Line: 4, Code: "s.key", Use: "read"},
+		},
+		Rarely: []query.RarelyGroup{{Symbol: "s.key", Change: "changed", Count: 2, Files: 2, Uses: map[string]int{"read": 2}}},
+	}
+	b.Reset()
+	writeDoneCheck(&b, rarely, false)
+	if out := b.String(); !strings.Contains(out, "2 more rarely break, counted per symbol (--verbose lists them)") || !strings.Contains(out, "s.key: 2 in 2 files") || strings.Contains(out, "a.ts:3") || strings.Contains(out, "and 0 more") {
+		t.Errorf("rarely, default:\n%s", out)
+	}
+	b.Reset()
+	writeDoneCheck(&b, rarely, true)
+	if out := b.String(); !strings.Contains(out, "a.ts:3  s.key") || !strings.Contains(out, "b.ts:4") {
+		t.Errorf("rarely, verbose:\n%s", out)
+	}
+
 	b.Reset()
 	writeDoneCheck(&b, nil, false)
 	if b.Len() != 0 {

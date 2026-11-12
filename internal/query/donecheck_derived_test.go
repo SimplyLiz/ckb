@@ -305,8 +305,12 @@ func TestDoneCheck_ZodSaysWhatChanged(t *testing.T) {
 		engine, root := zodFixtureRepo(t)
 		editRepoFile(t, root, "zod/schema.ts", "export const profileSchema = z.object({\n  id: z.string(),\n", "export const profileSchema = z.object({\n  id: z.union([z.string(), z.number()]),\n")
 		resp := runChangeSet(t, engine, AnalyzeChangeSetOptions{})
-		if got := openSiteKeys(resp.DoneCheck); fmt.Sprint(got) != "[zod/sample.ts:18]" {
-			t.Errorf("open sites = %v, want only `p.id`: what was written still fits", got)
+		check := resp.DoneCheck
+		if got := rarelySiteKeys(check); fmt.Sprint(got) != "[zod/sample.ts:18]" || len(check.OpenSites) != 0 {
+			t.Errorf("open sites = %v, rarely %v, want only `p.id`, as a read that rarely breaks: what was written still fits", openSiteKeys(check), got)
+		}
+		if check.Status != DoneCheckOpen || len(check.Rarely) != 1 || check.Rarely[0].Symbol != "profileSchema.id" {
+			t.Errorf("status %s, rarely %+v: a read left as it was keeps the check open, counted under its key", check.Status, check.Rarely)
 		}
 	})
 	t.Run("a chain that can't be read falls back and says so", func(t *testing.T) {
@@ -314,8 +318,8 @@ func TestDoneCheck_ZodSaysWhatChanged(t *testing.T) {
 		editRepoFile(t, root, "zod/schema.ts", "  items: z.array(itemSchema),\n});", "  items: z.array(itemSchema),\n  note: z.string().optional(),\n}).transform((p) => p);")
 		resp := runChangeSet(t, engine, AnalyzeChangeSetOptions{})
 		got := openSiteKeys(resp.DoneCheck)
-		if fmt.Sprint(got) != "[zod/sample.ts:3 zod/sample.ts:9 zod/sample.ts:24]" {
-			t.Fatalf("open sites = %v, want every literal and the cast, as without the reader", got)
+		if fmt.Sprint(got) != "[zod/sample.ts:3 zod/sample.ts:9]" || fmt.Sprint(rarelySiteKeys(resp.DoneCheck)) != "[zod/sample.ts:24]" {
+			t.Fatalf("open sites = %v, rarely %v, want every literal, and the cast as rarely breaking, as without the reader", got, rarelySiteKeys(resp.DoneCheck))
 		}
 		if via := resp.DoneCheck.OpenSites[0].Via; !strings.Contains(via, ".transform") {
 			t.Errorf("via = %q, want it to say what wasn't read", via)

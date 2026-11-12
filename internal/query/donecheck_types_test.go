@@ -91,8 +91,16 @@ func typeFixtureRepo(t *testing.T) (*Engine, string) {
 }
 
 func openSiteKeys(check *DoneCheck) []string {
+	return siteKeys(check.OpenSites)
+}
+
+func rarelySiteKeys(check *DoneCheck) []string {
+	return siteKeys(check.RarelySites)
+}
+
+func siteKeys(sites []OpenSite) []string {
 	var keys []string
-	for _, site := range check.OpenSites {
+	for _, site := range sites {
 		keys = append(keys, fmt.Sprintf("%s:%d", site.File, site.Line))
 	}
 	return keys

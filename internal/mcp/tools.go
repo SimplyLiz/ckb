@@ -401,7 +401,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		},
 		{
 			Name:        "assessChange",
-			Description: "The post-change counterpart to prepareChange: use this AFTER changes are made to assess what you actually changed and what to verify before finishing. Defaults to the uncommitted working tree; also supports staged changes or a base-branch range. Answers: what might break? which tests should run? are there possible contract changes? `doneCheck` lists each use of a changed declaration that the diff left as it was (`openSites`: under the symbol and why it counts, then the file, then `line: code`), with status open, clear or not_assessed. It compares text and compiles nothing, so clear is not proof. `coChangeOpen` lists the files that usually change with the touched files (git history, any language) and were left alone. The default format \"compact\" returns text with just what to act on (risk, open sites, the tests that use a changed symbol, contracts with before and after, consumer files), no symbol ids; pass focus \"done\", \"tests\" or \"risk\" for only that part, paged with offset; pass format \"full\" for every detail, including symbol ids, affected modules, recommendations and the per-check structure (`coChangeCheck.openFiles`). For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
+			Description: "The post-change counterpart to prepareChange: use this AFTER changes are made to assess what you actually changed and what to verify before finishing. Defaults to the uncommitted working tree; also supports staged changes or a base-branch range. Answers: what might break? which tests should run? are there possible contract changes? `doneCheck` lists each use of a changed declaration that the diff left as it was (`openSites`: under the symbol and why it counts, then the file, then `line: code`); uses that rarely break (a TypeScript annotation, a read of a widened key) are one line per symbol with a count, and focus \"rarely\" lists them. Status is open, clear or not_assessed. It compares text and compiles nothing, so clear is not proof. `coChangeOpen` lists the files that usually change with the touched files (git history, any language) and were left alone. The default format \"compact\" returns text with just what to act on (risk, open sites, the tests that use a changed symbol, contracts with before and after, consumer files), no symbol ids; pass focus \"done\", \"rarely\", \"tests\" or \"risk\" for only that part, paged with offset; pass format \"full\" for every detail, including symbol ids, affected modules, recommendations and the per-check structure (`coChangeCheck.openFiles`). For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -442,17 +442,17 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 					},
 					"focus": map[string]interface{}{
 						"type":        "string",
-						"enum":        []string{"done", "tests", "risk"},
-						"description": "Compact only: return just the part you need. 'done': open sites and co-change files left alone (is the change finished?). 'tests': affected test files with test names and runTests, a command that runs them. 'risk': score, riskFactors, contract changes, consumer files. Omit for all sections. The summary always covers everything",
+						"enum":        []string{"done", "rarely", "tests", "risk"},
+						"description": "Compact only: return just the part you need. 'done': open sites and co-change files left alone (is the change finished?). 'rarely': the open sites that rarely break, which the other views count per symbol. 'tests': affected test files with test names and runTests, a command that runs them. 'risk': score, riskFactors, contract changes, consumer files. Omit for all sections. The summary always covers everything",
 					},
 					"offset": map[string]interface{}{
 						"type":        "integer",
 						"default":     0,
-						"description": "With focus 'done' or 'tests': skip this many open sites or test files. The response's 'more' says the next offset",
+						"description": "With focus 'done', 'rarely' or 'tests': skip this many open sites or test files. The response's 'more' says the next offset",
 					},
 					"limit": map[string]interface{}{
 						"type":        "integer",
-						"description": "With focus 'done' or 'tests': at most this many open sites (default 50) or test files (default 20)",
+						"description": "With focus 'done', 'rarely' or 'tests': at most this many open sites (default 50) or test files (default 20)",
 					},
 				},
 			},

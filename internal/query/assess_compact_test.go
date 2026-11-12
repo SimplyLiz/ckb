@@ -2,8 +2,11 @@ package query
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/SimplyLiz/CodeMCP/internal/diff"
 )
 
 // The compact view keeps what an agent acts on and drops the symbol ids that made
@@ -222,5 +225,61 @@ func TestCompactAssessChange_Text(t *testing.T) {
 	focused, _ := CompactAssessChangeFor(r, CompactAssessOptions{Focus: AssessFocusTests, RunCommand: "npx vitest run"})
 	if text := focused.Text(); !strings.Contains(text, "tests/far.test.ts: renders") || !strings.Contains(text, "run: npx vitest run") {
 		t.Errorf("focus tests:\n%s", text)
+	}
+}
+
+// The sites that rarely break are one line per symbol by default, and their own list
+// with focus rarely, paged like the others. Neither view drops one.
+func TestCompactAssessChangeFor_Rarely(t *testing.T) {
+	var rarely []OpenSite
+	for i := range compactOpenSites + 3 {
+		use := diff.TSUseRead
+		if i%10 == 0 {
+			use = diff.TSUseAnnotation
+		}
+		rarely = append(rarely, OpenSite{Symbol: "sectionSchema.key", Change: "changed", Via: "is wider", File: fmt.Sprintf("r%d.ts", i%4), Line: i + 1, Code: "s.key", Use: use})
+	}
+	r := &AnalyzeChangeSetResponse{DoneCheck: &DoneCheck{
+		Status: "open", OpenCount: len(rarely) + 1, RarelyCount: len(rarely),
+		OpenSites:   []OpenSite{{Symbol: "Kind", Change: "changed", File: "k.ts", Line: 3, Code: "const x: Record<Kind, 1> = {}", Use: diff.TSUseKey}},
+		RarelySites: rarely,
+		Rarely:      []RarelyGroup{{Symbol: "sectionSchema.key", Change: "changed", Via: "is wider", Count: len(rarely), Files: 4, Uses: map[string]int{"read": 47, "annotation": 6}}},
+	}}
+
+	c := CompactAssessChangeFrom(r)
+	if len(c.DoneCheck.OpenSites) != 1 || c.DoneCheck.RarelyCount != len(rarely) || c.More != "" {
+		t.Errorf("default: %d sites, rarely %d, more %q: want the likely one, the count, and no page to fetch", len(c.DoneCheck.OpenSites), c.DoneCheck.RarelyCount, c.More)
+	}
+	text := c.Text()
+	for _, want := range []string{
+		`rarely break, 53 counted and not listed (focus "rarely" lists them):`,
+		"  sectionSchema.key (changed; is wider): 53 in 4 files, 47 read, 6 annotation\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text lacks %q:\n%s", want, text)
+		}
+	}
+	if !strings.Contains(c.Summary, "54 uses of a changed declaration left open, 53 of them rarely break.") {
+		t.Errorf("summary = %q", c.Summary)
+	}
+	if strings.Contains(text, "r1.ts") {
+		t.Errorf("a site that rarely breaks is listed by default:\n%s", text)
+	}
+
+	first, _ := CompactAssessChangeFor(r, CompactAssessOptions{Focus: AssessFocusRarely})
+	if len(first.DoneCheck.OpenSites) != compactOpenSites || first.DoneCheck.OpenSites[0].At != "r0.ts:1" || len(first.DoneCheck.Rarely) != 0 {
+		t.Fatalf("focus rarely: %d sites, first %+v, groups %v", len(first.DoneCheck.OpenSites), first.DoneCheck.OpenSites[0], first.DoneCheck.Rarely)
+	}
+	if !strings.Contains(first.More, `focus "rarely", offset 50`) || len(first.Tests) != 0 || len(first.CoChangeOpen) != 0 {
+		t.Errorf("focus rarely: more %q, tests %d, co-change %d", first.More, len(first.Tests), len(first.CoChangeOpen))
+	}
+	next, _ := CompactAssessChangeFor(r, CompactAssessOptions{Focus: AssessFocusRarely, Offset: 50})
+	if len(next.DoneCheck.OpenSites) != 3 || next.More != "" || next.DoneCheck.Status != "open" {
+		t.Errorf("second page: %d sites, more %q", len(next.DoneCheck.OpenSites), next.More)
+	}
+
+	r.DoneCheck.Truncated = true
+	if cut := CompactAssessChangeFrom(r); !strings.Contains(cut.More, "first 1 of 1 open sites likely to break") {
+		t.Errorf("the cut counts the likely sites only: %q", cut.More)
 	}
 }

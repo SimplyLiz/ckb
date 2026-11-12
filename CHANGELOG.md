@@ -96,17 +96,27 @@ private, so only aggregates are here.
   sites, 128 of them reads of one key whose type got wider.
 - **TypeScript sites are ordered by how likely they break.** Keyed by the type or
   indexing with the key first, then object literals, then a `switch` over the key, and
-  plain annotations and reads last. Nothing is dropped; `rarelyCount` and the note count
-  the last group. Replay, sites on a line `tsc` reports: 7 of the first 20 (5 at the
-  start), 12 of the first 50 (8). The list is cut at 100: on it 12 broken lines have a
-  site, 17 within three lines, 6 none. Uncut it is 13, 19 and 4, with every broken file
-  named, so two hits sit among the 163 sites that rarely break.
-- **Where this leaves the replay.** 61 open sites became 208, and of the 100 listed 88
-  are on lines `tsc` accepts (52 of 61 before). The first page got better and the whole
-  list got longer. The four lines still without a site index a value with a variable of a
+  plain annotations and reads last. Replay, sites on a line `tsc` reports: 7 of the first
+  20 (5 at the start), 12 of the first 50 (8).
+- **Sites that rarely break are counted, not listed.** A plain annotation with a changed
+  type and a read of a key whose type got wider are one line per symbol: how many, in
+  how many files, and focus `rarely` (`ckb changes --format=compact --focus=rarely`,
+  paged with offset) lists them. `--format=json` and `format: "full"` carry them as
+  `rarelySites`, uncut, beside the counts in `rarely`. The cut at 100 is for the listed
+  sites only, and the status doesn't move: a symbol with nothing but rare uses keeps the
+  check open. A literal used to be dropped when another use of the same file sat inside
+  its braces, on the grounds that the other one was listed; a rare one no longer counts
+  for that, because it isn't (`Record<Changed, Other> = {` names `Other` on its line).
+- **Where this leaves the replay.** 61 open sites became 212, of which 47 are listed and
+  165 counted in 6 lines. On the 47: 13 broken lines have a site (9 before), 18 within
+  three lines (14), 5 none (9), one broken file isn't named (2), and 34 sites are on lines
+  `tsc` accepts (52). 13 of the first 50. With the 165 included it is 13, 19 and 4 with
+  every file named: the line and the file they add hold an annotation three lines from a
+  break it has nothing to do with. Before the split the list was cut at 100, with 12
+  exact hits. The four lines still without a site index a value with a variable of a
   changed type, or sit in a callback whose parameter type is inferred from one; no line
-  there names anything that changed. One app, two commits: not a holdout. The Go recall sample is unchanged at 9/9
-  compiler-broken files.
+  there names anything that changed. One app, two commits: not a holdout. The Go recall
+  sample is unchanged at 9/9 compiler-broken files.
 - **The compact answer is text.** `assessChange` with `format: "compact"` and `ckb
   changes --format=compact` print open sites under the symbol and why it counts, then
   the file, then `line: code`; contracts as one line with before and after; the tests
@@ -817,8 +827,11 @@ things in every language. Checked on this repo and on a Next.js app.
   `riskScore.level`.
 - `assessChange` with `format: "compact"` and `ckb changes --format=compact` return
   text, not JSON. `format: "full"` and `--format=json` are JSON as before, with new
-  fields: `use` on an open site, `rarelyCount` on `doneCheck`, `detail` on a contract,
-  and the contract kind `shape-changed`. Open sites are no longer in file order.
+  fields: `use` on an open site, `rarelyCount`, `rarely` and `rarelySites` on
+  `doneCheck`, `detail` on a contract, and the contract kind `shape-changed`. Open sites
+  are no longer in file order, and `openSites` leaves out the TypeScript annotations and
+  reads that rarely break: they are in `rarelySites`, and `openCount` still counts them.
+  `focus` takes `rarely`.
 - `changedSymbols`: new `note`, fewer entries, `file:` entries for lines no
   definition could be found for; deleted symbols list old-file lines.
 - `riskFactors` may include `deleted_with_consumers`.

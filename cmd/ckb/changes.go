@@ -64,9 +64,9 @@ func init() {
 	changesCmd.Flags().StringVar(&changesRepo, "repo", "", "Repository path or registry name (auto-detected)")
 	changesCmd.Flags().BoolVar(&changesVerbose, "verbose", false, "Show full lists instead of capped summaries")
 	changesCmd.Flags().StringVar(&changesFormat, "format", "human", "Output format (human, json, compact)")
-	changesCmd.Flags().StringVar(&changesFocus, "focus", "", "With --format=compact: only done, tests or risk")
-	changesCmd.Flags().IntVar(&changesOffset, "offset", 0, "With --focus done or tests: skip this many open sites or test files")
-	changesCmd.Flags().IntVar(&changesLimit, "limit", 0, "With --focus done or tests: at most this many (default 50 sites, 20 test files)")
+	changesCmd.Flags().StringVar(&changesFocus, "focus", "", "With --format=compact: only done, rarely, tests or risk")
+	changesCmd.Flags().IntVar(&changesOffset, "offset", 0, "With --focus done, rarely or tests: skip this many open sites or test files")
+	changesCmd.Flags().IntVar(&changesLimit, "limit", 0, "With --focus done, rarely or tests: at most this many (default 50 sites, 20 test files)")
 	changesCmd.Flags().BoolVar(&changesCheck, "check", false, "Set the exit code from the done check: 0 clear, 2 open, 3 not assessed")
 	rootCmd.AddCommand(changesCmd)
 }

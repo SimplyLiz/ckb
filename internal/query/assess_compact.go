@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"github.com/SimplyLiz/CodeMCP/internal/diff"
 )
 
 // compactTestFiles and compactOpenSites bound the lists a compact assessChange
@@ -19,13 +21,17 @@ const (
 	AssessFocusDone  = "done"  // open sites and co-change partners: is the change finished?
 	AssessFocusTests = "tests" // affected tests and the command that runs them
 	AssessFocusRisk  = "risk"  // score, what drives it, contract changes, consumers
+	// AssessFocusRarely lists the open sites that rarely break, which the other views
+	// only count per symbol.
+	AssessFocusRarely = "rarely"
 )
 
 // CompactAssessOptions selects what a compact assessChange returns.
 type CompactAssessOptions struct {
 	Focus string
-	// Offset and Limit page the focused list: open sites for done, test files
-	// for tests. Limit 0 means the default bound. Without a focus Offset must be 0.
+	// Offset and Limit page the focused list: open sites for done, the ones that
+	// rarely break for rarely, test files for tests. Limit 0 means the default bound.
+	// Without a focus Offset must be 0.
 	Offset, Limit int
 	// RunCommand runs every affected test; shown with focus tests.
 	RunCommand string
@@ -69,8 +75,12 @@ type CompactDoneCheck struct {
 	Diff      string            `json:"diff,omitempty"`
 	OpenCount int               `json:"openCount"`
 	OpenSites []CompactOpenSite `json:"openSites,omitempty"`
-	Truncated bool              `json:"truncated,omitempty"`
-	Note      string            `json:"note,omitempty"`
+	// Rarely says, one line per symbol, how many open uses rarely break and aren't in
+	// OpenSites; RarelyCount counts them all. With focus rarely OpenSites lists them.
+	Rarely      []string `json:"rarely,omitempty"`
+	RarelyCount int      `json:"rarelyCount,omitempty"`
+	Truncated   bool     `json:"truncated,omitempty"`
+	Note        string   `json:"note,omitempty"`
 }
 
 // CompactOpenSite is one untouched use: At is "file:line".
@@ -112,15 +122,15 @@ func CompactAssessChangeFrom(r *AnalyzeChangeSetResponse) *CompactAssessChange {
 // sections that answer it, the focused list paged by Offset and Limit.
 func CompactAssessChangeFor(r *AnalyzeChangeSetResponse, opts CompactAssessOptions) (*CompactAssessChange, error) {
 	switch opts.Focus {
-	case "", AssessFocusDone, AssessFocusTests, AssessFocusRisk:
+	case "", AssessFocusDone, AssessFocusRarely, AssessFocusTests, AssessFocusRisk:
 	default:
-		return nil, fmt.Errorf("focus must be %q, %q or %q", AssessFocusDone, AssessFocusTests, AssessFocusRisk)
+		return nil, fmt.Errorf("focus must be %q, %q, %q or %q", AssessFocusDone, AssessFocusRarely, AssessFocusTests, AssessFocusRisk)
 	}
 	if opts.Offset < 0 || opts.Limit < 0 {
 		return nil, fmt.Errorf("offset and limit must not be negative")
 	}
-	if opts.Offset > 0 && opts.Focus != AssessFocusDone && opts.Focus != AssessFocusTests {
-		return nil, fmt.Errorf("offset pages the focused list, so it needs focus %q or %q", AssessFocusDone, AssessFocusTests)
+	if opts.Offset > 0 && opts.Focus != AssessFocusDone && opts.Focus != AssessFocusRarely && opts.Focus != AssessFocusTests {
+		return nil, fmt.Errorf("offset pages the focused list, so it needs focus %q, %q or %q", AssessFocusDone, AssessFocusRarely, AssessFocusTests)
 	}
 
 	c := &CompactAssessChange{Risk: "unknown", Focus: opts.Focus}
@@ -147,18 +157,23 @@ func CompactAssessChangeFor(r *AnalyzeChangeSetResponse, opts CompactAssessOptio
 	}
 
 	var more []string
-	if d := r.DoneCheck; d != nil && want(AssessFocusDone) {
-		cd := &CompactDoneCheck{Status: d.Status, Diff: d.Diff, OpenCount: d.OpenCount, Truncated: d.Truncated, Note: d.Note}
-		limit := opts.Limit
-		if limit == 0 || opts.Focus != AssessFocusDone {
-			limit = compactOpenSites
+	if d := r.DoneCheck; d != nil && (want(AssessFocusDone) || opts.Focus == AssessFocusRarely) {
+		cd := &CompactDoneCheck{Status: d.Status, Diff: d.Diff, OpenCount: d.OpenCount, RarelyCount: d.RarelyCount, Truncated: d.Truncated, Note: d.Note}
+		// The rare ones are a list of their own: with focus rarely it is the page, and
+		// otherwise a count per symbol, never cut.
+		sites, focus := d.OpenSites, AssessFocusDone
+		if opts.Focus == AssessFocusRarely {
+			sites, focus = d.RarelySites, AssessFocusRarely
 		}
-		offset := 0
-		if opts.Focus == AssessFocusDone {
+		limit, offset := opts.Limit, 0
+		if opts.Focus == focus {
 			offset = opts.Offset
 		}
-		page, rest := pageRange(len(d.OpenSites), offset, limit)
-		for _, s := range d.OpenSites[page[0]:page[1]] {
+		if limit == 0 || opts.Focus != focus {
+			limit = compactOpenSites
+		}
+		page, rest := pageRange(len(sites), offset, limit)
+		for _, s := range sites[page[0]:page[1]] {
 			cd.OpenSites = append(cd.OpenSites, CompactOpenSite{
 				At:       fmt.Sprintf("%s:%d", s.File, s.Line),
 				Symbol:   s.Symbol,
@@ -170,12 +185,21 @@ func CompactAssessChangeFor(r *AnalyzeChangeSetResponse, opts CompactAssessOptio
 			})
 		}
 		if rest > 0 {
-			more = append(more, fmt.Sprintf("open sites %d-%d of %d shown; the next with focus %q, offset %d",
-				page[0]+1, page[1], len(d.OpenSites), AssessFocusDone, page[1]))
+			noun := "open sites"
+			if focus == AssessFocusRarely {
+				noun = "sites that rarely break"
+			}
+			more = append(more, fmt.Sprintf("%s %d-%d of %d shown; the next with focus %q, offset %d",
+				noun, page[0]+1, page[1], len(sites), focus, page[1]))
 		}
-		if d.Truncated {
-			more = append(more, fmt.Sprintf("the check keeps the first %d of %d open sites; fix those and call again for the rest",
-				len(d.OpenSites), d.OpenCount))
+		if focus == AssessFocusDone {
+			for _, g := range d.Rarely {
+				cd.Rarely = append(cd.Rarely, rarelyLine(g))
+			}
+			if d.Truncated {
+				more = append(more, fmt.Sprintf("the check keeps the first %d of %d open sites likely to break; fix those and call again for the rest",
+					len(d.OpenSites), d.OpenCount-d.RarelyCount))
+			}
 		}
 		c.DoneCheck = cd
 	}
@@ -246,6 +270,31 @@ func CompactAssessChangeFor(r *AnalyzeChangeSetResponse, opts CompactAssessOptio
 	return c, nil
 }
 
+// rarelyLine says in one line how many uses of a symbol rarely break, where, and how
+// to see them: `sectionSchema.key (changed; …): 128 in 30 files, 120 read, 8 annotation`.
+func rarelyLine(g RarelyGroup) string {
+	uses := make([]string, 0, len(g.Uses))
+	for _, use := range []string{diff.TSUseRead, diff.TSUseAnnotation} {
+		if n := g.Uses[use]; n > 0 {
+			uses = append(uses, fmt.Sprintf("%d %s", n, use))
+		}
+	}
+	return fmt.Sprintf("%s: %d in %s, %s", siteHead(g.Symbol, g.Change, g.Via), g.Count, plural(g.Files, "file"), strings.Join(uses, ", "))
+}
+
+// siteHead names a symbol with its change and why its uses count.
+func siteHead(symbol, change, via string) string {
+	switch {
+	case change != "" && via != "":
+		return symbol + " (" + change + "; " + via + ")"
+	case change != "":
+		return symbol + " (" + change + ")"
+	case via != "":
+		return symbol + " (" + via + ")"
+	}
+	return symbol
+}
+
 // pageRange returns the [start, end) slice bounds of one page of a list of n,
 // and how many items follow it.
 func pageRange(n, offset, limit int) ([2]int, int) {
@@ -270,7 +319,11 @@ func compactAssessSummary(r *AnalyzeChangeSetResponse, c *CompactAssessChange) s
 	if d := r.DoneCheck; d != nil {
 		switch d.Status {
 		case "open":
-			parts = append(parts, plural(d.OpenCount, "use")+" of a changed declaration left open.")
+			if d.RarelyCount > 0 {
+				parts = append(parts, fmt.Sprintf("%s of a changed declaration left open, %d of them rarely break.", plural(d.OpenCount, "use"), d.RarelyCount))
+			} else {
+				parts = append(parts, plural(d.OpenCount, "use")+" of a changed declaration left open.")
+			}
 		default:
 			parts = append(parts, "doneCheck "+d.Status+".")
 		}
@@ -325,6 +378,12 @@ func (c *CompactAssessChange) Text() string {
 			b.WriteString(d.Note + "\n")
 		}
 		writeOpenSites(&b, d.OpenSites)
+		if len(d.Rarely) > 0 {
+			fmt.Fprintf(&b, "rarely break, %d counted and not listed (focus %q lists them):\n", d.RarelyCount, AssessFocusRarely)
+			for _, line := range d.Rarely {
+				b.WriteString("  " + line + "\n")
+			}
+		}
 	}
 
 	if len(c.CoChangeOpen) > 0 {
@@ -392,15 +451,7 @@ func writeOpenSites(b *strings.Builder, sites []CompactOpenSite) {
 	var groups []*group
 	byHead := make(map[string]*group)
 	for _, s := range sites {
-		head := s.Symbol
-		switch {
-		case s.Change != "" && s.Via != "":
-			head += " (" + s.Change + "; " + s.Via + ")"
-		case s.Change != "":
-			head += " (" + s.Change + ")"
-		case s.Via != "":
-			head += " (" + s.Via + ")"
-		}
+		head := siteHead(s.Symbol, s.Change, s.Via)
 		g := byHead[head]
 		if g == nil {
 			g = &group{head: head, lines: make(map[string][]string)}

@@ -1,6 +1,10 @@
 package query
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/SimplyLiz/CodeMCP/internal/diff"
+)
 
 func TestDropCoveredLiterals(t *testing.T) {
 	sites := []OpenSite{
@@ -32,5 +36,18 @@ func TestDropCoveredLiterals(t *testing.T) {
 		if g.File != w.file || g.Line != w.line || isLiteralVia(g.Via) != w.lit {
 			t.Errorf("site %d = %s:%d via %q, want %s:%d literal=%v", i, g.File, g.Line, g.Via, w.file, w.line, w.lit)
 		}
+	}
+}
+
+// A site that rarely breaks is counted per symbol and not listed, so a literal it sits
+// in stays listed: `const M: Record<Kind, Label> = {` breaks on Kind's keys, whatever
+// the annotation with Label says.
+func TestDropCoveredLiterals_RarelyDoesNotCover(t *testing.T) {
+	sites := []OpenSite{
+		{Symbol: "Kind", File: "a.ts", Line: 10, Use: diff.TSUseKey, literalLines: 4},
+		{Symbol: "Label", File: "a.ts", Line: 10, Use: diff.TSUseAnnotation},
+	}
+	if got := dropCoveredLiterals(sites); len(got) != 2 {
+		t.Errorf("got %+v, want the literal kept beside the annotation", got)
 	}
 }
