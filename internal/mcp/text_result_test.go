@@ -14,7 +14,13 @@ func callToolRaw(t *testing.T, s *MCPServer, name string) string {
 	if err != nil {
 		t.Fatalf("handleCallTool: %v", err)
 	}
-	return out.(map[string]interface{})["content"].([]map[string]interface{})[0]["text"].(string)
+	result, _ := out.(map[string]interface{})
+	content, _ := result["content"].([]map[string]interface{})
+	if len(content) == 0 {
+		t.Fatalf("no content in %v", out)
+	}
+	text, _ := content[0]["text"].(string)
+	return text
 }
 
 // Code goes to an agent as it is written: `<`, `>` and `&` are not HTML here.

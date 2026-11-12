@@ -135,3 +135,27 @@ python3 scripts/eval-change/sweep.py --report /tmp/sweep.jsonl
 It finds false alarms only, never a missed break: the commits compile, so there is
 nothing to miss. The 9.4.0 numbers in the CHANGELOG come from this, over the last 80
 commits of `develop`.
+
+## One TypeScript change against `tsc`: `replay.py`
+
+`eval.py` samples signature changes. `replay.py` takes one commit you pick, for a change
+the sample rule doesn't cover: a data model whose types are read off values, say. A
+throwaway clone is indexed at the parent, only the named files are written from the
+commit, and `ckb changes` is scored against `npx tsc --noEmit` before and after: every
+error line that is new is a use the change broke.
+
+```bash
+python3 scripts/eval-change/replay.py --ckb /tmp/ckb --repo ~/app \
+    --parent <sha> --commit <sha> --work /tmp/replay-app --show \
+    src/lib/schema.ts src/lib/types.ts
+```
+
+It prints how many broken lines have an open site on them, within three lines, or none,
+how many of the first `--top` sites are on a broken line, and the size of the compact
+answer. `--expect-clear` is for a commit that breaks nothing: exit 1 unless the check is
+clear. The work dir keeps the clone, both `tsc` outputs (reused: they don't depend on the
+binary) and each run's answer. It holds the app's symbol and file names, so for a private
+app keep it outside this repo. `node_modules` is linked from the app's checkout.
+
+The 9.4.0 numbers for value-derived types come from two commits of one app, picked
+because they showed the gap. That is a reproduction, not a holdout.

@@ -1,6 +1,25 @@
 # Value-derived types (zod and friends) and agent-shaped output
 
-Status: plan, 2026-11-12. Nothing here is built.
+Status: built 2026-11-12, all seven steps, on `develop`. The numbers are in the
+CHANGELOG under 9.4.0, and `scripts/eval-change/replay.py` repeats them. Left open:
+
+- The replay's open sites went from 61 to 208. The first 20 and 50 are better than
+  before (7 and 12 on a broken line, from 5 and 8), the whole list is longer, and the
+  cut at 100 costs two hits that sit among the sites that rarely break.
+- A wider key lists every read of it (128 in the replay). They come last and are
+  counted, as planned; whether an agent is better off not being shown them is unmeasured.
+- Four broken lines have no site: an index access with a variable of a changed type, and
+  callbacks whose parameter type is inferred from one. Nothing on the line names what
+  changed, so text can't find them.
+- Step 2 follows `typeof` from a value to its alias, and through the values that hold
+  it. It does not follow an alias into another alias (`type A = Partial<Profile>`).
+- `as const` arrays aren't read for their members the way `z.enum` is, so a Record keyed
+  by one is listed whether or not it lacks a key.
+- A spread or a computed key in a schema stops the reader, as does a base schema from
+  another file. A literal that sets a key under a quoted name reads as lacking it. valibot, yup and the others in "Scope" get the
+  `typeof` rule only.
+- `ckb refs` is no faster: 0.26 of its 0.31 s is starting the engine.
+- One app, two commits. No holdout.
 
 ## Why
 

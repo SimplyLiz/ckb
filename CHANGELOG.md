@@ -59,6 +59,82 @@ All notable changes to CKB will be documented in this file.
   so core goes from 25 tools to 26. The first 512 bytes of the MCP instructions now
   end on it.
 
+### Added — TypeScript types that take their shape from a value
+
+Replayed on a real data-model change in a Next.js app with zod schemas: only the three
+model files applied, `tsc` as truth (23 broken lines in 10 files). Before, 9 of them had
+an open site on the line, 14 within three lines, 9 none, and two broken files weren't
+named. Four of the nine were `Property 'custom' is missing` at literals typed `Profile`,
+which is `z.infer<typeof profileSchema>`: the change was one line inside
+`z.object({…})`. `scripts/eval-change/replay.py` repeats the measurement; the app is
+private, so only aggregates are here.
+
+- **A changed line inside a TypeScript `const` belongs to the const.** scip-typescript
+  gives a const a range only when its value is a function; for `export const schema =
+  z.object({…})` the index has the line of the name. The initializer is now read to its
+  end, as for Go vars. In the replay the edited schemas are changed symbols and no longer
+  one file-level entry. This alone opens nothing.
+- **`typeof` carries a changed value to the type read off it.** `z.infer<typeof X>`,
+  `ReturnType<typeof f>`, `(typeof KEYS)[number]`, `typeof table.$inferSelect`: the alias
+  or interface that names a changed value counts as changed, and so do the values whose
+  initializer holds it, four levels deep. A literal of a type that holds the changed one
+  under a key is listed at that key, and `Record<T, …>` is a literal of T. Replay: all
+  four `custom` lines are open sites; broken lines with a site 9 → 13, within three
+  lines 14 → 18, without 9 → 5. It cost 38 sites, 34 of them on lines `tsc` accepts.
+- **zod: the done check says what changed in a schema.** The keys of `z.object` are read
+  on both sides, through `extend`, `merge`, `pick`, `omit`, `partial`, `required` and a
+  base or helper in the same file; `z.enum`, `z.union` and `z.discriminatedUnion` by
+  their members. A contract line states it: `shape-changed Profile: + custom (required
+  in output, default [])`. `.optional()` is optional in the output type and `.default()`
+  is not, which is why those literals broke. A key the output now requires opens only
+  the literals that lack it and have no spread; an optional key or a changed validator
+  opens nothing; a removed, retyped or now-optional key opens the places that name it,
+  for a wider type only the reads. A chain the reader can't follow (`.transform`, a base
+  from another file) falls back to every literal, and the site says what stopped it.
+  Second replay, a commit that adds one optional key and breaks nothing: the `typeof`
+  rule alone listed 33 false sites, with this it is `clear`. First replay: 99 → 208
+  sites, 128 of them reads of one key whose type got wider.
+- **TypeScript sites are ordered by how likely they break.** Keyed by the type or
+  indexing with the key first, then object literals, then a `switch` over the key, and
+  plain annotations and reads last. Nothing is dropped; `rarelyCount` and the note count
+  the last group. Replay, sites on a line `tsc` reports: 7 of the first 20 (5 at the
+  start), 12 of the first 50 (8). The list is cut at 100: on it 12 broken lines have a
+  site, 17 within three lines, 6 none. Uncut it is 13, 19 and 4, with every broken file
+  named, so two hits sit among the 163 sites that rarely break.
+- **Where this leaves the replay.** 61 open sites became 208, and of the 100 listed 88
+  are on lines `tsc` accepts (52 of 61 before). The first page got better and the whole
+  list got longer. The four lines still without a site index a value with a variable of a
+  changed type, or sit in a callback whose parameter type is inferred from one; no line
+  there names anything that changed. One app, two commits: not a holdout. The Go recall sample is unchanged at 9/9
+  compiler-broken files.
+- **The compact answer is text.** `assessChange` with `format: "compact"` and `ckb
+  changes --format=compact` print open sites under the symbol and why it counts, then
+  the file, then `line: code`; contracts as one line with before and after; the tests
+  that use a changed symbol by name and the rest as a number. Replay, the same 50 of 99
+  sites: 16.5 KB as JSON, 9.3 KB as text.
+- **`ckb refs` and `findReferences` print `file:line: [use] code`,** one per reference,
+  with use read off the line: def, call, literal, write, type or read. Imports are
+  counted, not listed; `--by-symbol` (`bySymbol`) groups by the enclosing definition; a
+  line that no longer names the symbol is marked stale. Five symbols of this repo: 5.4
+  KB of bare positions before, 5.7 KB with the code, `git grep -n -w` 10.4 KB. It is no
+  faster: 0.31 s against grep's 0.016 s, of which 0.26 s is starting the engine, 0.04 s
+  resolving the name and 0.3 ms the lookup.
+
+### Fixed — small things found in review
+
+- **MCP answers no longer write `<`, `>` and `&` as `\u003c`.** Every tool's JSON went
+  through Go's HTML escaping; code now arrives as written.
+- **A file-level entry is named once in a note,** not as `schema.ts:schema.ts`.
+- **`return "x"` is code.** The pattern for a named Go import matched it. Nothing was
+  found that reached it; it no longer can.
+- **A Rust impl moved to a new file needs its `mod` line.** Without one, in the diff or
+  in the parent module, the method stays removed and the note says why. Where no parent
+  can be read whole it counts as moved, as before.
+- **A go.mod change that swaps the code behind an import is a doubt.** A require whose
+  major version changes (v0 to v1, or the `/vN` of the path), a require that goes, and a
+  replace that comes, goes or changes make the check `not_assessed` and are named. Minor
+  and patch bumps, indirect requires and new requires stay silent.
+
 ### Added — MCP tool annotations
 
 - **Every MCP tool says whether it changes anything.** `tools/list` now carries
@@ -713,10 +789,11 @@ things in every language. Checked on this repo and on a Next.js app.
 
 ### Changed
 
-- **`findReferences` over MCP answers per file by default:** `files` with each
-  file's lines, in place of one entry per reference. On six symbols of a Flutter
-  app that is 8 KB instead of 46 KB. `detail: "full"` returns the previous list,
-  and `ckb refs --compact` gives the CLI the same form; its JSON is unchanged.
+- **`findReferences` over MCP no longer answers one JSON entry per reference.**
+  First it went to `files` with each file's lines: on six symbols of a Flutter app
+  8 KB instead of 46 KB. That form sends the reader to the file for every line, so
+  the default is now the text described above; `detail: "files"` and `ckb refs
+  --compact` keep the per-file form, `detail: "full"` the original list.
 - **`getCallGraph` has a response budget.** A widely used symbol returned 250
   nodes and about 46k tokens. It now returns the 20 nodes closest to the symbol,
   says in `truncation` how many were cut, and takes a `limit`. `ckb callgraph`
@@ -733,9 +810,15 @@ things in every language. Checked on this repo and on a Next.js app.
 
 ### Output changes consumers will notice
 
-- `findReferences` over MCP returns `files` by default; `references` needs
-  `detail: "full"`. `blastRadius.riskLevel` in `analyzeImpact` equals
+- `findReferences` over MCP returns text by default, one `file:line: [use] code` per
+  reference; `detail: "files"` gives line numbers per file as JSON and `detail: "full"`
+  one entry per reference. `ckb refs` prints the same text; `--format=json` is as it
+  was, with a new `from`. `blastRadius.riskLevel` in `analyzeImpact` equals
   `riskScore.level`.
+- `assessChange` with `format: "compact"` and `ckb changes --format=compact` return
+  text, not JSON. `format: "full"` and `--format=json` are JSON as before, with new
+  fields: `use` on an open site, `rarelyCount` on `doneCheck`, `detail` on a contract,
+  and the contract kind `shape-changed`. Open sites are no longer in file order.
 - `changedSymbols`: new `note`, fewer entries, `file:` entries for lines no
   definition could be found for; deleted symbols list old-file lines.
 - `riskFactors` may include `deleted_with_consumers`.
