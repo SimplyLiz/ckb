@@ -348,3 +348,11 @@ counted, as `nested` under rarely. That match (`Some(Commands::X)` arms and `Non
 `match` line like any other, and the probe rerun lists `match cli.command {`; a `Self(_)`
 arm counts as covering whatever type it is in. A rerun of users3, variants and arms with both fixes
 (`--name users3root` etc.) moves none of the 44 commits.
+
+Three later fixes rerun on the same 44 (`--name users3dec`, `variantsdec`, `armsdec`;
+binary at 85b49bc): a nested match no arm covers is listed instead of counted (ebc110b),
+a declaration of a generic type ends at its `=` (3f33153), and the body of a `pub(crate)`
+struct or enum is read at all, with its strings skipped (85b49bc). One commit moves:
+Rust-A 62969bad49 goes from one false open to clear. 50/50 error lines exact before and
+after, open sites 215 → 214. Nothing else moves, so on these 44 the nested and `pub(crate)`
+fixes show no effect; they rest on tests and the probe only.
