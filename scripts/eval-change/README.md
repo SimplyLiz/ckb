@@ -246,3 +246,10 @@ reach its `pub enum` line, is read as a body change and `unchanged`; an exhausti
 another file breaks (E0004). Rust truth is a lower bound, so of the 84 listed sites the
 compiler doesn't flag, some sit in crates it never checked. 11 of 12 is one sample of
 11 breaking commits, nine of them from one repo.
+
+After 1bef158 (`--name users2`, same sample): a variant added to an enum lists every `match`
+over it with no `_` or binding arm and no arm for the variant. That case goes from false clear
+to open with one site, exactly on the error line; none of the other 26 commits changes. 12 of
+12 exact, 99 listed sites (15 on an error line), no clear while the compiler reports errors.
+That fix was written for the case it is measured on, so it shows the case is covered, not
+that recall is 12 of 12 elsewhere.
