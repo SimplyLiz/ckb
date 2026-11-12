@@ -343,7 +343,7 @@ func readDeclaration(lines map[int]string, start int, lang string) declaration {
 					return finish(true)
 				}
 			case '=':
-				if depth == 0 && angle == 0 && !isComparison(text, i, prev) && !isTypeDecl {
+				if depth == 0 && angle == 0 && !isComparison(text, i) && !isTypeDecl {
 					if lang != "ts" || !arrowValueRe.MatchString(text[i+1:]) {
 						return finish(true)
 					}
@@ -378,11 +378,13 @@ func isWordByte(c byte) bool {
 	return c == '_' || c == '$' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
-func isComparison(text string, i int, prev byte) bool {
+// isComparison says whether the `=` at i is part of `==`, `=>`, `!=`, `<=` or `>=`. The
+// byte before must touch it: in `x: Map<K, V> = …` the `>` closes a type.
+func isComparison(text string, i int) bool {
 	if i+1 < len(text) && (text[i+1] == '=' || text[i+1] == '>') {
 		return true
 	}
-	return strings.IndexByte("=!<>", prev) >= 0 && prev != 0
+	return i > 0 && strings.IndexByte("=!<>", text[i-1]) >= 0
 }
 
 var (

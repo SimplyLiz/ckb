@@ -88,6 +88,7 @@ func TestReadDeclaration(t *testing.T) {
 		{"ts arrow body", "ts", []string{"export const f = (a: string) => a.trim()"}, "export const f = (a: string) =>", true},
 		{"ts arrow block", "ts", []string{"const f = async (a: string): Promise<void> => {", "  await a"}, "const f = async (a: string): Promise<void> =>", true},
 		{"ts plain const", "ts", []string{"export const limit: number = 3"}, "export const limit: number", true},
+		{"ts const of a generic type", "ts", []string{"export const seen: Map<string, number> = new Map()"}, "export const seen: Map<string, number>", true},
 		{"ts interface member", "ts", []string{"  run(a: string): void", "  stop(): void"}, "run(a: string): void", true},
 		{"ts type alias", "ts", []string{"type A = { x: string }"}, "type A = { x: string }", true},
 		{"ts string with slashes", "ts", []string{`function f(u = "http://x") {`, "}"}, `function f(u = "http://x")`, true},
@@ -97,6 +98,8 @@ func TestReadDeclaration(t *testing.T) {
 		{"rust lifetime", "rust", []string{"fn f<'a>(a: &'a str) -> &'a str {", "  a"}, "fn f<'a>(a: &'a str) -> &'a str", true},
 		{"rust trait method", "rust", []string{"    fn f(&self);", "    fn g(&self);"}, "fn f(&self)", true},
 		{"rust const", "rust", []string{"pub const LIMIT: usize = 3;"}, "pub const LIMIT: usize", true},
+		{"rust static of a generic type", "rust", []string{"static NUMBERED: LazyLock<Vec<(Kind, Regex)>> = LazyLock::new(|| {", "    vec![]"}, "static NUMBERED: LazyLock<Vec<(Kind, Regex)>>", true},
+		{"rust default with >=", "rust", []string{"const OK: bool = A >= B;"}, "const OK: bool", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
