@@ -1223,7 +1223,8 @@ type ChangeInfo struct {
 //
 // Kind says what it rests on: "signature-changed", "definition-removed" and
 // "compatible-signature-change" compare the declaration's text across the diff,
-// "possible-contract-change" is visibility alone, for code it can't read.
+// "possible-contract-change" is visibility alone, for code it can't read, and
+// "shape-changed" is a type read off a value whose keys or members changed.
 type ContractSignal struct {
 	Symbol string `json:"symbol"`
 	File   string `json:"file"`
@@ -1232,6 +1233,9 @@ type ContractSignal struct {
 	// Before and After are the declarations compared, where known.
 	Before string `json:"before,omitempty"`
 	After  string `json:"after,omitempty"`
+	// Detail says what changed where the declaration didn't: the keys of the schema a
+	// type is read off, as `+ custom (required in output, default [])`.
+	Detail string `json:"detail,omitempty"`
 	// ConsumerCount counts the production files with a use the diff left as it was, and
 	// Consumers names the first of them.
 	ConsumerCount int      `json:"consumerCount,omitempty"`
@@ -1664,6 +1668,8 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			brokenContracts = append(brokenContracts, brokenContract{name: open.name, change: open.change, consumers: files, files: files})
 		}
 	}
+
+	contracts = append(contracts, done.shapes...)
 
 	allDirectImpact, allTransitiveImpact = mergeConsumers(allDirectImpact, allTransitiveImpact)
 

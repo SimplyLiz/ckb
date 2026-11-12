@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -136,4 +137,70 @@ const spread: Project = { ...base, id: profile ? a : b };`, "\n")
 			t.Errorf("%d..%d %s: line = %d, want %d", tc.first, tc.last, tc.key, got, tc.want)
 		}
 	}
+}
+
+func TestTSLiteralsMissing(t *testing.T) {
+	src := strings.Split(`export const a: Profile = {
+  id: "1",
+};
+export const b: Profile = { ...a, id: "2" };
+export const c: Profile = { id: "3", custom: [] };
+export function make(): Profile {
+  const base = load();
+  return {
+    id: "4",
+  };
+}
+export function pass(): Profile {
+  return load();
+}
+const list: Profile[] = [{ id: "5" }, { id: "6", custom: [] }];
+const cast = { id: "7" } as Profile;
+export const project: Project = {
+  name: "x",
+  profile: {
+    id: "8",
+  },
+};
+export const other: Project = { name: "y", profile: a };
+const arrow = (): Profile => ({ id: "9" });
+const rows: Project[] = [
+  { name: "z", profile: { id: "10", custom: [] } },
+  { name: "w", profile: { id: "11" } },
+];
+let later: Profile;`, "\n")
+	cases := []struct {
+		line int
+		name string
+		path []string
+		want string
+		read bool
+	}{
+		{1, "Profile", nil, "[1]", true},
+		{4, "Profile", nil, "[]", true},  // The spread carries it
+		{5, "Profile", nil, "[]", true},  // Set
+		{6, "Profile", nil, "[8]", true}, // The returned literal
+		{12, "Profile", nil, "[]", true}, // Built elsewhere
+		{15, "Profile", nil, "[15]", true},
+		{16, "Profile", nil, "[]", true}, // A cast compiles without the key
+		{17, "Project", []string{"profile"}, "[19]", true},
+		{23, "Project", []string{"profile"}, "[]", true}, // A value from elsewhere
+		{24, "Profile", nil, "[24]", true},
+		{25, "Project", []string{"profile"}, "[27]", true},
+		{29, "Profile", nil, "[]", false}, // Nothing is built here
+	}
+	for _, tc := range cases {
+		at, read := TSLiteralsMissing(src, tc.line, 0, tc.name, tc.path, []string{"custom"})
+		if got := fmtInts(at); got != tc.want || read != tc.read {
+			t.Errorf("line %d: missing at %s read %v, want %s read %v", tc.line, got, read, tc.want, tc.read)
+		}
+	}
+}
+
+func fmtInts(v []int) string {
+	parts := make([]string, len(v))
+	for i, n := range v {
+		parts[i] = strconv.Itoa(n)
+	}
+	return "[" + strings.Join(parts, " ") + "]"
 }
