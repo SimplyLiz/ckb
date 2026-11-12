@@ -392,3 +392,12 @@ Binary at 60618b0, `--name probe`:
 
 Why the other deleted arms leave no E0004 (Rust-B: 6 and 4 arms, 4 errors each) is not
 looked at here.
+
+### One Rust lexer (rerun of the same 44)
+
+The match, arm, `let` and declaration readers and the glob-use scan read through
+`rustCode` (diff/rust_lex.go) now, which also says per byte whether it is code, string or
+comment; the declaration reader keeps a string's text and drops comments. Three bugs
+that go with it have tests: a `'{'` char in a declaration read as its body, `match` in a
+comment above an arm taken for the match, a `|` in a comment inside a pattern taken for
+an alternative. `--name *lex` against `*unread`: all 44 answers the same, site for site.

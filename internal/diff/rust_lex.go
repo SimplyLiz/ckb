@@ -15,11 +15,47 @@ type rustCode struct {
 
 func newRustCode() *rustCode { return &rustCode{raw: -1} }
 
+// What each byte of a line is, as rustCode.kinds returns it. A string's quotes are code;
+// what is between them is string.
+const (
+	rustKindCode    byte = 'c'
+	rustKindString  byte = 's'
+	rustKindComment byte = '/'
+)
+
 func (s *rustCode) line(text string) string {
+	code, _ := s.kinds(text)
+	return code
+}
+
+// rustCodeLine is one line with its strings and comments blanked, read on its own: a
+// string or comment open from an earlier line isn't known.
+func rustCodeLine(text string) string { return newRustCode().line(text) }
+
+// RustCodeLine is rustCodeLine for the done check's own readers.
+func RustCodeLine(text string) string { return rustCodeLine(text) }
+
+// rustCodeText is a text of several lines, joined by newlines, blanked as one.
+func rustCodeText(text string) string {
+	code := newRustCode()
+	lines := strings.Split(text, "\n")
+	for i, l := range lines {
+		lines[i] = code.line(l)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// kinds is line, and what each byte of the line was.
+func (s *rustCode) kinds(text string) (string, []byte) {
 	out := []byte(text)
-	blank := func(from, to int) {
+	kind := make([]byte, len(text))
+	for k := range kind {
+		kind[k] = rustKindCode
+	}
+	blankAs := func(from, to int, as byte) {
 		for k := from; k < to && k < len(out); k++ {
 			out[k] = ' '
+			kind[k] = as
 		}
 	}
 	for i := 0; i < len(text); i++ {
@@ -27,11 +63,11 @@ func (s *rustCode) line(text string) string {
 		switch {
 		case s.comment:
 			if strings.HasPrefix(text[i:], "*/") {
+				blankAs(i, i+2, rustKindComment)
 				s.comment = false
-				blank(i, i+2)
 				i++
 			} else {
-				out[i] = ' '
+				blankAs(i, i+1, rustKindComment)
 			}
 		case s.raw >= 0:
 			closing := `"` + strings.Repeat("#", s.raw)
@@ -39,23 +75,23 @@ func (s *rustCode) line(text string) string {
 				s.raw = -1
 				i += len(closing) - 1 // The closing quote stays, as a plain string's does
 			} else {
-				out[i] = ' '
+				blankAs(i, i+1, rustKindString)
 			}
 		case s.quote != 0:
 			if c == '\\' {
-				blank(i, i+2)
+				blankAs(i, i+2, rustKindString)
 				i++
 			} else if c == s.quote {
 				s.quote = 0
 			} else {
-				out[i] = ' '
+				blankAs(i, i+1, rustKindString)
 			}
 		case strings.HasPrefix(text[i:], "//"):
-			blank(i, len(text))
-			return string(out)
+			blankAs(i, len(text), rustKindComment)
+			return string(out), kind
 		case strings.HasPrefix(text[i:], "/*"):
 			s.comment = true
-			blank(i, i+2)
+			blankAs(i, i+2, rustKindComment)
 			i++
 		case c == '"':
 			s.quote = c
@@ -68,7 +104,7 @@ func (s *rustCode) line(text string) string {
 			}
 		}
 	}
-	return string(out)
+	return string(out), kind
 }
 
 // rawStringStart returns the length of a raw string's opening, `r"`, `r#"` or `br#"`.

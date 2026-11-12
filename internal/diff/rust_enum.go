@@ -71,7 +71,7 @@ func RustMatchAt(lines []string, line, column int, name string) (RustMatch, bool
 	ref := rustPos{line, at}
 	unread := false
 	for l := line; l >= 1 && l > line-maxRustMatchLines; l-- {
-		text := rawLine(lines, l)
+		text := rustCodeLine(rawLine(lines, l)) // Not `match` in a comment or string
 		for _, m := range rustMatchKeywordRe.FindAllStringIndex(text, -1) {
 			start := rustPos{l, m[0]}
 			if !start.before(ref) {
@@ -100,12 +100,9 @@ func RustMatchAt(lines []string, line, column int, name string) (RustMatch, bool
 		}
 	}
 	// An arm's `=>` after the name, and no match found for it, is a match out of reach.
-	unread = unread || strings.Contains(rustCodeOf(rawLine(lines, line))[at:], "=>")
+	unread = unread || strings.Contains(rustCodeLine(rawLine(lines, line))[at:], "=>")
 	return RustMatch{Unread: unread}, false
 }
-
-// rustCodeOf is one line with its strings and comments blanked, read on its own.
-func rustCodeOf(text string) string { return newRustCode().line(text) }
 
 const maxRustMatchLines = 300
 
@@ -181,7 +178,8 @@ func isRustCharLiteral(text string, i int) bool {
 }
 
 // parseRustMatch reads the match starting at its keyword: each arm's pattern and where it
-// is, and where the match ends. Strings and comments are skipped. BodyNone means the
+// is, and where the match ends. Strings and comments are blanked (rustCode), so an arm's
+// pattern holds no string's text. BodyNone means the
 // keyword is a word, not an expression; BodyUnread that the end wasn't found.
 func parseRustMatch(lines []string, start rustPos) (*parsedRustMatch, Body) {
 	m := &parsedRustMatch{lines: lines}
@@ -192,45 +190,18 @@ func parseRustMatch(lines []string, start rustPos) (*parsedRustMatch, Body) {
 	blockArm := false // The arm's body is a block, which ends it without a comma
 	altPending := true
 	var arm *rustArm
-	var quote byte
-	inBlockComment := false
+	code := newRustCode()
 
 	newArm := func() { arm, inPattern, bodyStarted, blockArm, altPending = nil, true, false, false, true }
 
 	for l := start.line; l <= len(lines) && l < start.line+maxRustMatchLines; l++ {
-		text := lines[l-1]
+		text := code.line(lines[l-1])
 		from := 0
 		if l == start.line {
 			from = start.col + len("match")
 		}
 		for i := from; i < len(text); i++ {
 			c := text[i]
-			if inBlockComment {
-				if c == '*' && i+1 < len(text) && text[i+1] == '/' {
-					inBlockComment = false
-					i++
-				}
-				continue
-			}
-			if quote != 0 {
-				if c == '\\' {
-					i++
-				} else if c == quote {
-					quote = 0
-				}
-				continue
-			}
-			if c == '/' && i+1 < len(text) && text[i+1] == '/' {
-				break
-			}
-			if c == '/' && i+1 < len(text) && text[i+1] == '*' {
-				inBlockComment = true
-				i++
-				continue
-			}
-			if c == '"' || c == '\'' && isRustCharLiteral(text, i) {
-				quote = c
-			}
 			pos := rustPos{l, i}
 			space := c == ' ' || c == '\t'
 
