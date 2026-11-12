@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends"
+	"github.com/SimplyLiz/CodeMCP/internal/diff"
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
 )
 
@@ -172,5 +173,73 @@ func TestRustReexport_RemovedNameStillImported(t *testing.T) {
 		if strings.Contains(got, not) {
 			t.Errorf("%s is listed: %q", not, got)
 		}
+	}
+}
+
+func TestRustEnumVariants_IncompleteMatches(t *testing.T) {
+	const useSrc = `fn a(e: DraftError) -> u16 {
+    match e {
+        DraftError::NotFound => 404,
+        DraftError::Db(_) => 500,
+    }
+}
+fn b(e: DraftError) -> u16 {
+    match e {
+        DraftError::NotFound => 404,
+        _ => 500,
+    }
+}
+fn c(e: &DraftError) -> bool {
+    matches!(e, DraftError::NotFound)
+}
+`
+	const before = "pub enum DraftError {\n    NotFound,\n    Db(String),\n}\n"
+	const after = "pub enum DraftError {\n    NotFound,\n    /// New.\n    Unbelegt(Vec<u8>),\n    Db(String),\n}\n"
+	root := rustRepo(t, map[string]string{"src/drafts.rs": before, "src/api.rs": useSrc})
+	writeRepoFile(t, root, "src/drafts.rs", after)
+
+	c := rustChecker(root, "src/drafts.rs")
+	adapter := rustFixture{typ: "m/DraftError#", refs: map[string][]backends.Reference{"m/DraftError#": {
+		rustRef("src/api.rs", 1), rustRef("src/api.rs", 3), rustRef("src/api.rs", 4),
+		rustRef("src/api.rs", 7), rustRef("src/api.rs", 9), rustRef("src/api.rs", 13), rustRef("src/api.rs", 14),
+	}}}
+	open := c.checkRustFiles(context.Background(), adapter)
+
+	got := siteLines(c)
+	if want := []string{"src/api.rs:match e {"}; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("sites = %q, want %q", got, want)
+	}
+	if c.sites[0].Line != 2 || !strings.Contains(c.sites[0].Via, "Unbelegt") {
+		t.Errorf("site = %+v", c.sites[0])
+	}
+	if len(open) != 1 || !open[0].files["src/api.rs"] {
+		t.Errorf("open = %+v", open)
+	}
+}
+
+func TestRustEnumVariants_MatchGivenTheArm(t *testing.T) {
+	const useBefore = "fn a(e: E) -> u8 {\n    match e {\n        E::A => 1,\n    }\n}\n"
+	const useAfter = "fn a(e: E) -> u8 {\n    match e {\n        E::A => 1,\n        E::B => 2,\n    }\n}\n"
+	root := rustRepo(t, map[string]string{"src/e.rs": "pub enum E {\n    A,\n}\n", "src/use.rs": useBefore})
+	writeRepoFile(t, root, "src/e.rs", "pub enum E {\n    A,\n    B,\n}\n")
+	writeRepoFile(t, root, "src/use.rs", useAfter)
+
+	cmd := exec.Command("git", "diff", "-U0")
+	cmd.Dir = root
+	raw, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := diff.ParseGitDiff(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newDoneChecker(root, AnalyzeChangeSetOptions{}, parsed)
+	adapter := rustFixture{typ: "m/E#", refs: map[string][]backends.Reference{"m/E#": {rustRef("src/use.rs", 1), rustRef("src/use.rs", 3)}}}
+	if open := c.checkRustFiles(context.Background(), adapter); len(open) != 0 || len(c.sites) != 0 {
+		t.Fatalf("a match with the new arm is done: open %+v, sites %q", open, siteLines(c))
+	}
+	if c.updated != 1 {
+		t.Errorf("updated = %d, want the one match", c.updated)
 	}
 }

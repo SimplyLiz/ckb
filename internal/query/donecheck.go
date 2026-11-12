@@ -304,6 +304,9 @@ type useQuery struct {
 	// arrayLengths holds the old lengths of a Rust declaration that only changed the
 	// length of its array type. A use that doesn't spell one of them rarely breaks.
 	arrayLengths []string
+	// newVariants holds the variants a Rust enum gained. Only a match over it counts,
+	// one with no arm for the rest and none for them, listed at its `match`.
+	newVariants []string
 }
 
 // missingKeys is what a literal has to set since the change, and where in it.
@@ -406,6 +409,11 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 		c.updated++
 		return
 	}
+	if query.newVariants != nil {
+		if !c.incompleteMatch(oldLines, newLines, ref, query, &result) {
+			return
+		}
+	}
 	// An import of a name whose signature changed is still valid. Of a name that went
 	// away, it is exactly what has to go too.
 	if (result.Import || ref.Kind == "import") && query.change != impact.DeclRemoved {
@@ -475,6 +483,40 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 	if !atKey {
 		add(result.Line, result.Code, query.via, literalLines)
 	}
+}
+
+// incompleteMatch says whether the use starts an arm of a match that misses one of the
+// new variants, and moves the result to the match's line. A match given an arm for them,
+// or one for the rest, counts as updated.
+func (c *doneChecker) incompleteMatch(oldLines, newLines []string, ref *backends.Reference, query useQuery, result *diff.UseResult) bool {
+	lines := newLines
+	if oldLines != nil {
+		lines = oldLines
+	}
+	if m, ok := diff.RustMatchAt(lines, ref.Location.Line, ref.Location.Column, query.name); !ok || m.CatchAll {
+		return false
+	}
+	m, ok := diff.RustMatchAt(newLines, result.Line, 0, query.name)
+	if !ok {
+		return false
+	}
+	// Each arm is a use of the enum; the match is counted once.
+	key := fmt.Sprintf("match:%s:%d", ref.Location.Path, m.Line)
+	if c.seen[key] {
+		return false
+	}
+	c.seen[key] = true
+	complete := true
+	for _, v := range query.newVariants {
+		complete = complete && m.Names(v)
+	}
+	if m.CatchAll || complete {
+		c.updated++
+		return false
+	}
+	result.Line = m.Line
+	result.Code = strings.TrimSpace(newLines[m.Line-1])
+	return true
 }
 
 func sortedKeys(m map[string]string) []string {
