@@ -1,7 +1,9 @@
 package diff
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -167,5 +169,24 @@ func TestRustMatchAt_Nested(t *testing.T) {
 				t.Fatalf("got %+v %v, want nested %v covered %v ok %v", m, ok, tc.nested, tc.covered, tc.ok)
 			}
 		})
+	}
+}
+
+// A clap subcommand enum documents every field and runs to hundreds of lines.
+func TestRustEnumVariants_LongBody(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("#[derive(Subcommand)]\nenum Commands {\n")
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&b, "    /// Mode %d\n    Mode%d {\n", i, i)
+		for f := 0; f < 4; f++ {
+			fmt.Fprintf(&b, "        /// Field %d\n        #[arg(long)]\n        field%d: Option<String>,\n", f, f)
+		}
+		b.WriteString("    },\n")
+	}
+	b.WriteString("}\n")
+	src := lines(b.String())
+	got, ok := RustEnumVariants(src, "Commands")
+	if !ok || len(got) != 60 || got[59] != "Mode59" || len(src) < 800 {
+		t.Fatalf("%d lines: got %d variants, %v", len(src), len(got), ok)
 	}
 }

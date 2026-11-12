@@ -43,12 +43,16 @@ var (
 	rustBlockCommentRe = regexp.MustCompile(`/\*.*?\*/`)
 )
 
+// maxRustBodyLines bounds how far a struct's or enum's body is read. 500 was too few: a
+// clap `enum Commands` with a doc comment on every field runs 590 lines.
+const maxRustBodyLines = 5000
+
 // bracedBody returns the text between the first brace at or after start and its partner,
 // without comments. A `;` or `(` first means a unit or tuple struct, which has none.
 func bracedBody(lines []string, start int) (string, bool) {
 	var body strings.Builder
 	depth := 0
-	for i := start; i < len(lines) && i < start+500; i++ {
+	for i := start; i < len(lines) && i < start+maxRustBodyLines; i++ {
 		text := lines[i]
 		if at := strings.Index(text, "//"); at >= 0 {
 			text = text[:at]
