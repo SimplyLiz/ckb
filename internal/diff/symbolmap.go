@@ -207,12 +207,16 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 	}
 
 	defs := changeableDefinitions(doc)
-	if declarationLanguage(filePath) == "go" {
+	if lang := declarationLanguage(filePath); lang == "go" || lang == "ts" {
 		indexAll := readText().oldAll
 		if side == indexMatchesNew {
 			indexAll = readText().newAll
 		}
-		defs = withGoValueExtents(defs, indexAll)
+		if lang == "go" {
+			defs = withGoValueExtents(defs, indexAll)
+		} else {
+			defs = withTSValueExtents(defs, indexAll)
+		}
 	}
 	found := make(map[string]*attributedSymbol)
 	var unresolvedLines []int
