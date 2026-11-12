@@ -221,3 +221,28 @@ Rust-C moved four reads of an array whose length changed to the counted sites; t
 compiler flagged none of them. The Lebenslauf replay is unchanged, the Go sample stays at
 9/9, and `sweep.py` over the last 30 commits of `develop` shows the outside-index doubt
 once, on a `//go:build ignore` file that is now skipped.
+
+### Recall: only the defining file applied (`--rule users`, rules at dd8e79a)
+
+The declaration rule mostly picks changes that break nothing (3 of 25 above). `select_replay.py
+--rule users` is eval.py's Go rule: a changed declaration counts only when the same commit
+also edits another non-test source file whose diff names it, and only the defining files are
+applied, so those users are left at the parent. Same heads, every candidate whose parent
+builds, `replay_repo.py --name users --keep 20`:
+
+| | TS-A | TS-B | Rust-A | Rust-B | Rust-C | all |
+|---|---|---|---|---|---|---|
+| candidates (parent broken, skipped) | 2 | 3 (1) | 16 (1) | 0 | 8 | 29 (2) |
+| commits measured / that break a line | 2 / 0 | 2 / 1 | 15 / 9 | – | 8 / 1 | 27 / 11 |
+| broken lines | 0 | 1 | 10 | – | 1 | 12 |
+| exact, within 3, missed, file not named | – | 1, 1, 0, 0 | 9, 9, 1, 1 | – | 1, 1, 0, 0 | 11, 11, 1, 1 |
+| clear / open | 2 / 0 | 1 / 1 | 3 / 12 | – | 4 / 4 | 10 / 17 |
+| listed sites (on an error line) | 0 | 19 (4) | 59 (9) | – | 20 (1) | 98 (14) |
+| **clear while the compiler reports errors** | 0 | 0 | **1** | – | 0 | **1** |
+
+Rust-B has no commit that edits a user of a changed declaration. The one miss is the false
+clear: a variant added to a Rust `pub enum`, in a hunk that starts inside the enum and doesn't
+reach its `pub enum` line, is read as a body change and `unchanged`; an exhaustive `match` in
+another file breaks (E0004). Rust truth is a lower bound, so of the 84 listed sites the
+compiler doesn't flag, some sit in crates it never checked. 11 of 12 is one sample of
+11 breaking commits, nine of them from one repo.
