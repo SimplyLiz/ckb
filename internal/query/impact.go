@@ -1558,6 +1558,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			handled := changedFilePaths
 			if name := useName(sym); name != "" {
 				outsideNames[name] = sourceFamily(sym.File)
+				done.noteGoDeclaration(name, sym.File)
 			}
 			if openFiles, ok := done.checkSymbol(ctx, usesFinder, sym, declaration); ok {
 				handled = withoutFiles(changedFilePaths, openFiles)

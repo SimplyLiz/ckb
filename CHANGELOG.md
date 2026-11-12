@@ -175,6 +175,13 @@ private, so only aggregates are here.
   literal in the same file. Any Go line starting with the name passed as a declaration;
   now only what can follow a field, method or grouped entry does, so the rename is
   `definition-removed`. The done check had it right.
+- **A Go file behind a build tag is only a doubt if it can reach the changed name.**
+  Changing `compliance.Framework.Version()` and all 20 implementations ended
+  `not_assessed`: `internal/cartographer/bridge.go` (`//go:build cartographer`, so not
+  indexed) declares its own `func Version()`. Indexing with the tag only swaps in its
+  `!cartographer` stub. Outside its package a Go name is reached as a selector, a
+  receiver's method or a literal key, so a file that spells it only otherwise, and
+  doesn't dot-import, no longer stops a clear check.
 
 ### Added — MCP tool annotations
 
