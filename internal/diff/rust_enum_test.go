@@ -26,6 +26,19 @@ pub enum DraftError {
 	if _, ok := RustEnumVariants(src, "Other"); ok {
 		t.Fatal("found an enum that isn't there")
 	}
+	// The `(` of `pub(crate)` is no tuple; a `]` or `//` in an attribute's string is
+	// no part of the body (temporal's sdk-core spells its error codes `[TMPRL1100]`).
+	src = lines(`pub(crate) enum WFMachinesError {
+    #[error("[TMPRL1100] Nondeterminism error: {0}")]
+    Nondeterminism(String),
+    #[error("see https://example.com/{x}, or not")]
+    Moved { x: u8 },
+    /* Fatal, */ Fatal(String),
+}`)
+	got, ok = RustEnumVariants(src, "WFMachinesError")
+	if want := []string{"Nondeterminism", "Moved", "Fatal"}; !ok || !slices.Equal(got, want) {
+		t.Fatalf("got %v %v, want %v", got, ok, want)
+	}
 }
 
 func TestRustMatchAt(t *testing.T) {
