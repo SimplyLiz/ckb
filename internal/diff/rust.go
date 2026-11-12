@@ -15,10 +15,11 @@ import (
 func RustStructFields(lines []string, name string) ([]string, bool) {
 	re := regexp.MustCompile(`^\s*(pub(\s*\([^)]*\))?\s+)?struct\s+` + regexp.QuoteMeta(name) + `\b`)
 	for i, text := range lines {
-		if !re.MatchString(text) {
+		m := re.FindStringIndex(text)
+		if m == nil {
 			continue
 		}
-		body, ok := bracedBody(lines, i)
+		body, ok := bracedBody(lines, i, m[1])
 		if !ok {
 			return nil, false
 		}
@@ -47,17 +48,23 @@ var (
 // clap `enum Commands` with a doc comment on every field runs 590 lines.
 const maxRustBodyLines = 5000
 
-// bracedBody returns the text between the first brace at or after start and its partner,
-// without comments. A `;` or `(` first means a unit or tuple struct, which has none.
-func bracedBody(lines []string, start int) (string, bool) {
+// bracedBody returns the text between the first brace at or after column col of line
+// start and its partner, with strings, chars and comments blanked: a `}` or `//` in an
+// attribute's string is no part of the body's structure. A `;` or `(` first, outside
+// generics and a where clause, means a unit or tuple struct, which has none. col is past the name, so the
+// `(` of `pub(crate)` is behind it.
+func bracedBody(lines []string, start, col int) (string, bool) {
 	var body strings.Builder
-	depth := 0
+	code := newRustCode()
+	depth, angle := 0, 0
+	where := false // A `(` in a where clause, `F: Fn(u8)`, is no tuple struct's
 	for i := start; i < len(lines) && i < start+maxRustBodyLines; i++ {
-		text := lines[i]
-		if at := strings.Index(text, "//"); at >= 0 {
-			text = text[:at]
+		text := code.line(lines[i])
+		j := 0
+		if i == start {
+			j = min(col, len(text))
 		}
-		for j := 0; j < len(text); j++ {
+		for ; j < len(text); j++ {
 			c := text[j]
 			switch {
 			case c == '{':
@@ -70,7 +77,13 @@ func bracedBody(lines []string, start int) (string, bool) {
 				if depth == 0 {
 					return body.String(), true
 				}
-			case depth == 0 && (c == ';' || c == '('):
+			case depth == 0 && c == '<':
+				angle++
+			case depth == 0 && c == '>' && angle > 0 && (j == 0 || text[j-1] != '-'):
+				angle--
+			case depth == 0 && angle == 0 && strings.HasPrefix(text[j:], "where") && (j == 0 || !isIdentByte(text[j-1])) && (j+5 == len(text) || !isIdentByte(text[j+5])):
+				where = true
+			case depth == 0 && angle == 0 && (c == ';' || c == '(' && !where):
 				return "", false
 			}
 			if depth > 0 {

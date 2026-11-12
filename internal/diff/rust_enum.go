@@ -15,10 +15,11 @@ import (
 func RustEnumVariants(lines []string, name string) ([]string, bool) {
 	re := regexp.MustCompile(`^\s*(pub(\s*\([^)]*\))?\s+)?enum\s+` + regexp.QuoteMeta(name) + `\b`)
 	for i, text := range lines {
-		if !re.MatchString(text) {
+		m := re.FindStringIndex(text)
+		if m == nil {
 			continue
 		}
-		body, ok := bracedBody(lines, i)
+		body, ok := bracedBody(lines, i, m[1])
 		if !ok {
 			return nil, false
 		}

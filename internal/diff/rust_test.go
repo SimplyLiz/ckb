@@ -26,6 +26,16 @@ struct Tuple(u32, u32);`)
 	if !ok || !slices.Equal(got, want) {
 		t.Errorf("fields = %v, %v, want %v", got, ok, want)
 	}
+	// Visibility and a where clause have parentheses of their own.
+	scoped := rustLines("pub(crate) struct P<F: Fn(u8) -> u8> {\n  f: F,\n}\npub(super) struct W<F>\nwhere\n  F: Fn(u8),\n{\n  #[serde(rename = \"a//b}\")]\n  f: F,\n}\npub(crate) struct T<F>(F) where F: Fn(u8);")
+	for name, want := range map[string]string{"P": "f:F", "W": "f:F"} {
+		if got, ok := RustStructFields(scoped, name); !ok || !slices.Equal(got, []string{want}) {
+			t.Errorf("%s: fields = %v, %v, want [%s]", name, got, ok, want)
+		}
+	}
+	if _, ok := RustStructFields(scoped, "T"); ok {
+		t.Error("T is a tuple struct")
+	}
 	for _, name := range []string{"Unit", "Tuple", "Missing"} {
 		if _, ok := RustStructFields(before, name); ok {
 			t.Errorf("%s has no braced fields", name)
