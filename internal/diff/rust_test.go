@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -81,6 +82,16 @@ func TestIsRustLiteralUse(t *testing.T) {
 	multi := rustLines("let a = Foo {\n  x: 1,\n  ..b\n};")
 	if IsRustLiteralUse(multi, 1, 0, "Foo") {
 		t.Error("`..` on a later line covers the rest")
+	}
+	// A struct of fifty fields is built in a literal of as many lines (Morphon's
+	// `System`, 61): one that long is still a literal, and still ends where it ends.
+	long := []string{"let s = Foo {"}
+	for i := 0; i < 70; i++ {
+		long = append(long, fmt.Sprintf("    f%d: 1,", i))
+	}
+	long = append(long, "};")
+	if !IsRustLiteralUse(long, 1, 0, "Foo") || LiteralEnd("rust", long, 1, 0, "Foo") != len(long) {
+		t.Errorf("a %d-line literal: literal %v, end %d", len(long), IsRustLiteralUse(long, 1, 0, "Foo"), LiteralEnd("rust", long, 1, 0, "Foo"))
 	}
 }
 
