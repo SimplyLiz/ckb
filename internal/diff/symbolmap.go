@@ -251,7 +251,7 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 			sawLinesOutsideDefs = true
 			if code := codeLines(filePath, outside); len(code) > 0 && !trivial {
 				unresolvedLines = append(unresolvedLines, newFileLines(block)...)
-				if removed := codeLines(filePath, block.Removed); len(removed) > 0 {
+				if removed := codeLines(filePath, withoutPrivateImports(filePath, readText().oldAll, block)); len(removed) > 0 {
 					unresolvedRemoved = append(unresolvedRemoved, removed...)
 				}
 			}
@@ -287,6 +287,9 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 			name := scip.SymbolSimpleName(symbolID)
 			if name == "" {
 				name = sym.def.Name
+			}
+			if scip.ConstructorType(symbolID) != "" && declarationLanguage(filePath) == "ts" {
+				name = "constructor" // What its declaration line says, not `<constructor>`
 			}
 			if !file.IsNew && declarationLanguage(filePath) != "" {
 				entry.Declaration, entry.DeclarationBefore, entry.DeclarationAfter = classifyDeclarationIn(readText(), file.Deleted, sym.def, name, side, entry.ChangeType, filePath)
@@ -414,6 +417,30 @@ func mentions(lines []string, name string) bool {
 
 // codeLines drops the lines whose removal or addition changes no definition:
 // blank lines, comments, stray closing brackets, imports, a Rust inherent impl's header.
+// withoutPrivateImports drops the removed lines of a TypeScript or Rust file that
+// only imported a name for that file: nothing elsewhere used them. Go's import
+// specs are dropped by codeLines.
+func withoutPrivateImports(path string, oldAll map[int]string, block impact.ChangeBlock) []string {
+	if lang := declarationLanguage(path); (lang != "ts" && lang != "rust") || len(block.Removed) == 0 {
+		return block.Removed
+	}
+	last := 0
+	for line := range oldAll {
+		last = max(last, line)
+	}
+	old := make([]string, last)
+	for line, text := range oldAll {
+		old[line-1] = text
+	}
+	var kept []string
+	for i, text := range block.Removed {
+		if line := block.OldLine + i; line > last || old[line-1] != text || !isPrivateImportLine(old, line) {
+			kept = append(kept, text)
+		}
+	}
+	return kept
+}
+
 func codeLines(path string, lines []string) []string {
 	isGo, isRust := strings.HasSuffix(path, ".go"), strings.HasSuffix(path, ".rs")
 	var code []string

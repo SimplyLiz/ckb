@@ -282,26 +282,40 @@ var (
 // isImportLine says whether a line only brings a name into scope, including an entry
 // of a multi-line import list. A changed signature leaves those valid.
 func isImportLine(lines []string, line int) bool {
+	_, ok := importStatement(lines, line)
+	return ok
+}
+
+// isPrivateImportLine is an import line that only this file sees: removing it can't
+// break another file. A re-export (`pub use`, `export { A } from`) can.
+func isPrivateImportLine(lines []string, line int) bool {
+	start, ok := importStatement(lines, line)
+	return ok && !strings.HasPrefix(start, "pub ") && !strings.HasPrefix(start, "export") && !strings.HasPrefix(start, "#include")
+}
+
+// importStatement returns the first line of the import a line belongs to.
+func importStatement(lines []string, line int) (string, bool) {
 	text := strings.TrimSpace(rawLine(lines, line))
 	if hasImportPrefix(text) {
-		return true
+		return text, true
 	}
 	if !bareListEntry.MatchString(text) && !isUseTreeLine(text) {
-		return false
+		return "", false
 	}
 	for current := line - 1; current >= 1 && current >= line-maxCallSpan; current-- {
 		previous := strings.TrimSpace(rawLine(lines, current))
 		if hasImportPrefix(previous) {
 			// Only an import that stays open can own the lines below it: after
 			// `import { A } from './a'` the next line is code again.
-			return strings.Count(previous, "{") > strings.Count(previous, "}") ||
+			open := strings.Count(previous, "{") > strings.Count(previous, "}") ||
 				strings.Count(previous, "(") > strings.Count(previous, ")")
+			return previous, open
 		}
 		if previous != "" && !isUseTreeLine(previous) {
-			return false
+			return "", false
 		}
 	}
-	return false
+	return "", false
 }
 
 // isUseTreeLine says whether a line can be part of an import list. The characters

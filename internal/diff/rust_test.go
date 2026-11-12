@@ -186,3 +186,41 @@ S {
 		}
 	}
 }
+
+// A removed entry of a private import list took nothing from another file; one of a
+// re-export did.
+func TestWithoutPrivateImports(t *testing.T) {
+	oldAll := map[int]string{}
+	for i, line := range strings.Split(`use core::{
+    a, b,
+};
+pub use core::{
+    c,
+};
+fn f() {
+    g(a, b);
+}`, "\n") {
+		oldAll[i+1] = line
+	}
+	for _, tc := range []struct {
+		oldLine int
+		removed string
+		kept    bool
+	}{
+		{2, "    a, b,", false},
+		{5, "    c,", true},
+		{8, "    g(a, b);", true},
+	} {
+		got := withoutPrivateImports("lib.rs", oldAll, impact.ChangeBlock{OldLine: tc.oldLine, Removed: []string{tc.removed}})
+		if (len(got) == 1) != tc.kept {
+			t.Errorf("line %d %q: kept %v, want %v", tc.oldLine, tc.removed, got, tc.kept)
+		}
+	}
+	ts := map[int]string{1: "import {", 2: "  A,", 3: "} from './a';", 4: "export {", 5: "  B,", 6: "} from './b';"}
+	if got := withoutPrivateImports("x.ts", ts, impact.ChangeBlock{OldLine: 2, Removed: []string{"  A,"}}); len(got) != 0 {
+		t.Errorf("ts import entry kept: %v", got)
+	}
+	if got := withoutPrivateImports("x.ts", ts, impact.ChangeBlock{OldLine: 5, Removed: []string{"  B,"}}); len(got) != 1 {
+		t.Errorf("ts re-export entry dropped")
+	}
+}

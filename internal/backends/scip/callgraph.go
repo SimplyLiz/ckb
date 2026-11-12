@@ -367,6 +367,21 @@ func IsChangeableDefinition(symbolID string) bool {
 
 // SymbolSimpleName returns the bare name of a symbol ("sum" for
 // "... impl#[Point]sum()."), or "" if the identifier can't be parsed.
+// ConstructorType returns the type a compiler-named constructor belongs to, `Foo`
+// for `Foo#<constructor>().`, and "" for any other symbol. A use of the
+// constructor spells the type (`new Foo(x)`), never the member's name.
+func ConstructorType(symbolID string) string {
+	sym, err := bindingscip.ParseSymbol(symbolID)
+	if err != nil || len(sym.Descriptors) < 2 {
+		return ""
+	}
+	switch sym.Descriptors[len(sym.Descriptors)-1].Name {
+	case "<constructor>", "<init>":
+		return sym.Descriptors[len(sym.Descriptors)-2].Name
+	}
+	return ""
+}
+
 func SymbolSimpleName(symbolID string) string {
 	sym, err := bindingscip.ParseSymbol(symbolID)
 	if err != nil || len(sym.Descriptors) == 0 {

@@ -256,7 +256,11 @@ func leafName(name string) string {
 // It returns the files with an open use, and false if the uses couldn't be looked up.
 func (c *doneChecker) checkSymbol(ctx context.Context, adapter referenceFinder, sym impact.ChangedSymbol, change impact.DeclarationChange) (map[string]bool, bool) {
 	openFiles := make(map[string]bool)
-	ok := c.checkUses(ctx, adapter, sym, useQuery{name: leafName(sym.Name), change: change}, openFiles)
+	name := leafName(sym.Name)
+	if class := scip.ConstructorType(sym.SymbolID); class != "" {
+		name = class // `new Foo(x)` is the use of Foo's constructor
+	}
+	ok := c.checkUses(ctx, adapter, sym, useQuery{name: name, change: change}, openFiles)
 	return openFiles, ok
 }
 
