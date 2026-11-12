@@ -312,3 +312,33 @@ the literal on its first line. One of them is a struct whose fields did change i
 history, but in that commit every literal sat in the defining file and was updated. So no
 measured number depends on it: `users3strfix` is the same as `users3fix` in all 29
 commits.
+
+### `Self::`, glob and nested arms on real commits (`arms`, rule at 87b8b8e)
+
+`select_replay.py --rule arms` over every local repo with Rust files (23, the CKB repo
+aside; a prior eval is no reason to leave one out here, since none of the three paths was
+built from a real commit): an enum gains a variant, and at the parent an arm over it is
+spelled `Self::A`, `A` behind `use E::*`, or `E::A` inside another pattern. Eleven commits
+in four repos (Rust-A 6, Rust-B 2, Rust-F 1, and Rust-G 2, a repo new to the README). Binary built at bfd0368, rule and
+binary frozen before the run.
+
+| | commits | arms (self / glob / nested) | E0004 | listed at an arm's match |
+|---|---|---|---|---|
+| frozen run | 11 | 40 / 11 / 64 | 0 | 0 |
+
+No commit leaves an arm's match incomplete: the arms sit in the defining file, which is
+applied, and each commit gave them the new variant; the two nested arms in other files
+have an `Err(e)` arm that covers them. So the frozen run shows no false open at these
+paths, and nothing about whether they find an open match. Three commits break other
+lines (E0061, E0609, struct literals); those are listed as before. One false open from
+another check: a `static` whose initializer grew, its type unchanged.
+
+Afterwards, as a probe and not part of the measurement: the commit's defining file at
+the parent with the new variant's arms deleted, one commit per shape. `Self::` (Rust-B,
+two arms deleted) lists both matches at their lines, no other. Glob (Rust-F) lists the
+match. Nested (Rust-G) said clear, from two bugs: `bracedBody` stopped after 500 lines
+and the enum, a clap `Commands` of 590, had no variants (f1fe922); and `TypeSymbolIn`
+wanted `/Commands#`, but a name at a crate's root is `… 1.5.0 Commands#`, so no struct or
+enum of a `lib.rs` or `main.rs` was found at all (0fc1276). After both the nested match is
+counted, as `nested` under rarely. A rerun of users3, variants and arms with both fixes
+(`--name users3root` etc.) moves none of the 44 commits.
