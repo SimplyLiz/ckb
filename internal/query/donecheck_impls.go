@@ -1,12 +1,15 @@
 package query
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"go/types"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -162,6 +165,11 @@ func (c *doneChecker) checkInterface(index implIndex, filePath, name string, ifa
 		if !related[typeID] && !c.implementsByName(found, typeName, iface.methods, oldNames) {
 			continue
 		}
+		// A one-method interface, String() or Close(), is satisfied by every type with
+		// such a method, and the index's implementation relationships say no more
+		// than that. One whose package can't even see the interface breaks only where
+		// some third package uses it as one.
+		nameOnly := len(iface.methods) == 1 && !c.goSeesPackage(found, filePath)
 		methodSym := func(method string) impact.ChangedSymbol {
 			id := ifaceSym + method + "."
 			if ifaceSym == "" {
@@ -174,7 +182,7 @@ func (c *doneChecker) checkInterface(index implIndex, filePath, name string, ifa
 				Location:       backends.Location{Path: site.Path, Line: site.Line, Column: site.Column},
 				FromSymbolName: typeName + "." + use,
 			}
-			c.checkReference(&ref, methodSym(method), useQuery{name: use, change: declChange, via: via}, files)
+			c.checkReference(&ref, methodSym(method), useQuery{name: use, change: declChange, via: via, nameOnly: nameOnly}, files)
 		}
 
 		for _, method := range change.changed {
@@ -202,6 +210,86 @@ func (c *doneChecker) checkInterface(index implIndex, filePath, name string, ifa
 			report(change.added[0], found.Type, typeName, impact.DeclChanged)
 		}
 	}
+}
+
+// useNameMatch is an implementation of a one-method interface whose package doesn't
+// import the interface's: it satisfies it, but may never be used as it. It is counted with the uses that rarely
+// break, not listed.
+const useNameMatch = "name-match"
+
+// goSeesPackage says whether the type's package is the interface's or imports it.
+// Unknown (no go.mod found, unreadable directory) counts as seeing it.
+func (c *doneChecker) goSeesPackage(found *scip.GoTypeMethods, ifaceFile string) bool {
+	typeFile := found.Type.Path
+	if typeFile == "" {
+		for _, site := range found.Methods {
+			typeFile = site.Path
+			break
+		}
+	}
+	typeDir, ifaceDir := path.Dir(typeFile), path.Dir(ifaceFile)
+	if typeFile == "" || typeDir == ifaceDir {
+		return true
+	}
+	key := typeDir + "\x00" + ifaceDir
+	if seen, ok := c.goSees[key]; ok {
+		return seen
+	}
+	sees := true
+	if importPath := goImportPath(c.repoRoot, ifaceDir); importPath != "" {
+		sees = goDirImports(filepath.Join(c.repoRoot, typeDir), importPath)
+	}
+	if c.goSees == nil {
+		c.goSees = make(map[string]bool)
+	}
+	c.goSees[key] = sees
+	return sees
+}
+
+// goImportPath is the import path of a repo directory, from the nearest go.mod at or
+// above it, or "".
+func goImportPath(repoRoot, dir string) string {
+	for d := dir; ; d = path.Dir(d) {
+		if content, err := os.ReadFile(filepath.Join(repoRoot, d, "go.mod")); err == nil {
+			for _, line := range strings.Split(string(content), "\n") {
+				if module, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
+					module = strings.Trim(strings.TrimSpace(module), `"`)
+					rel, err := filepath.Rel(d, dir)
+					if err != nil {
+						return ""
+					}
+					if rel == "." {
+						return module
+					}
+					return module + "/" + filepath.ToSlash(rel)
+				}
+			}
+			return ""
+		}
+		if d == "." || d == "/" || d == "" {
+			return ""
+		}
+	}
+}
+
+// goDirImports says whether any Go file of the directory imports importPath.
+// An unreadable directory counts as importing it.
+func goDirImports(dir, importPath string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return true
+	}
+	quoted := []byte(`"` + importPath + `"`)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(dir, e.Name())) // #nosec G304 -- a file of the repo
+		if err != nil || bytes.Contains(content, quoted) {
+			return true
+		}
+	}
+	return false
 }
 
 // receiverType is the type a method symbol belongs to, or the symbol itself for a type.

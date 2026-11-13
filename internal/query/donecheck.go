@@ -122,7 +122,9 @@ type doneChecker struct {
 	outside []string
 	// goDirs are the package directories a changed Go name is declared in, which
 	// decide whether a Go file outside the index can reach it.
-	goDirs     map[string]map[string]bool
+	goDirs map[string]map[string]bool
+	// goSees caches goSeesPackage: type directory and interface directory to the answer.
+	goSees     map[string]bool
 	modulePath []string // go.mod files whose module line changed: every import of it did too
 	// dependencies are go.mod changes that put other code behind an import: a major
 	// version, a dropped require, a replace.
@@ -321,6 +323,9 @@ type useQuery struct {
 	// pyKeywords holds the old names of the parameters a Python def renamed, when
 	// that is all it did: only a call passing one of them by keyword breaks.
 	pyKeywords []string
+	// nameOnly marks an implementation matched by method name alone, of a one-method
+	// interface its package doesn't import: counted with the uses that rarely break.
+	nameOnly bool
 	// pyCallsOnly counts only the uses that call the name: a class's, for its
 	// __init__. Naming it as a base or in isinstance is no call.
 	pyCallsOnly bool
@@ -473,6 +478,9 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 	// Classified where the reference is: a site listed at a key further down is
 	// still the literal found here.
 	use := tsUse(sym, query, cmp.Or(ref.Location.Path, path), newLines, result.Line, len(missingAt) > 0)
+	if query.nameOnly {
+		use = useNameMatch
+	}
 	if query.arrayLengths != nil && !diff.SpellsArrayLength(result.Code, query.arrayLengths) {
 		use = diff.TSUseRead // Counted with the reads that rarely break, not listed
 	}
@@ -612,7 +620,7 @@ func useRank(use string) int {
 		return 2
 	case diff.TSUseSwitch:
 		return 3
-	case diff.TSUseAnnotation, diff.TSUseRead:
+	case diff.TSUseAnnotation, diff.TSUseRead, useNameMatch:
 		return rankRarely
 	}
 	return 1
@@ -867,7 +875,7 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 		check.Status = DoneCheckOpen
 		check.Note = "Uses of a changed declaration the diff didn't touch. Text comparison, nothing compiled: some may need no edit."
 		if check.RarelyCount > 0 {
-			check.Note += fmt.Sprintf(" %d of them only annotate with a changed type, read a changed key or read an array whose length changed, which rarely breaks: they are counted per symbol, not listed.", check.RarelyCount)
+			check.Note += fmt.Sprintf(" %d of them only annotate with a changed type, read a changed key, read an array whose length changed or implement a one-method interface their package doesn't import, which rarely breaks: they are counted per symbol, not listed.", check.RarelyCount)
 		}
 		if doubt != "" {
 			check.Note += " There may be more: " + doubt + "."
