@@ -35,9 +35,11 @@ type Plan struct {
 	// base is Command without the output flag Build added for a custom index
 	// path, so a multi-language build can point the output somewhere else.
 	base string
-	// redirected marks a plan writingTo made: its indexer writes the output
-	// itself, so relocate has nothing to move, only paths to rebase.
-	redirected bool
+	// NamesOutput marks a Command that tells the indexer to write IndexPath
+	// (a custom index path, or writingTo): relocate has nothing to move, only
+	// paths to rebase. Without it the indexer writes index.scip into
+	// IndexerDir, and relocate moves that to IndexPath.
+	NamesOutput bool
 }
 
 // FailureKind says why no plan could be built.
@@ -147,8 +149,12 @@ func Build(repoRoot string, lang project.Language, manifest, compdbOverride, ind
 	}
 
 	base := command
-	if needsOutputFlag {
-		command = fmt.Sprintf("%s --output %s", command, indexPath)
+	// An indexer without an output flag (scip-php) writes index.scip into its
+	// directory whatever it's given; relocate moves that to indexPath.
+	flag := project.OutputFlag(lang)
+	namesOutput := needsOutputFlag && flag != ""
+	if namesOutput {
+		command = fmt.Sprintf("%s %s %s", command, flag, indexPath)
 	}
 
 	if !IndexerInstalled(indexer.CheckCommand) {
@@ -166,13 +172,14 @@ func Build(repoRoot string, lang project.Language, manifest, compdbOverride, ind
 	}
 
 	return &Plan{
-		Lang:       lang,
-		Manifest:   manifest,
-		Indexer:    indexer,
-		Command:    command,
-		IndexerDir: indexerDir,
-		IndexPath:  indexPath,
-		base:       base,
+		Lang:        lang,
+		Manifest:    manifest,
+		Indexer:     indexer,
+		Command:     command,
+		IndexerDir:  indexerDir,
+		IndexPath:   indexPath,
+		base:        base,
+		NamesOutput: namesOutput,
 	}, warning, nil
 }
 
@@ -202,23 +209,25 @@ func RepairPython(repoRoot, indexPath string) {
 	}
 }
 
-// relocate moves and rebases an index an indexer wrote in a subdirectory.
+// relocate moves an index the indexer wrote into its own directory to
+// IndexPath, and rebases one written from a subdirectory.
 func relocate(repoRoot string, plan *Plan) error {
-	if plan.IndexerDir == repoRoot {
-		return nil
-	}
-	written := filepath.Join(plan.IndexerDir, "index.scip")
-	if written != plan.IndexPath && !plan.redirected {
-		if _, err := os.Stat(written); err == nil {
+	if !plan.NamesOutput {
+		written := filepath.Join(plan.IndexerDir, "index.scip")
+		if written != plan.IndexPath {
+			if _, err := os.Stat(written); err != nil {
+				// Nothing new was written. Whatever sits at the target is an
+				// earlier, already rebased index and must not be rebased again.
+				return nil
+			}
 			// Replaces the previous run's index at the target path.
 			if err := os.Rename(written, plan.IndexPath); err != nil {
 				return fmt.Errorf("moving %s to %s: %w", written, plan.IndexPath, err)
 			}
-		} else if plan.IndexPath == filepath.Join(repoRoot, "index.scip") {
-			// Nothing new was written. Whatever sits at the target is an earlier,
-			// already rebased index and must not be rebased again.
-			return nil
 		}
+	}
+	if plan.IndexerDir == repoRoot {
+		return nil
 	}
 	prefix, err := filepath.Rel(repoRoot, plan.IndexerDir)
 	if err != nil {

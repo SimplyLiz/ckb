@@ -99,7 +99,7 @@ func (e *SCIPExtractor) ExtractDeltas(changedFiles []ChangedFile) (*SymbolDelta,
 }
 
 // RunIndexer executes the SCIP indexer for the given language configuration.
-// It handles output path configuration and fixed-output indexers (like rust-analyzer).
+// It handles output path configuration and fixed-output indexers (like scip-php).
 func (e *SCIPExtractor) RunIndexer(config *project.IndexerConfig) error {
 	// Ensure output directory exists
 	outputDir := filepath.Dir(e.indexPath)
@@ -118,7 +118,7 @@ func (e *SCIPExtractor) RunIndexer(config *project.IndexerConfig) error {
 		return fmt.Errorf("indexer failed: %w", err)
 	}
 
-	// Handle indexers with fixed output paths (e.g., rust-analyzer)
+	// Handle indexers with fixed output paths (e.g., scip-php)
 	if config.HasFixedOutput() {
 		fixedPath := filepath.Join(e.repoRoot, config.FixedOutput)
 		if fixedPath != e.indexPath {

@@ -161,20 +161,23 @@ func TestRunAll_PreviousIndexStaysUntilTheMerge(t *testing.T) {
 		// Nested manifest: the part path is relative to the indexer's directory
 		// and the documents get rebased.
 		{Lang: project.LangPython, IndexerDir: sub, IndexPath: indexPath, base: "scip-python index .", Command: "scip-python index ."},
-		// No known output flag: runs in place.
+		// Not every indexer calls it --output.
 		{Lang: project.LangRuby, IndexerDir: dir, IndexPath: indexPath, base: "scip-ruby .", Command: "scip-ruby ."},
+		// No output flag at all: runs in place.
+		{Lang: project.LangPHP, IndexerDir: dir, IndexPath: indexPath, base: "vendor/bin/scip-php", Command: "vendor/bin/scip-php"},
 	}
-	docFor := map[project.Language]string{project.LangGo: "main.go", project.LangPython: "cli.py", project.LangRuby: "app.rb"}
+	docFor := map[project.Language]string{project.LangGo: "main.go", project.LangPython: "cli.py", project.LangRuby: "app.rb", project.LangPHP: "app.php"}
 
 	res, err := RunAll(dir, plans, func(p *Plan) error {
 		out := indexPath
-		if f := strings.Fields(p.Command); len(f) > 2 && f[len(f)-2] == "--output" {
+		flag := project.OutputFlag(p.Lang)
+		if f := strings.Fields(p.Command); flag != "" && len(f) > 2 && f[len(f)-2] == flag {
 			out = filepath.Join(p.IndexerDir, f[len(f)-1])
 			if docs := indexDocs(t, indexPath); len(docs) != 1 || docs[0] != "old.go" {
 				t.Errorf("%s running: index holds %v, want the previous one", p.Lang, docs)
 			}
-		} else if p.Lang != project.LangRuby {
-			t.Errorf("%s ran without --output: %q", p.Lang, p.Command)
+		} else if p.Lang != project.LangPHP {
+			t.Errorf("%s ran without %s: %q", p.Lang, flag, p.Command)
 		}
 		writeDocIndex(t, out, docFor[p.Lang])
 		return nil
@@ -190,7 +193,7 @@ func TestRunAll_PreviousIndexStaysUntilTheMerge(t *testing.T) {
 			t.Errorf("%s: result carries the part command %q", r.Plan.Lang, r.Plan.Command)
 		}
 	}
-	want := []string{"app.rb", "main.go", "tool/cli.py"}
+	want := []string{"app.php", "app.rb", "main.go", "tool/cli.py"}
 	if got := indexDocs(t, indexPath); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("merged docs = %v, want %v", got, want)
 	}
@@ -239,5 +242,35 @@ func TestRunOne_RemovesTheInferredTSConfig(t *testing.T) {
 		if !had && err == nil {
 			t.Errorf("the inferred tsconfig.json was left behind")
 		}
+	}
+}
+
+// scip-php can't be told where to write: with a custom index path its
+// index.scip in the repo root moves there, and a run that wrote nothing
+// leaves the previous index as it was.
+func TestFinalize_FixedOutputMovesToCustomPath(t *testing.T) {
+	dir := t.TempDir()
+	custom := filepath.Join(dir, ".ckb", "custom.scip")
+	if err := os.MkdirAll(filepath.Dir(custom), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan := &Plan{Lang: project.LangPHP, IndexerDir: dir, IndexPath: custom, base: "vendor/bin/scip-php", Command: "vendor/bin/scip-php"}
+
+	writeDocIndex(t, filepath.Join(dir, "index.scip"), "app.php")
+	if err := Finalize(dir, plan); err != nil {
+		t.Fatal(err)
+	}
+	if got := indexDocs(t, custom); strings.Join(got, ",") != "app.php" {
+		t.Errorf("custom index holds %v, want [app.php]", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "index.scip")); !os.IsNotExist(err) {
+		t.Errorf("index.scip left in the repo root: %v", err)
+	}
+
+	if err := Finalize(dir, plan); err != nil {
+		t.Fatal(err)
+	}
+	if got := indexDocs(t, custom); strings.Join(got, ",") != "app.php" {
+		t.Errorf("after a run that wrote nothing: %v", got)
 	}
 }
