@@ -183,6 +183,28 @@ func classifyDeclarationIn(text *fileText, deleted bool, def *SymbolDefInfo, nam
 	}
 
 	before, after = indexDecl.text, otherDecl.text
+	if lang == "rust" {
+		// A field on its braces' line is compared alone: the line also holds its type's
+		// head, which reads as the declaration, and the other fields.
+		a, aInline := rustInlineMember(indexAll[line], name)
+		b, bInline := rustInlineMember(otherAll[otherLine], name)
+		if aInline || bInline {
+			aOK, bOK := aInline, bInline
+			if !aInline {
+				a, aOK = rustOwnLineField(indexAll[line], name)
+			}
+			if !bInline {
+				b, bOK = rustOwnLineField(otherAll[otherLine], name)
+			}
+			if aOK && bOK {
+				before, after = a, b
+				if side == indexMatchesNew {
+					before, after = after, before
+				}
+				return compareDeclarations(before, after, name, lang), before, after
+			}
+		}
+	}
 	if side == indexMatchesNew {
 		before, after = after, before
 	}
@@ -414,6 +436,73 @@ func isComparison(text string, i int) bool {
 	return i > 0 && strings.IndexByte("=!<>", text[i-1]) >= 0
 }
 
+// rustInlineMemberRe is what stands before a field declared on the line of its type's
+// or variant's opening brace: `Filed { `, `pub struct P<T> { x: i32, pub `. A
+// literal written the same way, `P { x: 1 }` alone on a line, reads the same: the
+// declaration it is compared with tells them apart.
+var (
+	rustInlineMemberRe = regexp.MustCompile(`^(\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:struct\s+|union\s+)?[A-Za-z_]\w*(?:<[^{}]*>)?\s*\{)(?:[^{}]*,)?\s*(?:pub(?:\s*\([^)]*\))?\s+)?$`)
+	rustVariantBraceRe = regexp.MustCompile(`^\s*\{`)
+	rustTrailingVisRe  = regexp.MustCompile(`pub(?:\s*\([^)]*\))?\s+$`)
+)
+
+// rustInlineMember returns a field declared on its braces' line, from its name to the
+// comma or brace that ends it: `reason: String` of `Filed { reason: String, n: u8 },`.
+func rustInlineMember(text, name string) (string, bool) {
+	at := wordIndex(text, name)
+	if at < 0 || !rustInlineMemberRe.MatchString(text[:at]) || !strings.HasPrefix(strings.TrimSpace(text[at+len(name):]), ":") {
+		return "", false
+	}
+	from := at // With its visibility, which is part of what it declares
+	if vis := rustTrailingVisRe.FindStringIndex(text[:at]); vis != nil {
+		from = vis[0]
+	}
+	depth := 0
+	for i := at; i < len(text); i++ {
+		switch text[i] {
+		case '(', '[', '<', '{':
+			depth++
+		case ')', ']', '>':
+			if text[i] != '>' || text[i-1] != '-' {
+				depth--
+			}
+		case '}':
+			if depth == 0 {
+				return strings.TrimSpace(text[from:i]), true
+			}
+			depth--
+		case ',':
+			if depth == 0 {
+				return strings.TrimSpace(text[from:i]), true
+			}
+		}
+	}
+	return strings.TrimSpace(text[from:]), true
+}
+
+// rustOwnLineField returns a field declared on a line of its own, `pub reason: String,`,
+// without the comma or a comment after it.
+func rustOwnLineField(text, name string) (string, bool) {
+	at := wordIndex(text, name)
+	if at < 0 || !modifierOnlyRe.MatchString(text[:at]) || !strings.HasPrefix(strings.TrimSpace(text[at+len(name):]), ":") {
+		return "", false
+	}
+	if i := strings.Index(text, "//"); i > at {
+		text = text[:i]
+	}
+	return strings.TrimSuffix(strings.TrimSpace(text), ","), true
+}
+
+// rustInlineHead is the type or variant a field on its braces' line belongs to,
+// squeezed: `pubstructP<T>{` of `pub struct P<T> { x: i32, `.
+func rustInlineHead(prefix string) string {
+	m := rustInlineMemberRe.FindStringSubmatch(prefix)
+	if m == nil {
+		return ""
+	}
+	return squeeze(m[1], "rust")
+}
+
 var (
 	declKeywordRe  = regexp.MustCompile(`\b(func|fn|function|def|const|let|var|static|type|class|interface|enum|struct|trait|union)\b`)
 	modifierOnlyRe = regexp.MustCompile(`^\s*((export|default|declare|abstract|public|private|protected|static|readonly|override|async|get|set|pub(\([^)]*\))?|unsafe|mut|ref)\s+)*$`)
@@ -442,6 +531,26 @@ func findDeclaration(lines map[int]string, changed map[int]bool, like, name, lan
 func declaresSame(text, like, name, lang string) bool {
 	prefix := beforeWord(text, name)
 	likePrefix := beforeWord(like, name)
+	if lang == "rust" {
+		_, likeInline := rustInlineMember(like, name)
+		_, textInline := rustInlineMember(text, name)
+		if likeInline || textInline {
+			// A field on its braces' line, `Filed { reason: String },`: the same field of
+			// the same type or variant, or the field on a line of its own when the braces
+			// were spread over lines, or the other way round.
+			if likeInline && textInline {
+				return rustInlineHead(prefix) == rustInlineHead(likePrefix)
+			}
+			_, likeOwn := rustOwnLineField(like, name)
+			_, textOwn := rustOwnLineField(text, name)
+			return likeInline && textOwn || textInline && likeOwn
+		}
+		if rustVariantBraceRe.MatchString(text[len(prefix)+len(name):]) {
+			// A struct-like variant, `Filed { reason: String },`: its fields are
+			// compared by the enum's check, as a struct's are.
+			return modifierOnlyRe.MatchString(prefix) && rustVariantBraceRe.MatchString(like[len(likePrefix)+len(name):])
+		}
+	}
 	keyword := lastMatch(declKeywordRe, prefix)
 	likeKeyword := lastMatch(declKeywordRe, likePrefix)
 	if lang == "go" {

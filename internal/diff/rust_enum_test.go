@@ -140,22 +140,47 @@ func TestRustMatchAt_Nested(t *testing.T) {
     Ok(E::A) => 1,
     Err(_) => 0,
 }`, true, true, false},
-		{"a tuple, the other place wild", `match (e, n) {
+		// rustc: E0004 for a third variant. `(_, 2)` takes the first place only when the
+		// second is 2.
+		{"a tuple, the other place refutable", `match (e, n) {
     (E::A, 1) => 1,
     (_, 2) => 2,
     (E::B, _) => 3,
+}`, true, true, false},
+		{"a tuple, the other place wild", `match (e, n) {
+    (E::A, 1) => 1,
+    (_, _) => 2,
+}`, true, true, true},
+		// `(R::T, ..)` leaves the second place open only for R::T.
+		{"a tuple, .. beside a variant", `match (r, e, l) {
+    (R::U, E::A(..), _) => 1,
+    (R::T, ..) => 0,
+    (R::U, E::B, _) => 2,
+}`, true, true, false},
+		{"a tuple, .. beside a binding", `match (r, e, l) {
+    (R::U, E::A(..), _) => 1,
+    (r, ..) => 0,
 }`, true, true, true},
 		{"a tuple, its place never wild", `match (e, n) {
     (E::A, _) => 1,
     (E::B, _) => 2,
 }`, true, true, false},
-		{"a struct field, the field left to ..", `match f {
+		// rustc: E0004. Both arms take the field only when n is 0.
+		{"a struct field left to .., another field refutable", `match f {
     Foo { kind: E::A, .. } => 1,
     Foo { n: 0, .. } => 2,
+}`, true, true, false},
+		{"a struct field bound by shorthand, another field refutable", `match f {
+    Foo { kind: E::A, n } => n,
+    Foo { kind, n: 0 } => 0,
+}`, true, true, false},
+		{"a struct field left to ..", `match f {
+    Foo { kind: E::A, .. } => 1,
+    Foo { .. } => 2,
 }`, true, true, true},
 		{"a struct field bound by shorthand", `match f {
     Foo { kind: E::A, n } => n,
-    Foo { kind, n: 0 } => 0,
+    Foo { kind, n } => 0,
 }`, true, true, true},
 		{"a struct field, never left open", `match f {
     Foo { kind: E::A, n } => n,
