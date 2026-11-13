@@ -197,7 +197,7 @@ func TestMissingIndexWarning_OnStreamingInitialResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("searchSymbols: %v", err)
 	}
-	text := res.(map[string]interface{})["content"].([]map[string]interface{})[0]["text"].(string)
+	text := as[string](t, as[[]map[string]interface{}](t, as[map[string]interface{}](t, res)["content"])[0]["text"])
 	if !strings.Contains(text, `"streaming":true`) {
 		t.Fatalf("not a streaming initial response: %s", text)
 	}

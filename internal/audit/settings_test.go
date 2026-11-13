@@ -49,9 +49,9 @@ print(f"{tokens_per_second:.1f} tok/s")
 	}
 
 	loud := map[string]string{
-		`def login(user, password):`:              "password",
-		`API_KEY = os.environ["OPENAI_API_KEY"]`:  "api_key",
-		`const accessToken = await refresh();`:    "access_token",
+		`def login(user, password):`:               "password",
+		`API_KEY = os.environ["OPENAI_API_KEY"]`:   "api_key",
+		`const accessToken = await refresh();`:     "access_token",
 		`headers["Authorization"] = "Bearer " + t`: "authorization",
 		`HF_TOKEN = os.getenv("HF_TOKEN")`:         "hf_token",
 		`claims = jwt.decode(raw, verify=True)`:    "jwt",

@@ -61,14 +61,14 @@ func TestModernVersionAndCapabilityChecks(t *testing.T) {
 	s := newQuietServer()
 
 	old := modernMsg("tools/list", nil)
-	old.Params.(map[string]interface{})["_meta"].(map[string]interface{})[metaKeyProtocolVersion] = "2027-01-01"
+	as[map[string]interface{}](t, as[map[string]interface{}](t, old.Params)["_meta"])[metaKeyProtocolVersion] = "2027-01-01"
 	resp := s.handleMessage(old)
 	if resp.Error == nil || resp.Error.Code != UnsupportedProtocolVersion {
 		t.Fatalf("want -32022, got %+v", resp.Error)
 	}
 
 	noCaps := modernMsg("tools/list", nil)
-	delete(noCaps.Params.(map[string]interface{})["_meta"].(map[string]interface{}), metaKeyClientCapabilities)
+	delete(as[map[string]interface{}](t, as[map[string]interface{}](t, noCaps.Params)["_meta"]), metaKeyClientCapabilities)
 	if resp := s.handleMessage(noCaps); resp.Error == nil || resp.Error.Code != InvalidParams {
 		t.Fatalf("want -32602 without clientCapabilities, got %+v", resp.Error)
 	}
@@ -104,8 +104,8 @@ func TestModernToolsList(t *testing.T) {
 	}
 	sawRepo := false
 	for _, raw := range tools {
-		tool := raw.(map[string]interface{})
-		name := tool["name"].(string)
+		tool := as[map[string]interface{}](t, raw)
+		name := as[string](t, tool["name"])
 		if connectionStateTools[name] {
 			t.Errorf("%s must not be listed to a modern client", name)
 		}
@@ -180,7 +180,7 @@ func TestModernListenAcknowledgesThenCompletes(t *testing.T) {
 	if ack["method"] != "notifications/subscriptions/acknowledged" {
 		t.Errorf("ack method = %v", ack["method"])
 	}
-	meta := ack["params"].(map[string]interface{})["_meta"].(map[string]interface{})
+	meta := as[map[string]interface{}](t, as[map[string]interface{}](t, ack["params"])["_meta"])
 	if meta[metaKeySubscriptionID] != float64(1) {
 		t.Errorf("subscriptionId = %v", meta[metaKeySubscriptionID])
 	}

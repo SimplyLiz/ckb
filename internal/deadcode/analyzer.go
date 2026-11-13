@@ -324,45 +324,6 @@ func notADeclaration(kind string) bool {
 	return false
 }
 
-// extractNameFromSymbol extracts the symbol name from a SCIP symbol ID.
-func extractNameFromSymbol(symbolID string) string {
-	if symbolID == "" {
-		return ""
-	}
-
-	// SCIP symbol format varies by language, but generally the last part is the name
-	// Examples:
-	//   scip-go gomod github.com/example/pkg v1.0.0 internal/query/engine.go Engine.
-	//   scip-go gomod example.com/pkg v0.0.0 pkg/types/user.go User#Name.
-	// The name is typically after the last / or # and before trailing .
-
-	// Find the last component
-	lastSlash := strings.LastIndex(symbolID, "/")
-	lastHash := strings.LastIndex(symbolID, "#")
-	lastParen := strings.LastIndex(symbolID, "(")
-
-	startIdx := 0
-	if lastHash > lastSlash {
-		startIdx = lastHash + 1
-	} else if lastSlash >= 0 {
-		startIdx = lastSlash + 1
-	}
-
-	name := symbolID[startIdx:]
-
-	// Remove method signature (parentheses and after)
-	if lastParen > startIdx {
-		name = name[:lastParen-startIdx]
-	}
-
-	// Remove trailing . or ` or other markers
-	name = strings.TrimSuffix(name, ".")
-	name = strings.TrimSuffix(name, "`")
-	name = strings.TrimSuffix(name, "()")
-
-	return name
-}
-
 // extractFilePathFromSymbol extracts the file path from a SCIP symbol ID.
 func extractFilePathFromSymbol(symbolID string) string {
 	// SCIP symbol format varies, but we can often find the file path

@@ -287,45 +287,6 @@ func extractNameFromSymbol(symbolID string) string {
 	return name
 }
 
-func extractFilePathFromSymbol(symbolID string) string {
-	parts := strings.Split(symbolID, " ")
-	for _, part := range parts {
-		if strings.HasSuffix(part, ".go") ||
-			strings.HasSuffix(part, ".ts") ||
-			strings.HasSuffix(part, ".js") ||
-			strings.HasSuffix(part, ".py") {
-			idx := strings.LastIndex(part, "/")
-			if idx > 0 {
-				for i := idx + 1; i < len(part); i++ {
-					if part[i] == '/' {
-						return part[:i]
-					}
-				}
-			}
-			return part
-		}
-	}
-	return ""
-}
-
-func extractPackageFromSymbol(symbolID string) string {
-	parts := strings.Split(symbolID, " ")
-	for i, part := range parts {
-		if strings.HasSuffix(part, ".go") {
-			// Package is typically before the file
-			if i > 0 {
-				prev := parts[i-1]
-				if strings.Contains(prev, "/") {
-					lastSlash := strings.LastIndex(prev, "/")
-					return prev[lastSlash+1:]
-				}
-				return prev
-			}
-		}
-	}
-	return ""
-}
-
 func isExported(name string) bool {
 	if name == "" {
 		return false
@@ -341,41 +302,4 @@ func isTestFile(path string) bool {
 		strings.HasSuffix(path, "_test.py") ||
 		strings.Contains(path, "/tests/") ||
 		strings.Contains(path, "/__tests__/")
-}
-
-func isInScope(filePath string, scope []string) bool {
-	if len(scope) == 0 {
-		return true
-	}
-	for _, s := range scope {
-		if strings.HasPrefix(filePath, s) || strings.HasPrefix(filePath, s+"/") {
-			return true
-		}
-	}
-	return false
-}
-
-func kindToString(kind int32) string {
-	switch kind {
-	case 1:
-		return "package"
-	case 2:
-		return "type"
-	case 3:
-		return "term"
-	case 4:
-		return "method"
-	case 5:
-		return "type_parameter"
-	case 6:
-		return "parameter"
-	case 7:
-		return "self_parameter"
-	case 8:
-		return "attr"
-	case 9:
-		return "macro"
-	default:
-		return "unknown"
-	}
 }

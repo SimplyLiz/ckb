@@ -189,7 +189,10 @@ func (s *MCPServer) modernListTools(msg *MCPMessage, params map[string]interface
 	if err != nil {
 		return nil, NewErrorMessage(msg.Id, InvalidParams, err.Error(), nil)
 	}
-	result := raw.(map[string]interface{})
+	result, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, NewErrorMessage(msg.Id, InternalError, fmt.Sprintf("tools/list returned %T", raw), nil)
+	}
 	tools, _ := result["tools"].([]Tool)
 	out := make([]Tool, 0, len(tools))
 	for _, t := range tools {
