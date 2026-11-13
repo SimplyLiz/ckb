@@ -373,6 +373,13 @@ private, so only aggregates are here.
   consumers, as an edit that keeps the declaration; visibility, test files and co-change
   are still listed but no longer weighted. Rubik's `price`: 9 direct, 7 transitive, 2
   modules, low in both. File and module targets keep the old formula.
+- **unwired: `Unwrap`, `Is`, `As`, `Format`, `GoString` and the YAML marshalers are
+  called by the standard library** through interfaces nobody declares in the repo, like
+  `String` and `Error` already were. Measured on CKB against Go's own `deadcode` (RTA from
+  the three `main` packages): of 616 listed, 437 are unreachable for it too; the other 179
+  have no production caller, or one in code that is itself unreachable (146 and 33), except
+  `errUnknownTool.Unwrap`, now dropped. unwired misses 104 functions `deadcode` finds,
+  because a symbol a reached file mentions counts as reached.
 - **Changed symbols carry a qualified name.** `qualifiedName` in changedSymbols, open
   sites and rarely groups (`Backend.Priority`, `Win.__init__`), shown by the compact text
   and `ckb changes`. Renaming an interface method and its implementations gave three

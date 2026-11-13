@@ -164,6 +164,8 @@ func TestIsCommonInterfaceMethod(t *testing.T) {
 		{"MarshalJSON", "method", true},
 		{"UnmarshalJSON", "method", true},
 		{"ServeHTTP", "method", true},
+		{"Unwrap", "method", true}, // errors.Is/As call it through an unnamed interface
+		{"Format", "method", true},
 
 		// Not interface methods
 		{"String", "function", false}, // Not a method

@@ -139,8 +139,15 @@ func isCommonInterfaceMethod(name, kind string) bool {
 	commonMethods := map[string]bool{
 		// fmt.Stringer
 		"String": true,
-		// error interface
-		"Error": true,
+		// error interface, and what errors.Is/As/Unwrap assert for without a named
+		// interface anyone could implement in the repo
+		"Error":  true,
+		"Unwrap": true,
+		"Is":     true,
+		"As":     true,
+		// fmt.Formatter, fmt.GoStringer
+		"Format":   true,
+		"GoString": true,
 		// io.Reader/Writer/Closer
 		"Read":  true,
 		"Write": true,
@@ -160,6 +167,9 @@ func isCommonInterfaceMethod(name, kind string) bool {
 		// json.Marshaler/Unmarshaler
 		"MarshalJSON":   true,
 		"UnmarshalJSON": true,
+		// yaml.Marshaler/Unmarshaler
+		"MarshalYAML":   true,
+		"UnmarshalYAML": true,
 		// sql.Scanner/driver.Valuer
 		"Scan":  true,
 		"Value": true,
