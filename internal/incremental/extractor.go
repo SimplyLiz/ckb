@@ -128,6 +128,15 @@ func (e *SCIPExtractor) RunIndexer(config *project.IndexerConfig) error {
 		}
 	}
 
+	// scip-python leaves imports through sys.path unresolved; the full index path
+	// repairs them in indexplan.Finalize, and this one has to as well, or the deltas
+	// read below lose those references again.
+	if config.Cmd == "scip-python" {
+		if _, err := scip.RepairPythonImports(e.repoRoot, e.indexPath); err != nil {
+			slog.Warn("Could not repair the Python imports in the index", "error", err.Error())
+		}
+	}
+
 	return nil
 }
 

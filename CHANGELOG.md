@@ -200,6 +200,20 @@ Claude Code mods, with no manifest anywhere.
   files, no manifest`. Ignored files don't count.
 - **The scip-python install hint was wrong.** It said `pip install scip-python`; there
   is no such package on PyPI. It's `npm install -g @sourcegraph/scip-python`.
+- **Python imports through `sys.path` are in the index.** Five scripts in one
+  directory import `lc1_account` from a sibling through `sys.path.insert(...)`.
+  scip-python resolves imports like pyright, so it writes no occurrence for any of
+  that: `findReferences(price)` gave 13 of 23 at confidence 1.00, `assessChange` said
+  2 consumers after a signature change, and listed two test files that passed, but not
+  the one that failed 12 of 12. After scip-python runs (full and incremental), the
+  index is repaired: an import of a module that is one of the index's own files, by
+  name, in a file with no occurrence of that module, gets its occurrences from the
+  text: `alias.name` after `import m as alias`, each use after `from m import name`
+  (and `*`), and one hop such as `r2.lc.price` where `r2` imported it. Comments,
+  strings and names the file declares itself are skipped; an import the indexer
+  resolved is never touched. On that repo: 34 occurrences added, all checked against
+  the source, 23 of 23 references, 7 consumer files, the failing test among the
+  affected.
 - **`ckb index` keeps `.ckb/` and the index out of `git status` in repos initialized
   before `ckb init` started writing `.git/info/exclude`.** A tracked or already
   ignored index is left alone.
