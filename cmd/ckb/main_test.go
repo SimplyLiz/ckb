@@ -14,6 +14,7 @@ func TestIsMCPCommandArgs(t *testing.T) {
 		{[]string{"serve", "--port", "8080"}, true},
 		{[]string{"-v", "mcp"}, true},
 		{[]string{"--tier", "fast", "mcp"}, true},
+		{[]string{"hook", "session-start"}, true},
 		{[]string{"a2a"}, false},
 		{[]string{"daemon", "start"}, false},
 		{[]string{"status"}, false},
