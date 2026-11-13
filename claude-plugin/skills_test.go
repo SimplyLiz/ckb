@@ -3,8 +3,11 @@ package claudeplugin
 import (
 	"encoding/json"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/SimplyLiz/CodeMCP/internal/version"
 )
 
 // The skills are written to ~/.claude/commands by `ckb setup`, so they have to
@@ -123,10 +126,13 @@ func TestMCPServerUsesShim(t *testing.T) {
 	}
 }
 
-// hooks/hooks.json calls `ckb hook session-start` through the shim, for the
-// sources where the model starts without CKB's index line in context, and may
-// never fail the session: an older ckb without the command exits 1.
-func TestSessionStartHook(t *testing.T) {
+// hooks/hooks.json has two SessionStart hooks. The status line runs
+// synchronously through the shim, for the sources where the model starts
+// without CKB's index line in context; it may never fail the session (an older
+// ckb without the command exits 1) and never wait for npx (CKB_SHIM_NO_NPX).
+// The installer runs in the background: a synchronous download would hold up
+// the first response.
+func TestSessionStartHooks(t *testing.T) {
 	data, err := os.ReadFile("hooks/hooks.json")
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +144,7 @@ func TestSessionStartHook(t *testing.T) {
 				Type    string `json:"type"`
 				Command string `json:"command"`
 				Timeout int    `json:"timeout"`
+				Async   bool   `json:"async"`
 			} `json:"hooks"`
 		} `json:"hooks"`
 	}
@@ -145,17 +152,47 @@ func TestSessionStartHook(t *testing.T) {
 		t.Fatal(err)
 	}
 	groups := cfg.Hooks["SessionStart"]
-	if len(cfg.Hooks) != 1 || len(groups) != 1 || len(groups[0].Hooks) != 1 {
-		t.Fatalf("want exactly one SessionStart hook and no other events, got %+v", cfg.Hooks)
+	if len(cfg.Hooks) != 1 || len(groups) != 1 || len(groups[0].Hooks) != 2 {
+		t.Fatalf("want two SessionStart hooks and no other events, got %+v", cfg.Hooks)
 	}
 	if groups[0].Matcher != "startup|resume|clear|compact" {
 		t.Errorf("matcher = %q", groups[0].Matcher)
 	}
-	h := groups[0].Hooks[0]
-	if h.Type != "command" || h.Command != `"${CLAUDE_PLUGIN_ROOT}/scripts/ckb" hook session-start 2>/dev/null || true` {
-		t.Errorf("hook = %+v", h)
+	status, install := groups[0].Hooks[0], groups[0].Hooks[1]
+	if status.Type != "command" || status.Async ||
+		status.Command != `CKB_SHIM_NO_NPX=1 "${CLAUDE_PLUGIN_ROOT}/scripts/ckb" hook session-start 2>/dev/null || true` {
+		t.Errorf("status hook = %+v", status)
 	}
-	if h.Timeout <= 0 || h.Timeout > 30 {
-		t.Errorf("timeout = %d s; the first response waits for SessionStart hooks", h.Timeout)
+	if status.Timeout <= 0 || status.Timeout > 5 {
+		t.Errorf("status timeout = %d s; the first response waits for synchronous SessionStart hooks", status.Timeout)
+	}
+	if install.Type != "command" || !install.Async ||
+		install.Command != `"${CLAUDE_PLUGIN_ROOT}/scripts/ckb-install"` {
+		t.Errorf("install hook = %+v", install)
+	}
+}
+
+// scripts/ckb-install reads the version from the shim's pin= line, so that
+// line stays the only place the plugin's pin is written down.
+func TestInstallerReadsShimPin(t *testing.T) {
+	shim, err := os.ReadFile("scripts/ckb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?m)^pin=` + regexp.QuoteMeta(version.Version) + `$`).Match(shim) {
+		t.Errorf("scripts/ckb has no pin=%s line; run go run scripts/sync-version.go", version.Version)
+	}
+	installer, err := os.ReadFile("scripts/ckb-install")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(installer), `pin=$(sed -n 's/^pin=//p' "$dir/ckb")`) {
+		t.Error("ckb-install no longer reads the pin from scripts/ckb")
+	}
+	if regexp.MustCompile(`(?m)^pin=[0-9]`).Match(installer) {
+		t.Error("ckb-install writes its own pin; it must read the shim's")
+	}
+	if info, err := os.Stat("scripts/ckb-install"); err != nil || info.Mode().Perm()&0o111 == 0 {
+		t.Error("scripts/ckb-install is missing or not executable")
 	}
 }

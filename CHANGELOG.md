@@ -641,6 +641,15 @@ Claude Code mods, with no manifest anywhere.
   `ckb setup --tool=claude-code`, which installs the same texts as commands without
   the plugin, writes `ckb` into them, or `npx -y @tastehub/ckb@<its version>` when
   `ckb` is not on PATH or `--npx` is given.
+- **No npx on every call.** An async SessionStart hook (`scripts/ckb-install`)
+  installs the pinned `@tastehub/ckb` into the plugin's data directory the first
+  time no compatible `ckb` is on PATH; the data directory survives plugin updates,
+  a new pin replaces the old copy, and a failed or interrupted install is retried
+  at the next session start. The shim then runs that copy directly (Go binary, no
+  Node), also from skills, where Claude Code does not export `CLAUDE_PLUGIN_DATA`:
+  the shim derives it from the plugin's cache path. First install 3.7 s in the
+  background, 30 ms on later sessions. ckb's own update check is off for the
+  copy and the npx fallback, since the plugin updates them.
 - **A SessionStart hook tells the model what state the index is in.** The plugin
   runs `ckb hook session-start` on startup, resume, `/clear` and compaction: one
   to three lines saying the index is current, N commits behind HEAD and being
@@ -649,7 +658,8 @@ Claude Code mods, with no manifest anywhere.
   texts are the ones the MCP warnings use. Nothing outside a git repo or without
   `.ckb`, exit 0 always, no indexing, no engine. 13 ms outside a repo, 53 ms in a
   repo without an index, 90 ms on CKB's own repo. An older `ckb` without the
-  command prints nothing.
+  command prints nothing, and so does a session where only npx could run it: the
+  hook never waits for a download (timeout 5 s), the MCP warnings cover that case.
 
 ### Fixed — found by running CKB on its own repo
 
