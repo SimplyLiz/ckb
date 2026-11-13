@@ -45,3 +45,23 @@ Shape, if built:
   and report them. A key nobody reads after the change is worth a line too.
 - Open: nested tables (`[server] port` vs a `Port` field in a `Server` struct) need the
   struct path, not only the leaf key; a first version can match leaf key + file name.
+
+Built 2026-11-13, code side only (`internal/query/donecheck_config.go`): a Go field whose
+`json`/`yaml`/`toml` key is renamed or removed lists the lines of tracked `.json`,
+`.yaml`/`.yml` and `.toml` files (the tag's format only; lockfiles and dependencies left
+out, testdata kept) that still write the old key, as done-check open sites with
+`via: toml key "port" -> "listen_port"`, and the files as the contract's consumers.
+A file the diff took the key out of counts as updated. At most 20 lines per key.
+
+Still open:
+
+- **Nested tables.** Only the leaf key is matched: `[server] port` and `[client] port`
+  are both hits for any field tagged `port`. Matching needs the struct path from the
+  decoded root type to the field (`Config.Server.Port` → `server.port`), and knowing which
+  file decodes into which root; a common key (`name`, `id`) hits every manifest today.
+- **A dropped tag** isn't listed: the format's default key is the field name, which
+  encoding/json and BurntSushi/toml match case-insensitively, so the old key may still work.
+- **The config side** (a diff that renames a key in a config file → the field and the
+  `cfg["key"]` readers) isn't built.
+- **A tag-only change still lists the field's Go uses** (`c.Port`) as open: the
+  declaration text differs, though no Go code breaks.
