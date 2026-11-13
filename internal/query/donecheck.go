@@ -295,6 +295,8 @@ func (c *doneChecker) checkSymbol(ctx context.Context, adapter referenceFinder, 
 			classQuery := query
 			classQuery.name = scip.SymbolSimpleName(class)
 			classQuery.pyCallsOnly = true
+			// One line that builds Win and SubWin is one place to edit, listed once.
+			classQuery.siteOwner = sym.SymbolID
 			if i > 0 {
 				classQuery.via = fmt.Sprintf("%s, which inherits %s.__init__", classQuery.name, scip.SymbolSimpleName(classes[0]))
 			}
@@ -314,11 +316,14 @@ func useName(sym impact.ChangedSymbol) string {
 
 // useQuery says how to read the uses of a symbol. name is what a use spells out.
 type useQuery struct {
-	name    string
-	change  impact.DeclarationChange
-	via     string
-	literal bool   // Only literals count: Rust's without `..`, Go's and TypeScript's that build the type
-	lang    string // The reading of a literal; empty is Rust
+	name   string
+	change impact.DeclarationChange
+	via    string
+	// siteOwner, when set, is the symbol a line is listed once for in place of the
+	// one looked up: the __init__ whose class and subclasses are read.
+	siteOwner string
+	literal   bool   // Only literals count: Rust's without `..`, Go's and TypeScript's that build the type
+	lang      string // The reading of a literal; empty is Rust
 	// goBroken, for a Go struct, holds the fields a keyed literal can't set as before.
 	// Non-nil means only literals the compiler rejects count: positional ones, and keyed
 	// ones setting one of these.
@@ -503,7 +508,7 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 		use = diff.TSUseRead // Counted with the reads that rarely break, not listed
 	}
 	add := func(line int, code, via string, literalLines int) {
-		key := fmt.Sprintf("%s:%s:%d", sym.SymbolID, path, line)
+		key := fmt.Sprintf("%s:%s:%d", cmp.Or(query.siteOwner, sym.SymbolID), path, line)
 		if c.seen[key] {
 			return
 		}
