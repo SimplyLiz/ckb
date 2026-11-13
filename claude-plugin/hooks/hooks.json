@@ -1,0 +1,17 @@
+{
+  "description": "At session start, after /clear and after compaction: one to three lines on the CKB index of this repo (current, behind HEAD, being built, missing and why).",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/ckb\" hook session-start 2>/dev/null || true",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
