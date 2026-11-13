@@ -2248,7 +2248,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 					"applyAllowlist": map[string]interface{}{
 						"type":        "boolean",
 						"default":     true,
-						"description": "Apply configured allowlist to filter false positives",
+						"description": "Apply the allowlist: .ckb/secrets-allowlist.json (path, path-regex, pattern, hash or rule entries; rules/secretTypes limit an entry), .gitleaks.toml, and a ckb:allow-secret or gitleaks:allow comment on the line",
 					},
 				},
 			},

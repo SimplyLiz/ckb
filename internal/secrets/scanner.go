@@ -49,15 +49,18 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) (*ScanResult, erro
 		opts.ExcludePaths = DefaultExcludePaths()
 	}
 
-	// Load allowlist if needed
+	// Load allowlist if needed. Without it nothing is suppressed, not even
+	// by an allowlist an earlier Scan on this scanner loaded.
+	var allowlist *Allowlist
 	if opts.ApplyAllowlist {
 		al, err := LoadAllowlist(opts.RepoRoot)
 		if err != nil {
 			s.logger.Warn("Failed to load allowlist", "error", err)
 		} else {
-			s.allowlist = al
+			allowlist = al
 		}
 	}
+	s.allowlist = allowlist
 
 	// Collect findings from different sources
 	var allFindings []SecretFinding
@@ -134,12 +137,18 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) (*ScanResult, erro
 	// Deduplicate findings
 	allFindings = deduplicateFindings(allFindings)
 
-	// Apply allowlist
+	// Apply allowlist: inline markers first, then .ckb/secrets-allowlist.json
+	// and .gitleaks.toml. An inline marker holds even when the allowlist file
+	// failed to load.
 	suppressed := 0
-	if s.allowlist != nil {
+	if opts.ApplyAllowlist {
 		var filtered []SecretFinding
 		for i := range allFindings {
-			if isSuppressed, suppressID := s.allowlist.IsSuppressed(&allFindings[i]); isSuppressed {
+			isSuppressed, suppressID := allFindings[i].allowedInline, InlineAllowID
+			if !isSuppressed {
+				isSuppressed, suppressID = allowlist.IsSuppressed(&allFindings[i])
+			}
+			if isSuppressed {
 				allFindings[i].Suppressed = true
 				allFindings[i].SuppressID = suppressID
 				suppressed++
@@ -372,12 +381,33 @@ func (s *Scanner) scanFile(path string, minEntropy float64) ([]SecretFinding, er
 					Rule:       pattern.Name,
 					Confidence: confidence,
 					Source:     "builtin",
+
+					allowedInline: hasInlineAllow(line),
 				})
 			}
 		}
 	}
 
 	return findings, scanner.Err()
+}
+
+// InlineAllowMarkers are the comments that allow a finding on their line:
+// CKB's own and gitleaks', which CKB already honours the config of.
+//
+//	curl http://user:pw@localhost/ # ckb:allow-secret
+var InlineAllowMarkers = []string{"ckb:allow-secret", "gitleaks:allow"}
+
+// InlineAllowID is the suppressId of a finding allowed by an inline marker.
+const InlineAllowID = "inline"
+
+// hasInlineAllow reports whether line carries an inline allow marker.
+func hasInlineAllow(line string) bool {
+	for _, m := range InlineAllowMarkers {
+		if strings.Contains(line, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // calculateConfidence calculates a confidence score for a finding.

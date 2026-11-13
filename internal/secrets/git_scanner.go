@@ -171,6 +171,8 @@ func (g *GitScanner) scanHistory(ctx context.Context, opts ScanOptions) ([]Secre
 						Commit:     currentCommit,
 						Author:     currentAuthor,
 						CommitDate: currentDate,
+
+						allowedInline: hasInlineAllow(content),
 					})
 				}
 			}
@@ -296,6 +298,8 @@ func (g *GitScanner) scanDiff(diff, source string) ([]SecretFinding, error) {
 						Rule:       pattern.Name,
 						Confidence: calculateConfidence(secret, pattern),
 						Source:     source,
+
+						allowedInline: hasInlineAllow(content),
 					})
 				}
 			}

@@ -107,6 +107,10 @@ type SecretFinding struct {
 	// Allowlist info
 	Suppressed bool   `json:"suppressed,omitempty"`
 	SuppressID string `json:"suppressId,omitempty"`
+
+	// allowedInline is set when the line carries an allow marker
+	// (see InlineAllowMarkers).
+	allowedInline bool
 }
 
 // ScanOptions configures the secret scan.

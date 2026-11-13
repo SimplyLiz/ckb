@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -14,10 +15,11 @@ import (
 // AllowlistEntry defines a suppression rule.
 type AllowlistEntry struct {
 	ID          string       `json:"id"`
-	Type        string       `json:"type"`                  // "path", "pattern", "hash", "rule"
+	Type        string       `json:"type"`                  // "path", "path-regex", "pattern", "hash", "rule"
 	Value       string       `json:"value"`                 // Path glob, regex, finding hash, or rule name
 	Reason      string       `json:"reason"`                // Why it's suppressed
-	SecretTypes []SecretType `json:"secretTypes,omitempty"` // Limit to specific types
+	SecretTypes []SecretType `json:"secretTypes,omitempty"` // Limit a path/pattern entry to these secret types
+	Rules       []string     `json:"rules,omitempty"`       // Limit a path/pattern entry to these rule names
 	CreatedAt   string       `json:"createdAt,omitempty"`
 	CreatedBy   string       `json:"createdBy,omitempty"`
 }
@@ -36,6 +38,7 @@ type Allowlist struct {
 	pathPatterns  []*pathMatcher
 	pathRegexes   []*pathRegexMatcher // For gitleaks-style regex paths
 	valuePatterns []*regexp.Regexp
+	valueScopes   []entryScope      // parallel to valuePatterns; missing = every finding
 	hashes        map[string]string // hash -> entry ID
 	rules         map[string]string // rule name -> entry ID
 }
@@ -43,11 +46,47 @@ type Allowlist struct {
 type pathMatcher struct {
 	pattern string
 	entryID string
+	scope   entryScope
 }
 
 type pathRegexMatcher struct {
 	regex   *regexp.Regexp
 	entryID string
+	scope   entryScope
+}
+
+// entryScope limits an entry to findings of some rules or secret types, so a
+// path can be allowed for one noisy rule without hiding a real key there.
+// The zero value applies to every finding.
+type entryScope struct {
+	rules map[string]bool
+	types map[SecretType]bool
+}
+
+func newEntryScope(e AllowlistEntry) entryScope {
+	var sc entryScope
+	if len(e.Rules) > 0 {
+		sc.rules = make(map[string]bool, len(e.Rules))
+		for _, r := range e.Rules {
+			sc.rules[r] = true
+		}
+	}
+	if len(e.SecretTypes) > 0 {
+		sc.types = make(map[SecretType]bool, len(e.SecretTypes))
+		for _, t := range e.SecretTypes {
+			sc.types[t] = true
+		}
+	}
+	return sc
+}
+
+// covers reports whether the entry applies to f: with both rules and types
+// set, either one naming the finding is enough.
+func (sc entryScope) covers(f *SecretFinding) bool {
+	if sc.rules == nil && sc.types == nil {
+		return true
+	}
+	return sc.rules[f.Rule] || sc.types[f.Type]
 }
 
 // LoadAllowlist loads the allowlist from multiple sources:
@@ -94,6 +133,7 @@ func (al *Allowlist) compile() {
 			al.pathPatterns = append(al.pathPatterns, &pathMatcher{
 				pattern: e.Value,
 				entryID: e.ID,
+				scope:   newEntryScope(e),
 			})
 		case "path-regex":
 			// Gitleaks-style regex path patterns
@@ -101,11 +141,13 @@ func (al *Allowlist) compile() {
 				al.pathRegexes = append(al.pathRegexes, &pathRegexMatcher{
 					regex:   re,
 					entryID: e.ID,
+					scope:   newEntryScope(e),
 				})
 			}
 		case "pattern":
 			if re, err := regexp.Compile(e.Value); err == nil {
 				al.valuePatterns = append(al.valuePatterns, re)
+				al.valueScopes = append(al.valueScopes, newEntryScope(e))
 			}
 		case "hash":
 			al.hashes[e.Value] = e.ID
@@ -123,6 +165,9 @@ func (al *Allowlist) IsSuppressed(f *SecretFinding) (bool, string) {
 
 	// Check path patterns (glob style)
 	for _, pm := range al.pathPatterns {
+		if !pm.scope.covers(f) {
+			continue
+		}
 		if matched, _ := filepath.Match(pm.pattern, f.File); matched {
 			return true, pm.entryID
 		}
@@ -134,6 +179,9 @@ func (al *Allowlist) IsSuppressed(f *SecretFinding) (bool, string) {
 
 	// Check path regex patterns (gitleaks style)
 	for _, prm := range al.pathRegexes {
+		if !prm.scope.covers(f) {
+			continue
+		}
 		if prm.regex.MatchString(f.File) {
 			return true, prm.entryID
 		}
@@ -146,6 +194,9 @@ func (al *Allowlist) IsSuppressed(f *SecretFinding) (bool, string) {
 
 	// Check value patterns
 	for i, re := range al.valuePatterns {
+		if i < len(al.valueScopes) && !al.valueScopes[i].covers(f) {
+			continue
+		}
 		if re.MatchString(f.RawMatch) {
 			// Find the corresponding entry ID
 			idx := 0
@@ -187,10 +238,9 @@ func matchGlob(pattern, path string) bool {
 
 	// Convert ** to regex-like matching
 	parts := splitPattern(pattern)
-	pathParts := filepath.SplitList(path)
-	if len(pathParts) == 0 {
-		pathParts = []string{path}
-	}
+	// Split the path into segments (filepath.SplitList splits a PATH-style
+	// list on ':' and left "scripts/**" unable to match "scripts/a/b.sh").
+	pathParts := strings.Split(filepath.ToSlash(path), "/")
 
 	return matchParts(parts, pathParts)
 }
