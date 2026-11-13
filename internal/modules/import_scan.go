@@ -8,10 +8,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/SimplyLiz/CodeMCP/internal/complexity"
 	"github.com/SimplyLiz/CodeMCP/internal/config"
 	"github.com/SimplyLiz/CodeMCP/internal/paths"
+	"github.com/SimplyLiz/CodeMCP/internal/symbols"
 )
 
 // LanguagePattern defines import patterns for a specific language
@@ -105,6 +108,12 @@ type ImportScanner struct {
 	config   *config.ImportScanConfig
 	patterns map[string]*LanguagePattern
 	logger   *slog.Logger
+
+	// shell scripts: which repo file a script sources or runs, parsed with
+	// tree-sitter (a regex can't tell `python3 x.py` from an argument).
+	// Created on the first script; the parser isn't safe for concurrent use.
+	shellMu  sync.Mutex
+	shellExt *symbols.Extractor
 }
 
 // NewImportScanner creates a new import scanner
@@ -133,6 +142,10 @@ func (s *ImportScanner) ScanFile(filePath string, repoRoot string) ([]*ImportEdg
 	if info.Size() > int64(s.config.MaxFileSizeBytes) {
 		s.logger.Debug("Skipping file: too large", "file", canonicalPath, "size", info.Size())
 		return nil, nil
+	}
+
+	if lang, ok := complexity.LanguageFromPath(filePath); ok && lang == complexity.LangBash {
+		return s.scanShellScript(filePath, repoRoot, canonicalPath)
 	}
 
 	// Detect language from extension
@@ -186,6 +199,44 @@ func (s *ImportScanner) ScanFile(filePath string, repoRoot string) ([]*ImportEdg
 		return nil, err
 	}
 
+	return edges, nil
+}
+
+// scanShellScript turns the files a shell script sources or runs into import
+// edges. The target is written relative to the script ("./replay.py",
+// "../lib/common.sh"), the form relative imports have in every other
+// language, so classification (LocalFile) and directory resolution need
+// nothing new.
+func (s *ImportScanner) scanShellScript(filePath, repoRoot, canonicalPath string) ([]*ImportEdge, error) {
+	s.shellMu.Lock()
+	if s.shellExt == nil {
+		s.shellExt = symbols.NewExtractor()
+	}
+	calls, err := s.shellExt.ExtractScriptCalls(context.Background(), repoRoot, filePath)
+	s.shellMu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+
+	fromDir := filepath.Dir(filepath.FromSlash(canonicalPath))
+	edges := make([]*ImportEdge, 0, len(calls))
+	for _, c := range calls {
+		rel, err := filepath.Rel(fromDir, filepath.FromSlash(c.To))
+		if err != nil {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		if !strings.HasPrefix(rel, "../") {
+			rel = "./" + rel
+		}
+		edges = append(edges, &ImportEdge{
+			From:       canonicalPath,
+			To:         rel,
+			RawImport:  rel,
+			Line:       c.Line,
+			Confidence: c.Confidence,
+		})
+	}
 	return edges, nil
 }
 
