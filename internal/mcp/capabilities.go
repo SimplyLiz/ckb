@@ -101,8 +101,8 @@ func instructionsText() string {
 		"\n\nNew to the code, call explore or understand to get oriented. For " +
 		"callers and a risk score without the test list, call analyzeImpact " +
 		"instead. Results come from the index, parsers, and git history; " +
-		"searchSymbols searches text first. Check getStatus if the index looks " +
-		"stale or missing. CKB only reads your code and writes its own .ckb data; " +
+		"searchSymbols searches text first. No index? Every response and getStatus " +
+		"warn with the step to take. CKB only reads your code and writes its own .ckb data; " +
 		"the one exception is recordDecision, which adds an ADR file under " +
 		"docs/decisions."
 }

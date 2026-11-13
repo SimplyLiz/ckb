@@ -86,6 +86,11 @@ type MCPServer struct {
 	// one run per repo at a time.
 	reindexRunner ReindexRunner
 	reindexGuard  reindexGuard
+
+	// missing-index warning: the next step checked by cmd/ckb (see
+	// IndexDiagnoser), cached per repo.
+	indexDiagnoser IndexDiagnoser
+	missingIndex   missingIndexCache
 }
 
 // NewMCPServer creates a new MCP server in legacy single-engine mode

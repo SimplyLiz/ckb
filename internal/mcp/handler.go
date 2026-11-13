@@ -417,6 +417,7 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 	}
 
 	result = withWarnings(result, remapWarnings)
+	result = withWarnings(result, s.missingIndexWarnings(toolName))
 	s.markStaleServer(result)
 
 	// The envelope as JSON, or for a result with a text form, that text

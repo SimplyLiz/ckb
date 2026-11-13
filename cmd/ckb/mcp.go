@@ -209,6 +209,8 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	server.SetReindexRunner(func(ctx context.Context, repoRoot string, scope mcp.ReindexScope) (*mcp.ReindexRunInfo, error) {
 		return runReindexForMCP(ctx, repoRoot, scope, log)
 	})
+	// Responses served without an index say so, with the next step checked here.
+	server.SetIndexDiagnoser(diagnoseIndex)
 
 	// Apply preset configuration
 	if err := server.SetPreset(mcpPreset); err != nil {
