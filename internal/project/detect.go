@@ -97,6 +97,7 @@ func DetectLanguage(root string) (Language, string, bool) {
 // Returns primary language, its manifest, and a list of all detected languages.
 func DetectAllLanguages(root string) (Language, string, []Language) {
 	detected := make(map[Language]string) // lang -> manifest path
+	filter := newDirFilter(root)
 
 	for _, m := range manifests {
 		if _, exists := detected[m.lang]; exists {
@@ -105,7 +106,7 @@ func DetectAllLanguages(root string) (Language, string, []Language) {
 
 		if strings.Contains(m.pattern, "*") {
 			// Glob pattern - search with bounded depth
-			found := findWithDepth(root, m.pattern)
+			found := findWithDepth(root, m.pattern, filter)
 			if len(found) > 0 {
 				relPath, _ := filepath.Rel(root, found[0])
 				detected[m.lang] = relPath
@@ -119,7 +120,7 @@ func DetectAllLanguages(root string) (Language, string, []Language) {
 		} else {
 			// Exact filename - search root and subdirectories up to maxScanDepth.
 			// This catches monorepo layouts like src/cli/go.mod or packages/api/package.json.
-			if found := findManifest(root, m.pattern); found != "" {
+			if found := findManifestIn(root, m.pattern, filter); found != "" {
 				detected[m.lang] = found
 			}
 		}
@@ -231,8 +232,14 @@ func skipManifestDir(name string) bool {
 // Returns the relative path to the first match, or empty string.
 // Root is checked first (fast path). Among subdirectories, WalkDir visits in
 // lexical order, so at equal depth the alphabetically-first path wins.
-// Skips example, test, doc, and vendor directories to avoid false detections.
+// Skips example, test, doc, and vendor directories to avoid false detections,
+// and nested git repos and gitignored directories (see dirFilter).
 func findManifest(root, filename string) string {
+	return findManifestIn(root, filename, newDirFilter(root))
+}
+
+// findManifestIn is findManifest with a filter shared across one detection run.
+func findManifestIn(root, filename string, filter *dirFilter) string {
 	// Check root first (fast path)
 	if _, err := os.Stat(filepath.Join(root, filename)); err == nil {
 		return filename
@@ -258,7 +265,7 @@ func findManifest(root, filename string) string {
 		}
 
 		if d.IsDir() {
-			if skipManifestDir(d.Name()) {
+			if skipManifestDir(d.Name()) || filter.skip(path, rel) {
 				return filepath.SkipDir
 			}
 			switch d.Name() {
@@ -282,18 +289,19 @@ func findManifest(root, filename string) string {
 // FindManifestForLanguage searches for the manifest file of a specific language.
 // Used when --lang is specified to locate the module directory for indexing.
 func FindManifestForLanguage(root string, lang Language) string {
+	filter := newDirFilter(root)
 	for _, m := range manifests {
 		if m.lang != lang {
 			continue
 		}
 		if strings.Contains(m.pattern, "*") {
-			found := findWithDepth(root, m.pattern)
+			found := findWithDepth(root, m.pattern, filter)
 			if len(found) > 0 {
 				relPath, _ := filepath.Rel(root, found[0])
 				return relPath
 			}
 		} else {
-			if found := findManifest(root, m.pattern); found != "" {
+			if found := findManifestIn(root, m.pattern, filter); found != "" {
 				return found
 			}
 		}
@@ -301,8 +309,9 @@ func FindManifestForLanguage(root string, lang Language) string {
 	return ""
 }
 
-// findWithDepth searches for files matching a glob pattern with bounded depth.
-func findWithDepth(root, pattern string) []string {
+// findWithDepth searches for files matching a glob pattern with bounded depth,
+// outside the directories filter assigns to other projects.
+func findWithDepth(root, pattern string, filter *dirFilter) []string {
 	var results []string
 	checked := 0
 
@@ -326,8 +335,8 @@ func findWithDepth(root, pattern string) []string {
 			return nil
 		}
 
-		// Skip common non-project dirs
-		if d.IsDir() && skipManifestDir(d.Name()) {
+		// Skip common non-project dirs, nested repos and ignored dirs
+		if d.IsDir() && (skipManifestDir(d.Name()) || filter.skip(path, rel)) {
 			return filepath.SkipDir
 		}
 
