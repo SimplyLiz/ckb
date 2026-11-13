@@ -189,6 +189,21 @@ private, so only aggregates are here.
   the format's default is the contract's `detail`. The compact text now shows a
   declaration and its detail together.
 
+### Fixed — a repo of Python scripts
+
+Found running the usual workflow on a repo of 28 Python scripts and two TypeScript
+Claude Code mods, with no manifest anywhere.
+
+- **`ckb index` picks a language without a manifest.** It used to refuse. With no
+  manifest found, the language of most git-tracked `.py`, `.ts` or `.js` files is
+  indexed (their indexers need none), and the line says so: `from 28 tracked .py
+  files, no manifest`. Ignored files don't count.
+- **The scip-python install hint was wrong.** It said `pip install scip-python`; there
+  is no such package on PyPI. It's `npm install -g @sourcegraph/scip-python`.
+- **`ckb index` keeps `.ckb/` and the index out of `git status` in repos initialized
+  before `ckb init` started writing `.git/info/exclude`.** A tracked or already
+  ignored index is left alone.
+
 ### Added — MCP tool annotations
 
 - **Every MCP tool says whether it changes anything.** `tools/list` now carries

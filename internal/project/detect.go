@@ -3,6 +3,7 @@ package project
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -125,6 +126,9 @@ func DetectAllLanguages(root string) (Language, string, []Language) {
 	}
 
 	if len(detected) == 0 {
+		if lang, from := detectBySourceFiles(root); lang != LangUnknown {
+			return lang, from, []Language{lang}
+		}
 		return LangUnknown, "", nil
 	}
 
@@ -158,6 +162,54 @@ func DetectAllLanguages(root string) (Language, string, []Language) {
 	}
 
 	return primaryLang, primaryManifest, allLangs
+}
+
+// sourceOnlyLanguages are the languages whose indexer runs without a manifest:
+// scip-python indexes a directory of scripts, scip-typescript infers a tsconfig.
+var sourceOnlyLanguages = map[string]Language{
+	".py":  LangPython,
+	".ts":  LangTypeScript,
+	".tsx": LangTypeScript,
+	".js":  LangJavaScript,
+	".jsx": LangJavaScript,
+	".mjs": LangJavaScript,
+}
+
+// detectBySourceFiles picks the language of most tracked source files when the repo
+// has no manifest at all, such as a directory of Python scripts. Only git-tracked
+// files count, so ignored scratch and installed packages don't decide. The second
+// result says what the choice came from, for the "Detected ... (from ...)" line; it
+// holds no slash, so nothing takes it for a nested manifest.
+func detectBySourceFiles(root string) (Language, string) {
+	cmd := exec.Command("git", "ls-files", "-z")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return LangUnknown, ""
+	}
+	counts := make(map[Language]int)
+	exts := make(map[Language]string)
+	for _, path := range strings.Split(string(out), "\x00") {
+		ext := strings.ToLower(filepath.Ext(path))
+		lang, ok := sourceOnlyLanguages[ext]
+		if !ok || strings.Contains("/"+path, "/node_modules/") {
+			continue
+		}
+		counts[lang]++
+		if exts[lang] == "" {
+			exts[lang] = ext
+		}
+	}
+	best, bestCount := LangUnknown, 0
+	for _, lang := range []Language{LangPython, LangTypeScript, LangJavaScript} {
+		if counts[lang] > bestCount {
+			best, bestCount = lang, counts[lang]
+		}
+	}
+	if best == LangUnknown {
+		return LangUnknown, ""
+	}
+	return best, fmt.Sprintf("%d tracked %s files, no manifest", bestCount, exts[best])
 }
 
 // skipManifestDir says whether a directory below the root can hold no manifest
@@ -356,7 +408,7 @@ func GetIndexerInfo(lang Language) *IndexerInfo {
 	case LangPython:
 		return &IndexerInfo{
 			Command:        "scip-python index .",
-			InstallCommand: "pip install scip-python",
+			InstallCommand: "npm install -g @sourcegraph/scip-python",
 			CheckCommand:   "scip-python",
 			OutputFile:     "index.scip",
 		}

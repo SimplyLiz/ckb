@@ -188,3 +188,33 @@ func TestStartFirstIndex_SkipsLinkedWorktree(t *testing.T) {
 		t.Errorf("expected the worktree skip to be logged, got: %s", logs.String())
 	}
 }
+
+// A repo initialized before init wrote info/exclude gets its index and .ckb/ kept
+// out of 'git status' on the next index; a tracked index is left alone.
+func TestExcludeIndexFromGit(t *testing.T) {
+	dir := gitInitTemp(t)
+	if err := os.MkdirAll(filepath.Join(dir, ".ckb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{".ckb/config.json", "index.scip"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	excludeIndexFromGit(dir, filepath.Join(dir, "index.scip"))
+	if got := gitStatusPorcelain(t, dir); got != "" {
+		t.Fatalf("git status after backfill = %q, want clean", got)
+	}
+
+	tracked := gitInitTemp(t)
+	if err := os.WriteFile(filepath.Join(tracked, "index.scip"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", tracked, "add", "index.scip").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v %s", err, out)
+	}
+	excludeIndexFromGit(tracked, filepath.Join(tracked, "index.scip"))
+	if b, _ := os.ReadFile(filepath.Join(tracked, ".git", "info", "exclude")); strings.Contains(string(b), "index.scip") {
+		t.Errorf("tracked index was excluded: %q", b)
+	}
+}
