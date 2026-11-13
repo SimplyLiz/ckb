@@ -129,8 +129,10 @@ type doneChecker struct {
 	// dependencies are go.mod changes that put other code behind an import: a major
 	// version, a dropped require, a replace.
 	dependencies []string
-	compared     []comparedSpan   // Type bodies read on both sides, which explain lines no symbol names
-	shapes       []ContractSignal // Types read off a value whose keys or members changed
+	compared     []comparedSpan // Type bodies read on both sides, which explain lines no symbol names
+	// wirePaths caches goWirePaths: format and struct name to where its keys are written.
+	wirePaths map[string]wirePaths
+	shapes    []ContractSignal // Types read off a value whose keys or members changed
 }
 
 func newDoneChecker(repoRoot string, opts AnalyzeChangeSetOptions, parsed *impact.ParsedDiff) *doneChecker {
@@ -142,6 +144,8 @@ func newDoneChecker(repoRoot string, opts AnalyzeChangeSetOptions, parsed *impac
 		oldLines: make(map[string][]string),
 		newLines: make(map[string][]string),
 		seen:     make(map[string]bool),
+
+		wirePaths: make(map[string]wirePaths),
 	}
 	for i := range parsed.Files {
 		file := &parsed.Files[i]
@@ -629,7 +633,7 @@ func useRank(use string) int {
 		return 2
 	case diff.TSUseSwitch:
 		return 3
-	case diff.TSUseAnnotation, diff.TSUseRead, useNameMatch:
+	case diff.TSUseAnnotation, diff.TSUseRead, useNameMatch, useLeafKey:
 		return rankRarely
 	}
 	return 1
@@ -884,7 +888,7 @@ func (c *doneChecker) result(diffContent string, hasGraph, nothingChanged bool, 
 		check.Status = DoneCheckOpen
 		check.Note = "Uses of a changed declaration the diff didn't touch. Text comparison, nothing compiled: some may need no edit."
 		if check.RarelyCount > 0 {
-			check.Note += fmt.Sprintf(" %d of them only annotate with a changed type, read a changed key, read an array whose length changed or implement a one-method interface their package doesn't import, which rarely breaks: they are counted per symbol, not listed.", check.RarelyCount)
+			check.Note += fmt.Sprintf(" %d of them only annotate with a changed type, read a changed key, read an array whose length changed, implement a one-method interface their package doesn't import or write a config key matched by its name alone, which rarely breaks: they are counted per symbol, not listed.", check.RarelyCount)
 		}
 		if doubt != "" {
 			check.Note += " There may be more: " + doubt + "."

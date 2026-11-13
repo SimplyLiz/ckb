@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
 )
 
@@ -16,10 +17,10 @@ import (
 // still writes `port = 8080` after the tag became `toml:"listen_port"` is silently
 // ignored. These look for the old key in the repo's own config files.
 //
-// Only the leaf key is matched. `[server] port` and a `Port` field of some other
-// struct read the same here; telling them apart needs the struct path from the
-// root type to the field, and which file decodes into which root (see
-// docs/backlog/string-contracts-and-config-impact.md).
+// The key is matched where the field's struct puts it, under the keys of the fields
+// holding the struct (donecheck_config_paths.go). Which file decodes into which root
+// isn't known: a root struct's keys are matched at the top of any file of the format
+// (see docs/backlog/string-contracts-and-config-impact.md).
 
 // wireKeyChange is a serialized key a field's change renamed or removed.
 type wireKeyChange struct {
@@ -107,31 +108,20 @@ func skipConfigFile(path string) bool {
 	return ignoredByBuild(path) && !strings.Contains("/"+filepath.ToSlash(path), "/testdata/")
 }
 
-// configKeyLine says whether a line of a file in format writes key as a key.
-func configKeyLine(format, line, key string) bool {
-	q := regexp.QuoteMeta(key)
-	var re string
-	switch format {
-	case "toml":
-		re = `^\s*(?:` + q + `|"` + q + `"|'` + q + `')\s*=`
-	case "yaml":
-		re = `^\s*(?:-\s+)?(?:` + q + `|"` + q + `"|'` + q + `')\s*:(?:\s|$)`
-	case "json":
-		re = `"` + q + `"\s*:`
-	default:
-		return false
-	}
-	return regexp.MustCompile(re).MatchString(line)
-}
-
 // maxConfigSites caps the lines listed per key: a leaf key as common as "name" hits
 // every manifest, and the first ones say what there is to look at.
 const maxConfigSites = 20
 
+// useLeafKey is a config line writing a changed key whose path from the top of the
+// file couldn't be matched to the field's struct: only the key's name is the same.
+// It is counted with the uses that rarely break, not listed.
+const useLeafKey = "leaf-key"
+
 // checkConfigKeys lists the lines of the repo's tracked config files that still
-// write a renamed or removed key. A file whose old key the diff took out counts as
-// updated. It returns the files with a line left open.
-func (c *doneChecker) checkConfigKeys(symbol string, changes []wireKeyChange) []string {
+// write a renamed or removed key, where the field's struct puts it: under the keys
+// of the fields holding the struct. A file whose old key the diff took out counts
+// as updated. It returns the files with a line left open.
+func (c *doneChecker) checkConfigKeys(sym impact.ChangedSymbol, changes []wireKeyChange) []string {
 	if len(changes) == 0 {
 		return nil
 	}
@@ -139,18 +129,30 @@ func (c *doneChecker) checkConfigKeys(symbol string, changes []wireKeyChange) []
 	if err != nil {
 		return nil
 	}
+	container := ""
+	if id, err := scip.ParseSCIPIdentifier(sym.SymbolID); err == nil {
+		container = id.GetContainerName()
+	}
+	dir := "" // The struct's package directory; unknown matches any
+	if sym.File != "" {
+		dir = filepath.ToSlash(filepath.Dir(sym.File))
+	}
+	where := make(map[string]wirePaths)
 	var open []string
 	for _, path := range strings.Split(string(out), "\x00") {
 		format := configFormat(path)
 		if format == "" || skipConfigFile(path) {
 			continue
 		}
+		if _, ok := where[format]; !ok {
+			where[format] = c.goWirePaths(format, dir, container)
+		}
 		newLines := c.readConfig(path, changes)
 		if newLines == nil {
 			// None of the old keys is left. Where the diff took one out, it was updated.
 			if file := c.files[path]; file != nil && !file.Deleted {
 				for _, change := range changes {
-					if change.format == format && c.writesKey(file, path, format, change.old) {
+					if change.format == format && c.writesKey(file, path, change.old, where[format]) {
 						c.updated++
 					}
 				}
@@ -162,36 +164,36 @@ func (c *doneChecker) checkConfigKeys(symbol string, changes []wireKeyChange) []
 			if change.format != format {
 				continue
 			}
-			found := 0
-			for i, line := range newLines {
-				if !configKeyLine(format, line, change.old) {
-					continue
-				}
-				found++
-				if found > maxConfigSites {
+			hits := changedKeyLines(format, newLines, change.old, where[format])
+			for n, hit := range hits {
+				if n == maxConfigSites {
 					break
 				}
 				via := fmt.Sprintf("%s key %q gone", format, change.old)
 				if change.now != "" {
 					via = fmt.Sprintf("%s key %q -> %q", format, change.old, change.now)
 				}
-				key := fmt.Sprintf("config:%s:%s:%d", symbol, path, i+1)
+				key := fmt.Sprintf("config:%s:%s:%d", sym.Name, path, hit.line)
 				if c.seen[key] {
 					continue
 				}
 				c.seen[key] = true
-				c.sites = append(c.sites, OpenSite{
-					Symbol: symbol,
+				site := OpenSite{
+					Symbol: sym.Name,
 					Change: map[bool]string{true: "changed", false: "removed"}[change.now != ""],
 					File:   path,
-					Line:   i + 1,
-					Code:   strings.TrimSpace(line),
+					Line:   hit.line,
+					Code:   strings.TrimSpace(newLines[hit.line-1]),
 					IsTest: isTestFilePath(path),
 					Via:    via,
-				})
+				}
+				if hit.rarely {
+					site.Use = useLeafKey
+				}
+				c.sites = append(c.sites, site)
 				listed = true
 			}
-			if found == 0 && c.files[path] != nil && c.writesKey(c.files[path], path, format, change.old) {
+			if len(hits) == 0 && c.files[path] != nil && c.writesKey(c.files[path], path, change.old, where[format]) {
 				c.updated++ // The diff took this key out; another one is still there
 			}
 		}
@@ -237,15 +239,10 @@ func (c *doneChecker) readConfig(path string, changes []wireKeyChange) []string 
 	return nil
 }
 
-// writesKey says whether a changed file's old side wrote key.
-func (c *doneChecker) writesKey(file *impact.ChangedFile, path, format, key string) bool {
+// writesKey says whether a changed file's old side wrote key where it would be a site.
+func (c *doneChecker) writesKey(file *impact.ChangedFile, path, key string, where wirePaths) bool {
 	if file.IsNew {
 		return false
 	}
-	for _, line := range c.readOld(file, path) {
-		if configKeyLine(format, line, key) {
-			return true
-		}
-	}
-	return false
+	return len(changedKeyLines(configFormat(path), c.readOld(file, path), key, where)) > 0
 }

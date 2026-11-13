@@ -58,10 +58,21 @@ A file the diff took the key out of counts as updated. At most 20 lines per key.
 
 Still open:
 
-- **Nested tables.** Only the leaf key is matched: `[server] port` and `[client] port`
-  are both hits for any field tagged `port`. Matching needs the struct path from the
-  decoded root type to the field (`Config.Server.Port` → `server.port`), and knowing which
-  file decodes into which root; a common key (`name`, `id`) hits every manifest today.
+- ~~Nested tables~~ Built 2026-11-13 (`donecheck_config_paths.go`): the key is matched
+  where its struct puts it. The fields holding the struct are found by text in the
+  tracked Go files (`Server ServerConfig \`toml:"server"\``, exported fields only,
+  of the struct's own package or one importing it, through `*`, `[]` and `map[K]`,
+  which adds a key of any name), up to a struct no field holds, taken to be a file's
+  top. `[server] port` is a site of `ServerConfig.Port`, `[client] port` isn't listed
+  at all; an untagged parent uses the format's default key, an untagged embedded
+  struct (json, toml) or `yaml:",inline"` adds none. Counted with the uses that rarely
+  break (`leaf-key`): a key at the top of a file when parents were found (the struct
+  may also be decoded on its own), a nested one when none were, and every line where
+  a parent can't be read (an anonymous struct's field, a failed `git grep`). Renaming
+  CKB's own `Config.Version` json key went from 11 likely sites (every package.json
+  `"version"`) to 9 counted as rarely. Still open: which file decodes into which root
+  (a root's keys match the top of every file of the format), inline TOML tables and
+  YAML flow mappings, a module's root package as a parent's import.
 - **A dropped tag** isn't listed: the format's default key is the field name, which
   encoding/json and BurntSushi/toml match case-insensitively, so the old key may still work.
 - **The config side** (a diff that renames a key in a config file → the field and the
