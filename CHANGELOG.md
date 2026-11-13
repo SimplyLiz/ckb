@@ -207,6 +207,14 @@ private, so only aggregates are here.
 
 ### Fixed — small things found in review
 
+- **auditRisk audits the repo's own files and doesn't ask a one-off script for tests.** It
+  walked the disk, so a gitignored `.venv` filled 47 of 50 items in a repo of scripts with
+  pip and pydantic; in a git repo it now reads the files git lists. A script that runs
+  directly (a shebang, a `__main__` guard, or work at module level outside a Python package)
+  and that nothing imports has its missing test file shown but not scored, so no "Add tests"
+  quick win; a helper the scripts share still gets one (Python, JS and TS, whose imports CKB
+  resolves). Every repo-root file also counted as tested: the `pkg/test/x` pattern turned
+  `x.py` into itself.
 - **listEntrypoints finds `main`.** It took a `main` only under a path containing `/cmd/`,
   which a repo-relative path like `main.go` or `cmd/ckb/main.go` never has, and it searched
   for "main" with a cap that `domain`, `remaining` and the like filled first. CKB's own

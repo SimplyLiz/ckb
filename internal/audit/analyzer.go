@@ -31,6 +31,10 @@ type Analyzer struct {
 
 	authorsOnce  sync.Once
 	singleAuthor bool
+
+	// scripts are the files Analyze found run directly and imported by
+	// nothing (see standaloneScripts), slash-separated.
+	scripts map[string]bool
 }
 
 // NewAnalyzer creates a new risk analyzer
@@ -78,6 +82,7 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AuditOptions) (*RiskAnalysi
 	if err != nil {
 		return nil, fmt.Errorf("failed to find source files: %w", err)
 	}
+	a.scripts = standaloneScripts(opts.RepoRoot, files, a.logger)
 
 	// Analyze each file
 	items := make([]RiskItem, 0, len(files))
@@ -160,7 +165,10 @@ func (a *Analyzer) analyzeFile(ctx context.Context, repoRoot, file string) (*Ris
 	hasTests := a.hasTestFile(file)
 	coverageContrib := 0.0
 	var coverageValue string
-	if !hasTests {
+	if !hasTests && a.scripts[filepath.ToSlash(file)] {
+		// A one-off script: "add tests" is no advice for it.
+		coverageValue = "no test file; a script nothing imports, not scored"
+	} else if !hasTests {
 		coverageContrib = 15.0 // Penalize missing tests
 		coverageValue = "no test file"
 	} else {
@@ -288,18 +296,23 @@ func (a *Analyzer) analyzeFile(ctx context.Context, repoRoot, file string) (*Ris
 	}, nil
 }
 
-// findSourceFiles finds all source files in the repository
+// findSourceFiles finds the repo's source files: in a git repo the ones git
+// lists (tracked, and untracked but not ignored), so a gitignored .venv, build
+// tree or nested checkout isn't audited as this repo's code; outside one every
+// file on disk. The named directories are skipped either way.
 func (a *Analyzer) findSourceFiles(repoRoot string) ([]string, error) {
-	var files []string
+	if files, err := gitSourceFiles(repoRoot); err == nil {
+		return files, nil
+	}
 
+	var files []string
 	err := filepath.Walk(repoRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // skip inaccessible files
 		}
 
 		if info.IsDir() {
-			name := info.Name()
-			if name == "node_modules" || name == "vendor" || name == ".git" || name == "__pycache__" || name == ".ckb" {
+			if skippedDirs[info.Name()] {
 				return filepath.SkipDir
 			}
 			return nil
@@ -317,6 +330,35 @@ func (a *Analyzer) findSourceFiles(repoRoot string) ([]string, error) {
 	})
 
 	return files, err
+}
+
+// skippedDirs are never audited, even when git tracks them.
+var skippedDirs = map[string]bool{"node_modules": true, "vendor": true, ".git": true, "__pycache__": true, ".ckb": true}
+
+// gitSourceFiles lists the source files git knows in repoRoot. An error means
+// repoRoot isn't a git work tree or git is missing.
+func gitSourceFiles(repoRoot string) ([]string, error) {
+	cmd := exec.Command("git", "ls-files", "-co", "--exclude-standard", "-z") // #nosec G204 //nolint:gosec // fixed git subcommand
+	cmd.Dir = repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+next:
+	for _, path := range strings.Split(string(out), "\x00") {
+		if path == "" || !isSourceFile(filepath.Ext(path)) {
+			continue
+		}
+		parts := strings.Split(path, "/")
+		for _, dir := range parts[:len(parts)-1] {
+			if skippedDirs[dir] {
+				continue next
+			}
+		}
+		files = append(files, filepath.FromSlash(path))
+	}
+	return files, nil
 }
 
 // getComplexityDetailed returns total complexity and per-function breakdown.
@@ -388,9 +430,13 @@ func (a *Analyzer) hasTestFile(file string) bool {
 		base + "_test" + ext,
 		base + ".test" + ext,
 		base + ".spec" + ext,
-		strings.Replace(file, "/", "/test/", 1),
 		"test/" + file,
 		"tests/" + file,
+	}
+	// pkg/x.go -> pkg/test/x.go. Without a slash the replacement is the file
+	// itself, and every repo-root file passed for tested.
+	if strings.Contains(file, "/") {
+		testPatterns = append(testPatterns, strings.Replace(file, "/", "/test/", 1))
 	}
 
 	for _, pattern := range testPatterns {
