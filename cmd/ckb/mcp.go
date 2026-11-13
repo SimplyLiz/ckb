@@ -210,7 +210,7 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		return runReindexForMCP(ctx, repoRoot, scope, log)
 	})
 	// Responses served without an index say so, with the next step checked here.
-	server.SetIndexDiagnoser(diagnoseIndex)
+	server.SetIndexDiagnoser(diagnoseIndexOnPath)
 
 	// Apply preset configuration
 	if err := server.SetPreset(mcpPreset); err != nil {
@@ -281,14 +281,15 @@ const maxWatchBackoff = 10 * time.Minute
 // tolerates before disabling itself for the rest of the process lifetime —
 // retrying an identical failure forever wastes CPU and spams logs for no
 // benefit; the fix (once made) needs an MCP server restart to pick up
-// anyway, same as the missing-indexer case.
+// anyway. A missing indexer is different: see indexerWait.
 const maxWatchFailures = 5
 
 // errIndexerUnavailable means runWatchLoop can't build an index for this
 // project right now — no supported/single language detected, the language
-// has no known SCIP indexer, or the indexer binary isn't installed. It's
-// treated as permanent for the life of the process: watch mode disables
-// itself rather than retrying every tick.
+// has no known SCIP indexer, or the indexer binary isn't installed. A
+// missing binary is waited for (see indexerWait): no retries, one LookPath per
+// tick until it is on PATH. Anything else disables watch mode for the life of
+// the process rather than retrying every tick.
 var errIndexerUnavailable = errors.New("no usable SCIP indexer for this project")
 
 // errRepoTooLarge means the project exceeds scipLargeRepoThreshold. A watch
@@ -307,6 +308,8 @@ type watchState struct {
 	consecutiveFailures int
 	lastAttempt         time.Time
 	disabled            bool
+	// indexerWait holds builds back until a missing indexer is on PATH.
+	indexerWait indexerWait
 }
 
 // watchBackoff returns how long to wait before the next reindex attempt
@@ -362,7 +365,7 @@ func runWatchLoop(repoRoot string, interval time.Duration, logger *slog.Logger) 
 // of runWatchLoop so the same logic can run once immediately on start and
 // again on every ticker.C fire, without duplicating it.
 func watchTick(repoRoot, ckbDir string, interval time.Duration, state *watchState, permanentLogged *bool, logger *slog.Logger) {
-	if state.disabled {
+	if state.disabled || !state.indexerWait.ready() {
 		return
 	}
 
@@ -396,6 +399,12 @@ func watchTick(repoRoot, ckbDir string, interval time.Duration, state *watchStat
 				logger.Warn("Reindex finished but reloading it into the server failed", "error", reloadErr.Error())
 			}
 		}
+
+	case errors.Is(err, errIndexerUnavailable) && state.indexerWait.await(missingIndexers(repoRoot)):
+		// Installing the indexer is the fix, and it needs no restart: the next
+		// tick builds once one of them is on PATH.
+		logger.Warn("No SCIP indexer installed for this project; building once one is on PATH",
+			"indexers", strings.Join(state.indexerWait.commands, ", "))
 
 	case errors.Is(err, errIndexerUnavailable), errors.Is(err, errRepoTooLarge):
 		if !*permanentLogged {

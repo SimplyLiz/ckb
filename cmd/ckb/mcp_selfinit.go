@@ -122,22 +122,49 @@ func startFirstIndex(repoRoot string, logger *slog.Logger) {
 		return
 	}
 	go func() {
-		lockDir, err := firstIndexLockDir()
-		if err != nil {
-			logger.Warn("Skipping the automatic first index", "error", err.Error())
+		state := &watchState{}
+		if !firstIndexTick(repoRoot, state, logger) {
 			return
 		}
-		machineLock, err := index.AcquireLock(lockDir)
-		if err != nil {
-			logger.Info("Another first index is running on this machine; skipping it for this session")
-			return
+		// No indexer installed: look for it on PATH now and then, and build
+		// when it's there, instead of staying text-only until a restart.
+		for state.indexerWait.waiting() {
+			time.Sleep(firstIndexRecheck)
+			if pathExists(resolveIndexPath(repoRoot)) {
+				return // built meanwhile by 'ckb index' or the reindex tool
+			}
+			awaited := state.indexerWait.commands
+			if !state.indexerWait.ready() {
+				continue
+			}
+			logger.Info("SCIP indexer now on PATH, building the first index", "indexers", strings.Join(awaited, ", "))
+			if !firstIndexTick(repoRoot, state, logger) {
+				state.indexerWait.await(awaited) // machine lock busy: try again later
+			}
 		}
-		defer machineLock.Release()
-
-		logger.Info("No SCIP index yet, building one in the background")
-		permanentLogged := false
-		watchTick(repoRoot, filepath.Join(repoRoot, ".ckb"), time.Minute, &watchState{}, &permanentLogged, logger)
 	}()
+}
+
+// firstIndexTick runs one watchTick under the machine-wide first-index lock.
+// False when it didn't run: the lock is held by another session's first index,
+// or its directory isn't available.
+func firstIndexTick(repoRoot string, state *watchState, logger *slog.Logger) bool {
+	lockDir, err := firstIndexLockDir()
+	if err != nil {
+		logger.Warn("Skipping the automatic first index", "error", err.Error())
+		return false
+	}
+	machineLock, err := index.AcquireLock(lockDir)
+	if err != nil {
+		logger.Info("Another first index is running on this machine; skipping it for now")
+		return false
+	}
+	defer machineLock.Release()
+
+	logger.Info("No SCIP index yet, building one in the background")
+	permanentLogged := false
+	watchTick(repoRoot, filepath.Join(repoRoot, ".ckb"), time.Minute, state, &permanentLogged, logger)
+	return true
 }
 
 // firstIndexLockDir is where the machine-wide first-index lock lives.

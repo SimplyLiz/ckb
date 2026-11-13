@@ -227,7 +227,7 @@ func TestExcludeIndexFromGit(t *testing.T) {
 // 'ckb setup' in a repo without .ckb/ initializes it; like 'ckb init' it keeps
 // .ckb/ and the index out of 'git status'.
 func TestEnsureCkbInitialized_ExcludesFromGit(t *testing.T) {
-	t.Setenv("CKB_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir()) // the registry lives under $HOME/.ckb, not CKB_HOME
 	dir := gitInitTemp(t)
 	t.Chdir(dir)
 	if err := ensureCkbInitialized(); err != nil {

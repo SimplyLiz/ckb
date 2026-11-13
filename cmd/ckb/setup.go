@@ -321,7 +321,7 @@ func ensureProjectReady() error {
 		if err != nil {
 			return fmt.Errorf("failed to get current directory: %w", err)
 		}
-		if d := diagnoseIndex(cwd); !d.Ready {
+		if d := diagnoseIndexOnPath(cwd); !d.Ready {
 			fmt.Println("CKB cannot build the code index yet:")
 			fmt.Println("  " + d.Problem)
 			if d.ThenReindex {
