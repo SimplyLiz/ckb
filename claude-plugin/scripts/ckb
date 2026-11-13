@@ -9,7 +9,8 @@
 # Order:
 #   1. a ckb on PATH whose version has the plugin's major and at least its
 #      minor (the skills depend on CLI flags of that release)
-#   2. the copy scripts/ckb-install put into the plugin's data directory
+#   2. the copy scripts/ckb-install (async SessionStart hook) put into the
+#      plugin's data directory
 #   3. npx -y @tastehub/ckb@<pin>
 # With CKB_SHIM_NO_NPX=1 step 3 exits 0 silently instead: the SessionStart
 # hook must not wait for a package download.
@@ -53,9 +54,11 @@ if [ -z "$data_dir" ]; then
 		data_dir="$(dirname "$(dirname "$marketplace_dir")")/data/$id"
 	fi
 fi
+# The plugin updates steps 2 and 3, so ckb's own "npm update -g" advice and
+# its registry check do not apply to them.
 if [ -n "$data_dir" ]; then
 	for bin in "$data_dir/ckb-$pin"/node_modules/@tastehub/ckb-*/bin/ckb "$data_dir/ckb-$pin"/node_modules/@tastehub/ckb-*/bin/ckb.exe; do
-		[ -x "$bin" ] && exec "$bin" "$@"
+		[ -x "$bin" ] && CKB_NO_UPDATE_CHECK=1 exec "$bin" "$@"
 	done
 fi
 
@@ -64,7 +67,7 @@ if [ "${CKB_SHIM_NO_NPX:-}" = 1 ]; then
 	exit 0
 fi
 if command -v npx >/dev/null 2>&1; then
-	exec npx -y "@tastehub/ckb@$pin" "$@"
+	CKB_NO_UPDATE_CHECK=1 exec npx -y "@tastehub/ckb@$pin" "$@"
 fi
 echo "ckb: not installed, and npx is not on PATH to fetch it. Install one: npm install -g @tastehub/ckb, or brew install simplyliz/ckb/ckb" >&2
 exit 127

@@ -1,0 +1,43 @@
+#!/bin/sh
+# Installs the pinned @tastehub/ckb into the plugin's data directory, so
+# scripts/ckb does not go through npx on every call when no compatible ckb is
+# on PATH. Runs as an async SessionStart hook: it never delays the session,
+# prints nothing, and a failed or interrupted install is retried at the next
+# session start. ${CLAUDE_PLUGIN_DATA} survives plugin updates; the copy is
+# kept per version (ckb-<pin>) and older ones are removed.
+
+dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) || exit 0
+pin=$(sed -n 's/^pin=//p' "$dir/ckb")
+data=${CLAUDE_PLUGIN_DATA:-}
+[ -n "$pin" ] && [ -n "$data" ] || exit 0
+
+# A compatible ckb on PATH or an existing copy: nothing to do.
+[ -n "$(CKB_SHIM_NO_NPX=1 "$dir/ckb" --version 2>/dev/null)" ] && exit 0
+command -v npm >/dev/null 2>&1 || exit 0
+
+mkdir -p "$data" || exit 0
+lock="$data/.install-lock"
+if ! mkdir "$lock" 2>/dev/null; then
+	# Another session is installing; a lock older than 10 minutes is left over.
+	[ -n "$(find "$lock" -maxdepth 0 -mmin +10 2>/dev/null)" ] || exit 0
+	rm -rf "$lock"
+	mkdir "$lock" 2>/dev/null || exit 0
+fi
+tmp="$data/.ckb-$pin.tmp.$$"
+trap 'rm -rf "$tmp" "$lock"' EXIT INT TERM HUP
+
+npm install --prefix "$tmp" --no-save --no-package-lock --no-fund --no-audit \
+	--loglevel=error "@tastehub/ckb@$pin" >/dev/null 2>&1 || exit 0
+found=""
+for bin in "$tmp"/node_modules/@tastehub/ckb-*/bin/ckb "$tmp"/node_modules/@tastehub/ckb-*/bin/ckb.exe; do
+	[ -x "$bin" ] && found=1 && break
+done
+[ -n "$found" ] || exit 0
+
+target="$data/ckb-$pin"
+rm -rf "$target"
+mv "$tmp" "$target" || exit 0
+for old in "$data"/ckb-*; do
+	[ "$old" = "$target" ] || rm -rf "$old"
+done
+exit 0
