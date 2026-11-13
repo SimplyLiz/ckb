@@ -98,6 +98,7 @@ type CompactOpenSite struct {
 type CompactContract struct {
 	Kind   string `json:"kind"`
 	Symbol string `json:"symbol"`
+	File   string `json:"file,omitempty"`
 	// Before and After are the declarations compared, where both could be read.
 	Before string `json:"before,omitempty"`
 	After  string `json:"after,omitempty"`
@@ -212,7 +213,7 @@ func CompactAssessChangeFor(r *AnalyzeChangeSetResponse, opts CompactAssessOptio
 
 	if want(AssessFocusRisk) {
 		for _, k := range r.Contracts {
-			c.Contracts = append(c.Contracts, CompactContract{Kind: k.Kind, Symbol: k.Symbol, Before: k.Before, After: k.After, Detail: k.Detail})
+			c.Contracts = append(c.Contracts, CompactContract{Kind: k.Kind, Symbol: k.Symbol, File: k.File, Before: k.Before, After: k.After, Detail: k.Detail})
 		}
 		if cf := r.ConsumerFiles; cf != nil {
 			c.Consumers = cf.Direct
@@ -395,8 +396,17 @@ func (c *CompactAssessChange) Text() string {
 
 	if len(c.Contracts) > 0 {
 		b.WriteString("\ncontracts:\n")
+		// Two files can declare the same name (a simulate() in each): then the
+		// line says whose.
+		named := make(map[string]int)
+		for _, k := range c.Contracts {
+			named[k.Symbol]++
+		}
 		for _, k := range c.Contracts {
 			b.WriteString("  " + k.Kind + " " + k.Symbol)
+			if named[k.Symbol] > 1 && k.File != "" {
+				b.WriteString(" (" + k.File + ")")
+			}
 			switch {
 			case k.Before != "" && k.After != "":
 				b.WriteString(": " + oneLine(k.Before) + " -> " + oneLine(k.After))

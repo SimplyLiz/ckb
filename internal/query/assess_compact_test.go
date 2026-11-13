@@ -283,3 +283,22 @@ func TestCompactAssessChangeFor_Rarely(t *testing.T) {
 		t.Errorf("the cut counts the likely sites only: %q", cut.More)
 	}
 }
+
+// Two files declaring simulate(): the compact text says whose each contract is, and a
+// name declared once stays as short as before.
+func TestCompactAssessChange_SameNameContracts(t *testing.T) {
+	r := &AnalyzeChangeSetResponse{
+		Summary: &ChangeSummary{FilesChanged: 2},
+		Contracts: []ContractSignal{
+			{Symbol: "simulate", File: "lc/lc1_account.py", Kind: "possible-contract-change"},
+			{Symbol: "simulate", File: "lc/lc1b_trim.py", Kind: "possible-contract-change"},
+			{Symbol: "price", File: "lc/lc1_account.py", Kind: "possible-contract-change"},
+		},
+	}
+	text := CompactAssessChangeFrom(r).Text()
+	for _, want := range []string{"possible-contract-change simulate (lc/lc1_account.py)\n", "possible-contract-change simulate (lc/lc1b_trim.py)\n", "possible-contract-change price\n"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in\n%s", want, text)
+		}
+	}
+}
