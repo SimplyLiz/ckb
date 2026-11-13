@@ -15,8 +15,8 @@ All notable changes to CKB will be documented in this file.
   the next reindex bring it in. Python scripts without a manifest count from 5 tracked files.
   `--lang` still indexes one language; incremental updates are skipped on a merged index.
   The previous index stays at the index path until the merged one replaces it, so a session
-  starting mid-build reads the old index. Only scip-clang, scip-ruby, scip-php and scip_dart,
-  which CKB can't point at another output file, still run with the old index moved aside.
+  starting mid-build reads the old index. Only scip-php, which has no output option, still
+  runs with the old index moved aside.
   A repo without any manifest gets every source language with 3 or more tracked files, so
   Python scripts beside a few TypeScript hooks are both indexed, not only the more common one.
   The tsconfig.json that scip-typescript's `--infer-tsconfig` writes where none was is removed
@@ -207,6 +207,11 @@ private, so only aggregates are here.
 
 ### Fixed — small things found in review
 
+- **A custom `scip.indexPath` works for C++, Ruby and PHP.** Every indexer was given
+  `--output`; scip-clang calls it `--index-output-path` and scip-ruby `--index-file`, and
+  scip-php has none and writes `index.scip` into the repo root, where it stayed while the
+  configured path got nothing. Each indexer now gets the flag its own source names, and a
+  scip-php index moves to the configured path.
 - **MCP answers no longer write `<`, `>` and `&` as `\u003c`.** Every tool's JSON went
   through Go's HTML escaping; code now arrives as written.
 - **A file-level entry is named once in a note,** not as `schema.ts:schema.ts`.

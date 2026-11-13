@@ -103,7 +103,7 @@ type LangResult struct {
 // The previous index stays at IndexPath until the merged one is renamed over
 // it, so a session opening the index mid-build reads the old one, never a
 // missing file or one language's part. The exception is an indexer that can't
-// be told where to write (see outputFlagLanguages): while it runs, the
+// be told where to write (scip-php, see writingTo): while it runs, the
 // previous index sits aside and IndexPath is its output.
 //
 // The error is non-nil only when no language made it into the index, or the
@@ -175,27 +175,13 @@ func runInPlace(repoRoot string, plan *Plan, part string, run func(*Plan) error)
 	return res
 }
 
-// outputFlagLanguages are the languages whose indexer is known to write where
-// --output says (scip-go, scip-typescript and rust-analyzer checked against
-// the installed binaries; scip-python, scip-java and scip-dotnet document it).
-// scip-clang and scip-ruby name the flag differently, and scip-php and
-// scip_dart aren't confirmed, so they run in place.
-var outputFlagLanguages = map[project.Language]bool{
-	project.LangGo:         true,
-	project.LangTypeScript: true,
-	project.LangJavaScript: true,
-	project.LangRust:       true,
-	project.LangPython:     true,
-	project.LangJava:       true,
-	project.LangKotlin:     true,
-	project.LangCSharp:     true,
-}
-
 // writingTo is plan with its indexer told to write to path, or nil when the
-// indexer can't be told. The path is passed relative to the indexer's
-// directory: commands are split on spaces, and a repo path may contain them.
+// indexer can't be told (project.OutputFlag is empty: scip-php). The path is
+// passed relative to the indexer's directory: commands are split on spaces,
+// and a repo path may contain them.
 func (p *Plan) writingTo(path string) *Plan {
-	if p.base == "" || !outputFlagLanguages[p.Lang] {
+	flag := project.OutputFlag(p.Lang)
+	if p.base == "" || flag == "" {
 		return nil
 	}
 	rel, err := filepath.Rel(p.IndexerDir, path)
@@ -204,8 +190,8 @@ func (p *Plan) writingTo(path string) *Plan {
 	}
 	q := *p
 	q.IndexPath = path
-	q.Command = fmt.Sprintf("%s --output %s", p.base, filepath.ToSlash(rel))
-	q.redirected = true
+	q.Command = fmt.Sprintf("%s %s %s", p.base, flag, filepath.ToSlash(rel))
+	q.NamesOutput = true
 	return &q
 }
 

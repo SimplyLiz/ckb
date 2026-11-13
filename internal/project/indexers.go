@@ -16,12 +16,18 @@ type IndexerConfig struct {
 	// Args are additional arguments before the output flag
 	Args []string
 
-	// OutputFlag is the flag for specifying output path (e.g., "--output")
-	// Empty if the indexer uses a fixed output path
+	// OutputFlag is the flag that tells the indexer where to write its index,
+	// as the indexer's own source names it: not every SCIP indexer calls it
+	// --output. Empty if the indexer can't be told and uses FixedOutput.
+	// indexplan reads it too, so a wrong flag here breaks every custom index
+	// path and every multi-language build for that language. Checked against
+	// each indexer's source: scip-clang's indexer/main.cc, scip-ruby's
+	// docs/scip-ruby/CLI.md, scip_dart's bin/scip_dart.dart; bin/scip-php has
+	// no such option and writes index.scip unconditionally.
 	OutputFlag string
 
-	// FixedOutput is the fixed output filename for indexers that ignore --output
-	// (e.g., rust-analyzer always outputs "index.scip")
+	// FixedOutput is the file an indexer without OutputFlag always writes into
+	// its working directory (scip-php: "index.scip").
 	FixedOutput string
 
 	// SupportsIncremental indicates if this indexer works with incremental mode
@@ -75,7 +81,7 @@ var Indexers = map[Language]IndexerConfig{
 	LangRust: {
 		Cmd:                 "rust-analyzer",
 		Args:                []string{"scip", "."},
-		FixedOutput:         "index.scip",
+		OutputFlag:          "--output",
 		SupportsIncremental: true,
 		Extensions:          []string{".rs"},
 	},
@@ -93,13 +99,13 @@ var Indexers = map[Language]IndexerConfig{
 	},
 	LangCpp: {
 		Cmd:                 "scip-clang",
-		OutputFlag:          "--output",
+		OutputFlag:          "--index-output-path",
 		SupportsIncremental: false, // Requires compile_commands.json
 	},
 	LangRuby: {
 		Cmd:                 "scip-ruby",
 		Args:                []string{"."},
-		OutputFlag:          "--output",
+		OutputFlag:          "--index-file",
 		SupportsIncremental: false, // Lower priority
 	},
 	LangCSharp: {
@@ -110,9 +116,15 @@ var Indexers = map[Language]IndexerConfig{
 	},
 	LangPHP: {
 		Cmd:                 "vendor/bin/scip-php",
-		OutputFlag:          "--output",
+		FixedOutput:         "index.scip",
 		SupportsIncremental: false, // Lower priority
 	},
+}
+
+// OutputFlag is the flag that tells lang's indexer where to write, or "" when
+// it can't be told (or there's no indexer).
+func OutputFlag(lang Language) string {
+	return Indexers[lang].OutputFlag
 }
 
 // GetIndexerConfig returns the indexer configuration for a language.

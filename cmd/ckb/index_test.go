@@ -126,7 +126,7 @@ func TestFinalizeIndexOutput_CustomOutputPath(t *testing.T) {
 	if err := os.Mkdir(engine, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	plan := &indexPlan{IndexerDir: engine, IndexPath: filepath.Join(repo, "custom.scip")}
+	plan := &indexPlan{IndexerDir: engine, IndexPath: filepath.Join(repo, "custom.scip"), NamesOutput: true}
 	writeTestSCIP(t, plan.IndexPath, "src/lib.rs")
 	if err := finalizeIndexOutput(repo, plan); err != nil {
 		t.Fatal(err)
