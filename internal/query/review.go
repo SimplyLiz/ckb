@@ -393,7 +393,7 @@ func (e *Engine) ReviewPR(ctx context.Context, opts ReviewPROptions) (*ReviewPRR
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c, ff := e.checkBreakingChanges(ctx, opts)
+			c, ff := e.checkBreakingChanges(changeSet)
 			addCheck(c)
 			addFindings(ff)
 		}()
@@ -911,135 +911,66 @@ func generateNarrative(summary ReviewSummary, checks []ReviewCheck, findings []R
 
 // --- Individual check implementations ---
 
-func (e *Engine) checkBreakingChanges(ctx context.Context, opts ReviewPROptions) (ReviewCheck, []ReviewFinding) {
+// checkBreakingChanges reports the public declarations the diff changed or removed,
+// from the change set's declaration comparison. Where declarations changed in a
+// language that isn't compared, it says so and skips rather than passing.
+func (e *Engine) checkBreakingChanges(changeSet func() (*AnalyzeChangeSetResponse, error)) (ReviewCheck, []ReviewFinding) {
 	start := time.Now()
-
-	resp, err := e.CompareAPI(ctx, CompareAPIOptions{
-		BaseRef:       opts.BaseBranch,
-		TargetRef:     opts.HeadBranch,
-		IgnorePrivate: true,
-	})
-
-	if err != nil {
-		return ReviewCheck{
-			Name:     "breaking",
-			Status:   "skip",
-			Severity: "error",
-			Summary:  fmt.Sprintf("Could not analyze: %v", err),
-			Duration: time.Since(start).Milliseconds(),
-		}, nil
+	cs, err := changeSet()
+	if err != nil || cs == nil {
+		summary := "Could not analyze the change set"
+		if err != nil {
+			summary = fmt.Sprintf("Could not analyze: %v", err)
+		}
+		return ReviewCheck{Name: "breaking", Status: "skip", Severity: "error", Summary: summary, Duration: time.Since(start).Milliseconds()}, nil
 	}
+	changes, notCompared := apiChangesFromContracts(cs.Contracts, nil, false)
 
+	// A use left in the repo breaks now; with every use updated it's the public API
+	// that changed, which matters to callers outside the repo only.
 	var findings []ReviewFinding
-
-	for _, change := range resp.Changes {
-		if change.Severity == "breaking" || change.Severity == "error" {
-			findings = append(findings, ReviewFinding{
-				Check:    "breaking",
-				Severity: "error",
-				File:     change.FilePath,
-				Message:  change.Description,
-				Category: "breaking",
-				RuleID:   fmt.Sprintf("ckb/breaking/%s", change.Kind),
-			})
+	errorsLeft := 0
+	for _, change := range changes {
+		severity := "warning"
+		if change.AffectsUsers {
+			severity = "error"
+			errorsLeft++
 		}
+		findings = append(findings, ReviewFinding{
+			Check:    "breaking",
+			Severity: severity,
+			File:     change.FilePath,
+			Message:  change.Description,
+			Category: "breaking",
+			RuleID:   fmt.Sprintf("ckb/breaking/%s", change.Kind),
+		})
 	}
 
-	// Filter out rename pairs — a removed + added symbol in the same file
-	// with the same kind is likely a rename, not a breaking change.
-	findings = filterRenamePairs(findings)
-	breakingCount := len(findings)
-
-	status := "pass"
-	severity := "error"
-	summary := "No breaking API changes"
-	if breakingCount > 0 {
-		status = "fail"
-		summary = fmt.Sprintf("%d breaking API change(s) detected", breakingCount)
-	}
-
-	return ReviewCheck{
-		Name:     "breaking",
-		Status:   status,
-		Severity: severity,
-		Summary:  summary,
-		Duration: time.Since(start).Milliseconds(),
-	}, findings
-}
-
-// filterRenamePairs removes findings that are likely renames rather than
-// breaking changes. A rename produces "removed X" + "added Y" in the same
-// file with the same kind — not a real API break. Both sides of a matched
-// pair are removed: the "removed" finding is noise, and the "added" finding
-// is not a new API symbol — it's the renamed version of the old one.
-func filterRenamePairs(findings []ReviewFinding) []ReviewFinding {
-	// Group by file — use sorted keys for deterministic output.
-	byFile := make(map[string][]ReviewFinding)
-	for _, f := range findings {
-		byFile[f.File] = append(byFile[f.File], f)
-	}
-	files := make([]string, 0, len(byFile))
-	for f := range byFile {
-		files = append(files, f)
-	}
-	sort.Strings(files)
-
-	var filtered []ReviewFinding
-	for _, file := range files {
-		fileFindings := byFile[file]
-		// Count removed and added per kind
-		removedByKind := make(map[string]int)
-		addedByKind := make(map[string]int)
-		for _, f := range fileFindings {
-			if isRemovedFinding(f.Message) {
-				removedByKind[f.RuleID]++
-			} else if isAddedFinding(f.Message) {
-				addedByKind[f.RuleID]++
-			}
+	check := ReviewCheck{Name: "breaking", Severity: "error", Duration: time.Since(start).Milliseconds()}
+	switch {
+	case errorsLeft > 0:
+		check.Status = "fail"
+		check.Summary = fmt.Sprintf("%d breaking API change(s) with uses left in the repo", errorsLeft)
+		if rest := len(findings) - errorsLeft; rest > 0 {
+			check.Summary += fmt.Sprintf(", %d more with every use updated", rest)
 		}
-
-		// Compute how many pairs to consume per kind (min of removed, added).
-		pairsByKind := make(map[string]int)
-		for kind, rem := range removedByKind {
-			if add := addedByKind[kind]; add > 0 {
-				pairs := rem
-				if add < pairs {
-					pairs = add
-				}
-				pairsByKind[kind] = pairs
-			}
+		if len(notCompared) > 0 {
+			check.Summary += fmt.Sprintf("; %d file(s) not compared", len(notCompared))
 		}
-
-		// Second pass: consume paired findings from both sides.
-		removedLeft := make(map[string]int)
-		addedLeft := make(map[string]int)
-		for k, v := range pairsByKind {
-			removedLeft[k] = v
-			addedLeft[k] = v
+	case len(findings) > 0:
+		check.Status = "warn"
+		check.Summary = fmt.Sprintf("%d public declaration(s) changed, every use in the repo updated", len(findings))
+		if len(notCompared) > 0 {
+			check.Summary += fmt.Sprintf("; %d file(s) not compared", len(notCompared))
 		}
-
-		for _, f := range fileFindings {
-			kind := f.RuleID
-			if isRemovedFinding(f.Message) && removedLeft[kind] > 0 {
-				removedLeft[kind]--
-				continue
-			}
-			if isAddedFinding(f.Message) && addedLeft[kind] > 0 {
-				addedLeft[kind]--
-				continue
-			}
-			filtered = append(filtered, f)
-		}
+	case len(notCompared) > 0:
+		check.Status = "skip"
+		check.Summary = fmt.Sprintf("Not assessed: public declarations changed in %s, whose language isn't compared", namedFiles(notCompared))
+	default:
+		check.Status = "pass"
+		check.Summary = "No breaking API changes"
 	}
-	return filtered
-}
-
-func isRemovedFinding(msg string) bool {
-	return strings.Contains(msg, "removed") || strings.Contains(msg, "Removed")
-}
-
-func isAddedFinding(msg string) bool {
-	return strings.Contains(msg, "added") || strings.Contains(msg, "Added") || strings.Contains(msg, "new")
+	return check, findings
 }
 
 func (e *Engine) checkSecrets(ctx context.Context, files []string) (ReviewCheck, []ReviewFinding) {

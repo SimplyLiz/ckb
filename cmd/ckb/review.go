@@ -402,9 +402,11 @@ func formatReviewHuman(resp *query.ReviewPRResponse) string {
 			b.WriteString(fmt.Sprintf("  ⚠ %-20s %s\n", c.Name, c.Summary))
 		case "info":
 			b.WriteString(fmt.Sprintf("  ○ %-20s %s\n", c.Name, c.Summary))
+		case "skip":
+			// A skipped check didn't look: saying nothing would read as a pass.
+			b.WriteString(fmt.Sprintf("  – %-20s %s\n", c.Name, c.Summary))
 		case "pass":
 			passNames = append(passNames, c.Name)
-			// skip: omit entirely
 		}
 	}
 	if len(passNames) > 0 {
