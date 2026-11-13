@@ -429,7 +429,7 @@ func TestCalculatePrepareRisk_ScoreRounding(t *testing.T) {
 	target := &PrepareChangeTarget{Visibility: "public", Path: "internal/example/widget.go"} // +0.15
 	// transitive module spread >5 -> +0.2, no tests -> +0.2
 
-	risk := engine.calculatePrepareRisk(target, dependents, transitive, nil, nil, nil, ChangeModify)
+	risk := engine.calculatePrepareRisk(target, dependents, transitive, nil, nil, nil, ChangeModify, nil)
 
 	if risk.Score != 0.7 {
 		t.Errorf("Score = %v, want exactly 0.7 (rounded)", risk.Score)
@@ -471,7 +471,7 @@ func TestCalculatePrepareRisk_TestFactorWording(t *testing.T) {
 	engine := &Engine{}
 	target := &PrepareChangeTarget{Visibility: "internal", Path: "internal/example/widget.go"}
 
-	risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify)
+	risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify, nil)
 
 	foundOldWording := false
 	foundNewWording := false
@@ -504,7 +504,7 @@ func TestCalculatePrepareRisk_TestFactorOmittedForUnsupportedLanguage(t *testing
 	engine := &Engine{}
 	target := &PrepareChangeTarget{Visibility: "internal", Path: "app/models/widget.py", ModuleId: "app/models"}
 
-	risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify)
+	risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify, nil)
 
 	for _, f := range risk.Factors {
 		if f == "No test files found in target module" {
@@ -532,7 +532,7 @@ func TestCalculatePrepareRisk_SuggestionOnlyForPublicVisibility(t *testing.T) {
 
 	t.Run("internal visibility", func(t *testing.T) {
 		target := &PrepareChangeTarget{Visibility: "internal"}
-		risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify)
+		risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify, nil)
 
 		for _, f := range risk.Factors {
 			if f == "Public API change" {
@@ -548,7 +548,7 @@ func TestCalculatePrepareRisk_SuggestionOnlyForPublicVisibility(t *testing.T) {
 
 	t.Run("public visibility", func(t *testing.T) {
 		target := &PrepareChangeTarget{Visibility: "public"}
-		risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify)
+		risk := engine.calculatePrepareRisk(target, nil, nil, nil, nil, nil, ChangeModify, nil)
 
 		factorFound := false
 		for _, f := range risk.Factors {
@@ -1058,7 +1058,7 @@ func TestCalculatePrepareRisk_RenameDeleteFloor(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			risk := engine.calculatePrepareRisk(target, c.dependents, nil, tests, nil, nil, c.changeType)
+			risk := engine.calculatePrepareRisk(target, c.dependents, nil, tests, nil, nil, c.changeType, nil)
 			if risk.Score != c.wantScore || risk.Level != c.wantLevel {
 				t.Errorf("got %v %s, want %v %s (factors %v)", risk.Score, risk.Level, c.wantScore, c.wantLevel, risk.Factors)
 			}
@@ -1123,11 +1123,11 @@ func TestCalculatePrepareRisk_CountsCallersBeyondBudget(t *testing.T) {
 	engine := &Engine{}
 	target := &PrepareChangeTarget{Visibility: "internal", Path: "app/x.py"}
 	shown := make([]PrepareDependent, 3)
-	risk := engine.calculatePrepareRisk(target, shown, &PrepareTransitive{DirectCallers: 12}, nil, nil, nil, ChangeModify)
+	risk := engine.calculatePrepareRisk(target, shown, &PrepareTransitive{DirectCallers: 12}, nil, nil, nil, ChangeModify, nil)
 	if risk.Score != 0.25 || len(risk.Factors) == 0 || risk.Factors[0] != "High dependent count (12 direct callers)" {
 		t.Errorf("got %v %v, want 0.25 from 12 callers", risk.Score, risk.Factors)
 	}
-	risk = engine.calculatePrepareRisk(target, shown, &PrepareTransitive{DirectCallers: 12}, nil, nil, nil, ChangeRename)
+	risk = engine.calculatePrepareRisk(target, shown, &PrepareTransitive{DirectCallers: 12}, nil, nil, nil, ChangeRename, nil)
 	if want := "rename breaks 12 production caller(s) unless they change too"; risk.Factors[len(risk.Factors)-1] != want {
 		t.Errorf("floor factor = %q, want %q", risk.Factors[len(risk.Factors)-1], want)
 	}

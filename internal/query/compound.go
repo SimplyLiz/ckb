@@ -18,6 +18,7 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/complexity"
 	"github.com/SimplyLiz/CodeMCP/internal/coupling"
 	"github.com/SimplyLiz/CodeMCP/internal/errors"
+	"github.com/SimplyLiz/CodeMCP/internal/impact"
 	"github.com/SimplyLiz/CodeMCP/internal/modules"
 	"github.com/SimplyLiz/CodeMCP/internal/output"
 	"github.com/SimplyLiz/CodeMCP/internal/version"
@@ -1598,6 +1599,7 @@ func (e *Engine) PrepareChange(ctx context.Context, opts PrepareChangeOptions) (
 	// Get impact analysis. A file target is the sum of what it declares: its
 	// types, their fields and methods, its functions.
 	var testConsumers []ImpactItem
+	var baseRisk *RiskScore
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -1624,6 +1626,7 @@ func (e *Engine) PrepareChange(ctx context.Context, opts PrepareChangeOptions) (
 		directDependents = imp.dependents
 		transitiveImpact = imp.transitive
 		testConsumers = imp.tests
+		baseRisk = imp.base
 		riskFactors = append(riskFactors, imp.factors...)
 		mu.Unlock()
 	}()
@@ -1715,7 +1718,7 @@ func (e *Engine) PrepareChange(ctx context.Context, opts PrepareChangeOptions) (
 	relatedTests = e.getPrepareTests(target, testConsumers)
 
 	// Calculate risk assessment
-	risk := e.calculatePrepareRisk(target, directDependents, transitiveImpact, relatedTests, coChangeFiles, riskFactors, opts.ChangeType)
+	risk := e.calculatePrepareRisk(target, directDependents, transitiveImpact, relatedTests, coChangeFiles, riskFactors, opts.ChangeType, baseRisk)
 	if !e.hasConsumerGraph() {
 		markConsumersNotAssessed(risk, len(directDependents))
 	}
@@ -1843,6 +1846,9 @@ type prepareImpact struct {
 	// picks the test files out of it.
 	tests   []ImpactItem
 	factors []string
+	// base, for a symbol target, is the score assessChange gives an edit of the
+	// symbol that keeps its declaration: the same formula on the same consumers.
+	base *RiskScore
 }
 
 // getPrepareImpact retrieves impact analysis data for one symbol.
@@ -1872,6 +1878,14 @@ func (e *Engine) getPrepareImpact(ctx context.Context, symbolId string) (*prepar
 			NameMatchImplementations: impactResp.NameMatchImplementations}),
 		tests: allConsumers(direct, transitive, impactResp.TestImpact),
 	}
+	// An edit of this one symbol, as assessChange scores it once it is a diff that
+	// keeps the declaration. Scored on its own formula, prepareChange called Rubik's
+	// price medium where assessChange said low for the same body edit.
+	var file string
+	if impactResp.Symbol != nil && impactResp.Symbol.Location != nil {
+		file = impactResp.Symbol.Location.FileId
+	}
+	imp.base = e.calculateAggregatedRisk([]impact.ChangedSymbol{{SymbolID: symbolId, File: file}}, direct, transitive, impactResp.ModulesAffected)
 	if limit := e.compressor.GetBudget().MaxImpactItems; limit > 0 && len(direct) > limit {
 		direct = direct[:limit]
 	}
@@ -2219,10 +2233,26 @@ func (e *Engine) calculatePrepareRisk(
 	coChanges []PrepareCoChange,
 	existingFactors []string,
 	changeType ChangeType,
+	base *RiskScore,
 ) *PrepareRisk {
 	score := 0.0
 	var factors []string
 	var suggestions []string
+	// counted adds a factor's weight to the score, unless the score is base's:
+	// then the factor is still said, but assessChange's formula has no place for it.
+	counted := func(weight float64) {
+		if base == nil {
+			score += weight
+		}
+	}
+	if base != nil {
+		score = base.Score
+		var evidence []string
+		for _, f := range base.Factors {
+			evidence = append(evidence, f.Evidence)
+		}
+		factors = append(factors, fmt.Sprintf("Scored as assessChange scores this edit: %s", strings.Join(evidence, ", ")))
+	}
 
 	// dependents is cut to the response budget; the summary counts them all.
 	callers, impls := 0, 0
@@ -2238,12 +2268,14 @@ func (e *Engine) calculatePrepareRisk(
 	}
 	described := describeDependents(callers, impls)
 
-	// Factor: Number of direct dependents
-	if callers+impls > 10 {
-		score += 0.25
+	// Factor: Number of direct dependents (base already says how many)
+	switch {
+	case base != nil:
+	case callers+impls > 10:
+		counted(0.25)
 		factors = append(factors, fmt.Sprintf("High dependent count (%s)", described))
-	} else if callers+impls > 5 {
-		score += 0.15
+	case callers+impls > 5:
+		counted(0.15)
 		factors = append(factors, fmt.Sprintf("Moderate dependent count (%s)", described))
 	}
 	if transitive != nil && transitive.NameMatchImplementations > 0 {
@@ -2251,15 +2283,15 @@ func (e *Engine) calculatePrepareRisk(
 	}
 
 	// Factor: Module spread
-	if transitive != nil && transitive.ModuleSpread > 5 {
-		score += 0.2
+	if base == nil && transitive != nil && transitive.ModuleSpread > 5 {
+		counted(0.2)
 		factors = append(factors, fmt.Sprintf("High module spread (%d modules affected)", transitive.ModuleSpread))
 		suggestions = append(suggestions, "Consider splitting into smaller changes")
 	}
 
 	// Factor: Public visibility
 	if target.Visibility == "public" {
-		score += 0.15
+		counted(0.15)
 		factors = append(factors, "Public API change")
 		suggestions = append(suggestions, "Ensure backward compatibility or bump major version")
 	}
@@ -2274,23 +2306,23 @@ func (e *Engine) calculatePrepareRisk(
 	// `tests` slice means discovery never ran, not that there are no
 	// tests, so the factor is omitted rather than asserted.
 	if len(tests) == 0 && e.languageSupportsTestDiscovery(target) {
-		score += 0.2
+		counted(0.2)
 		factors = append(factors, "No test files found in target module")
 		suggestions = append(suggestions, "Add tests before modifying")
 	}
 
 	// Factor: Change type
 	if changeType == ChangeDelete {
-		score += 0.15
+		counted(0.15)
 		factors = append(factors, "Deletion change type")
 	} else if changeType == ChangeRename {
-		score += 0.1
+		counted(0.1)
 		factors = append(factors, "Rename change type")
 	}
 
 	// Factor: Co-change files
 	if len(coChanges) > 5 {
-		score += 0.1
+		counted(0.1)
 		factors = append(factors, fmt.Sprintf("High coupling (%d co-change files)", len(coChanges)))
 	}
 
