@@ -28,6 +28,13 @@ func NewGitScanner(repoRoot string) *GitScanner {
 
 // ScanHistory scans git commit history for secrets.
 func (g *GitScanner) ScanHistory(ctx context.Context, opts ScanOptions) ([]SecretFinding, error) {
+	findings, _, err := g.scanHistory(ctx, opts)
+	return findings, err
+}
+
+// scanHistory is ScanHistory that also counts the distinct files whose
+// added lines it read.
+func (g *GitScanner) scanHistory(ctx context.Context, opts ScanOptions) ([]SecretFinding, int, error) {
 	// Build git log command
 	args := []string{
 		"log",
@@ -61,14 +68,15 @@ func (g *GitScanner) ScanHistory(ctx context.Context, opts ScanOptions) ([]Secre
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create pipe: %w", err)
+		return nil, 0, fmt.Errorf("failed to create pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start git: %w", err)
+		return nil, 0, fmt.Errorf("failed to start git: %w", err)
 	}
 
 	var findings []SecretFinding
+	files := make(map[string]bool)
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024) // 10MB buffer for large diffs
 
@@ -100,6 +108,7 @@ func (g *GitScanner) ScanHistory(ctx context.Context, opts ScanOptions) ([]Secre
 			parts := strings.Split(line, " b/")
 			if len(parts) >= 2 {
 				currentFile = parts[1]
+				files[currentFile] = true
 			}
 			continue
 		}
@@ -172,22 +181,28 @@ func (g *GitScanner) ScanHistory(ctx context.Context, opts ScanOptions) ([]Secre
 	}
 
 	if err := scanner.Err(); err != nil {
-		return findings, fmt.Errorf("error reading git output: %w", err)
+		return findings, len(files), fmt.Errorf("error reading git output: %w", err)
 	}
 
 	if err := cmd.Wait(); err != nil {
 		// Git may exit with error if there are no commits matching criteria
 		// This is not necessarily an error for us
 		if ctx.Err() == context.DeadlineExceeded {
-			return findings, fmt.Errorf("git scan timed out")
+			return findings, len(files), fmt.Errorf("git scan timed out")
 		}
 	}
 
-	return findings, nil
+	return findings, len(files), nil
 }
 
 // ScanStaged scans only staged (git add'd) changes for secrets.
 func (g *GitScanner) ScanStaged(ctx context.Context, opts ScanOptions) ([]SecretFinding, error) {
+	findings, _, err := g.scanStaged(ctx)
+	return findings, err
+}
+
+// scanStaged is ScanStaged that also counts the staged files it read.
+func (g *GitScanner) scanStaged(ctx context.Context) ([]SecretFinding, int, error) {
 	// Get staged diff
 	args := []string{"diff", "--cached", "--unified=0"}
 
@@ -199,10 +214,22 @@ func (g *GitScanner) ScanStaged(ctx context.Context, opts ScanOptions) ([]Secret
 
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get staged diff: %w", err)
+		return nil, 0, fmt.Errorf("failed to get staged diff: %w", err)
 	}
 
-	return g.scanDiff(string(output), "staged")
+	findings, err := g.scanDiff(string(output), "staged")
+	return findings, countDiffFiles(string(output)), err
+}
+
+// countDiffFiles counts the files a unified diff touches.
+func countDiffFiles(diff string) int {
+	n := 0
+	for _, line := range strings.Split(diff, "\n") {
+		if strings.HasPrefix(line, "diff --git") {
+			n++
+		}
+	}
+	return n
 }
 
 // scanDiff scans a unified diff for secrets.
