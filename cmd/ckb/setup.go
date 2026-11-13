@@ -1486,9 +1486,10 @@ func configureClaudeCodeGlobal(ckbCommand string, ckbArgs []string) error {
 
 // installClaudeCodeSkills writes CKB's Claude Code slash commands to ~/.claude/commands/.
 // The texts are the plugin's SKILL.md files (see claude-plugin/skills.go); the
-// frontmatter is valid for a command file too. The skills call `ckb`, which
-// the plugin's bin/ckb provides; a command file has no plugin behind it, so
-// where ckb is not on PATH (or setup runs with --npx) they call npx instead.
+// frontmatter is valid for a command file too. The skills call the plugin's
+// scripts/ckb; a command file has no plugin behind it, so CommandText turns
+// those calls into `ckb`, or into npx where ckb is not on PATH (or setup runs
+// with --npx).
 // /ckb-review runs ckb before the model reads it, and that call failing
 // aborts the command.
 func installClaudeCodeSkills() error {

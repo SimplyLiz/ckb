@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "ckb": {
-      "command": "npx",
-      "args": ["-y", "@tastehub/ckb", "mcp"]
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ckb",
+      "args": ["mcp"]
     }
   }
 }

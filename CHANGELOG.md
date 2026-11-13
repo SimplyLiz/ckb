@@ -627,12 +627,20 @@ Claude Code mods, with no manifest anywhere.
 - **The review skill asked for `--compact`, which `ckb review` never had.**
   `2>/dev/null` hid the error, so since the skill was written the model got
   nothing back and ran the review a second time on its own.
-- **The plugin brings a `ckb` command.** `claude-plugin/bin/ckb` is on the PATH
-  Claude Code gives the Bash tool: it runs the first other `ckb` on PATH (brew,
-  npm, a release binary) and falls back to `npx -y @tastehub/ckb`. The skills lost
-  their "if ckb is not on PATH" paragraph. `ckb setup --tool=claude-code`, which
-  installs the same texts as commands without the plugin, writes `npx -y
-  @tastehub/ckb` into them when `ckb` is not on PATH or `--npx` is given.
+- **The plugin brings its own `ckb`, pinned to its release.** MCP server, skills
+  and SessionStart hook all start `claude-plugin/scripts/ckb`, so one rule decides
+  which ckb runs: a `ckb` on PATH with the plugin's major version and at least its
+  minor (the skills use flags of that release, like `--target`), else
+  `npx -y @tastehub/ckb@9.4.0`. `scripts/sync-version.go` keeps that pin with
+  `plugin.json`. Before, the MCP server ran an unpinned npx and a brew 9.3.0 next
+  to a 9.4.0 skill failed on the new flag. The shim sits in `scripts/`, not `bin/`:
+  claude.ai and org-wide plugin distribution reject a plugin with a top-level
+  `bin/`. The skills call it through `${CLAUDE_PLUGIN_ROOT}`, which also covers the
+  `allowed-tools` rule of the injected review line (tested with and without a
+  matching rule). The skills lost their "if ckb is not on PATH" paragraph.
+  `ckb setup --tool=claude-code`, which installs the same texts as commands without
+  the plugin, writes `ckb` into them, or `npx -y @tastehub/ckb@<its version>` when
+  `ckb` is not on PATH or `--npx` is given.
 - **A SessionStart hook tells the model what state the index is in.** The plugin
   runs `ckb hook session-start` on startup, resume, `/clear` and compaction: one
   to three lines saying the index is current, N commits behind HEAD and being

@@ -40,12 +40,12 @@ structurally correct but contextually blind:
 ## Phase 1: Structural scan (~2k tokens into context)
 
 ```bash
-ckb audit compliance --framework=$ARGUMENTS --format=json --min-confidence=0.7 2>/dev/null
+"${CLAUDE_PLUGIN_ROOT}/scripts/ckb" audit compliance --framework=$ARGUMENTS --format=json --min-confidence=0.7 2>/dev/null
 ```
 
 For large repos, scope to a specific path to reduce noise:
 ```bash
-ckb audit compliance --framework=$ARGUMENTS --scope=src/api --format=json --min-confidence=0.7 2>/dev/null
+"${CLAUDE_PLUGIN_ROOT}/scripts/ckb" audit compliance --framework=$ARGUMENTS --scope=src/api --format=json --min-confidence=0.7 2>/dev/null
 ```
 
 If no framework specified, pick based on repo context:
