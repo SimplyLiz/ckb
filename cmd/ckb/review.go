@@ -558,11 +558,10 @@ func formatReviewHuman(resp *query.ReviewPRResponse) string {
 
 	// --- Reviewers: clean email display (#6) ---
 	if len(resp.Reviewers) > 0 {
-		b.WriteString("Reviewers: ")
+		b.WriteString("Reviewers (has lines in % of changed files): ")
 		var parts []string
 		for _, r := range resp.Reviewers {
-			name := formatReviewerName(r.Owner)
-			parts = append(parts, fmt.Sprintf("%s (%.0f%%)", name, r.Coverage*100))
+			parts = append(parts, formatReviewer(r))
 		}
 		b.WriteString(strings.Join(parts, " · "))
 		b.WriteString("\n")
@@ -951,9 +950,9 @@ func formatReviewMarkdown(resp *query.ReviewPRResponse) string {
 	if len(resp.Reviewers) > 0 {
 		var parts []string
 		for _, r := range resp.Reviewers {
-			parts = append(parts, fmt.Sprintf("%s (%.0f%%)", formatReviewerName(r.Owner), r.Coverage*100))
+			parts = append(parts, formatReviewer(r))
 		}
-		b.WriteString("**Reviewers:** " + strings.Join(parts, " · ") + "\n\n")
+		b.WriteString("**Reviewers** (has lines in % of changed files): " + strings.Join(parts, " · ") + "\n\n")
 	}
 
 	// Marker for update-in-place
@@ -1104,4 +1103,15 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n-1]) + "…"
+}
+
+// formatReviewer names a suggested reviewer with the share of changed files they have
+// lines in (the label says so: two can both be at 100%). The change's own author is
+// marked as such rather than given a share.
+func formatReviewer(r query.SuggestedReview) string {
+	name := formatReviewerName(r.Owner)
+	if r.IsAuthor {
+		return name + " (author)"
+	}
+	return fmt.Sprintf("%s %.0f%%", name, r.Coverage*100)
 }

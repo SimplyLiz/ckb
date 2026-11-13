@@ -75,6 +75,6 @@
 
 **Estimated review:** ~95min (complex)
 
-**Reviewers:** @alice (85%) · @bob (45%)
+**Reviewers** (has lines in % of changed files): @alice 85% · @bob 45%
 
 <!-- ckb-review-marker -->
