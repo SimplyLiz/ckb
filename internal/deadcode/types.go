@@ -155,4 +155,22 @@ type Result struct {
 
 	// Scope that was analyzed.
 	Scope []string `json:"scope,omitempty"`
+
+	// Analyzed is false when there was nothing to analyze with (no SCIP
+	// index loaded): an empty DeadCode then means "not checked", not
+	// "no dead code". NotAnalyzedReason says why.
+	Analyzed          bool   `json:"analyzed"`
+	NotAnalyzedReason string `json:"notAnalyzedReason,omitempty"`
+}
+
+// notAnalyzed is the result when the index the analysis reads is missing.
+func notAnalyzed(reason string) *Result {
+	return &Result{
+		DeadCode: []DeadCodeItem{},
+		Summary: DeadCodeSummary{
+			ByKind:     make(map[string]int),
+			ByCategory: make(map[string]int),
+		},
+		NotAnalyzedReason: reason,
+	}
 }

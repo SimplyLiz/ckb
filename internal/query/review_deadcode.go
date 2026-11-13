@@ -100,9 +100,11 @@ func (e *Engine) checkDeadCode(ctx context.Context, changedFiles []string, opts 
 	// Phase 3: Cartographer cross-project unreferenced exports.
 	// Catches public symbols with no callers anywhere in the project —
 	// stronger signal than SCIP's per-package analysis.
+	cartographerRan := false
 	if cartographer.Available() {
 		unref, err := cartographer.UnreferencedSymbols(e.repoRoot)
 		if err == nil {
+			cartographerRan = true
 			for _, f := range unref.Files {
 				// A test file's functions are called by its runner, not by code.
 				if !changedSet[f.Path] || isTestFilePath(f.Path) {
@@ -133,11 +135,26 @@ func (e *Engine) checkDeadCode(ctx context.Context, changedFiles []string, opts 
 		}
 	}
 
+	// Without the SCIP index the reference analysis didn't run: with nothing
+	// else checked that's a skip, not a pass, and a partial check says so.
+	if !resp.Analyzed && !cartographerRan {
+		return ReviewCheck{
+			Name:     "dead-code",
+			Status:   "skip",
+			Severity: "warning",
+			Summary:  "Not analyzed: " + resp.NotAnalyzedReason,
+			Duration: time.Since(start).Milliseconds(),
+		}, nil
+	}
+
 	status := "pass"
 	summary := "No dead code in changed files"
 	if len(findings) > 0 {
 		status = "warn"
 		summary = fmt.Sprintf("%d dead code item(s) found in changed files", len(findings))
+	}
+	if !resp.Analyzed {
+		summary += " (unreferenced exports only; reference analysis needs the SCIP index)"
 	}
 
 	return ReviewCheck{
