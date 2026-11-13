@@ -31,6 +31,7 @@ docs/marketing/*.zip
 .idea/
 .vscode/
 .cursor/
+.codex/
 *.swp
 *.swo
 
