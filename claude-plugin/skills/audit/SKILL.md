@@ -8,11 +8,6 @@ Run a CKB-augmented compliance audit optimized for minimal token usage.
 ## Input
 $ARGUMENTS - Optional: framework(s) to audit (default: auto-detect from repo context). Examples: "gdpr", "gdpr,pci-dss,hipaa", "all"
 
-## Running CKB
-
-The commands below call `ckb`. If it is not on PATH, run them through npx instead,
-replacing `ckb` with `npx -y @tastehub/ckb`.
-
 ## Philosophy
 
 CKB already ran deterministic checks across 20 regulatory frameworks, mapped every finding

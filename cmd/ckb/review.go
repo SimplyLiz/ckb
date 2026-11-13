@@ -45,6 +45,7 @@ var (
 	reviewMinReviewers       int
 	// New analyzer flags
 	reviewStaged             bool
+	reviewTarget             string
 	reviewNoAutoFetch        bool
 	reviewScope              string
 	reviewMaxBlastRadius     int
@@ -151,6 +152,7 @@ func init() {
 
 	// New analyzers
 	reviewCmd.Flags().BoolVar(&reviewStaged, "staged", false, "Review staged changes instead of branch diff")
+	reviewCmd.Flags().StringVar(&reviewTarget, "target", "", "What to review, in one value: a base branch, \"staged\", or a PR number (base and head from gh). Empty keeps --base/--staged; the /ckb:review skill passes its argument here")
 	reviewCmd.Flags().BoolVar(&reviewNoAutoFetch, "no-auto-fetch", false, "Disable automatic fetch of the base ref from origin when missing locally (for air-gapped CI)")
 	reviewCmd.Flags().StringVar(&reviewScope, "scope", "", "Filter to path prefix or symbol name")
 	reviewCmd.Flags().IntVar(&reviewMaxBlastRadius, "max-blast-radius", 0, "Maximum blast radius delta (0 = disabled)")
@@ -166,6 +168,26 @@ func init() {
 func runReview(cmd *cobra.Command, args []string) {
 	start := time.Now()
 	logger := newLogger(reviewFormat)
+
+	if strings.TrimSpace(reviewTarget) != "" {
+		if cmd.Flags().Changed("base") || cmd.Flags().Changed("staged") || cmd.Flags().Changed("head") {
+			fmt.Fprintln(os.Stderr, "Error: --target replaces --base, --head and --staged; pass one or the other")
+			os.Exit(1)
+		}
+		t, err := resolveReviewTarget(reviewTarget, ghPullRequestRefs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if t.Base != "" {
+			reviewBaseBranch = t.Base
+		}
+		reviewHeadBranch = t.Head
+		reviewStaged = t.Staged
+		if t.Note != "" {
+			fmt.Fprintln(os.Stderr, "Note: "+t.Note)
+		}
+	}
 
 	repoRoot := mustGetRepoRoot()
 	engine := mustGetEngine(repoRoot, logger)
@@ -1114,4 +1136,83 @@ func formatReviewer(r query.SuggestedReview) string {
 		return name + " (author)"
 	}
 	return fmt.Sprintf("%s %.0f%%", name, r.Coverage*100)
+}
+
+// reviewTargetSpec is what --target resolved to.
+type reviewTargetSpec struct {
+	Base   string // "" keeps --base's default
+	Head   string // "" reviews the current checkout
+	Staged bool
+	Note   string // said on stderr, e.g. that a PR's branch is not checked out here
+}
+
+// resolveReviewTarget reads --target: "staged", a PR number (with or without
+// '#'), or a base branch. The /ckb:review skill hands its argument over as is,
+// so one value covers the three forms the skill offers. prRefs looks up a PR's
+// base and head branch.
+func resolveReviewTarget(target string, prRefs func(pr string) (base, head string, err error)) (reviewTargetSpec, error) {
+	t := strings.TrimSpace(target)
+	switch {
+	case t == "":
+		return reviewTargetSpec{}, nil
+	case strings.ContainsAny(t, " \t\n"):
+		return reviewTargetSpec{}, fmt.Errorf("--target takes one value (a base branch, \"staged\" or a PR number), got %q", t)
+	case t == "staged":
+		return reviewTargetSpec{Staged: true}, nil
+	}
+	if pr := strings.TrimPrefix(t, "#"); isAllDigits(pr) {
+		base, head, err := prRefs(pr)
+		if err != nil {
+			return reviewTargetSpec{}, fmt.Errorf("PR %s: %w", pr, err)
+		}
+		spec := reviewTargetSpec{Base: base}
+		if head != "" && localBranchExists(head) {
+			spec.Head = head
+		} else {
+			spec.Note = fmt.Sprintf("PR %s's branch %q is not a local branch here, so this reviews the current checkout against %s; 'gh pr checkout %s' first to review the PR itself", pr, head, base, pr)
+		}
+		return spec, nil
+	}
+	return reviewTargetSpec{Base: t}, nil
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// ghPullRequestRefs asks gh for a PR's base and head branch.
+func ghPullRequestRefs(pr string) (string, string, error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return "", "", fmt.Errorf("resolving a PR number needs the gh CLI (https://cli.github.com); pass the base branch instead")
+	}
+	out, err := exec.Command("gh", "pr", "view", pr, "--json", "baseRefName,headRefName", "-q", ".baseRefName + \" \" + .headRefName").Output() // #nosec G204 //nolint:gosec // pr is all digits
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			return "", "", fmt.Errorf("gh pr view: %s", strings.TrimSpace(string(ee.Stderr)))
+		}
+		return "", "", fmt.Errorf("gh pr view: %w", err)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		return "", "", fmt.Errorf("gh pr view returned no base branch")
+	}
+	head := ""
+	if len(fields) > 1 {
+		head = fields[1]
+	}
+	return fields[0], head, nil
+}
+
+// localBranchExists reports whether name is a local branch of the repo in the
+// working directory.
+func localBranchExists(name string) bool {
+	return exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+name).Run() == nil // #nosec G204 //nolint:gosec // fixed git subcommand; name from gh
 }

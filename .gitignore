@@ -2,6 +2,8 @@
 .ckb/
 .scip/
 bin/
+# the Claude Code plugin's ckb shim, which Claude Code puts on PATH
+!claude-plugin/bin/
 !npm/bin/
 
 # Binaries
