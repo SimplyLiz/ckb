@@ -295,7 +295,13 @@ private, so only aggregates are here.
   Go field's `json:`, `yaml:` or `toml:` key changes, the done check searches the repo's
   tracked files of that format and lists each line still writing the old key, as
   `port = 8080 (toml key "port" -> "listen_port")`; the files count as the contract's
-  consumers. Leaf keys only: `[server] port` and `[client] port` both match.
+  consumers. The key is matched where its struct puts it: the fields holding the struct are
+  read from the Go source (tags, format defaults, embedded and inline structs, maps), and
+  TOML tables, YAML indentation and JSON nesting give each line its path, so `[server]
+  port` is open for `ServerConfig.Port` and `[client] port` isn't listed. A match by name
+  alone is counted with the uses that rarely break (`leaf-key`). A field whose tag is all
+  that changed doesn't list its Go uses: `c.Port` compiles as before, only the config
+  lines still writing the old key are open.
 
 ### Added — Python in the done check
 
@@ -304,10 +310,52 @@ private, so only aggregates are here.
   breaking check and `notCompared` in `compareAPI`. A parameter's name counts, since any
   call may pass it by keyword; a rename alone leaves open only the calls that pass the old
   name or unpack a mapping. Decorators count (`@property` changes every call), and a
-  changed `__init__` lists the calls of its class. `compareAPI` leaves names with a
+  changed `__init__` lists the calls of its class and of every subclass without its own
+  `__init__` (`class Bar(Foo): pass`), naming the subclass. `compareAPI` leaves names with a
   leading underscore out, and Go's lowercase ones, as `ignorePrivate` always said. On a
   repo of Python scripts, 7 changes checked against mypy and the tests: 50 of 50 broken
   uses found, 8 open uses that weren't broken. `docs/features/done-check.md` has the table.
+
+### Fixed — consumers that were missed or counted twice
+
+- **A Python `__init__`'s consumers are the calls constructing its class.** scip-python
+  records `Foo(x)` as a use of the class, so analyzeImpact, prepareChange and the
+  changeset risk found only `super().__init__` calls. The functions constructing the class
+  (or a subclass without its own `__init__`) are now direct consumers and their callers
+  transitive ones. On a fixture: 1 consumer before, 6 after; the done check's 4 open
+  sites are the 4 lines mypy reports.
+- **A Go interface method's implementations count as its dependents.** analyzeImpact and
+  prepareChange saw only callers, so `Backend.Priority` (implemented 4 times, called
+  nowhere) read 0 dependents and low risk. They are now listed as `implements-interface`,
+  found by the done check's own lookup and read as of the indexed commit; test mocks go
+  to the related tests. Renaming the method gets the 0.6 floor; deleting it or renaming
+  the interface type breaks no implementation and doesn't. For a one-method interface,
+  types whose package doesn't import the interface's go to `nameMatchImplementations`,
+  not into the count.
+- **prepareChange counts each consumer once, from all of them.** The symbol path scored on
+  the 20 items the response budget kept, one row per reference: `SearchOptions.MaxResults`
+  read 15 direct callers, 5 modules and 20 in all; the real numbers are 10, 8 and 39, the
+  same as assessChange's. `transitiveImpact.directCallers` holds the uncapped count. The
+  bare `visibility`/`direct-callers`/`module-spread`/`impact-kind` factor names, which
+  never fed the score, are gone. A modify risk says what it assumes in
+  `riskAssessment.basis` (`risk_basis` in compact): the declaration stays, and a changed
+  one whose callers are left as they are is at least high in assessChange.
+- **A change inside a Go type's body names the type.** scip-go gives types no enclosing
+  range, so a field or interface method inserted mid-body fell between definitions and
+  became a file-level entry at 0.3; changedSymbols, review's breaking, blast-radius and
+  affected-tests checks didn't name the type and impact found none of its users. The
+  type's extent now runs to its closing brace (0.8). TS and Rust indexers send ranges;
+  the same fallback covers older ones. Adding a field to `SymbolDefInfo` on CKB: 0
+  consumers before, 15 direct after.
+- **A slice or map of pointers to a struct is not its literal.** `[]*T{x}` and
+  `map[K]*T{k: v}` were open sites whenever T's fields changed (3 false ones on CKB for
+  the field above, now clear). An elided element (`[]*T{{…}}`) still counts, read per
+  element, so a keyed one isn't listed after a field is added.
+- **unwired: files a bundler builds are entrypoints.** esbuild `entryPoints`, tsup/webpack
+  `entry` and rollup/vite `input` are read from the scripts package.json runs and from
+  root bundler configs, along with esbuild/tsup command-line entries and webpack's
+  `--entry`; `join(root, "src/…")` counts. On a Next.js app with an esbuild-built PDF
+  worker, unwired drops from 20 to 10. Only esbuild is checked on a real repo.
 
 ### Fixed — a repo of Python scripts
 
