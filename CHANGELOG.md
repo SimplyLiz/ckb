@@ -214,6 +214,25 @@ Claude Code mods, with no manifest anywhere.
   resolved is never touched. On that repo: 34 occurrences added, all checked against
   the source, 23 of 23 references, 7 consumer files, the failing test among the
   affected.
+- **The review's breaking check compared nothing.** `breaking.Analyzer.Compare` read
+  the target's symbols and returned no changes, so `breaking ✓` was a constant, in
+  every language; `compareAPI` and `ckb breaking-changes` were empty the same way. All
+  three now use the change set's declaration comparison: a public declaration whose
+  signature changed or that is gone is a change, an error when the repo still uses
+  the old form and a warning when every use was updated. Where a public declaration
+  changed in a language that isn't compared (Python, Java, ...), the check is `skip`
+  naming the files, and `compareAPI` lists them as `notCompared`. `compareAPI` only
+  compares against the working tree now and says so for another `targetRef`; its
+  `totalBaseSymbols` and `totalTargetSymbols`, always 0 and the count of every
+  exported symbol, are gone.
+- **`ckb review` shows skipped checks.** They were left out of the text output, so a
+  check that didn't look read like one that passed.
+- **The review's dead code no longer reports functions called in their own file.**
+  Cartographer's unreferenced exports only count uses from other files: on a change
+  to four Python scripts, all 44 dead-code findings were such functions, plus
+  scip-python's `__init__` module symbol, and they alone made the review WARN. Each
+  must now survive a word search (no use in its own file beyond the declaration, none
+  in another file of its language); dunder names and test files are left out.
 - **`ckb index` keeps `.ckb/` and the index out of `git status` in repos initialized
   before `ckb init` started writing `.git/info/exclude`.** A tracked or already
   ignored index is left alone.

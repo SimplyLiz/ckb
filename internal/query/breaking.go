@@ -2,6 +2,9 @@ package query
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/breaking"
@@ -18,14 +21,15 @@ type CompareAPIOptions struct {
 
 // CompareAPIResponse contains the API comparison result
 type CompareAPIResponse struct {
-	BaseRef            string            `json:"baseRef"`
-	TargetRef          string            `json:"targetRef"`
-	Changes            []APIChangeItem   `json:"changes"`
-	Summary            *APIChangeSummary `json:"summary"`
-	SemverAdvice       string            `json:"semverAdvice,omitempty"`
-	TotalBaseSymbols   int               `json:"totalBaseSymbols"`
-	TotalTargetSymbols int               `json:"totalTargetSymbols"`
-	Provenance         *Provenance       `json:"provenance,omitempty"`
+	BaseRef      string            `json:"baseRef"`
+	TargetRef    string            `json:"targetRef"`
+	Changes      []APIChangeItem   `json:"changes"`
+	Summary      *APIChangeSummary `json:"summary"`
+	SemverAdvice string            `json:"semverAdvice,omitempty"`
+	// NotCompared are files where a public declaration changed in a language whose
+	// declarations aren't compared (Python, Java, ...): what changed there is unknown.
+	NotCompared []string    `json:"notCompared,omitempty"`
+	Provenance  *Provenance `json:"provenance,omitempty"`
 }
 
 // APIChangeItem represents a single API change
@@ -54,82 +58,130 @@ type APIChangeSummary struct {
 	ByPackage       map[string]int `json:"byPackage,omitempty"`
 }
 
-// CompareAPI compares API surfaces between two git refs
+// CompareAPI compares the declarations a diff changed, from BaseRef's fork point to
+// the working tree: the change set's declaration comparison (Go, TypeScript and
+// JavaScript, Rust) says which public declarations changed their signature or are
+// gone. Declarations of other languages can't be compared; the files they changed in
+// are NotCompared, so an empty Changes doesn't read as "nothing broke".
+//
+// Only the checked-out state can be the target: the index and the files read are the
+// working tree's. Another TargetRef is an error rather than a silent HEAD.
 func (e *Engine) CompareAPI(ctx context.Context, opts CompareAPIOptions) (*CompareAPIResponse, error) {
 	startTime := time.Now()
-
-	// Apply defaults
 	if opts.BaseRef == "" {
 		opts.BaseRef = "HEAD~1"
 	}
 	if opts.TargetRef == "" {
 		opts.TargetRef = "HEAD"
 	}
-
-	// Get repo state
-	repoState, _ := e.GetRepoState(ctx, "fast")
-
-	// Create analyzer
-	analyzer := breaking.NewAnalyzer(e.scipAdapter, e.repoRoot, e.logger)
-
-	// Compare
-	compareOpts := breaking.CompareOptions{
-		BaseRef:       opts.BaseRef,
-		TargetRef:     opts.TargetRef,
-		Scope:         opts.Scope,
-		IncludeMinor:  opts.IncludeMinor,
-		IgnorePrivate: opts.IgnorePrivate,
+	if opts.TargetRef != "HEAD" {
+		return nil, fmt.Errorf("compareAPI compares against the working tree; check out %s and compare with targetRef HEAD", opts.TargetRef)
 	}
 
-	result, err := analyzer.Compare(ctx, compareOpts)
+	repoState, _ := e.GetRepoState(ctx, "fast")
+	cs, err := e.AnalyzeChangeSet(ctx, AnalyzeChangeSetOptions{BaseBranch: opts.BaseRef, TransitiveDepth: 1})
 	if err != nil {
 		return nil, err
 	}
+	changes, notCompared := apiChangesFromContracts(cs.Contracts, opts.Scope, opts.IncludeMinor)
 
-	// Build provenance
-	completeness := CompletenessInfo{Score: 0.8, Reason: "static-analysis"}
-	provenance := e.buildProvenance(repoState, "fast", startTime, nil, completeness)
-
-	// Convert to response format
-	response := &CompareAPIResponse{
-		BaseRef:            result.BaseRef,
-		TargetRef:          result.TargetRef,
-		SemverAdvice:       result.SemverAdvice,
-		TotalBaseSymbols:   result.TotalBaseSymbols,
-		TotalTargetSymbols: result.TotalTargetSymbols,
-		Provenance:         provenance,
+	completeness := CompletenessInfo{Score: 0.8, Reason: "declaration-diff"}
+	if len(notCompared) > 0 {
+		completeness = CompletenessInfo{Score: 0.5, Reason: "declarations-not-compared"}
 	}
-
-	// Convert changes
-	response.Changes = make([]APIChangeItem, len(result.Changes))
-	for i, change := range result.Changes {
-		response.Changes[i] = APIChangeItem{
+	response := &CompareAPIResponse{
+		BaseRef:     opts.BaseRef,
+		TargetRef:   opts.TargetRef,
+		Changes:     make([]APIChangeItem, 0, len(changes)),
+		NotCompared: notCompared,
+		Provenance:  e.buildProvenance(repoState, "fast", startTime, nil, completeness),
+	}
+	summary, advice := breaking.Summarize(changes)
+	response.SemverAdvice = advice
+	for _, change := range changes {
+		response.Changes = append(response.Changes, APIChangeItem{
 			Kind:         string(change.Kind),
 			Severity:     string(change.Severity),
 			SymbolName:   change.SymbolName,
-			SymbolKind:   change.SymbolKind,
-			Package:      change.Package,
 			FilePath:     change.FilePath,
-			LineNumber:   change.LineNumber,
 			Description:  change.Description,
 			OldValue:     change.OldValue,
 			NewValue:     change.NewValue,
-			Suggestion:   change.Suggestion,
 			AffectsUsers: change.AffectsUsers,
-		}
+		})
 	}
-
-	// Convert summary
-	if result.Summary != nil {
+	if summary != nil {
 		response.Summary = &APIChangeSummary{
-			TotalChanges:    result.Summary.TotalChanges,
-			BreakingChanges: result.Summary.BreakingChanges,
-			Warnings:        result.Summary.Warnings,
-			Additions:       result.Summary.Additions,
-			ByKind:          result.Summary.ByKind,
-			ByPackage:       result.Summary.ByPackage,
+			TotalChanges:    summary.TotalChanges,
+			BreakingChanges: summary.BreakingChanges,
+			Warnings:        summary.Warnings,
+			Additions:       summary.Additions,
+			ByKind:          summary.ByKind,
+			ByPackage:       summary.ByPackage,
 		}
 	}
-
 	return response, nil
+}
+
+// apiChangesFromContracts turns the change set's contract signals into API changes.
+// A changed signature or a removed declaration of a public symbol is breaking; a
+// compatible one only with includeMinor. A public declaration that couldn't be read
+// ("possible-contract-change") is no change: its file is returned as not compared.
+// Test files aren't API.
+func apiChangesFromContracts(contracts []ContractSignal, scope []string, includeMinor bool) ([]breaking.APIChange, []string) {
+	var changes []breaking.APIChange
+	notCompared := make(map[string]bool)
+	for _, c := range contracts {
+		if isTestFilePath(c.File) || !inAPIScope(c.File, scope) {
+			continue
+		}
+		change := breaking.APIChange{
+			SymbolName:   c.Symbol,
+			FilePath:     c.File,
+			OldValue:     c.Before,
+			NewValue:     c.After,
+			AffectsUsers: c.ConsumerCount > 0,
+		}
+		switch c.Kind {
+		case "signature-changed":
+			change.Kind, change.Severity = breaking.ChangeSignatureChanged, breaking.SeverityBreaking
+			change.Description = fmt.Sprintf("Signature of '%s' changed", c.Symbol)
+		case "definition-removed":
+			change.Kind, change.Severity = breaking.ChangeRemoved, breaking.SeverityBreaking
+			change.Description = fmt.Sprintf("'%s' was removed or renamed", c.Symbol)
+		case "compatible-signature-change":
+			if !includeMinor {
+				continue
+			}
+			change.Kind, change.Severity = breaking.ChangeSignatureChanged, breaking.SeverityNonBreaking
+			change.Description = fmt.Sprintf("Signature of '%s' changed; existing uses should still fit", c.Symbol)
+		case "possible-contract-change":
+			notCompared[c.File] = true
+			continue
+		default:
+			continue
+		}
+		if c.ConsumerCount > 0 {
+			change.Description += fmt.Sprintf("; %d file(s) still use the old form", c.ConsumerCount)
+		}
+		changes = append(changes, change)
+	}
+	files := make([]string, 0, len(notCompared))
+	for f := range notCompared {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+	return changes, files
+}
+
+func inAPIScope(file string, scope []string) bool {
+	if len(scope) == 0 {
+		return true
+	}
+	for _, s := range scope {
+		if strings.HasPrefix(file, strings.TrimSuffix(s, "/")) {
+			return true
+		}
+	}
+	return false
 }
