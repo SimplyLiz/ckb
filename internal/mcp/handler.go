@@ -382,7 +382,11 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 				"isError": true,
 			}, nil
 		}
-		// Return streaming initial response
+		// Return streaming initial response. Its warnings are the ones a
+		// non-streaming answer would carry: the chunks that follow come from the
+		// same engine, so an agent must learn here that there is no index.
+		streamResp = withWarnings(streamResp, remapWarnings)
+		streamResp = withWarnings(streamResp, s.missingIndexWarnings(toolName))
 		jsonBytes, err := marshalForAgent(streamResp)
 		if err != nil {
 			return nil, errors.NewOperationError("marshal streaming response", err)
