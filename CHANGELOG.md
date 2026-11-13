@@ -282,6 +282,13 @@ private, so only aggregates are here.
   the format's default is the contract's `detail`. The compact text now shows a
   declaration and its detail together.
 
+### Fixed — one-method interfaces
+
+- **A changed one-method interface no longer lists every type with that method.** A
+  `Label() string` interface matched each type with a `Label() string`, wherever it was.
+  Implementations whose package neither is nor imports the interface's are now counted
+  with the uses that rarely break (`name-match`), not listed; the check stays `open`.
+
 ### Added — config files that still write a renamed key
 
 - **A renamed or removed serialized key lists the config files that write it.** When a

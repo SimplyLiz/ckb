@@ -217,8 +217,12 @@ It compares text and compiles nothing, so it says "open", never "safe".
   arguments being right.
 - **New callers in the diff aren't in the index,** so a call the diff adds with the old
   signature is not listed.
-- **Interface implementers aren't references.** A changed interface method doesn't list the
-  types implementing it.
+- **Go interface implementations are found by method set,** not type-checked: a type
+  defining every method the interface had, with the same signatures, is listed. For a
+  one-method interface (`String()`, `Close()`) that is every type with such a method, so
+  one whose package neither is nor imports the interface's is only counted with the uses
+  that rarely break (`name-match`): it breaks only where a third package uses it as the
+  interface.
 - **Behaviour isn't looked at.** A declaration with the same text and a new meaning changes
   nothing here.
 - **Other repositories aren't visible.** An exported symbol keeps its medium-risk floor for

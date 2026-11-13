@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	scippb "github.com/sourcegraph/scip/bindings/go/scip"
+
+	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 )
 
 // implFixture is an interface Backend with two implementations: mock in the interface's
@@ -158,5 +160,34 @@ func TestDoneCheck_InterfaceChangeWithoutLookupIsNotAssessed(t *testing.T) {
 	check := runChangeSet(t, engine, AnalyzeChangeSetOptions{}).DoneCheck
 	if check.Status != DoneCheckNotAssessed {
 		t.Errorf("check = %+v, want not_assessed", check)
+	}
+}
+
+// A one-method interface is satisfied by every type with that method; one whose
+// package doesn't import the interface's is only counted.
+func TestGoSeesPackage(t *testing.T) {
+	root := t.TempDir()
+	writeRepoFile(t, root, "go.mod", "module example.com/m\n\ngo 1.22\n")
+	writeRepoFile(t, root, "a/a.go", "package a\n\ntype Labeler interface{ Label() string }\n")
+	writeRepoFile(t, root, "b/b.go", "package b\n\nimport \"example.com/m/a\"\n\nvar _ a.Labeler\n")
+	writeRepoFile(t, root, "c/c.go", "package c\n\ntype U struct{}\n")
+	writeRepoFile(t, root, "tools/go.mod", "module example.com/tools\n")
+	writeRepoFile(t, root, "tools/x/x.go", "package x\n")
+
+	if got := goImportPath(root, "a"); got != "example.com/m/a" {
+		t.Errorf("goImportPath(a) = %q", got)
+	}
+	if got := goImportPath(root, "tools/x"); got != "example.com/tools/x" {
+		t.Errorf("goImportPath(tools/x) = %q, want the nested module's", got)
+	}
+	c := &doneChecker{repoRoot: root}
+	sees := func(typeFile string) bool {
+		return c.goSeesPackage(&scip.GoTypeMethods{Type: scip.DefinitionSite{Path: typeFile}}, "a/a.go")
+	}
+	if !sees("a/impl.go") || !sees("b/b.go") || sees("c/c.go") {
+		t.Errorf("same package %v, importer %v, stranger %v; want true, true, false", sees("a/impl.go"), sees("b/b.go"), sees("c/c.go"))
+	}
+	if got := rarelyLine(RarelyGroup{Symbol: "Labeler.Label", Change: "changed", Via: "implements Labeler", Count: 1, Files: 1, Uses: map[string]int{useNameMatch: 1}}); got != "Labeler.Label (changed; implements Labeler): 1 in 1 file, 1 name-match" {
+		t.Errorf("rarelyLine = %q", got)
 	}
 }
