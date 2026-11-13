@@ -598,6 +598,35 @@ Claude Code mods, with no manifest anywhere.
   Verified on a Go repo: commit after indexing, start `ckb mcp`, index metadata
   moves to HEAD.
 
+### Added — the plugin works without being asked
+
+- **`/ckb:review` runs `ckb review` before the model reads the skill.** The skill
+  injects the review JSON with Claude Code's `` !`…` `` lines, so the structural
+  pass no longer depends on the model choosing to run it first. Its argument goes
+  to the new `ckb review --target`: `staged`, a PR number (base, and the PR's branch
+  when it is checked out, from `gh`), or a base branch. An error lands in the
+  skill as text instead of aborting it, and the skill says how to go on.
+  `when_to_use` keeps it to whole branches, staged changes and PRs. Measured on a
+  staged two-line change with Haiku: two turns, the model read only the diff.
+- **The review skill asked for `--compact`, which `ckb review` never had.**
+  `2>/dev/null` hid the error, so since the skill was written the model got
+  nothing back and ran the review a second time on its own.
+- **The plugin brings a `ckb` command.** `claude-plugin/bin/ckb` is on the PATH
+  Claude Code gives the Bash tool: it runs the first other `ckb` on PATH (brew,
+  npm, a release binary) and falls back to `npx -y @tastehub/ckb`. The skills lost
+  their "if ckb is not on PATH" paragraph. `ckb setup --tool=claude-code`, which
+  installs the same texts as commands without the plugin, writes `npx -y
+  @tastehub/ckb` into them when `ckb` is not on PATH or `--npx` is given.
+- **A SessionStart hook tells the model what state the index is in.** The plugin
+  runs `ckb hook session-start` on startup, resume, `/clear` and compaction: one
+  to three lines saying the index is current, N commits behind HEAD and being
+  refreshed by the starting MCP server, missing uncommitted edits, being built,
+  or missing with the diagnosed next step, plus the languages it leaves out. The
+  texts are the ones the MCP warnings use. Nothing outside a git repo or without
+  `.ckb`, exit 0 always, no indexing, no engine. 13 ms outside a repo, 53 ms in a
+  repo without an index, 90 ms on CKB's own repo. An older `ckb` without the
+  command prints nothing.
+
 ### Fixed — found by running CKB on its own repo
 
 Three changes with known breakage, checked against the compiler: a new parameter on
