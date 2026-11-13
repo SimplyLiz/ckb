@@ -201,7 +201,12 @@ func TestExcludeIndexFromGit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	excludeIndexFromGit(dir, filepath.Join(dir, "index.scip"))
+	if rel := excludeIndexFromGit(dir, filepath.Join(dir, "index.scip")); rel != "index.scip" {
+		t.Errorf("excludeIndexFromGit = %q, want index.scip", rel)
+	}
+	if rel := excludeIndexFromGit(dir, filepath.Join(dir, "index.scip")); rel != "" {
+		t.Errorf("second excludeIndexFromGit = %q, want nothing added", rel)
+	}
 	if got := gitStatusPorcelain(t, dir); got != "" {
 		t.Fatalf("git status after backfill = %q, want clean", got)
 	}
@@ -216,5 +221,47 @@ func TestExcludeIndexFromGit(t *testing.T) {
 	excludeIndexFromGit(tracked, filepath.Join(tracked, "index.scip"))
 	if b, _ := os.ReadFile(filepath.Join(tracked, ".git", "info", "exclude")); strings.Contains(string(b), "index.scip") {
 		t.Errorf("tracked index was excluded: %q", b)
+	}
+}
+
+// 'ckb setup' in a repo without .ckb/ initializes it; like 'ckb init' it keeps
+// .ckb/ and the index out of 'git status'.
+func TestEnsureCkbInitialized_ExcludesFromGit(t *testing.T) {
+	t.Setenv("CKB_HOME", t.TempDir())
+	dir := gitInitTemp(t)
+	t.Chdir(dir)
+	if err := ensureCkbInitialized(); err != nil {
+		t.Fatalf("ensureCkbInitialized: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.scip"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitStatusPorcelain(t, dir); got != "" {
+		t.Fatalf("git status after setup's init = %q, want clean", got)
+	}
+}
+
+// An index the MCP server builds is kept out of 'git status' too, without
+// writing to stdout (the JSON-RPC transport).
+func TestExcludeBuiltIndex_LogsNotPrints(t *testing.T) {
+	dir := gitInitTemp(t)
+	if err := os.MkdirAll(filepath.Join(dir, ".ckb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.scip"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	stdout := captureStdout(t, func() {
+		excludeBuiltIndex(dir, slog.New(slog.NewTextHandler(&logs, nil)))
+	})
+	if stdout != "" {
+		t.Errorf("wrote to stdout: %q", stdout)
+	}
+	if !strings.Contains(logs.String(), "index.scip") {
+		t.Errorf("exclude not logged: %s", logs.String())
+	}
+	if got := gitStatusPorcelain(t, dir); got != "" {
+		t.Fatalf("git status = %q, want clean", got)
 	}
 }

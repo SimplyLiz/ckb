@@ -290,6 +290,9 @@ func performIndex(repoRoot string) indexResult {
 
 	// Migration: move legacy .scip/index.scip to root if needed
 	migrateIndexPath(repoRoot, indexPath)
+	// Before any early return (current, incremental): a repo initialized before
+	// init wrote .git/info/exclude is caught up whichever way this run ends.
+	printIndexExcluded(excludeIndexFromGit(repoRoot, indexPath))
 
 	// Check index freshness (unless --force)
 	if !indexForce {
@@ -506,7 +509,6 @@ func performIndex(repoRoot string) indexResult {
 	fmt.Println()
 	fmt.Printf("Done! Indexed in %.1fs\n", duration.Seconds())
 	fmt.Printf("Index: %s (%.2f MB)\n", indexPath, float64(info.Size())/1024/1024)
-	excludeIndexFromGit(repoRoot, indexPath)
 	fmt.Println()
 	fmt.Println("Full code intelligence now available:")
 	fmt.Println("  findReferences - Find all usages of a symbol")

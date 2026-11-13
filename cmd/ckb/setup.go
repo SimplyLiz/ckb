@@ -393,6 +393,8 @@ func ensureCkbInitialized() error {
 	if err := runInitCore(initOptions{NoActivate: true}); err != nil {
 		return fmt.Errorf("failed to initialize CKB: %w", err)
 	}
+	// Same as 'ckb init': .ckb/ and the index it leads to stay out of 'git status'.
+	excludeInitFilesFromGit(cwd, newLogger("human"), os.Stdout)
 	fmt.Println()
 	return nil
 }
