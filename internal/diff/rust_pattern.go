@@ -234,7 +234,16 @@ func (p *rustPat) takes(steps []rustStep) bool {
 	if p.kind != step.kind || !sameCtor(lastSegment(p.head), step.ctor) {
 		return false
 	}
+	// The arm takes the place for every value only if it takes everything beside it:
+	// `(R::T, ..)` leaves the second place open to anything, but only when the first
+	// is `R::T`. Several arms that cover a place together, as `(R::T, _)` and
+	// `(R::U, _)` do, aren't seen: the match is listed, which costs a look, not a break.
 	if p.kind == '{' {
+		for name, other := range p.fields {
+			if name != step.field && !other.irrefutable() {
+				return false
+			}
+		}
 		field, ok := p.fields[step.field]
 		if !ok {
 			return p.hasRest // `..` leaves the field to anything
@@ -244,6 +253,11 @@ func (p *rustPat) takes(steps []rustStep) bool {
 	if step.index < 0 {
 		return true // Can't tell which part it lines up with: count it as taken
 	}
+	for n, other := range p.parts {
+		if n != step.index && !other.irrefutable() {
+			return false
+		}
+	}
 	if p.hasRest && step.index >= p.rest {
 		return true
 	}
@@ -251,6 +265,33 @@ func (p *rustPat) takes(steps []rustStep) bool {
 		return false
 	}
 	return p.parts[step.index].takes(steps[1:])
+}
+
+// irrefutable says whether a pattern takes every value of its type: `_`, a binding, or
+// a plain tuple of those. A named constructor may be one variant of several, so it
+// isn't one, and a match whose arms differ only there is listed.
+func (p *rustPat) irrefutable() bool {
+	switch {
+	case p == nil:
+		return false
+	case p.wild():
+		return true
+	case p.kind == '|':
+		for _, alt := range p.parts {
+			if alt.irrefutable() {
+				return true
+			}
+		}
+		return false
+	case p.kind == '(' && p.head == "":
+		for _, part := range p.parts {
+			if !part.irrefutable() {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // sameCtor says whether two constructors may be the same one. `Self` in an impl is

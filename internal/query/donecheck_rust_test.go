@@ -432,3 +432,48 @@ fn e(p: P) -> u8 {
 		t.Errorf("two variants before: open = %+v, sites = %+v", open, c.sites)
 	}
 }
+
+// A struct-like variant that gains a field breaks what builds or destructures it
+// without `..` (E0063, E0027), and nothing that names it with `..`. A probe:
+// the clap `Cmd::Import { .. }` gained a field, `Cmd::Import { dir, project, id }
+// =>` stopped compiling, and the check said clear.
+func TestRustEnumVariants_VariantFieldsChanged(t *testing.T) {
+	const useSrc = `fn a(c: Cmd) {
+    match c {
+        Cmd::Import { dir, project } => {}
+        Cmd::Info { .. } => {}
+    }
+}
+fn b() -> Cmd { Cmd::Import { dir: 1, project: 2 } }
+fn c(c: &Cmd) -> bool { matches!(c, Cmd::Import { .. }) }
+fn d(c: Cmd) { if let Cmd::Info { look } = c {} }
+`
+	const before = "pub(crate) enum Cmd {\n    Import {\n        dir: u8,\n        #[arg(long, default_value = \"x]//y\")]\n        project: u8,\n    },\n    Info { look: u8 },\n}\n"
+	const after = "pub(crate) enum Cmd {\n    Import {\n        dir: u8,\n        #[arg(long, default_value = \"x]//y\")]\n        project: u8,\n        #[arg(long, help = \"a ] b // c\")] id: Option<String>,\n    },\n    Info { look: u8 },\n}\n"
+	root := rustRepo(t, map[string]string{"src/cmd.rs": before, "src/use.rs": useSrc})
+	writeRepoFile(t, root, "src/cmd.rs", after)
+
+	c := rustChecker(root, "src/cmd.rs")
+	adapter := rustFixture{
+		typ:      "m/Cmd#",
+		variants: map[string]string{"Import": "m/Cmd#Import#", "Info": "m/Cmd#Info#"},
+		refs: map[string][]backends.Reference{
+			"m/Cmd#":        {rustRef("src/use.rs", 1), rustRef("src/use.rs", 3), rustRef("src/use.rs", 4), rustRef("src/use.rs", 7), rustRef("src/use.rs", 8), rustRef("src/use.rs", 9)},
+			"m/Cmd#Import#": {rustRef("src/use.rs", 3), rustRef("src/use.rs", 7), rustRef("src/use.rs", 8)},
+			"m/Cmd#Info#":   {rustRef("src/use.rs", 4), rustRef("src/use.rs", 9)},
+		},
+	}
+	open := c.checkRustFiles(context.Background(), adapter)
+
+	got := siteLines(c)
+	want := []string{"src/use.rs:Cmd::Import { dir, project } => {}", "src/use.rs:fn b() -> Cmd { Cmd::Import { dir: 1, project: 2 } }"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("sites = %q, want %q", got, want)
+	}
+	if !strings.Contains(c.sites[0].Via, "Import") {
+		t.Errorf("via = %q", c.sites[0].Via)
+	}
+	if len(open) != 1 || !open[0].files["src/use.rs"] {
+		t.Errorf("open = %+v", open)
+	}
+}

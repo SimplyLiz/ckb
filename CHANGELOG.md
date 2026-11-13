@@ -281,6 +281,26 @@ private, so only aggregates are here.
   `json`, `yaml`, `xml` and `toml` keys are compared, and a key gone, changed or left to
   the format's default is the contract's `detail`. The compact text now shows a
   declaration and its detail together.
+- **Rust: a field added to a struct-like enum variant lists what builds or destructures
+  it.** `Cmd::Import { dir, project, id } =>` stopped compiling when `Import { .. }`
+  gained a field (E0027), and the check said `clear`: only added variants were compared,
+  not a variant's fields. They are now read like a struct's, and the variant's literals
+  and patterns without `..` are listed. Written on one line, `Filed { reason: String },`,
+  the variant and its other fields counted as removed instead, and every use was open,
+  `matches!(k, Kind::Filed { .. })` included. A field declared on its braces' line, of
+  a variant or of a one-line `struct P { x: i32 }`, is now compared on its own.
+- **Rust: `(R::T, ..) =>` no longer covers the place beside it.** A match over
+  `(r, e, n)` whose first arm was `(R::T, ..)` counted as taking every `E`, so a
+  new `E` variant left it off the list although the compiler said E0004.
+  An arm covers a nested place only if everything beside it on the way there takes any
+  value. Arms that cover a place together, `(R::T, _)` and `(R::U, _)`, aren't seen, and
+  the match is listed. Both found on probes, not natural commits: 19 artificial changes
+  in six local Rust repos (`pub(crate)`, `pub(super)`, attribute strings, nested
+  patterns), 49 sites the compiler reports, before 47 listed and 2 open that weren't,
+  after 49 and none. On the 44 replayed Rust commits nothing exact moves (50/50), and a
+  commit that builds goes from 19 open uses, fields of one-line structs read as removed,
+  to `clear`. A field moved between its braces' line and a line of its own is the same
+  field.
 
 ### Fixed — one-method interfaces
 

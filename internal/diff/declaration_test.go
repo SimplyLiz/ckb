@@ -474,3 +474,56 @@ func TestClassifyDeclaration_TSExportList(t *testing.T) {
 		})
 	}
 }
+
+// A struct-like variant or a struct written on one line declares its fields on the
+// line of its braces. A field added there leaves the variant and the other fields as
+// they were; they were taken for removed, and every use listed (a probe:
+// `matches!(k, Kind::Filed { .. })` open).
+func TestClassifyDeclaration_RustInlineMembers(t *testing.T) {
+	enum := func(variant string) []string {
+		return []string{"pub(crate) enum Kind {", "    Note { art: u8 },", variant, "}", ""}
+	}
+	strct := func(decl string) []string { return []string{"", "", decl, "", ""} }
+	cases := []struct {
+		name     string
+		old, new []string
+		symbol   string
+		want     impact.DeclarationChange
+		defLine  int // 0 for line 3
+	}{
+		{"variant gains a field", enum("    Filed { reason: String },"), enum("    Filed { reason: String, n: u8 },"), "Filed", impact.DeclUnchanged, 0},
+		{"its other field", enum("    Filed { reason: String },"), enum("    Filed { reason: String, n: u8 },"), "reason", impact.DeclUnchanged, 0},
+		{"its field's type changed", enum("    Filed { reason: String },"), enum("    Filed { reason: u8 },"), "reason", impact.DeclChanged, 0},
+		{"a field before it", enum("    Filed { n: u8, reason: String },"), enum("    Filed { reason: String },"), "reason", impact.DeclUnchanged, 0},
+		{"variant renamed", enum("    Filed { reason: String },"), enum("    Stored { reason: String },"), "Filed", impact.DeclRemoved, 0},
+		{"struct on one line gains a field", strct("pub struct P { x: i32 }"), strct("pub struct P { x: i32, y: i32 }"), "x", impact.DeclUnchanged, 0},
+		{"generic struct on one line", strct("pub struct P<T> { pub x: Vec<(T, u8)>, y: T }"), strct("pub struct P<T> { pub x: Vec<(T, u8)>, y: T, z: u8 }"), "y", impact.DeclUnchanged, 0},
+		{"its field narrowed", strct("pub struct P { pub x: i32 }"), strct("pub struct P { pub(crate) x: i32 }"), "x", impact.DeclChanged, 0},
+		// PIXL replay: `Retries { retries: u32 },` spread over lines with four more fields.
+		{"one-line variant spread over lines", enum("    Filed { reason: String },"), []string{"pub(crate) enum Kind {", "    Note { art: u8 },", "    Filed {", "        reason: String,", "        n: u8,", "    },", "}", ""}, "reason", impact.DeclUnchanged, 0},
+		{"spread over lines, then back on one", []string{"pub(crate) enum Kind {", "    Note { art: u8 },", "    Filed {", "        reason: String,", "    },", "}", ""}, enum("    Filed { reason: String, n: u8 },"), "reason", impact.DeclUnchanged, 4},
+		{"spread over lines, type changed", enum("    Filed { reason: String },"), []string{"pub(crate) enum Kind {", "    Note { art: u8 },", "    Filed {", "        reason: u8,", "    },", "}", ""}, "reason", impact.DeclChanged, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			at := c.defLine
+			if at == 0 {
+				at = 3
+			}
+			def := &SymbolDefInfo{StartLine: at, EndLine: at, DefLine: at}
+			// Line 3 changed; a side that is longer changed the lines after it too.
+			span := func(n int) []int {
+				lines := []int{3}
+				for l := 4; l <= 3+n; l++ {
+					lines = append(lines, l)
+				}
+				return lines
+			}
+			file := changedFile("a.rs", 1, c.old, c.new, span(len(c.old)-len(c.new)), span(len(c.new)-len(c.old)))
+			got, before, after := classifyDeclarationIn(readFileText(file, &fileSides{old: c.old, new: c.new}), false, def, c.symbol, indexMatchesOld, impact.ChangeModified, "a.rs")
+			if got != c.want {
+				t.Errorf("got %q (%q -> %q), want %q", got, before, after, c.want)
+			}
+		})
+	}
+}

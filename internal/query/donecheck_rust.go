@@ -134,16 +134,24 @@ func (c *doneChecker) checkEnumVariants(ctx context.Context, adapter referenceFi
 				added = append(added, v)
 			}
 		}
-		if len(added) == 0 {
+		reshaped := changedVariantFields(oldLines, newLines, name, before, after)
+		if len(added) == 0 && len(reshaped) == 0 {
 			continue
 		}
 		id := c.changedTypeSymbol(index, path, name)
 		if id == "" {
 			continue
 		}
+		files := make(map[string]bool)
+		c.checkVariantFields(ctx, adapter, index, path, name, id, reshaped, files)
+		if len(added) == 0 {
+			if len(files) > 0 {
+				open = append(open, rustOpen{name: name, change: impact.DeclChanged, files: files})
+			}
+			continue
+		}
 		sym := impact.ChangedSymbol{SymbolID: id, Name: name, File: path}
 		via := fmt.Sprintf("%s gained %s; a match without it or `_` is incomplete", name, strings.Join(added, ", "))
-		files := make(map[string]bool)
 		if len(before) == 1 {
 			via += ", a `let` over the only old one refutable"
 		}
@@ -172,6 +180,45 @@ func (c *doneChecker) checkEnumVariants(ctx context.Context, adapter referenceFi
 		}
 	}
 	return open
+}
+
+// changedVariantFields returns the struct-like variants on both sides whose fields
+// changed: `E::A { x }` and `E::A { x: 1 }` lack the new field, as a struct's literal
+// does. Read like the variants, from the whole file, so a field added inside a variant
+// the hunks don't show is seen.
+func changedVariantFields(oldLines, newLines []string, name string, before, after []string) []string {
+	fieldsBefore, stateBefore := diff.RustVariantFields(oldLines, name)
+	fieldsAfter, stateAfter := diff.RustVariantFields(newLines, name)
+	if stateBefore != diff.BodyRead || stateAfter != diff.BodyRead {
+		return nil // The variants weren't read either; bothBodiesRead said so
+	}
+	var reshaped []string
+	for _, v := range before {
+		a, inBefore := fieldsBefore[v]
+		b, inAfter := fieldsAfter[v]
+		if inBefore && inAfter && slices.Contains(after, v) && !slices.Equal(a, b) {
+			reshaped = append(reshaped, v)
+		}
+	}
+	return reshaped
+}
+
+// checkVariantFields lists the literals and patterns without `..` of each variant
+// whose fields changed, found from the variant's own references.
+func (c *doneChecker) checkVariantFields(ctx context.Context, adapter referenceFinder, index rustIndex, path, name, id string, reshaped []string, files map[string]bool) {
+	if len(reshaped) == 0 {
+		return
+	}
+	variants := index.VariantSymbolsIn(path, id)
+	for _, v := range reshaped {
+		if variants[v] == "" {
+			c.failed++ // Its uses can't be looked up, which is no reason to call them done
+			continue
+		}
+		via := fmt.Sprintf("fields of %s::%s changed", name, v)
+		sym := impact.ChangedSymbol{SymbolID: variants[v], Name: name + "::" + v, File: path}
+		c.checkUses(ctx, adapter, sym, useQuery{name: v, change: impact.DeclChanged, via: via, literal: true, lang: "rust"}, files)
+	}
 }
 
 // bothBodiesRead says whether a type's body was read on both sides of the file. One

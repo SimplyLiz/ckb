@@ -37,6 +37,40 @@ func RustEnumVariants(lines []string, name string) ([]string, Body) {
 
 var rustVariantRe = regexp.MustCompile(`^\s*([A-Za-z_]\w*)`)
 
+// RustVariantFields returns the named fields of an enum's struct-like variants, each
+// variant's as RustStructFields gives a struct's, and whether the body could be read.
+// A tuple or unit variant has no entry.
+func RustVariantFields(lines []string, name string) (map[string][]string, Body) {
+	re := regexp.MustCompile(`^\s*(pub(\s*\([^)]*\))?\s+)?enum\s+` + regexp.QuoteMeta(name) + `\b`)
+	for i, text := range lines {
+		m := re.FindStringIndex(text)
+		if m == nil {
+			continue
+		}
+		body, state := bracedBody(lines, i, m[1])
+		if state != BodyRead {
+			return nil, state
+		}
+		body = strings.ReplaceAll(rustBlockCommentRe.ReplaceAllString(body, ""), "'", "")
+		fields := make(map[string][]string)
+		for _, entry := range splitTopLevel(rustAttrRe.ReplaceAllString(body, ""), ',') {
+			v := rustStructVariantRe.FindStringSubmatchIndex(entry)
+			if v == nil {
+				continue
+			}
+			inner := entry[v[1]:]
+			if end := strings.LastIndexByte(inner, '}'); end >= 0 {
+				inner = inner[:end]
+			}
+			fields[entry[v[2]:v[3]]] = rustFieldList(inner)
+		}
+		return fields, BodyRead
+	}
+	return nil, BodyNone
+}
+
+var rustStructVariantRe = regexp.MustCompile(`^\s*([A-Za-z_]\w*)\s*\{`)
+
 // RustMatch is a `match` expression one of whose arms names a type.
 type RustMatch struct {
 	Line     int  // The line with the `match` keyword, 1-based

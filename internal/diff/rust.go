@@ -24,18 +24,24 @@ func RustStructFields(lines []string, name string) ([]string, Body) {
 		}
 		// A lifetime's quote would read as the start of a string.
 		body = strings.ReplaceAll(rustBlockCommentRe.ReplaceAllString(body, ""), "'", "")
-		var fields []string
-		for _, entry := range splitTopLevel(body, ',') {
-			entry = rustAttrRe.ReplaceAllString(entry, "")
-			entry, _ = stripVisibility(entry, "rust")
-			if squeezed := squeeze(entry, "rust"); squeezed != "" {
-				fields = append(fields, squeezed)
-			}
-		}
-		sort.Strings(fields)
-		return fields, BodyRead
+		return rustFieldList(body), BodyRead
 	}
 	return nil, BodyNone
+}
+
+// rustFieldList returns the fields between a struct's or variant's braces, each as its
+// name and type with attributes and visibility removed, sorted.
+func rustFieldList(body string) []string {
+	var fields []string
+	for _, entry := range splitTopLevel(body, ',') {
+		entry = rustAttrRe.ReplaceAllString(entry, "")
+		entry, _ = stripVisibility(entry, "rust")
+		if squeezed := squeeze(entry, "rust"); squeezed != "" {
+			fields = append(fields, squeezed)
+		}
+	}
+	sort.Strings(fields)
+	return fields
 }
 
 var (
