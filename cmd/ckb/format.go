@@ -754,7 +754,11 @@ func formatHotspotsHuman(resp *HotspotsResponseCLI) (string, error) {
 	b.WriteString("Code Hotspots\n")
 	b.WriteString(strings.Repeat("=", 60) + "\n\n")
 
-	b.WriteString(fmt.Sprintf("Total Hotspots: %d (period: %s)\n\n", resp.TotalCount, resp.TimeWindow))
+	b.WriteString(fmt.Sprintf("Total Hotspots: %d (period: %s)\n", resp.TotalCount, resp.TimeWindow))
+	if resp.LeftOut != nil {
+		b.WriteString(resp.LeftOut.Note + "\n")
+	}
+	b.WriteString("\n")
 
 	for i, h := range resp.Hotspots {
 		b.WriteString(fmt.Sprintf("%d. %s\n", i+1, h.FilePath))

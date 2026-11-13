@@ -13,6 +13,7 @@ import (
 
 	"github.com/SimplyLiz/CodeMCP/internal/complexity"
 	"github.com/SimplyLiz/CodeMCP/internal/coupling"
+	"github.com/SimplyLiz/CodeMCP/internal/pathclass"
 )
 
 // Analyzer performs risk analysis on codebases
@@ -21,6 +22,8 @@ type Analyzer struct {
 	logger             *slog.Logger
 	couplingAnalyzer   *coupling.Analyzer
 	complexityAnalyzer *complexity.Analyzer
+	// classes keeps generated and data paths (.ckb/config.json paths) out of the audit.
+	classes *pathclass.Classifier
 }
 
 // NewAnalyzer creates a new risk analyzer
@@ -29,11 +32,13 @@ func NewAnalyzer(repoRoot string, logger *slog.Logger) *Analyzer {
 	if complexity.IsAvailable() {
 		ca = complexity.NewAnalyzer()
 	}
+	classes := pathclass.Load(repoRoot)
 	return &Analyzer{
 		repoRoot:           repoRoot,
 		logger:             logger,
-		couplingAnalyzer:   coupling.NewAnalyzer(repoRoot, logger),
+		couplingAnalyzer:   coupling.NewAnalyzer(repoRoot, logger).WithClasses(classes),
 		complexityAnalyzer: ca,
+		classes:            classes,
 	}
 }
 
@@ -55,7 +60,8 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AuditOptions) (*RiskAnalysi
 		"minScore", opts.MinScore,
 		"limit", opts.Limit)
 
-	// Find all source files
+	// Find all source files; generated and data paths are counted, not scored
+	var leftOut pathclass.Counter
 	files, err := a.findSourceFiles(opts.RepoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find source files: %w", err)
@@ -64,6 +70,9 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AuditOptions) (*RiskAnalysi
 	// Analyze each file
 	items := make([]RiskItem, 0, len(files))
 	for _, file := range files {
+		if leftOut.Skip(a.classes, filepath.ToSlash(file)) {
+			continue
+		}
 		item, err := a.analyzeFile(ctx, opts.RepoRoot, file)
 		if err != nil {
 			a.logger.Warn("Failed to analyze file",
@@ -115,6 +124,7 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AuditOptions) (*RiskAnalysi
 		Items:      items,
 		Summary:    summary,
 		QuickWins:  quickWins,
+		LeftOut:    leftOut.Tally(),
 	}, nil
 }
 
@@ -208,11 +218,15 @@ func (a *Analyzer) analyzeFile(ctx context.Context, repoRoot, file string) (*Ris
 	})
 
 	// 7. Co-change coupling
-	coupledFiles := a.getCoupledFilesCount(ctx, file)
+	coupledFiles, coupledLeftOut := a.getCoupledFilesCount(ctx, file)
 	couplingContrib := min(float64(coupledFiles)/10, 1.0) * 5
+	couplingValue := fmt.Sprintf("%d files", coupledFiles)
+	if coupledLeftOut > 0 {
+		couplingValue += fmt.Sprintf(" (%d in data/generated paths left out)", coupledLeftOut)
+	}
 	factors = append(factors, RiskFactor{
 		Factor:       FactorCoChangeCoupling,
-		Value:        fmt.Sprintf("%d files", coupledFiles),
+		Value:        couplingValue,
 		Weight:       RiskWeights[FactorCoChangeCoupling],
 		Contribution: couplingContrib,
 	})
@@ -433,8 +447,9 @@ func (a *Analyzer) detectSecurityKeywords(filePath string) []string {
 	return found
 }
 
-// getCoupledFilesCount returns the number of highly coupled files
-func (a *Analyzer) getCoupledFilesCount(ctx context.Context, file string) int {
+// getCoupledFilesCount returns the number of highly coupled files, and how many
+// co-changed files in generated or data paths were left out of that count.
+func (a *Analyzer) getCoupledFilesCount(ctx context.Context, file string) (int, int) {
 	result, err := a.couplingAnalyzer.Analyze(ctx, coupling.AnalyzeOptions{
 		RepoRoot:       a.repoRoot,
 		Target:         file,
@@ -444,10 +459,13 @@ func (a *Analyzer) getCoupledFilesCount(ctx context.Context, file string) int {
 	})
 
 	if err != nil {
-		return 0
+		return 0, 0
 	}
-
-	return len(result.Correlations)
+	leftOut := 0
+	if result.LeftOut != nil {
+		leftOut = result.LeftOut.Count
+	}
+	return len(result.Correlations), leftOut
 }
 
 // getRecentChurn returns the number of commits in the recent period

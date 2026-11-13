@@ -14,6 +14,7 @@ import (
 
 	"github.com/SimplyLiz/CodeMCP/internal/diff"
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
+	"github.com/SimplyLiz/CodeMCP/internal/pathclass"
 )
 
 // Co-change check statuses, with the done check's meaning: open is a file left alone,
@@ -56,6 +57,9 @@ type CoChangeCheck struct {
 	CommitsRead int    `json:"commitsRead"`
 	Truncated   bool   `json:"truncated,omitempty"`
 	Note        string `json:"note,omitempty"`
+	// LeftOut counts the partners over the floor that sit in generated or data
+	// paths (.ckb/config.json paths) and so aren't listed.
+	LeftOut *pathclass.Tally `json:"leftOut,omitempty"`
 }
 
 // CoChangeFile is one file that usually changes with a changed file and didn't.
@@ -97,13 +101,18 @@ func (e *Engine) coChangeCheck(ctx context.Context, parsed *impact.ParsedDiff) *
 	if err != nil {
 		return &CoChangeCheck{Status: CoChangeNotAssessed, Note: "The history of the changed files couldn't be read: " + err.Error() + "."}
 	}
+	classes := pathclass.FromConfig(e.repoRoot, e.config)
+	var leftOut pathclass.Counter
 	check := scoreCoChanges(commits, changed, func(path string) bool {
-		if !diff.IsSourceFile(path) {
+		if leftOut.Skip(classes, path) || !diff.IsSourceFile(path) {
 			return false
 		}
 		_, err := os.Stat(filepath.Join(e.repoRoot, path))
 		return err == nil
 	})
+	if check.LeftOut = leftOut.Tally(); check.LeftOut != nil {
+		check.Note += " " + check.LeftOut.Note + "."
+	}
 	return check
 }
 

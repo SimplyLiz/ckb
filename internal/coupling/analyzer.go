@@ -8,20 +8,33 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/SimplyLiz/CodeMCP/internal/pathclass"
 )
 
 // Analyzer performs co-change pattern analysis on files
 type Analyzer struct {
 	repoRoot string
 	logger   *slog.Logger
+	// classes keeps generated and data paths (.ckb/config.json paths) out of the
+	// correlations: a data directory committed in batches couples to everything.
+	classes *pathclass.Classifier
 }
 
-// NewAnalyzer creates a new coupling analyzer
+// NewAnalyzer creates a new coupling analyzer. It reads the repo's path classes
+// from .ckb/config.json once.
 func NewAnalyzer(repoRoot string, logger *slog.Logger) *Analyzer {
 	return &Analyzer{
 		repoRoot: repoRoot,
 		logger:   logger,
+		classes:  pathclass.Load(repoRoot),
 	}
+}
+
+// WithClasses replaces the path classes, for callers holding a loaded config.
+func (a *Analyzer) WithClasses(c *pathclass.Classifier) *Analyzer {
+	a.classes = c
+	return a
 }
 
 // Analyze performs coupling analysis on a target file or symbol
@@ -107,6 +120,15 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingA
 		}
 	}
 
+	// Generated and data files still count in the commit size above (a batch
+	// commit is no evidence either way), but are not correlations.
+	var leftOut pathclass.Counter
+	for file := range coChangeCounts {
+		if leftOut.Skip(a.classes, file) {
+			delete(coChangeCounts, file)
+		}
+	}
+
 	// Compute correlations
 	correlations := make([]Correlation, 0, len(coChangeCounts))
 	for file, count := range coChangeCounts {
@@ -136,6 +158,9 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingA
 
 	// Generate insights
 	insights := a.generateInsights(correlations, targetFile)
+	if note := leftOut.Note(); note != "" {
+		insights = append(insights, note)
+	}
 
 	// Generate recommendations
 	recommendations := a.generateRecommendations(correlations, targetFile)
@@ -144,6 +169,7 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingA
 		Correlations:    correlations,
 		Insights:        insights,
 		Recommendations: recommendations,
+		LeftOut:         leftOut.Tally(),
 	}
 	result.Target.File = targetFile
 	result.Target.CommitCount = len(targetCommits)

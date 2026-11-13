@@ -50,8 +50,11 @@ type CompactAssessChange struct {
 	RiskFactors []string          `json:"riskFactors,omitempty"`
 	DoneCheck   *CompactDoneCheck `json:"doneCheck,omitempty"`
 	// CoChangeOpen are files that usually change with the touched ones and didn't.
-	CoChangeOpen []string          `json:"coChangeOpen,omitempty"`
-	Contracts    []CompactContract `json:"contracts,omitempty"`
+	CoChangeOpen []string `json:"coChangeOpen,omitempty"`
+	// CoChangeLeftOut says how many usual partners sit in generated or data paths
+	// and weren't listed.
+	CoChangeLeftOut string            `json:"coChangeLeftOut,omitempty"`
+	Contracts       []CompactContract `json:"contracts,omitempty"`
 	// Tests are the test files that use a changed symbol themselves, or with focus
 	// tests one page of all of them. TestsTotal counts all, TestsIndirect those that
 	// reach the change through other code and aren't listed.
@@ -208,6 +211,9 @@ func CompactAssessChangeFor(r *AnalyzeChangeSetResponse, opts CompactAssessOptio
 	if cc := r.CoChangeCheck; cc != nil && want(AssessFocusDone) {
 		for _, f := range cc.OpenFiles {
 			c.CoChangeOpen = append(c.CoChangeOpen, f.File)
+		}
+		if cc.LeftOut != nil {
+			c.CoChangeLeftOut = cc.LeftOut.Note
 		}
 	}
 

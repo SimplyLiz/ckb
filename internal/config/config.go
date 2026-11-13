@@ -72,6 +72,20 @@ type Config struct {
 
 	// Activity ledger (MCP tool-call audit trail)
 	Activity ActivityConfig `json:"activity" mapstructure:"activity"`
+
+	// Path classes left out of hotspots, co-change coupling and risk scoring
+	Paths PathsConfig `json:"paths" mapstructure:"paths"`
+}
+
+// PathsConfig declares repo paths that hold generated files or data rather than
+// code. Files in them drop out of history-based analyses (getHotspots, co-change
+// coupling, auditRisk, assessChange's coChangeCheck); responses say how many were
+// left out. Globs: "*" crosses directories, "**" any depth, a plain directory name
+// covers everything under it. paths.generated also feeds the review's generated
+// check, alongside review.generatedPatterns.
+type PathsConfig struct {
+	Generated []string `json:"generated,omitempty" mapstructure:"generated"` // e.g. ["gen/**", "*.pb.go"]
+	Data      []string `json:"data,omitempty" mapstructure:"data"`           // e.g. ["bench-data/**"]
 }
 
 // ActivityConfig controls the MCP activity ledger (tool_calls table).

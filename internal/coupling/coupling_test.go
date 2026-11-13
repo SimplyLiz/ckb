@@ -508,3 +508,60 @@ func TestAnalyzeReportsRepoRelativePaths(t *testing.T) {
 		t.Errorf("Correlation.File = %q, want repo-relative internal/a/helper.go", got)
 	}
 }
+
+// A data directory declared in .ckb/config.json paths.data is committed in batches
+// with the scripts that write it; its files are no correlations, and the result
+// says how many were left out.
+func TestAnalyzeLeavesOutDeclaredDataPaths(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-q")
+	runGit(t, dir, "config", "user.email", "t@t")
+	runGit(t, dir, "config", "user.name", "t")
+	if err := os.MkdirAll(filepath.Join(dir, "bench-data", "ocr"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".ckb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".ckb", "config.json"),
+		[]byte(`{"paths": {"data": ["bench-data/**"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		files := []string{"bench.py", "report.py"}
+		for j := 0; j < 5; j++ {
+			files = append(files, fmt.Sprintf("bench-data/ocr/page%d.json", j))
+		}
+		for _, f := range files {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte(fmt.Sprint(i)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runGit(t, dir, "add", "bench.py", "report.py", "bench-data")
+		runGit(t, dir, "commit", "-q", "-m", fmt.Sprint(i))
+	}
+
+	a := NewAnalyzer(dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	res, err := a.Analyze(context.Background(), AnalyzeOptions{Target: "bench.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Correlations) != 1 || res.Correlations[0].File != "report.py" {
+		t.Errorf("correlations = %+v, want only report.py", res.Correlations)
+	}
+	if res.LeftOut == nil || res.LeftOut.Count != 5 || res.LeftOut.ByClass["data"] != 5 {
+		t.Fatalf("LeftOut = %+v, want 5 data files", res.LeftOut)
+	}
+	found := false
+	for _, s := range res.Insights {
+		if contains(s, "5 files in data/generated paths left out") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("insights %q don't say what was left out", res.Insights)
+	}
+}
