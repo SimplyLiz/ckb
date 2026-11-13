@@ -2303,8 +2303,8 @@ func (e *Engine) calculatePrepareRisk(
 	// Two decimals is all the factor weights above carry meaning to
 	// anyway. Level is derived from this same rounded value — deriving it
 	// from the raw, unrounded score let the level disagree with the
-	// displayed score at a threshold boundary (raw 0.6999999999999998
-	// prints as "0.70" but would classify as "high", not "critical").
+	// displayed score at a threshold boundary (raw 0.7999999999999998
+	// prints as "0.80" but would classify as "high", not "critical").
 	roundedScore := math.Round(score*100) / 100
 
 	// A rename or delete breaks every production caller left as it is, however
@@ -2324,14 +2324,8 @@ func (e *Engine) calculatePrepareRisk(
 		factors = append(factors, fmt.Sprintf("%s breaks %s unless they change too", changeType, describeBroken(callers, broken-callers)))
 	}
 
-	level := "low"
-	if roundedScore >= 0.7 {
-		level = "critical"
-	} else if roundedScore >= 0.5 {
-		level = "high"
-	} else if roundedScore >= 0.3 {
-		level = "medium"
-	}
+	// assessChange's bands, so the level before the edit is the one after it.
+	level := riskLevelFor(roundedScore)
 
 	return &PrepareRisk{
 		Level:       level,

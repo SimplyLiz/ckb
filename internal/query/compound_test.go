@@ -434,6 +434,27 @@ func TestCalculatePrepareRisk_ScoreRounding(t *testing.T) {
 	if risk.Score != 0.7 {
 		t.Errorf("Score = %v, want exactly 0.7 (rounded)", risk.Score)
 	}
+	if risk.Level != "high" {
+		t.Errorf("Level = %q, want high: 0.7 is below assessChange's critical band", risk.Level)
+	}
+}
+
+// prepareChange had bands of its own, 0.3/0.5/0.7, so the MaxResults rename it scored
+// 0.7 was critical before the edit and high (assessChange, 0.6) after it. Both now
+// use riskLevelFor.
+func TestRiskLevelFor_OneSetOfBands(t *testing.T) {
+	cases := []struct {
+		score float64
+		want  string
+	}{
+		{0, "low"}, {0.39, "low"}, {0.4, "medium"}, {0.59, "medium"},
+		{0.6, "high"}, {0.7, "high"}, {0.79, "high"}, {0.8, "critical"}, {1, "critical"},
+	}
+	for _, c := range cases {
+		if got := riskLevelFor(c.score); got != c.want {
+			t.Errorf("riskLevelFor(%v) = %q, want %q", c.score, got, c.want)
+		}
+	}
 }
 
 // TestCalculatePrepareRisk_TestFactorWording is a regression test for the
