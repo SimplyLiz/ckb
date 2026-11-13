@@ -3,7 +3,11 @@
 // test coverage, bus factor, staleness, and security sensitivity.
 package audit
 
-import "time"
+import (
+	"time"
+
+	"github.com/SimplyLiz/CodeMCP/internal/pathclass"
+)
 
 // RiskAnalysis is the result of a risk audit
 type RiskAnalysis struct {
@@ -12,6 +16,9 @@ type RiskAnalysis struct {
 	Items      []RiskItem  `json:"items"`
 	Summary    RiskSummary `json:"summary"`
 	QuickWins  []QuickWin  `json:"quickWins"`
+	// LeftOut counts the files in generated or data paths (.ckb/config.json paths)
+	// that weren't scored; nil when none were.
+	LeftOut *pathclass.Tally `json:"leftOut,omitempty"`
 }
 
 // FunctionRisk contains per-function complexity metrics within a risky file.

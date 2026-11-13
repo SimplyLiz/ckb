@@ -16,6 +16,7 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/output"
+	"github.com/SimplyLiz/CodeMCP/internal/pathclass"
 	"github.com/SimplyLiz/CodeMCP/internal/version"
 )
 
@@ -2565,7 +2566,14 @@ type GetHotspotsResponse struct {
 	Confidence      float64               `json:"confidence"`
 	ConfidenceBasis []ConfidenceBasisItem `json:"confidenceBasis"`
 	Limitations     []string              `json:"limitations,omitempty"`
+	// LeftOut counts the files in generated or data paths (.ckb/config.json paths,
+	// built-in generated patterns, large data files) kept out of the ranking.
+	LeftOut *pathclass.Tally `json:"leftOut,omitempty"`
 }
+
+// hotspotCandidateCap is how many churn-ranked files GetHotspots reads before its
+// filters. The git log is parsed in full regardless; this only bounds the sort.
+const hotspotCandidateCap = 2000
 
 // HotspotV52 represents a hotspot with v5.2 ranking signals.
 type HotspotV52 struct {
@@ -2645,22 +2653,28 @@ func (e *Engine) GetHotspots(ctx context.Context, opts GetHotspotsOptions) (*Get
 		Status:  "available",
 	})
 
-	// Get hotspots from git backend
-	gitHotspots, err := e.gitAdapter.GetHotspots(opts.Limit*2, since) // Get extra for filtering
+	// Get hotspots from git backend. The whole log is read either way; the limit only
+	// cuts the ranked list, so ask for plenty when filters follow, or a data directory
+	// committed in batches would leave fewer than opts.Limit files after them.
+	classifier := pathclass.FromConfig(e.repoRoot, e.config)
+	gitHotspots, err := e.gitAdapter.GetHotspots(max(opts.Limit*2, hotspotCandidateCap), since)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get hotspots: %w", err)
 	}
 
-	// Apply scope filter if specified
-	if opts.Scope != "" {
-		filtered := []git.ChurnMetrics{}
-		for _, h := range gitHotspots {
-			if strings.HasPrefix(h.FilePath, opts.Scope) {
-				filtered = append(filtered, h)
-			}
+	// Apply scope filter if specified, then leave out generated and data paths
+	var leftOut pathclass.Counter
+	filtered := make([]git.ChurnMetrics, 0, len(gitHotspots))
+	for _, h := range gitHotspots {
+		if opts.Scope != "" && !strings.HasPrefix(h.FilePath, opts.Scope) {
+			continue
 		}
-		gitHotspots = filtered
+		if leftOut.Skip(classifier, h.FilePath) {
+			continue
+		}
+		filtered = append(filtered, h)
 	}
+	gitHotspots = filtered
 
 	// Convert to v5.2 format with enrichment
 	for _, gh := range gitHotspots {
@@ -2785,6 +2799,11 @@ func (e *Engine) GetHotspots(ctx context.Context, opts GetHotspotsOptions) (*Get
 	if len(limitations) > 1 {
 		confidence = 0.69
 	}
+	// Said where readers look, not counted as a limitation: leaving data out
+	// sharpens the ranking rather than weakening it.
+	if note := leftOut.Note(); note != "" {
+		limitations = append(limitations, note)
+	}
 
 	// Build response
 	response := &GetHotspotsResponse{
@@ -2798,6 +2817,7 @@ func (e *Engine) GetHotspots(ctx context.Context, opts GetHotspotsOptions) (*Get
 		TimeWindow:      timeWindowStr,
 		Confidence:      confidence,
 		ConfidenceBasis: confidenceBasis,
+		LeftOut:         leftOut.Tally(),
 		Limitations:     limitations,
 	}
 

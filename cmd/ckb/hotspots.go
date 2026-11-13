@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/SimplyLiz/CodeMCP/internal/pathclass"
 	"github.com/SimplyLiz/CodeMCP/internal/query"
 )
 
@@ -88,12 +89,14 @@ func runHotspots(cmd *cobra.Command, args []string) {
 
 // HotspotsResponseCLI contains hotspots list for CLI output
 type HotspotsResponseCLI struct {
-	Hotspots    []HotspotCLI   `json:"hotspots"`
-	TotalCount  int            `json:"totalCount"`
-	TimeWindow  string         `json:"timeWindow"`
-	Confidence  float64        `json:"confidence"`
-	Limitations []string       `json:"limitations,omitempty"`
-	Provenance  *ProvenanceCLI `json:"provenance,omitempty"`
+	Hotspots    []HotspotCLI `json:"hotspots"`
+	TotalCount  int          `json:"totalCount"`
+	TimeWindow  string       `json:"timeWindow"`
+	Confidence  float64      `json:"confidence"`
+	Limitations []string     `json:"limitations,omitempty"`
+	// LeftOut counts the files in generated or data paths kept out of the ranking.
+	LeftOut    *pathclass.Tally `json:"leftOut,omitempty"`
+	Provenance *ProvenanceCLI   `json:"provenance,omitempty"`
 }
 
 type HotspotCLI struct {
@@ -141,6 +144,7 @@ func convertHotspotsResponse(resp *query.GetHotspotsResponse) *HotspotsResponseC
 		TimeWindow:  resp.TimeWindow,
 		Confidence:  resp.Confidence,
 		Limitations: resp.Limitations,
+		LeftOut:     resp.LeftOut,
 	}
 
 	if resp.Provenance != nil {
