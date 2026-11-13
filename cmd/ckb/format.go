@@ -292,6 +292,7 @@ func formatStatusHuman(resp *StatusResponseCLI) (string, error) {
 			b.WriteString(fmt.Sprintf("  ⚠ %s\n", resp.IndexStatus.Reason))
 			b.WriteString("  Run 'ckb index' to refresh.\n")
 		}
+		writeIndexLanguages(&b, resp.IndexStatus)
 	}
 
 	// Change Impact Analysis section

@@ -2,11 +2,13 @@ package mcp
 
 import (
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/envelope"
 	"github.com/SimplyLiz/CodeMCP/internal/index"
+	"github.com/SimplyLiz/CodeMCP/internal/project"
 )
 
 // IndexDiagnosis is what building the SCIP index for a repo would run into
@@ -22,6 +24,9 @@ type IndexDiagnosis struct {
 	// fixed. False when the build has to run in a terminal ('ckb index --lang',
 	// 'ckb index --scip') or can't happen at all (no indexable language).
 	ThenReindex bool
+	// Note names the languages a Ready build will leave out and what gets
+	// them in, e.g. an indexer to install. Empty when every language is in.
+	Note string
 }
 
 // IndexDiagnoser checks what an index build for repoRoot would run into. The
@@ -44,6 +49,8 @@ type missingIndexCache struct {
 	repo    string
 	at      time.Time
 	message string
+	// shown is the partial-coverage message last attached to a response.
+	shown string
 }
 
 // missingIndexText is the start of every missing-index warning.
@@ -67,12 +74,15 @@ func (s *MCPServer) missingIndexWarnings(toolName string) []envelope.Warning {
 		return nil
 	}
 	sb := eng.GetScipBackend()
-	if sb == nil || sb.IsAvailable() {
+	if sb == nil {
 		return nil
 	}
 	repoRoot := eng.GetRepoRoot()
 	if repoRoot == "" {
 		return nil
+	}
+	if sb.IsAvailable() {
+		return s.partialIndexWarnings(toolName, repoRoot)
 	}
 
 	if index.BuildRunning(filepath.Join(repoRoot, ".ckb")) {
@@ -106,6 +116,8 @@ func (s *MCPServer) missingIndexMessage(repoRoot string) string {
 	}
 	d := s.indexDiagnoser(repoRoot)
 	switch {
+	case d.Ready && d.Note != "":
+		return missingIndexText + reindexStep + " " + d.Note
 	case d.Ready:
 		return missingIndexText + reindexStep
 	case d.ThenReindex && canReindex:
@@ -125,4 +137,49 @@ func (s *MCPServer) toolActive(name string) bool {
 		}
 	}
 	return false
+}
+
+// partialIndexText is the start of the warning for an index that leaves
+// languages out.
+const partialIndexText = "The SCIP index leaves out some of this repo's languages, so for their files " +
+	"symbols, references, callers and impact come from text search and parsers and can miss uses. "
+
+// partialIndexWarnings names the languages the loaded index leaves out (their
+// indexer isn't installed, they are over the size limit, or it failed), as the
+// last build recorded them in the index metadata. It comes with getStatus and
+// with the first response of a session, not with every one: answers about the
+// indexed languages are complete.
+func (s *MCPServer) partialIndexWarnings(toolName, repoRoot string) []envelope.Warning {
+	c := &s.partialIndex
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.repo != repoRoot || time.Since(c.at) > indexDiagnosisTTL {
+		c.repo, c.at, c.message = repoRoot, time.Now(), s.partialIndexMessage(repoRoot)
+	}
+	if c.message == "" || (toolName != "getStatus" && c.shown == c.message) {
+		return nil
+	}
+	c.shown = c.message
+	return []envelope.Warning{{Code: "index_partial", Message: c.message}}
+}
+
+// partialIndexMessage builds the partial-coverage text from the index metadata.
+func (s *MCPServer) partialIndexMessage(repoRoot string) string {
+	meta, err := index.LoadMeta(filepath.Join(repoRoot, ".ckb"))
+	if err != nil || meta == nil || len(meta.Skipped) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(meta.Skipped))
+	for _, sk := range meta.Skipped {
+		p := project.LanguageDisplayName(project.Language(sk.Language)) + ": " + sk.Reason
+		if sk.Fix != "" && !strings.Contains(sk.Reason, sk.Fix) {
+			p += " (fix: " + sk.Fix + ")"
+		}
+		parts = append(parts, p)
+	}
+	step := " Then call the reindex tool."
+	if s.reindexRunner == nil || !s.toolActive("reindex") {
+		step = " Then run 'ckb index'; this server loads the index on its next call."
+	}
+	return partialIndexText + strings.Join(parts, "; ") + "." + step
 }

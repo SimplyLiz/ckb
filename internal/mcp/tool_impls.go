@@ -236,6 +236,14 @@ func (s *MCPServer) getIndexStaleness() map[string]interface{} {
 		"indexAge":      staleness.IndexAge,
 		"commitsBehind": staleness.CommitsBehind,
 	}
+	// Per-language coverage: what the index holds, and what it leaves out
+	// with the fix (an indexer to install, 'ckb index --scip').
+	if len(meta.Languages) > 0 {
+		result["languages"] = meta.Languages
+	}
+	if len(meta.Skipped) > 0 {
+		result["skippedLanguages"] = meta.Skipped
+	}
 
 	// Metadata describes the file on disk; "fresh" is only true if the
 	// running engine is actually serving it (#134). Without a SCIP backend

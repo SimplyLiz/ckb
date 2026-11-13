@@ -207,9 +207,13 @@ func (s *MCPServer) toolReindex(params map[string]interface{}) (*envelope.Respon
 		})), nil
 	}
 
+	msg := "Index rebuilt and loaded."
+	if info.Note != "" {
+		msg += " " + info.Note
+	}
 	return envelope.Operational(counts(&ReindexOutput{
 		Status:  "reindexed",
 		Mode:    info.Mode,
-		Message: "Index rebuilt and loaded.",
+		Message: msg,
 	})), nil
 }

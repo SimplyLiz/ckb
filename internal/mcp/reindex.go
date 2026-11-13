@@ -24,6 +24,9 @@ const (
 type ReindexRunInfo struct {
 	// Mode is "full" or "incremental".
 	Mode string
+	// Note names the languages the build left out (indexer not installed,
+	// over the size limit), with the fix. Empty when every language is in.
+	Note string
 }
 
 // ReindexRunner builds the SCIP index for repoRoot in-process and returns how

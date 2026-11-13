@@ -225,6 +225,10 @@ type IndexStatusCLI struct {
 	FileCount      int       `json:"fileCount,omitempty"`
 	CommitsBehind  int       `json:"commitsBehind,omitempty"`
 	HasUncommitted bool      `json:"hasUncommitted,omitempty"`
+	// Languages are the languages in the index; Skipped the ones it leaves
+	// out, with why and the fix.
+	Languages []index.LanguageIndex   `json:"languages,omitempty"`
+	Skipped   []index.SkippedLanguage `json:"skippedLanguages,omitempty"`
 }
 
 // BackendStatusCLI describes the status of a backend
@@ -330,6 +334,8 @@ func getIndexStatus(ckbDir, repoRoot string) *IndexStatusCLI {
 		FileCount:      meta.FileCount,
 		CommitsBehind:  freshness.CommitsBehind,
 		HasUncommitted: freshness.HasUncommitted,
+		Languages:      meta.Languages,
+		Skipped:        meta.Skipped,
 	}
 }
 

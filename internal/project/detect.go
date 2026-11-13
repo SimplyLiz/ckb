@@ -47,10 +47,31 @@ type IndexerInfo struct {
 
 // ProjectConfig stores detected project information.
 type ProjectConfig struct {
+	// Language is the primary language; Indexer and ManifestPath are its.
 	Language     Language  `json:"language"`
 	Indexer      string    `json:"indexer"`
 	ManifestPath string    `json:"manifestPath"`
 	DetectedAt   time.Time `json:"detectedAt"`
+
+	// Languages are all languages the last index was built for, Language
+	// first. Empty in a project.json written before multi-language indexing,
+	// which always names one language: see IndexLanguages.
+	Languages []Language `json:"languages,omitempty"`
+	// LanguageFromFlag means 'ckb index --lang' chose the language, so a
+	// background reindex keeps to it instead of detecting all languages.
+	LanguageFromFlag bool `json:"languageFromFlag,omitempty"`
+}
+
+// IndexLanguages returns the languages the saved config says to index:
+// Languages, or Language alone for a config from before multi-language indexing.
+func (c *ProjectConfig) IndexLanguages() []Language {
+	if len(c.Languages) > 0 {
+		return c.Languages
+	}
+	if c.Language != "" && c.Language != LangUnknown {
+		return []Language{c.Language}
+	}
+	return nil
 }
 
 // manifestInfo maps marker files to languages

@@ -15,11 +15,11 @@ import (
 
 	"github.com/SimplyLiz/CodeMCP/internal/config"
 	"github.com/SimplyLiz/CodeMCP/internal/index"
+	"github.com/SimplyLiz/CodeMCP/internal/indexplan"
 	"github.com/SimplyLiz/CodeMCP/internal/mcp"
 	"github.com/SimplyLiz/CodeMCP/internal/project"
 	"github.com/SimplyLiz/CodeMCP/internal/query"
 	"github.com/SimplyLiz/CodeMCP/internal/repos"
-	"github.com/SimplyLiz/CodeMCP/internal/repostate"
 	"github.com/SimplyLiz/CodeMCP/internal/slogutil"
 	"github.com/SimplyLiz/CodeMCP/internal/version"
 
@@ -380,7 +380,7 @@ func watchTick(repoRoot, ckbDir string, interval time.Duration, state *watchStat
 	state.lastAttempt = time.Now()
 	logger.Info("Index stale, triggering reindex", "trigger", string(trigger), "reason", reason)
 
-	err := triggerReindex(context.Background(), repoRoot, ckbDir, trigger, triggerInfo, logger)
+	_, err := triggerReindex(context.Background(), repoRoot, ckbDir, trigger, triggerInfo, logger)
 	switch {
 	case errors.Is(err, errIndexLocked):
 		// Another process is indexing; its result shows up on the next tick.
@@ -428,8 +428,10 @@ func runReindexForMCP(ctx context.Context, repoRoot string, scope mcp.ReindexSco
 	ckbDir := filepath.Join(repoRoot, ".ckb")
 
 	if scope != mcp.ReindexFull {
-		if lang, ok := watchDetectLanguage(repoRoot); ok && project.SupportsIncrementalIndexing(lang) {
-			if tryIncrementalIndexTo(repoRoot, ckbDir, lang, io.Discard) {
+		// Incremental reruns one indexer over the whole index: one language only
+		// (tryIncrementalIndexTo also refuses an index that holds several).
+		if targets, ok := indexedTargets(repoRoot); ok && len(targets) == 1 && project.SupportsIncrementalIndexing(targets[0].Lang) {
+			if tryIncrementalIndexTo(repoRoot, ckbDir, targets[0].Lang, io.Discard) {
 				excludeBuiltIndex(repoRoot, logger)
 				return &mcp.ReindexRunInfo{Mode: "incremental"}, nil
 			}
@@ -437,11 +439,11 @@ func runReindexForMCP(ctx context.Context, repoRoot string, scope mcp.ReindexSco
 		}
 	}
 
-	err := triggerReindex(ctx, repoRoot, ckbDir, index.TriggerManual, "mcp reindex", logger)
+	note, err := triggerReindex(ctx, repoRoot, ckbDir, index.TriggerManual, "mcp reindex", logger)
 	switch {
 	case err == nil:
 		excludeBuiltIndex(repoRoot, logger)
-		return &mcp.ReindexRunInfo{Mode: "full"}, nil
+		return &mcp.ReindexRunInfo{Mode: "full", Note: note}, nil
 	case errors.Is(err, errIndexerUnavailable), errors.Is(err, errRepoTooLarge):
 		return nil, fmt.Errorf("%w: %v", mcp.ErrReindexNotPossible, err)
 	case errors.Is(err, errIndexLocked):
@@ -486,154 +488,118 @@ func watchCheckStale(repoRoot, ckbDir string) (stale bool, trigger index.Refresh
 	return true, trigger, triggerInfo, freshness.Reason
 }
 
-// watchDetectLanguage resolves the project language to index: the saved
-// project config if one exists (written after the first successful index),
-// or a fresh auto-detect otherwise — covering the "never indexed yet" case
-// that project.json can't answer. Returns ok=false if no single supported
-// language can be determined.
-func watchDetectLanguage(repoRoot string) (project.Language, bool) {
-	if cfg, err := project.LoadConfig(repoRoot); err == nil {
-		return cfg.Language, true
-	}
-	lang, _, allLangs := project.DetectAllLanguages(repoRoot)
-	if lang == project.LangUnknown || len(allLangs) > 1 {
-		return project.LangUnknown, false
-	}
-	return lang, true
-}
-
-// triggerReindex runs the SCIP indexer and updates metadata. It never
+// triggerReindex runs the SCIP indexers and updates metadata. It never
 // writes to stdout (unlike the CLI's performIndex) since this runs inside
 // 'ckb mcp', whose stdout is the JSON-RPC transport — all status goes
 // through logger (file + stderr).
 //
-// The command it runs comes from buildIndexPlan — the same plan builder
-// `ckb index` uses via performIndex — so C++'s --compdb-path flag, Ruby's
-// bundle-aware prefix, PHP's prerequisite check, and a custom
-// scip.indexPath's --output flag are never missed here the way a
-// hand-rolled `indexer.Command` would miss them.
-func triggerReindex(ctx context.Context, repoRoot, ckbDir string, trigger index.RefreshTrigger, triggerInfo string, logger *slog.Logger) error {
-	lang, ok := watchDetectLanguage(repoRoot)
+// The languages come from indexedTargets and the plans from planLanguages —
+// the same plan builder `ckb index` uses via performIndex — so C++'s
+// --compdb-path flag, Ruby's bundle-aware prefix, PHP's prerequisite check,
+// and a custom scip.indexPath's --output flag are never missed here the way
+// a hand-rolled `indexer.Command` would miss them. Every language with an
+// installed indexer goes into the one index; the rest are recorded in the
+// index metadata as skipped, and the returned note names them.
+func triggerReindex(ctx context.Context, repoRoot, ckbDir string, trigger index.RefreshTrigger, triggerInfo string, logger *slog.Logger) (string, error) {
+	targets, ok := indexedTargets(repoRoot)
 	if !ok {
-		return errIndexerUnavailable
+		return "", errIndexerUnavailable
 	}
 
 	// Never kick off an hours-long SCIP build from a background watch tick;
 	// that requires the explicit opt-in 'ckb index --scip'.
-	if fileCount := countSourceFiles(repoRoot, lang); fileCount >= scipLargeRepoThreshold {
-		return errRepoTooLarge
-	}
-
-	manifest := project.FindManifestForLanguage(repoRoot, lang)
 	indexPath := resolveIndexPath(repoRoot)
-
-	plan, planResult := buildIndexPlan(repoRoot, lang, manifest, "", indexPath)
-	if plan == nil {
-		switch planResult.Outcome {
-		case indexOutcomeIndexerMissing, indexOutcomeIndexerRequirementMissing:
-			logger.Warn("Watch mode: cannot build index plan", "reason", planResult.Message)
-			return errIndexerUnavailable
-		default:
-			return fmt.Errorf("building index plan: %s", planResult.Message)
-		}
+	lp := planLanguages(repoRoot, targets, "", indexPath, false)
+	for _, w := range lp.Warnings {
+		logger.Warn("Index plan warning", "warning", w)
 	}
-	if planResult.Warning != "" {
-		logger.Warn("Index plan warning", "warning", planResult.Warning)
+	if len(lp.Plans) == 0 {
+		logger.Warn("Watch mode: cannot build index plan", "reason", skippedNote(lp.Skipped))
+		if lp.LargeOnly {
+			return "", errRepoTooLarge
+		}
+		for _, res := range lp.Failures {
+			if res.Outcome == indexOutcomeError {
+				return "", fmt.Errorf("building index plan: %s", res.Message)
+			}
+		}
+		return "", errIndexerUnavailable
+	}
+	if len(lp.Skipped) > 0 {
+		logger.Warn("Indexing without some languages", "skipped", skippedNote(lp.Skipped))
 	}
 
 	// Acquire lock
 	lock, err := index.AcquireLock(ckbDir)
 	if err != nil {
 		logger.Debug("Skipping reindex, locked by another process")
-		return errIndexLocked
+		return "", errIndexLocked
 	}
 	defer lock.Release()
 
-	// Run indexer
 	start := time.Now()
-	parts := strings.Fields(plan.Command)
-	if len(parts) == 0 {
-		return errIndexerUnavailable
-	}
-
-	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...) // #nosec G204 //nolint:gosec // command from trusted indexer config
-	cmd.Dir = plan.IndexerDir
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		logger.Error("Indexer failed",
-			"error", err.Error(),
-			"stderr", stderr.String(),
-		)
-		return err
-	}
-
+	results, runErr := indexplan.RunAll(repoRoot, lp.Plans, func(plan *indexPlan) error {
+		parts := strings.Fields(plan.Command)
+		if len(parts) == 0 {
+			return errIndexerUnavailable
+		}
+		cmd := exec.CommandContext(ctx, parts[0], parts[1:]...) // #nosec G204 //nolint:gosec // command from trusted indexer config
+		cmd.Dir = plan.IndexerDir
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			logger.Error("Indexer failed",
+				"language", string(plan.Lang),
+				"error", err.Error(),
+				"stderr", stderr.String(),
+			)
+			return err
+		}
+		return nil
+	})
 	duration := time.Since(start)
-
-	if err := finalizeIndexOutput(repoRoot, plan); err != nil {
-		logger.Error("Reindex failed", "error", err.Error())
-		return err
+	for _, r := range results {
+		if r.Err != nil {
+			logger.Error("Reindex failed", "language", string(r.Plan.Lang), "error", r.Err.Error())
+		}
+	}
+	// No language made it into an index: nothing must be recorded as fresh.
+	if runErr != nil {
+		return "", runErr
 	}
 
-	// Verify the index file the plan targeted actually exists before ever
-	// writing metadata that would claim success — a language whose indexer
-	// exits 0 without producing output (or a custom --output path that
-	// wasn't honored) must be reported as a failure, not silently recorded
-	// as a fresh index.
-	if _, statErr := os.Stat(plan.IndexPath); os.IsNotExist(statErr) {
-		err := fmt.Errorf("indexer completed but %s was not created", plan.IndexPath)
-		logger.Error("Reindex failed", "error", err.Error())
-		return err
+	// Update metadata with refresh trigger info, and persist the project
+	// config so 'ckb index' and later ticks see the languages, same as the
+	// CLI's performIndex does.
+	meta, saveErrs := recordIndexBuild(repoRoot, ckbDir, lp, results, duration, false, &index.LastRefresh{
+		At:          time.Now(),
+		Trigger:     trigger,
+		TriggerInfo: triggerInfo,
+		DurationMs:  duration.Milliseconds(),
+	})
+	for _, e := range saveErrs {
+		logger.Warn("Reindex bookkeeping", "error", e.Error())
 	}
-
-	// Update metadata with refresh trigger info
-	newMeta := &index.IndexMeta{
-		CreatedAt:   time.Now(),
-		FileCount:   countSourceFiles(repoRoot, lang),
-		Duration:    duration.Round(time.Millisecond * 100).String(),
-		Indexer:     plan.Indexer.CheckCommand,
-		IndexerArgs: parts,
-		LastRefresh: &index.LastRefresh{
-			At:          time.Now(),
-			Trigger:     trigger,
-			TriggerInfo: triggerInfo,
-			DurationMs:  duration.Milliseconds(),
-		},
-	}
-
-	if rs, err := repostate.ComputeRepoState(repoRoot); err == nil {
-		newMeta.CommitHash = rs.HeadCommit
-		newMeta.RepoStateID = rs.RepoStateID
-	}
-
-	if err := newMeta.Save(ckbDir); err != nil {
-		logger.Error("Failed to save index metadata", "error", err.Error())
-	}
-
-	// Persist project config so future ticks (and 'ckb index') don't need to
-	// re-detect the language, same as the CLI's performIndex does.
-	if saveErr := project.SaveConfig(repoRoot, &project.ProjectConfig{
-		Language:     lang,
-		Indexer:      plan.Indexer.CheckCommand,
-		ManifestPath: plan.Manifest,
-		DetectedAt:   time.Now(),
-	}); saveErr != nil {
-		logger.Warn("Could not save project config", "error", saveErr.Error())
+	if meta == nil {
+		return "", fmt.Errorf("no language indexed")
 	}
 
 	// Populate incremental tracking tables so subsequent incremental updates work
-	if project.SupportsIncrementalIndexing(lang) {
-		populateIncrementalTracking(repoRoot, lang, io.Discard) // stdout is the JSON-RPC transport
+	if tracksIncrementally(meta) {
+		populateIncrementalTracking(repoRoot, project.Language(meta.Languages[0].Language), io.Discard) // stdout is the JSON-RPC transport
 	}
 
 	logger.Info("Reindex complete",
 		"trigger", string(trigger),
 		"duration", duration.String(),
-		"files", newMeta.FileCount,
+		"files", meta.FileCount,
+		"languages", meta.Indexer,
 	)
 
-	return nil
+	if len(meta.Skipped) > 0 {
+		return "Not indexed, these stay on text search: " + skippedNote(meta.Skipped) + ".", nil
+	}
+	return "", nil
 }
 
 // listPresets prints available presets with tool counts and token estimates

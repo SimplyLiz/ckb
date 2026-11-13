@@ -100,7 +100,7 @@ func TestTriggerReindex_HonoursContext(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := triggerReindex(ctx, dir, ckbDir, index.TriggerManual, "", newLogger("human"))
+	_, err := triggerReindex(ctx, dir, ckbDir, index.TriggerManual, "", newLogger("human"))
 	if err == nil {
 		t.Fatal("indexer ran to completion despite cancelled context")
 	}

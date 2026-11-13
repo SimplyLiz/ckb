@@ -142,6 +142,47 @@ func TestMissingIndexWarning_DiagnosisIsCached(t *testing.T) {
 	}
 }
 
+func TestPartialIndexWarning_NamesSkippedLanguageOncePerSession(t *testing.T) {
+	s, dir := newReindexTestServer(t, true)
+	s.SetReindexRunner(noopRunner)
+	meta := &index.IndexMeta{
+		Indexer:   "scip-go",
+		Languages: []index.LanguageIndex{{Language: "go", Indexer: "scip-go"}},
+		Skipped: []index.SkippedLanguage{{
+			Language: "python",
+			Reason:   "scip-python not installed (install with: npm install -g @sourcegraph/scip-python)",
+			Fix:      "npm install -g @sourcegraph/scip-python",
+		}},
+	}
+	if err := meta.Save(filepath.Join(dir, ".ckb")); err != nil {
+		t.Fatal(err)
+	}
+
+	got := onlyWarning(t, s, "findReferences")
+	if !strings.HasPrefix(got, "index_partial: ") || !strings.Contains(got, "Python: scip-python not installed") ||
+		strings.Contains(got, "(fix:") || !strings.Contains(got, "reindex tool") {
+		t.Fatalf("warning = %q", got)
+	}
+	if ws := s.missingIndexWarnings("searchSymbols"); len(ws) != 0 {
+		t.Errorf("second response repeated the note: %+v", ws)
+	}
+	if ws := s.missingIndexWarnings("getStatus"); len(ws) != 1 {
+		t.Errorf("getStatus should always carry the note, got %+v", ws)
+	}
+}
+
+func TestMissingIndexWarning_ReadyWithNote(t *testing.T) {
+	s, _ := newReindexTestServer(t, false)
+	s.SetReindexRunner(noopRunner)
+	s.SetIndexDiagnoser(func(string) IndexDiagnosis {
+		return IndexDiagnosis{Ready: true, Note: "The index will leave out Python: scip-python not installed."}
+	})
+	got := onlyWarning(t, s, "findReferences")
+	if !strings.Contains(got, "Call the reindex tool") || !strings.HasSuffix(got, "leave out Python: scip-python not installed.") {
+		t.Fatalf("warning = %q", got)
+	}
+}
+
 // A streamed answer comes from the same index as a plain one, so its initial
 // response carries the same index_missing warning.
 func TestMissingIndexWarning_OnStreamingInitialResponse(t *testing.T) {

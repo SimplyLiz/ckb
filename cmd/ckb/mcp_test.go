@@ -83,24 +83,26 @@ func TestWatchCheckStale_NoMetadata_IsStale(t *testing.T) {
 	}
 }
 
-// --- watchDetectLanguage ---
+// --- indexedTargets ---
 
-func TestWatchDetectLanguage_UsesSavedProjectConfig(t *testing.T) {
+func TestIndexedTargets_UsesSavedProjectConfig(t *testing.T) {
 	dir := t.TempDir()
+	// A project.json from before multi-language indexing names one language;
+	// a background build keeps to it.
 	if err := project.SaveConfig(dir, &project.ProjectConfig{Language: project.LangRust}); err != nil {
 		t.Fatalf("failed to save project config: %v", err)
 	}
 
-	lang, ok := watchDetectLanguage(dir)
+	targets, ok := indexedTargets(dir)
 	if !ok {
 		t.Fatal("expected ok=true when project.json exists")
 	}
-	if lang != project.LangRust {
-		t.Errorf("lang = %v, want %v", lang, project.LangRust)
+	if len(targets) != 1 || targets[0].Lang != project.LangRust {
+		t.Errorf("targets = %v, want rust alone", targets)
 	}
 }
 
-func TestWatchDetectLanguage_FallsBackToAutoDetect(t *testing.T) {
+func TestIndexedTargets_FallsBackToAutoDetect(t *testing.T) {
 	dir := t.TempDir()
 	// No project.json yet (never indexed) — must fall back to manifest
 	// detection so a first-ever watch tick can still build an index.
@@ -108,19 +110,19 @@ func TestWatchDetectLanguage_FallsBackToAutoDetect(t *testing.T) {
 		t.Fatalf("failed to write go.mod: %v", err)
 	}
 
-	lang, ok := watchDetectLanguage(dir)
+	targets, ok := indexedTargets(dir)
 	if !ok {
 		t.Fatal("expected ok=true via auto-detect fallback")
 	}
-	if lang != project.LangGo {
-		t.Errorf("lang = %v, want %v", lang, project.LangGo)
+	if len(targets) != 1 || targets[0].Lang != project.LangGo {
+		t.Errorf("targets = %v, want go", targets)
 	}
 }
 
-func TestWatchDetectLanguage_NoLanguage_NotOK(t *testing.T) {
+func TestIndexedTargets_NoLanguage_NotOK(t *testing.T) {
 	dir := t.TempDir() // empty, no manifest of any kind
 
-	if _, ok := watchDetectLanguage(dir); ok {
+	if _, ok := indexedTargets(dir); ok {
 		t.Error("expected ok=false for a directory with no detectable language")
 	}
 }
@@ -135,7 +137,7 @@ func TestTriggerReindex_NoLanguage_ReturnsIndexerUnavailable(t *testing.T) {
 	}
 
 	logger := newLogger("human")
-	err := triggerReindex(context.Background(), dir, ckbDir, index.TriggerStale, "", logger)
+	_, err := triggerReindex(context.Background(), dir, ckbDir, index.TriggerStale, "", logger)
 	if !errors.Is(err, errIndexerUnavailable) {
 		t.Errorf("err = %v, want errIndexerUnavailable", err)
 	}
@@ -212,7 +214,7 @@ mkdir -p "$(dirname "$out")"
 `)
 
 	logger := newLogger("human")
-	err := triggerReindex(context.Background(), dir, ckbDir, index.TriggerStale, "", logger)
+	_, err := triggerReindex(context.Background(), dir, ckbDir, index.TriggerStale, "", logger)
 	if err != nil {
 		t.Fatalf("triggerReindex() error = %v, want nil", err)
 	}
@@ -249,7 +251,7 @@ func TestTriggerReindex_MissingOutputFile_ReturnsError(t *testing.T) {
 	writeFakeIndexer(t, "scip-go", `exit 0`)
 
 	logger := newLogger("human")
-	err := triggerReindex(context.Background(), dir, ckbDir, index.TriggerStale, "", logger)
+	_, err := triggerReindex(context.Background(), dir, ckbDir, index.TriggerStale, "", logger)
 	if err == nil {
 		t.Fatal("triggerReindex() error = nil, want an error for missing output file")
 	}
