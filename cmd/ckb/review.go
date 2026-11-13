@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -54,6 +55,7 @@ var (
 	reviewTestGapLines       int
 	reviewLLM                bool
 	reviewPost               string
+	reviewCompact            bool
 	reviewSkipChecks         []string
 )
 
@@ -161,12 +163,25 @@ func init() {
 	reviewCmd.Flags().IntVar(&reviewTestGapLines, "test-gap-lines", 5, "Minimum function lines for test gap reporting")
 	reviewCmd.Flags().BoolVar(&reviewLLM, "llm", false, "Use Claude AI for narrative summary (requires ANTHROPIC_API_KEY)")
 	reviewCmd.Flags().StringVar(&reviewPost, "post", "", "Post review as PR comment (PR number or branch name, requires gh CLI)")
+	reviewCmd.Flags().BoolVar(&reviewCompact, "compact", false, fmt.Sprintf("JSON for an agent: verdict, score, checks that did not pass, the first %d findings and counts for the rest (implies --format=json)", reviewCompactFindings))
 
 	rootCmd.AddCommand(reviewCmd)
 }
 
+// reviewCompactFindings is how many findings --compact keeps. Claude Code
+// inlines an injected command's output up to ~30,000 characters; 30 findings
+// plus the rest of the compact review stay well below that.
+const reviewCompactFindings = 30
+
 func runReview(cmd *cobra.Command, args []string) {
 	start := time.Now()
+	if reviewCompact {
+		if cmd.Flags().Changed("format") && OutputFormat(reviewFormat) != FormatJSON {
+			fmt.Fprintln(os.Stderr, "Error: --compact is JSON; drop --format or pass --format=json")
+			os.Exit(1)
+		}
+		reviewFormat = string(FormatJSON)
+	}
 	logger := newLogger(reviewFormat)
 
 	if strings.TrimSpace(reviewTarget) != "" {
@@ -303,7 +318,14 @@ func runReview(cmd *cobra.Command, args []string) {
 		}
 	case FormatJSON:
 		var fmtErr error
-		output, fmtErr = formatJSON(response)
+		if reviewCompact {
+			// One line: indentation is a fifth of the size and an agent does not need it.
+			var data []byte
+			data, fmtErr = json.Marshal(query.CompactReview(response, reviewCompactFindings))
+			output = string(data)
+		} else {
+			output, fmtErr = formatJSON(response)
+		}
 		if fmtErr != nil {
 			fmt.Fprintf(os.Stderr, "Error formatting output: %v\n", fmtErr)
 			os.Exit(1)

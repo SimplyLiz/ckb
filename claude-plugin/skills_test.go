@@ -31,7 +31,7 @@ func TestSkillsAreWellFormed(t *testing.T) {
 // that fails or is not allowed aborts the whole skill, so it has to swallow its
 // exit code and be covered by allowed-tools.
 func TestReviewInjectsCKB(t *testing.T) {
-	inject := "!`" + PluginCKB + " review --target='$ARGUMENTS' --format=json || true`"
+	inject := "!`" + PluginCKB + " review --target='$ARGUMENTS' --compact || true`"
 	if !strings.Contains(ReviewSkill, "\n"+inject+"\n") {
 		t.Errorf("review skill lost its injected ckb review line %q", inject)
 	}
