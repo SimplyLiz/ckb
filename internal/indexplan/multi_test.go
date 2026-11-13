@@ -5,7 +5,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
+
+	scippb "github.com/sourcegraph/scip/bindings/go/scip"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/SimplyLiz/CodeMCP/internal/project"
 )
@@ -105,5 +110,110 @@ func TestRunAll_SinglePlanIsTheOldBuild(t *testing.T) {
 	res, err = RunAll(dir, []*Plan{plan}, func(*Plan) error { return nil })
 	if err == nil || res[0].Err == nil {
 		t.Fatal("RunAll accepted an indexer that wrote nothing")
+	}
+}
+
+func writeDocIndex(t *testing.T, path, doc string) {
+	t.Helper()
+	data, err := proto.Marshal(&scippb.Index{
+		Metadata:  &scippb.Metadata{ProjectRoot: "file:///repo"},
+		Documents: []*scippb.Document{{RelativePath: doc}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func indexDocs(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var idx scippb.Index
+	if err := proto.Unmarshal(data, &idx); err != nil {
+		t.Fatal(err)
+	}
+	var docs []string
+	for _, d := range idx.Documents {
+		docs = append(docs, d.RelativePath)
+	}
+	sort.Strings(docs)
+	return docs
+}
+
+// A session opening the index during a multi-language build reads the
+// previous index, never a missing file or one language's part.
+func TestRunAll_PreviousIndexStaysUntilTheMerge(t *testing.T) {
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "index.scip")
+	writeDocIndex(t, indexPath, "old.go")
+
+	sub := filepath.Join(dir, "tool")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plans := []*Plan{
+		{Lang: project.LangGo, IndexerDir: dir, IndexPath: indexPath, base: "scip-go", Command: "scip-go"},
+		// Nested manifest: the part path is relative to the indexer's directory
+		// and the documents get rebased.
+		{Lang: project.LangPython, IndexerDir: sub, IndexPath: indexPath, base: "scip-python index .", Command: "scip-python index ."},
+		// No known output flag: runs in place.
+		{Lang: project.LangRuby, IndexerDir: dir, IndexPath: indexPath, base: "scip-ruby .", Command: "scip-ruby ."},
+	}
+	docFor := map[project.Language]string{project.LangGo: "main.go", project.LangPython: "cli.py", project.LangRuby: "app.rb"}
+
+	res, err := RunAll(dir, plans, func(p *Plan) error {
+		out := indexPath
+		if f := strings.Fields(p.Command); len(f) > 2 && f[len(f)-2] == "--output" {
+			out = filepath.Join(p.IndexerDir, f[len(f)-1])
+			if docs := indexDocs(t, indexPath); len(docs) != 1 || docs[0] != "old.go" {
+				t.Errorf("%s running: index holds %v, want the previous one", p.Lang, docs)
+			}
+		} else if p.Lang != project.LangRuby {
+			t.Errorf("%s ran without --output: %q", p.Lang, p.Command)
+		}
+		writeDocIndex(t, out, docFor[p.Lang])
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+	for _, r := range res {
+		if r.Err != nil {
+			t.Errorf("%s: %v", r.Plan.Lang, r.Err)
+		}
+		if strings.Contains(r.Plan.Command, ".part") {
+			t.Errorf("%s: result carries the part command %q", r.Plan.Lang, r.Plan.Command)
+		}
+	}
+	want := []string{"app.rb", "main.go", "tool/cli.py"}
+	if got := indexDocs(t, indexPath); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("merged docs = %v, want %v", got, want)
+	}
+	left, _ := filepath.Glob(filepath.Join(dir, "index.scip.*"))
+	if len(left) != 0 {
+		t.Errorf("left behind: %v", left)
+	}
+}
+
+// When every language fails, the previous index is untouched.
+func TestRunAll_AllFailedKeepsThePreviousIndex(t *testing.T) {
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "index.scip")
+	writeDocIndex(t, indexPath, "old.go")
+	plans := []*Plan{
+		{Lang: project.LangGo, IndexerDir: dir, IndexPath: indexPath, base: "scip-go", Command: "scip-go"},
+		{Lang: project.LangRuby, IndexerDir: dir, IndexPath: indexPath, base: "scip-ruby .", Command: "scip-ruby ."},
+	}
+	_, err := RunAll(dir, plans, func(*Plan) error { return fmt.Errorf("boom") })
+	if err == nil {
+		t.Fatal("RunAll succeeded with every indexer failing")
+	}
+	if docs := indexDocs(t, indexPath); len(docs) != 1 || docs[0] != "old.go" {
+		t.Errorf("index holds %v, want the previous one", docs)
 	}
 }

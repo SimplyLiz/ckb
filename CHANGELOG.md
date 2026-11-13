@@ -14,6 +14,9 @@ All notable changes to CKB will be documented in this file.
   index`, `ckb status`, getStatus and an `index_partial` warning; installing the indexer makes
   the next reindex bring it in. Python scripts without a manifest count from 5 tracked files.
   `--lang` still indexes one language; incremental updates are skipped on a merged index.
+  The previous index stays at the index path until the merged one replaces it, so a session
+  starting mid-build reads the old index. Only scip-clang, scip-ruby, scip-php and scip_dart,
+  which CKB can't point at another output file, still run with the old index moved aside.
 - **Bash scripts are no longer a blind spot for the tree-sitter tier.** `.sh`, `.bash` and
   extensionless files with a bash/sh shebang get function symbols in searchSymbols and
   listSymbols, and getFileComplexity reports cyclomatic and cognitive complexity per function

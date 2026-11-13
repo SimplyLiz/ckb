@@ -96,13 +96,19 @@ type LangResult struct {
 // RunAll runs every plan's indexer with run, finalizes each output (path
 // rebasing, the Python import repair) and leaves one index at the plans'
 // shared IndexPath holding all of them. With one plan that is exactly the
-// single-language build. With several, each language's index is moved aside
-// as it finishes and the parts are merged (scip.MergeIndexes), so a language
-// whose indexer fails costs only its own documents.
+// single-language build. With several, each language's index is written to a
+// part file beside the index and the parts are merged (scip.MergeIndexes), so
+// a language whose indexer fails costs only its own documents.
+//
+// The previous index stays at IndexPath until the merged one is renamed over
+// it, so a session opening the index mid-build reads the old one, never a
+// missing file or one language's part. The exception is an indexer that can't
+// be told where to write (see outputFlagLanguages): while it runs, the
+// previous index sits aside and IndexPath is its output.
 //
 // The error is non-nil only when no language made it into the index, or the
-// merge failed; then the previous index, if any, is back in place (multi only:
-// a single indexer overwrites it as it always has).
+// merge failed; then the previous index, if any, is still in place (multi
+// only: a single indexer overwrites it as it always has).
 func RunAll(repoRoot string, plans []*Plan, run func(*Plan) error) ([]LangResult, error) {
 	if len(plans) == 0 {
 		return nil, fmt.Errorf("no index plans")
@@ -114,11 +120,6 @@ func RunAll(repoRoot string, plans []*Plan, run func(*Plan) error) ([]LangResult
 		return []LangResult{res}, res.Err
 	}
 
-	// An indexer that exits 0 without writing must not have the previous
-	// index taken for its output, so that one moves aside first.
-	backup := indexPath + ".prev"
-	hadPrevious := os.Rename(indexPath, backup) == nil
-
 	results := make([]LangResult, 0, len(plans))
 	var parts []string
 	defer func() {
@@ -127,37 +128,85 @@ func RunAll(repoRoot string, plans []*Plan, run func(*Plan) error) ([]LangResult
 		}
 	}()
 	for _, plan := range plans {
-		res := runOne(repoRoot, plan, run)
-		if res.Err == nil {
-			part := fmt.Sprintf("%s.%s.part", indexPath, plan.Lang)
-			if err := os.Rename(indexPath, part); err != nil {
-				res.Err = fmt.Errorf("moving the %s index aside: %w", plan.Lang, err)
-			} else {
-				parts = append(parts, part)
-			}
+		part := fmt.Sprintf("%s.%s.part", indexPath, plan.Lang)
+		// A stale part from an interrupted build must not pass for output.
+		_ = os.Remove(part)
+		var res LangResult
+		if redirected := plan.writingTo(part); redirected != nil {
+			res = runOne(repoRoot, redirected, run)
+			res.Plan = plan
 		} else {
-			_ = os.Remove(indexPath)
+			res = runInPlace(repoRoot, plan, part, run)
+		}
+		if res.Err == nil {
+			parts = append(parts, part)
+		} else {
+			_ = os.Remove(part)
 		}
 		results = append(results, res)
 	}
 
-	restore := func() {
-		if hadPrevious {
-			_ = os.Rename(backup, indexPath)
-		}
-	}
 	if len(parts) == 0 {
-		restore()
 		return results, firstErr(results)
 	}
 	if err := scip.MergeIndexes(indexPath, parts); err != nil {
-		restore()
 		return results, fmt.Errorf("merging the language indexes: %w", err)
 	}
-	if hadPrevious {
-		_ = os.Remove(backup)
-	}
 	return results, nil
+}
+
+// runInPlace runs an indexer that writes to IndexPath and moves its output to
+// part. The previous index moves aside first, so an indexer that exits 0
+// without writing can't have it taken for its output, and comes back after.
+func runInPlace(repoRoot string, plan *Plan, part string, run func(*Plan) error) LangResult {
+	backup := plan.IndexPath + ".prev"
+	hadPrevious := os.Rename(plan.IndexPath, backup) == nil
+	res := runOne(repoRoot, plan, run)
+	if res.Err == nil {
+		if err := os.Rename(plan.IndexPath, part); err != nil {
+			res.Err = fmt.Errorf("moving the %s index aside: %w", plan.Lang, err)
+		}
+	}
+	if hadPrevious {
+		_ = os.Rename(backup, plan.IndexPath)
+	} else {
+		_ = os.Remove(plan.IndexPath)
+	}
+	return res
+}
+
+// outputFlagLanguages are the languages whose indexer is known to write where
+// --output says (scip-go, scip-typescript and rust-analyzer checked against
+// the installed binaries; scip-python, scip-java and scip-dotnet document it).
+// scip-clang and scip-ruby name the flag differently, and scip-php and
+// scip_dart aren't confirmed, so they run in place.
+var outputFlagLanguages = map[project.Language]bool{
+	project.LangGo:         true,
+	project.LangTypeScript: true,
+	project.LangJavaScript: true,
+	project.LangRust:       true,
+	project.LangPython:     true,
+	project.LangJava:       true,
+	project.LangKotlin:     true,
+	project.LangCSharp:     true,
+}
+
+// writingTo is plan with its indexer told to write to path, or nil when the
+// indexer can't be told. The path is passed relative to the indexer's
+// directory: commands are split on spaces, and a repo path may contain them.
+func (p *Plan) writingTo(path string) *Plan {
+	if p.base == "" || !outputFlagLanguages[p.Lang] {
+		return nil
+	}
+	rel, err := filepath.Rel(p.IndexerDir, path)
+	if err != nil || strings.ContainsAny(rel, " \t") {
+		return nil
+	}
+	q := *p
+	q.IndexPath = path
+	q.Command = fmt.Sprintf("%s --output %s", p.base, filepath.ToSlash(rel))
+	q.redirected = true
+	return &q
 }
 
 func runOne(repoRoot string, plan *Plan, run func(*Plan) error) LangResult {
