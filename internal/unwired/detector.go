@@ -478,7 +478,7 @@ func (d *Detector) countTestReferences(symbolID string, index *scip.SCIPIndex) i
 
 // DetectScriptEntrypoints finds additional entrypoints from package.json scripts.
 // This catches patterns like `"dev": "bun run src/server.ts"` that the standard
-// entrypoint detection misses.
+// entrypoint detection misses, and the entries a bundler builds (buildEntrypoints).
 func (d *Detector) DetectScriptEntrypoints() []architecture.Entrypoint {
 	packageJSON := filepath.Join(d.repoRoot, "package.json")
 	data, err := os.ReadFile(packageJSON)
@@ -520,6 +520,14 @@ func (d *Detector) DetectScriptEntrypoints() []architecture.Entrypoint {
 					})
 				}
 			}
+		}
+	}
+
+	// Bundle entries: a worker esbuild builds, which nothing imports.
+	for _, ep := range d.buildEntrypoints(pkg.Scripts) {
+		if !seen[ep.FileId] {
+			seen[ep.FileId] = true
+			entrypoints = append(entrypoints, ep)
 		}
 	}
 
