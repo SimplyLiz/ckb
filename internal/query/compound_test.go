@@ -1044,3 +1044,103 @@ func TestCalculatePrepareRisk_RenameDeleteFloor(t *testing.T) {
 		})
 	}
 }
+
+// prepareChange counted reference rows from a budgeted list: a caller using the
+// target three times was three callers, and past 20 items the count, the
+// transitive total and the module spread were whatever fit. It now counts each
+// consumer once from the whole lists, as assessChange does, and no longer lists
+// AnalyzeImpact's bare factor names ("visibility", "direct-callers", ...), which
+// appeared on every call whatever their value.
+func TestPrepareChange_SymbolCountsConsumersOnce(t *testing.T) {
+	fixture := testutil.LoadFixture(t, "go")
+	engine, cleanup := setupGoldenEngine(t, fixture)
+	defer cleanup()
+
+	var target string
+	for _, sym := range engine.scipAdapter.GetIndex().GetDocument("pkg/model.go").Symbols {
+		if strings.HasSuffix(sym.Symbol, "/NewModel().") {
+			target = sym.Symbol
+		}
+	}
+	if target == "" {
+		t.Fatal("NewModel not in the fixture index")
+	}
+	resp, err := engine.PrepareChange(context.Background(), PrepareChangeOptions{Target: target, ChangeType: ChangeModify})
+	if err != nil {
+		t.Fatalf("PrepareChange failed: %v", err)
+	}
+	if len(resp.DirectDependents) == 0 || resp.TransitiveImpact == nil {
+		t.Fatalf("NewModel is called from pkg/service.go, got %+v / %+v", resp.DirectDependents, resp.TransitiveImpact)
+	}
+	seen := make(map[string]bool)
+	for _, d := range resp.DirectDependents {
+		key := d.SymbolId
+		if key == "" {
+			key = d.File
+		}
+		if seen[key] {
+			t.Errorf("consumer %s listed twice", key)
+		}
+		seen[key] = true
+	}
+	if got := resp.TransitiveImpact.DirectCallers; got != len(resp.DirectDependents) {
+		t.Errorf("DirectCallers = %d, want %d", got, len(resp.DirectDependents))
+	}
+	for _, f := range resp.RiskAssessment.Factors {
+		switch f {
+		case "visibility", "direct-callers", "module-spread", "impact-kind":
+			t.Errorf("bare analyzeImpact factor name %q in prepareChange factors %v", f, resp.RiskAssessment.Factors)
+		}
+	}
+	if !strings.Contains(resp.RiskAssessment.Basis, "at least high") {
+		t.Errorf("modify with callers should say what a signature change scores, basis = %q", resp.RiskAssessment.Basis)
+	}
+}
+
+// The dependents list is cut to the response budget; the score counts them all.
+func TestCalculatePrepareRisk_CountsCallersBeyondBudget(t *testing.T) {
+	engine := &Engine{}
+	target := &PrepareChangeTarget{Visibility: "internal", Path: "app/x.py"}
+	shown := make([]PrepareDependent, 3)
+	risk := engine.calculatePrepareRisk(target, shown, &PrepareTransitive{DirectCallers: 12}, nil, nil, nil, ChangeModify)
+	if risk.Score != 0.25 || len(risk.Factors) == 0 || risk.Factors[0] != "High dependent count (12 direct callers)" {
+		t.Errorf("got %v %v, want 0.25 from 12 callers", risk.Score, risk.Factors)
+	}
+	risk = engine.calculatePrepareRisk(target, shown, &PrepareTransitive{DirectCallers: 12}, nil, nil, nil, ChangeRename)
+	if want := "rename breaks 12 production caller(s) unless they change too"; risk.Factors[len(risk.Factors)-1] != want {
+		t.Errorf("floor factor = %q, want %q", risk.Factors[len(risk.Factors)-1], want)
+	}
+}
+
+// A modify score can't tell a body edit from a signature change, so it says
+// which one it scored and what assessChange will do with the other.
+func TestModifyRiskBasis(t *testing.T) {
+	cases := []struct {
+		name       string
+		changeType ChangeType
+		callers    int
+		public     bool
+		score      float64
+		want       string // substring; "" means no basis
+	}{
+		{"callers below the floor", ChangeModify, 9, true, 0.3, "the 9 production caller(s) stay as they are, it is at least high (0.6)"},
+		{"exported, no callers", ChangeModify, 0, true, 0.15, "at least medium (0.4)"},
+		{"internal, no callers", ChangeModify, 0, false, 0.2, ""},
+		{"already at the floor", ChangeModify, 30, true, 0.6, ""},
+		{"rename has its own floor", ChangeRename, 3, true, 0.6, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := modifyRiskBasis(c.changeType, c.callers, c.public, c.score)
+			if c.want == "" {
+				if got != "" {
+					t.Errorf("basis = %q, want none", got)
+				}
+				return
+			}
+			if !strings.Contains(got, c.want) || !strings.Contains(got, "assessChange rescores the real diff") {
+				t.Errorf("basis = %q, want it to contain %q", got, c.want)
+			}
+		})
+	}
+}

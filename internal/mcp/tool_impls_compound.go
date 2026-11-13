@@ -18,6 +18,8 @@ type CompactPrepareChange struct {
 	TestsNeeded   []string `json:"tests_needed"`   // top 5
 	OwnerSuggest  string   `json:"owner_suggest,omitempty"`
 	Summary       string   `json:"summary"`
+	// RiskBasis is what the risk assumes, for modify: that the declaration stays.
+	RiskBasis string `json:"risk_basis,omitempty"`
 	// Hint says how to narrow a file or module target down to the change made.
 	Hint     string `json:"hint,omitempty"`
 	Backend  string `json:"backend"`
@@ -26,9 +28,9 @@ type CompactPrepareChange struct {
 
 // buildMCPCompactPrepareChange converts a PrepareChangeResponse into compact form.
 func buildMCPCompactPrepareChange(target string, r *query.PrepareChangeResponse, activeBackend string) CompactPrepareChange {
-	risk := "unknown"
+	risk, riskBasis := "unknown", ""
 	if r.RiskAssessment != nil {
-		risk = r.RiskAssessment.Level
+		risk, riskBasis = r.RiskAssessment.Level, r.RiskAssessment.Basis
 	}
 
 	seen := make(map[string]bool)
@@ -86,6 +88,7 @@ func buildMCPCompactPrepareChange(target string, r *query.PrepareChangeResponse,
 		AffectedFiles: affectedFiles,
 		TestsNeeded:   testsNeeded,
 		Summary:       summary,
+		RiskBasis:     riskBasis,
 		Hint:          hint,
 		Backend:       activeBackend,
 		Accuracy:      envelope.AccuracyForBackend(activeBackend),

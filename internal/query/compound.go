@@ -1518,9 +1518,12 @@ type PrepareDependent struct {
 
 // PrepareTransitive summarizes transitive impact.
 type PrepareTransitive struct {
-	TotalCallers int `json:"totalCallers"`
-	ModuleSpread int `json:"moduleSpread"`
-	MaxDepth     int `json:"maxDepth"`
+	// DirectCallers counts the direct consumers, all of them: directDependents is
+	// cut to the response budget.
+	DirectCallers int `json:"directCallers"`
+	TotalCallers  int `json:"totalCallers"`
+	ModuleSpread  int `json:"moduleSpread"`
+	MaxDepth      int `json:"maxDepth"`
 }
 
 // PrepareTest describes a test that may need updating.
@@ -1540,8 +1543,11 @@ type PrepareCoChange struct {
 
 // PrepareRisk assesses the risk of the change.
 type PrepareRisk struct {
-	Level       string   `json:"level"` // low, medium, high, critical, or RiskLevelNotAssessed
-	Score       float64  `json:"score"`
+	Level string  `json:"level"` // low, medium, high, critical, or RiskLevelNotAssessed
+	Score float64 `json:"score"`
+	// Basis says what the score assumes where that changes the answer: for
+	// modify, that the declaration stays as it is.
+	Basis       string   `json:"basis,omitempty"`
 	Factors     []string `json:"factors"`
 	Suggestions []string `json:"suggestions"`
 }
@@ -1835,26 +1841,35 @@ type prepareImpact struct {
 
 // getPrepareImpact retrieves impact analysis data for one symbol.
 func (e *Engine) getPrepareImpact(ctx context.Context, symbolId string) (*prepareImpact, error) {
+	// All items: the counts the risk is scored on come from the whole lists, not
+	// the 20 the response budget keeps. Budgeted, a symbol with 40 callers counted
+	// 20, and its transitive callers and module spread were whatever fit after them.
 	impactResp, err := e.AnalyzeImpact(ctx, AnalyzeImpactOptions{
 		SymbolId: symbolId,
 		Depth:    2,
+		AllItems: true,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	var factors []string
-	if impactResp.RiskScore != nil {
-		for _, f := range impactResp.RiskScore.Factors {
-			factors = append(factors, f.Name)
-		}
+	// One entry per consumer, as assessChange counts them: a function calling the
+	// target three times is one caller, not three. (AnalyzeImpact's own risk
+	// factors are not passed on: prepareChange scores on its own, and their bare
+	// names, "visibility", "direct-callers", ..., listed every one of them on every
+	// call whatever their value.)
+	direct, transitive := mergeConsumers(impactResp.DirectImpact, impactResp.TransitiveImpact)
+	sortImpactItems(direct)
+	sortImpactItems(transitive)
+	imp := &prepareImpact{
+		transitive: summarizeTransitive(&AnalyzeImpactResponse{DirectImpact: direct, TransitiveImpact: transitive}),
+		tests:      allConsumers(direct, transitive, impactResp.TestImpact),
 	}
-	return &prepareImpact{
-		dependents: toPrepareDependents(impactResp.DirectImpact),
-		transitive: summarizeTransitive(impactResp),
-		tests:      allConsumers(impactResp.DirectImpact, impactResp.TransitiveImpact, impactResp.TestImpact),
-		factors:    factors,
-	}, nil
+	if limit := e.compressor.GetBudget().MaxImpactItems; limit > 0 && len(direct) > limit {
+		direct = direct[:limit]
+	}
+	imp.dependents = toPrepareDependents(direct)
+	return imp, nil
 }
 
 // maxPrepareFileSymbols bounds the impact analyses a file target runs, one per
@@ -2202,13 +2217,19 @@ func (e *Engine) calculatePrepareRisk(
 	var factors []string
 	var suggestions []string
 
+	// dependents is cut to the response budget; the summary counts them all.
+	callers := len(dependents)
+	if transitive != nil && transitive.DirectCallers > callers {
+		callers = transitive.DirectCallers
+	}
+
 	// Factor: Number of direct dependents
-	if len(dependents) > 10 {
+	if callers > 10 {
 		score += 0.25
-		factors = append(factors, fmt.Sprintf("High dependent count (%d direct callers)", len(dependents)))
-	} else if len(dependents) > 5 {
+		factors = append(factors, fmt.Sprintf("High dependent count (%d direct callers)", callers))
+	} else if callers > 5 {
 		score += 0.15
-		factors = append(factors, fmt.Sprintf("Moderate dependent count (%d direct callers)", len(dependents)))
+		factors = append(factors, fmt.Sprintf("Moderate dependent count (%d direct callers)", callers))
 	}
 
 	// Factor: Module spread
@@ -2273,9 +2294,9 @@ func (e *Engine) calculatePrepareRisk(
 	// change once it is in a diff (applyContractChangesToRisk). Without it the
 	// two tools disagree on one change: prepareChange low, assessChange high.
 	// modify has no floor: it can't tell a body edit from a signature change.
-	if (changeType == ChangeDelete || changeType == ChangeRename) && len(dependents) > 0 && roundedScore < highRiskFloor {
+	if (changeType == ChangeDelete || changeType == ChangeRename) && callers > 0 && roundedScore < highRiskFloor {
 		roundedScore = highRiskFloor
-		factors = append(factors, fmt.Sprintf("%s breaks %d production caller(s) unless they change too", changeType, len(dependents)))
+		factors = append(factors, fmt.Sprintf("%s breaks %d production caller(s) unless they change too", changeType, callers))
 	}
 
 	level := "low"
@@ -2290,9 +2311,31 @@ func (e *Engine) calculatePrepareRisk(
 	return &PrepareRisk{
 		Level:       level,
 		Score:       roundedScore,
+		Basis:       modifyRiskBasis(changeType, callers, target.Visibility == "public", roundedScore),
 		Factors:     factors,
 		Suggestions: suggestions,
 	}
+}
+
+// modifyRiskBasis says what a modify score assumes. Before the edit there is no
+// telling a body change from a signature change, so the score is the one for an
+// edit that keeps the declaration, counted from consumers. Once the edit is a
+// diff, assessChange puts the floors of applyContractChangesToRisk on a changed
+// declaration: high while production callers stay as they are, medium for an
+// exported one without any. Where the score already reaches that floor there is
+// nothing to qualify.
+func modifyRiskBasis(changeType ChangeType, callers int, public bool, score float64) string {
+	if changeType != ChangeModify {
+		return ""
+	}
+	const assumed = "Scored as an edit that keeps the declaration; assessChange rescores the real diff."
+	switch {
+	case callers > 0 && score < highRiskFloor:
+		return fmt.Sprintf("%s If the signature or type changes and the %d production caller(s) stay as they are, it is at least high (%.1f).", assumed, callers, highRiskFloor)
+	case callers == 0 && public && score < mediumRiskFloor:
+		return fmt.Sprintf("%s If the exported declaration changes, it is at least medium (%.1f): consumers in other repos can't be seen.", assumed, mediumRiskFloor)
+	}
+	return ""
 }
 
 // =============================================================================
@@ -2539,8 +2582,9 @@ func summarizeTransitive(resp *AnalyzeImpactResponse) *PrepareTransitive {
 		}
 	}
 	return &PrepareTransitive{
-		TotalCallers: len(resp.TransitiveImpact) + len(resp.DirectImpact),
-		ModuleSpread: len(moduleSet),
-		MaxDepth:     maxDepth,
+		DirectCallers: len(resp.DirectImpact),
+		TotalCallers:  len(resp.TransitiveImpact) + len(resp.DirectImpact),
+		ModuleSpread:  len(moduleSet),
+		MaxDepth:      maxDepth,
 	}
 }
