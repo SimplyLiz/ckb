@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -138,5 +139,28 @@ func TestMissingIndexWarning_DiagnosisIsCached(t *testing.T) {
 	onlyWarning(t, s, "getCallGraph")
 	if calls != 1 {
 		t.Fatalf("diagnoser ran %d times for two calls", calls)
+	}
+}
+
+// A streamed answer comes from the same index as a plain one, so its initial
+// response carries the same index_missing warning.
+func TestMissingIndexWarning_OnStreamingInitialResponse(t *testing.T) {
+	s, _ := newReindexTestServer(t, false)
+	s.SetStdout(io.Discard) // the stream's chunks go out as notifications
+	s.SetIndexDiagnoser(func(string) IndexDiagnosis { return IndexDiagnosis{Ready: true} })
+
+	res, err := s.handleCallTool(map[string]interface{}{
+		"name":      "searchSymbols",
+		"arguments": map[string]interface{}{"query": "Engine", "stream": true},
+	})
+	if err != nil {
+		t.Fatalf("searchSymbols: %v", err)
+	}
+	text := res.(map[string]interface{})["content"].([]map[string]interface{})[0]["text"].(string)
+	if !strings.Contains(text, `"streaming":true`) {
+		t.Fatalf("not a streaming initial response: %s", text)
+	}
+	if !strings.Contains(text, "index_missing") {
+		t.Fatalf("streaming initial response has no index_missing warning: %s", text)
 	}
 }
