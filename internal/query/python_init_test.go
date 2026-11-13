@@ -280,3 +280,44 @@ func TestAnalyzeImpact_PythonInitOneRowPerConsumerLine(t *testing.T) {
 		t.Errorf("direct = %v, want both() once", got)
 	}
 }
+
+// `Foo(1), Bar(2)` is one line to edit: the done check lists it once, as Foo's, not a
+// second time for Bar, which inherits Foo.__init__ (Rubik's lc1_wins.py:15).
+func TestCheckSymbol_PythonInitOneSitePerLine(t *testing.T) {
+	root := t.TempDir()
+	writeRepoFile(t, root, "pkg/shapes.py", "class Foo:\n    def __init__(self, x):\n        self.x = x\n\n\nclass Bar(Foo):\n    pass\n")
+	writeRepoFile(t, root, "pkg/use.py", "from pkg.shapes import Foo, Bar\n\n\ndef both():\n    return Foo(1), Bar(2)\n")
+	def, read, imp := scippb.SymbolRole_Definition, scippb.SymbolRole_ReadAccess, scippb.SymbolRole_Import
+	shapes := pyDoc("pkg/shapes.py", []pyOcc{
+		{pyPkg + "Foo#", 0, 6, def},
+		{pyPkg + "Foo#__init__().", 1, 8, def},
+		{pyPkg + "Bar#", 5, 6, def},
+		{pyPkg + "Foo#", 5, 10, read},
+	}, map[string]string{pyPkg + "Bar#": pyPkg + "Foo#"})
+	uses := pyDoc("pkg/use.py", []pyOcc{
+		{pyPkg + "Foo#", 0, 23, imp},
+		{pyPkg + "Bar#", 0, 28, imp},
+		{pyUse + "both().", 3, 4, def},
+		{pyPkg + "Foo#", 4, 11, read},
+		{pyPkg + "Bar#", 4, 19, read},
+	}, nil)
+	engine := scipEngine(t, root, "scip-python", []*scippb.Document{shapes, uses})
+	checker := newDoneChecker(root, AnalyzeChangeSetOptions{}, &impact.ParsedDiff{})
+	sym := impact.ChangedSymbol{
+		SymbolID:          pyPkg + "Foo#__init__().",
+		Name:              "__init__",
+		File:              "pkg/shapes.py",
+		DeclarationBefore: "def __init__(self, x):",
+		DeclarationAfter:  "def __init__(self, x, y):",
+	}
+	if _, ok := checker.checkSymbol(context.Background(), engine.scipAdapter, sym, impact.DeclChanged); !ok {
+		t.Fatal("lookup failed")
+	}
+	var got []string
+	for _, s := range checker.sites {
+		got = append(got, fmt.Sprintf("%s:%d %s", s.File, s.Line, s.Via))
+	}
+	if want := []string{"pkg/use.py:5 "}; !slices.Equal(got, want) {
+		t.Errorf("sites = %q, want %q", got, want)
+	}
+}
