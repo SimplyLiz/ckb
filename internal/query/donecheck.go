@@ -273,15 +273,24 @@ func (c *doneChecker) checkSymbol(ctx context.Context, adapter referenceFinder, 
 		query.pyKeywords = diff.PythonRenamedKeywords(sym.DeclarationBefore, sym.DeclarationAfter, query.name)
 	}
 	ok := c.checkUses(ctx, adapter, sym, query, openFiles)
-	if class := diff.PythonInitClass(sym.SymbolID); class != "" && change == impact.DeclChanged {
+	if change == impact.DeclChanged {
 		// `Root(x)` calls Root.__init__, but its reference is to Root: the class's
-		// calls are this declaration's uses too. A subclass's own super().__init__
-		// is a use of __init__ and was looked at above.
-		classSym := sym
-		classSym.SymbolID = class
-		query.name = scip.SymbolSimpleName(class)
-		query.pyCallsOnly = true
-		ok = c.checkUses(ctx, adapter, classSym, query, openFiles) && ok
+		// calls are this declaration's uses too, and so are those of a subclass
+		// that inherits the __init__. A subclass's own super().__init__ is a use of
+		// __init__ and was looked at above.
+		index, _ := adapter.(pyClassIndex)
+		classes := pythonInitClasses(index, sym.SymbolID)
+		for i, class := range classes {
+			classSym := sym
+			classSym.SymbolID = class
+			classQuery := query
+			classQuery.name = scip.SymbolSimpleName(class)
+			classQuery.pyCallsOnly = true
+			if i > 0 {
+				classQuery.via = fmt.Sprintf("%s, which inherits %s.__init__", classQuery.name, scip.SymbolSimpleName(classes[0]))
+			}
+			ok = c.checkUses(ctx, adapter, classSym, classQuery, openFiles) && ok
+		}
 	}
 	return openFiles, ok
 }
