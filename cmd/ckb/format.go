@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -1118,7 +1119,7 @@ func formatChangeSetHuman(resp *ChangeSetResponseCLI) string {
 		b.WriteString(fmt.Sprintf("Changed Symbols (%d):\n", len(resp.ChangedSymbols)))
 		shown := min(10, len(resp.ChangedSymbols))
 		for _, s := range resp.ChangedSymbols[:shown] {
-			b.WriteString(fmt.Sprintf("  %s %s\n", s.ChangeType, s.Name))
+			b.WriteString(fmt.Sprintf("  %s %s\n", s.ChangeType, cmp.Or(s.QualifiedName, s.Name)))
 			b.WriteString(fmt.Sprintf("    %s\n", s.File))
 			if s.Note != "" {
 				b.WriteString(fmt.Sprintf("    (not attributed to a symbol: %s)\n", s.Note))
@@ -1285,7 +1286,7 @@ func writeDoneCheck(b *strings.Builder, check *query.DoneCheck, verbose bool) {
 			if site.Unverified {
 				b.WriteString("  (index out of date here, line may be off)")
 			}
-			b.WriteString(fmt.Sprintf("  [%s %s]\n", site.Symbol, site.Change))
+			b.WriteString(fmt.Sprintf("  [%s %s]\n", cmp.Or(site.QualifiedName, site.Symbol), site.Change))
 		}
 	}
 	writeSites(check.OpenSites[:shown])
@@ -1299,7 +1300,7 @@ func writeDoneCheck(b *strings.Builder, check *query.DoneCheck, verbose bool) {
 		} else {
 			b.WriteString(fmt.Sprintf("  %d more rarely break, counted per symbol (--verbose lists them):\n", check.RarelyCount))
 			for _, g := range check.Rarely {
-				b.WriteString(fmt.Sprintf("    %s: %d in %s\n", g.Symbol, g.Count, countNoun(g.Files, "file", "files")))
+				b.WriteString(fmt.Sprintf("    %s: %d in %s\n", cmp.Or(g.QualifiedName, g.Symbol), g.Count, countNoun(g.Files, "file", "files")))
 			}
 		}
 	}
@@ -1454,9 +1455,15 @@ func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 			}
 		}
 		b.WriteString(fmt.Sprintf("Possible contract changes (%d)  [%s]\n", len(resp.Contracts), basis))
+		qualified := make(map[[2]string]string, len(resp.ChangedSymbols))
+		for _, s := range resp.ChangedSymbols {
+			if s.QualifiedName != "" {
+				qualified[[2]string{s.Name, s.File}] = s.QualifiedName
+			}
+		}
 		shown := cap10(len(resp.Contracts))
 		for _, c := range resp.Contracts[:shown] {
-			b.WriteString(fmt.Sprintf("  %-20s%s\n", c.Symbol, c.File))
+			b.WriteString(fmt.Sprintf("  %-19s %s\n", cmp.Or(qualified[[2]string{c.Symbol, c.File}], c.Symbol), c.File))
 			if c.Kind != "possible-contract-change" {
 				line := "    " + c.Kind
 				if c.ConsumerCount > 0 {

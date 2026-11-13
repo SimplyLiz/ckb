@@ -307,3 +307,30 @@ func TestMapToSymbols_GoFieldRenamedWithItsComment(t *testing.T) {
 		}
 	})
 }
+
+// changedSymbols named three methods "Priority" and a Python constructor "__init__":
+// the display name now says whose.
+func TestQualifiedSymbolName(t *testing.T) {
+	cases := []struct{ id, name, want string }{
+		{"scip-go gomod github.com/x/y abc `github.com/x/y/internal/backends`/Backend#Priority.", "Priority", "Backend.Priority"},
+		{"scip-go gomod github.com/x/y abc `github.com/x/y/internal/backends/lsp`/LspAdapter#Priority().", "Priority", "LspAdapter.Priority"},
+		{"scip-go gomod github.com/x/y abc `github.com/x/y/internal/backends`/SearchOptions#MaxResults.", "MaxResults", "SearchOptions.MaxResults"},
+		{"scip-python python . 1bb27f5 `experiments.living-context.lc1_account`/Win#__init__().", "__init__", "Win.__init__"},
+		{tsPkg + "Store#get().", "get", "Store.get"},
+		{"scip-go gomod github.com/x/y abc `github.com/x/y/internal/query`/NewEngine().", "NewEngine", ""},
+		{"scip-go gomod github.com/x/y abc `github.com/x/y/internal/backends`/SearchOptions#", "SearchOptions", ""},
+		{"scip-typescript npm demo 1.0.0 src/`lib.ts`/sectionSchema.key.", "sectionSchema.key", ""},
+		{"file:lib/lib.go", "lib/lib.go", ""},
+		{"local 3", "x", ""},
+	}
+	for _, c := range cases {
+		if got := QualifiedSymbolName(c.id, c.name); got != c.want {
+			t.Errorf("QualifiedSymbolName(%q, %q) = %q, want %q", c.id, c.name, got, c.want)
+		}
+	}
+	got := mapDocWith(t, goDoc(), fileDiff("lib/lib.go", "@@ -18,2 +18,2 @@\n-\tX int\n+\tX int64\n }\n"),
+		readerFor(goLib, append(append(append([]string{}, goLib[:17]...), "\tX int64"), goLib[18:]...)))
+	if len(got) != 1 || got[0].Name != "X" || got[0].QualifiedName != "Point.X" {
+		t.Fatalf("got %+v, want X with qualified name Point.X", got)
+	}
+}
