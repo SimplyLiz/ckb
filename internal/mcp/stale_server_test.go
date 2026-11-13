@@ -18,9 +18,9 @@ func callToolText(t *testing.T, s *MCPServer, name string) *envelope.Response {
 	if err != nil {
 		t.Fatalf("handleCallTool: %v", err)
 	}
-	content := out.(map[string]interface{})["content"].([]map[string]interface{})
+	content := as[[]map[string]interface{}](t, as[map[string]interface{}](t, out)["content"])
 	var resp envelope.Response
-	if err := json.Unmarshal([]byte(content[0]["text"].(string)), &resp); err != nil {
+	if err := json.Unmarshal([]byte(as[string](t, content[0]["text"])), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	return &resp

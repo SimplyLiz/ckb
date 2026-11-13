@@ -50,11 +50,11 @@ func callStatus(t *testing.T, s *MCPServer) map[string]interface{} {
 	if err != nil {
 		t.Fatalf("getStatus: %v", err)
 	}
-	content := res.(map[string]interface{})["content"].([]map[string]interface{})
+	content := as[[]map[string]interface{}](t, as[map[string]interface{}](t, res)["content"])
 	var env struct {
 		Data map[string]interface{} `json:"data"`
 	}
-	if err := json.Unmarshal([]byte(content[0]["text"].(string)), &env); err != nil {
+	if err := json.Unmarshal([]byte(as[string](t, content[0]["text"])), &env); err != nil {
 		t.Fatalf("decode getStatus: %v", err)
 	}
 	return env.Data
@@ -62,8 +62,8 @@ func callStatus(t *testing.T, s *MCPServer) map[string]interface{} {
 
 func scipBackendStatus(t *testing.T, data map[string]interface{}) map[string]interface{} {
 	t.Helper()
-	for _, b := range data["backends"].([]interface{}) {
-		if m := b.(map[string]interface{}); m["id"] == "scip" {
+	for _, b := range as[[]interface{}](t, data["backends"]) {
+		if m := as[map[string]interface{}](t, b); m["id"] == "scip" {
 			return m
 		}
 	}
@@ -79,14 +79,14 @@ func TestIndexBuiltAfterLazyStart_IsServedOnNextCall(t *testing.T) {
 	s, dir := newLazyTestServer(t, true)
 
 	before := callStatus(t, s)
-	if idx := before["index"].(map[string]interface{}); idx["exists"] != false || idx["fresh"] != false {
+	if idx := as[map[string]interface{}](t, before["index"]); idx["exists"] != false || idx["fresh"] != false {
 		t.Fatalf("index before build = %v, want exists/fresh false", idx)
 	}
 
 	writeFixtureIndex(t, dir) // what 'ckb index' leaves behind
 
 	after := callStatus(t, s)
-	idx := after["index"].(map[string]interface{})
+	idx := as[map[string]interface{}](t, after["index"])
 	if idx["exists"] != true || idx["fresh"] != true || idx["loaded"] != true {
 		t.Fatalf("index after build = %v, want exists, fresh and loaded", idx)
 	}
@@ -104,7 +104,7 @@ func TestIndexStaleness_NoSCIPBackendIsNeverFresh(t *testing.T) {
 	s, dir := newLazyTestServer(t, false)
 	writeFixtureIndex(t, dir)
 
-	idx := callStatus(t, s)["index"].(map[string]interface{})
+	idx := as[map[string]interface{}](t, callStatus(t, s)["index"])
 	if idx["fresh"] != false || idx["loaded"] != false {
 		t.Fatalf("index = %v, want fresh and loaded false", idx)
 	}
@@ -138,9 +138,10 @@ func TestGetStatus_RepoHintNamesServedRepoAndStaysPut(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out []string
-		for _, h := range callStatus(t, s)["hints"].([]interface{}) {
-			if strings.Contains(strings.ToLower(h.(string)), "repo") && !strings.Contains(h.(string), "preset") {
-				out = append(out, h.(string))
+		for _, raw := range as[[]interface{}](t, callStatus(t, s)["hints"]) {
+			h := as[string](t, raw)
+			if strings.Contains(strings.ToLower(h), "repo") && !strings.Contains(h, "preset") {
+				out = append(out, h)
 			}
 		}
 		return out

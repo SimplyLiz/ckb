@@ -72,7 +72,7 @@ func TestToolErrorSetsIsError(t *testing.T) {
 	if resp.Error != nil {
 		t.Fatalf("tool error must be a result, got protocol error %+v", resp.Error)
 	}
-	result := resp.Result.(map[string]interface{})
+	result := as[map[string]interface{}](t, resp.Result)
 	if result["isError"] != true {
 		t.Errorf("isError = %v, want true", result["isError"])
 	}

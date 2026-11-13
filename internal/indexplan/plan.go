@@ -218,7 +218,7 @@ func relocate(repoRoot string, plan *Plan) error {
 			if _, err := os.Stat(written); err != nil {
 				// Nothing new was written. Whatever sits at the target is an
 				// earlier, already rebased index and must not be rebased again.
-				return nil
+				return nil //nolint:nilerr // a missing file is the answer, not a failure
 			}
 			// Replaces the previous run's index at the target path.
 			if err := os.Rename(written, plan.IndexPath); err != nil {
