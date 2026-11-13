@@ -207,6 +207,11 @@ private, so only aggregates are here.
 
 ### Fixed — small things found in review
 
+- **listEntrypoints finds `main`.** It took a `main` only under a path containing `/cmd/`,
+  which a repo-relative path like `main.go` or `cmd/ckb/main.go` never has, and it searched
+  for "main" with a cap that `domain`, `remaining` and the like filled first. CKB's own
+  index listed no CLI entrypoint at all. Every function named `main` outside test files now
+  counts, in Go only in a `package main`; traceUsage reaches it as a `cli` path.
 - **A custom `scip.indexPath` works for C++, Ruby and PHP.** Every indexer was given
   `--output`; scip-clang calls it `--index-output-path` and scip-ruby `--index-file`, and
   scip-php has none and writes `index.scip` into the repo root, where it stayed while the
