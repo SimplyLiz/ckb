@@ -2426,9 +2426,25 @@ func findBrokenContract(name string, change impact.DeclarationChange, direct []I
 }
 
 const (
-	highRiskFloor   = 0.6
-	mediumRiskFloor = 0.4
+	criticalRiskFloor = 0.8
+	highRiskFloor     = 0.6
+	mediumRiskFloor   = 0.4
 )
+
+// riskLevelFor is the level of a change risk score, the same bands for assessChange
+// and prepareChange: one change scored before and after the edit gets one level.
+func riskLevelFor(score float64) string {
+	switch {
+	case score >= criticalRiskFloor:
+		return "critical"
+	case score >= highRiskFloor:
+		return "high"
+	case score >= mediumRiskFloor:
+		return "medium"
+	default:
+		return "low"
+	}
+}
 
 // applyContractChangesToRisk keeps the score from calling a change low when a
 // declaration changed under code that still uses it, because the count-based score
@@ -2667,18 +2683,7 @@ func (e *Engine) calculateAggregatedRisk(
 		}
 	}
 
-	// Determine level
-	var level string
-	switch {
-	case score >= 0.8:
-		level = "critical"
-	case score >= 0.6:
-		level = "high"
-	case score >= 0.4:
-		level = "medium"
-	default:
-		level = "low"
-	}
+	level := riskLevelFor(score)
 
 	// Build explanation
 	explanation := fmt.Sprintf("Change affects %d symbols across %d modules with %d direct and %d transitive impacts.",
