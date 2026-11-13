@@ -2,7 +2,7 @@
 
 All notable changes to CKB will be documented in this file.
 
-## [9.4.0] - 2026-11-08
+## [9.4.0] - 2026-11-13
 
 ### Added — mixed repos, scripts and data
 

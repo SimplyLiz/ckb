@@ -1,7 +1,7 @@
 What's new
   • Done check: `ckb changes --check` lists every use of a changed
     declaration your diff left untouched
-  • findReferences over MCP is far smaller: grouped by file by default
+  • findReferences over MCP is far smaller: plain text, one line per use
   • Upgrades no longer need a fresh .ckb
 
 CKB is built by one developer, and I want it to stay free for the people
