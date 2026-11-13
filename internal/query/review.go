@@ -909,7 +909,7 @@ func (e *Engine) checkBreakingChanges(changeSet func() (*AnalyzeChangeSetRespons
 		}
 		return ReviewCheck{Name: "breaking", Status: "skip", Severity: "error", Summary: summary, Duration: time.Since(start).Milliseconds()}, nil
 	}
-	changes, notCompared := apiChangesFromContracts(cs.Contracts, nil, false)
+	changes, notCompared := apiChangesFromContracts(cs.Contracts, nil, false, false) // A private use left behind breaks too
 
 	// A use left in the repo breaks now; with every use updated it's the public API
 	// that changed, which matters to callers outside the repo only.

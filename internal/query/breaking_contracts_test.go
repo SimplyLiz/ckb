@@ -14,8 +14,10 @@ func TestAPIChangesFromContracts(t *testing.T) {
 		{Symbol: "price", File: "exp/lc1_account.py", Kind: "possible-contract-change"},
 		{Symbol: "simulate", File: "exp/lc1_account.py", Kind: "possible-contract-change"},
 		{Symbol: "Helper", File: "lib/acct_test.go", Kind: "signature-changed"},
+		{Symbol: "_load", File: "exp/roi.py", Kind: "signature-changed"},
+		{Symbol: "parse", File: "lib/acct.go", Kind: "definition-removed"},
 	}
-	changes, notCompared := apiChangesFromContracts(contracts, nil, false)
+	changes, notCompared := apiChangesFromContracts(contracts, nil, false, true)
 	if len(changes) != 2 {
 		t.Fatalf("changes = %+v, want Price and Old", changes)
 	}
@@ -29,9 +31,27 @@ func TestAPIChangesFromContracts(t *testing.T) {
 		t.Errorf("notCompared = %v", notCompared)
 	}
 
-	minor, _ := apiChangesFromContracts(contracts, []string{"lib/"}, true)
+	minor, _ := apiChangesFromContracts(contracts, []string{"lib/"}, true, true)
 	if len(minor) != 3 {
 		t.Errorf("with includeMinor and scope lib/: %d changes, want 3", len(minor))
+	}
+	// The review counts private symbols too: a use left behind breaks all the same.
+	if all, _ := apiChangesFromContracts(contracts, nil, false, false); len(all) != 4 {
+		t.Errorf("without ignorePrivate: %d changes, want Price, Old, _load and parse", len(all))
+	}
+}
+
+func TestPrivateByName(t *testing.T) {
+	for _, tt := range []struct {
+		symbol, file string
+		want         bool
+	}{
+		{"_load", "a.py", true}, {"__secret", "a.py", true}, {"__init__", "a.py", false}, {"price", "a.py", false},
+		{"Account._bill", "a.py", true}, {"parse", "a.go", true}, {"Parse", "a.go", false}, {"_x", "a.ts", false},
+	} {
+		if got := privateByName(tt.symbol, tt.file); got != tt.want {
+			t.Errorf("privateByName(%q, %q) = %v", tt.symbol, tt.file, got)
+		}
 	}
 }
 
