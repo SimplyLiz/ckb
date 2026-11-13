@@ -245,6 +245,9 @@ type SemanticCallerInfo struct {
 type scipCallerProvider struct {
 	adapter *scip.SCIPAdapter
 	nodes   map[string]*scip.CallGraphNode // callers seen by the last GetTransitiveCallers
+	// constructions, for a Python __init__, are the functions that construct its
+	// class or a subclass inheriting it. Nil leaves them out.
+	constructions func(initID string) []string
 	// separateTests moves callers in test files out of the result into testCallers.
 	separateTests bool
 	testCallers   map[string]int
@@ -269,6 +272,101 @@ func (p *scipCallerProvider) CallerLocation(callerId string) (string, *impact.Lo
 
 // GetTransitiveCallers implements impact.TransitiveCallerProvider
 func (p *scipCallerProvider) GetTransitiveCallers(symbolId string, maxDepth int) (map[string]int, error) {
+	var result map[string]int
+	var err error
+	if p.constructions != nil && strings.HasPrefix(symbolId, "scip-python ") {
+		result, err = p.pythonCallers(symbolId, maxDepth)
+	} else {
+		result, err = p.graphCallers(symbolId, maxDepth)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if p.separateTests {
+		p.testCallers = make(map[string]int)
+		for id, depth := range result {
+			if n := p.nodes[id]; n != nil && n.Location != nil && isTestFilePath(n.Location.FileId) {
+				p.testCallers[id] = depth
+				delete(result, id)
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// pythonCallers walks the callers of a Python symbol one level at a time, so that
+// wherever the walk reaches an __init__, the functions constructing its class are
+// its callers too: the call graph only knows the uses of __init__ itself.
+func (p *scipCallerProvider) pythonCallers(symbolId string, maxDepth int) (map[string]int, error) {
+	p.nodes = make(map[string]*scip.CallGraphNode)
+	result := make(map[string]int)
+	type entry struct {
+		id    string
+		depth int
+	}
+	visited := map[string]bool{symbolId: true}
+	queue := []entry{{symbolId, 0}}
+	for len(queue) > 0 {
+		curr := queue[0]
+		queue = queue[1:]
+		if curr.depth >= maxDepth {
+			continue
+		}
+		if len(p.nodes) >= transitiveCallerNodes {
+			p.nodeLimitHit = true
+			break
+		}
+		graph, err := p.adapter.BuildCallGraph(curr.id, scip.CallGraphOptions{
+			Direction: scip.DirectionCallers,
+			MaxDepth:  1,
+			MaxNodes:  transitiveCallerNodes,
+		})
+		if err != nil {
+			if curr.id == symbolId {
+				return nil, err
+			}
+			continue
+		}
+		var callers []*scip.CallGraphNode
+		if graph != nil {
+			if _, ok := p.nodes[curr.id]; !ok && curr.id != symbolId && graph.Root != nil {
+				p.nodes[curr.id] = graph.Root
+			}
+			callers = graph.Callers
+		}
+		if diff.PythonInitClass(curr.id) != "" {
+			for _, id := range p.constructions(curr.id) {
+				callers = append(callers, &scip.CallGraphNode{SymbolID: id, Location: p.definitionNode(id)})
+			}
+		}
+		for _, caller := range callers {
+			if caller == nil || visited[caller.SymbolID] {
+				continue
+			}
+			visited[caller.SymbolID] = true
+			if _, ok := p.nodes[caller.SymbolID]; !ok {
+				p.nodes[caller.SymbolID] = caller
+			}
+			result[caller.SymbolID] = curr.depth + 1
+			queue = append(queue, entry{caller.SymbolID, curr.depth + 1})
+		}
+	}
+	return result, nil
+}
+
+// definitionNode is where id is defined, as a call graph node places it.
+func (p *scipCallerProvider) definitionNode(id string) *scip.Location {
+	loc := p.adapter.DefinitionLocation(id)
+	if loc == nil {
+		return nil
+	}
+	return &scip.Location{FileId: loc.Path, StartLine: loc.Line - 1, StartColumn: loc.Column - 1}
+}
+
+// graphCallers takes the callers from one call graph built from symbolId.
+func (p *scipCallerProvider) graphCallers(symbolId string, maxDepth int) (map[string]int, error) {
 	graph, err := p.adapter.BuildCallGraph(symbolId, scip.CallGraphOptions{
 		Direction: scip.DirectionCallers,
 		MaxDepth:  maxDepth,
@@ -318,16 +416,6 @@ func (p *scipCallerProvider) GetTransitiveCallers(symbolId string, maxDepth int)
 						depth int
 					}{callerId, callerDepth})
 				}
-			}
-		}
-	}
-
-	if p.separateTests {
-		p.testCallers = make(map[string]int)
-		for id, depth := range result {
-			if n := graph.Nodes[id]; n != nil && n.Location != nil && isTestFilePath(n.Location.FileId) {
-				p.testCallers[id] = depth
-				delete(result, id)
 			}
 		}
 	}
@@ -475,7 +563,15 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 				incomplete = append(incomplete, fmt.Sprintf("looked at the first %d of %d references",
 					len(refsResult.References), refsResult.TotalReferences))
 			}
-			for _, ref := range refsResult.References {
+			references := refsResult.References
+			// A Python __init__ is used by constructing its class, or a subclass
+			// that inherits it, and those calls are references to the class.
+			if constructions, ok := pythonConstructions(ctx, e.scipAdapter, e.repoRoot, symbolIdForLookup); ok {
+				references = append(references, constructions...)
+			} else {
+				incomplete = append(incomplete, "couldn't look up the constructions of the class")
+			}
+			for _, ref := range references {
 				// An import only brings the name in; the uses after it are the
 				// callers. As an item it was a nameless "unknown" at module level.
 				if ref.Kind == "import" {
@@ -524,6 +620,16 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 	var callerProv *scipCallerProvider
 	if e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
 		callerProv = &scipCallerProvider{adapter: e.scipAdapter, separateTests: !opts.IncludeTests}
+		callerProv.constructions = func(initID string) []string {
+			calls, _ := pythonConstructions(ctx, e.scipAdapter, e.repoRoot, initID)
+			var ids []string
+			for _, call := range calls {
+				if call.FromSymbol != "" && !scip.IsModuleScopeSymbol(call.FromSymbol) {
+					ids = append(ids, call.FromSymbol)
+				}
+			}
+			return ids
+		}
 		analyzer = impact.NewImpactAnalyzerWithCallers(opts.Depth, callerProv)
 	} else {
 		analyzer = impact.NewImpactAnalyzer(opts.Depth)

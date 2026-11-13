@@ -88,8 +88,14 @@ func changeSetEngine(t *testing.T, extra ...*scippb.Document) *Engine {
 			[]fixtureFunc{{symMain, 4, 8}}, []fixtureRef{{symRun, 5}}),
 	}
 	docs = append(docs, extra...)
+	return scipEngine(t, root, "scip-go", docs)
+}
+
+// scipEngine is an engine over root with an index of docs, as tool wrote it.
+func scipEngine(t *testing.T, root, tool string, docs []*scippb.Document) *Engine {
+	t.Helper()
 	data, err := proto.Marshal(&scippb.Index{
-		Metadata:  &scippb.Metadata{ProjectRoot: "file://" + root, ToolInfo: &scippb.ToolInfo{Name: "scip-go"}},
+		Metadata:  &scippb.Metadata{ProjectRoot: "file://" + root, ToolInfo: &scippb.ToolInfo{Name: tool}},
 		Documents: docs,
 	})
 	if err != nil {

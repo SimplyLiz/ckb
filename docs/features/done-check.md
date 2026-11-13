@@ -154,7 +154,13 @@ Three things differ from the other languages:
   change, not the enclosing class's.
 - **A changed `__init__` lists the class's calls.** scip-python records `Root()` as a
   use of `Root`, so the check also looks at the class's references and keeps the ones
-  that call it: not `class Sub(Root)` or `isinstance(x, Root)`.
+  that call it: not `class Sub(Root)` or `isinstance(x, Root)`. A subclass that
+  defines no `__init__` of its own, at any depth, runs `Root.__init__` too: its calls
+  are listed, `via` naming it. One that defines its own is followed through its
+  `super().__init__`. The bases come from the index, not the MRO: a subclass listing
+  another base with an `__init__` before `Root` is still listed. Impact counts the
+  functions making those calls as consumers of `__init__`, and their callers as
+  transitive ones.
 
 Measured on a repo of Python scripts (no manifest, `sys.path` imports), each change
 checked against mypy `--check-untyped-defs` and the unit tests:
@@ -172,8 +178,7 @@ checked against mypy `--check-untyped-defs` and the unit tests:
 The 8 extra open calls for the rename pass `**dict(...)` built two lines up; they don't
 hold the name, but reading that needs more than the call.
 
-Not seen: a subclass without its own `__init__` (`Sub()` calls `Root.__init__`), uses
-through `getattr` or a string, and a module attribute changed by assignment elsewhere.
+Not seen: uses through `getattr` or a string, and a module attribute changed by assignment elsewhere.
 A class's bases are compared as a list: one added at the end is compatible, any other
 change is a change.
 
