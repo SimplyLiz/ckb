@@ -2,6 +2,7 @@ package project
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -896,5 +897,54 @@ func TestDetectAllLanguages_SkipsHiddenAndVendoredDirs(t *testing.T) {
 	lang, _, all := DetectAllLanguages(root)
 	if lang != LangGo || len(all) != 1 {
 		t.Errorf("detected %v (primary %s), want Go alone: hidden and vendored manifests are not this project's", all, lang)
+	}
+}
+
+// A repo of scripts has no manifest; the language of most tracked source files is
+// picked, and git-ignored files don't count.
+func TestDetectLanguage_SourceFilesWithoutManifest(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".gitignore", "Temp/\n")
+	write("exp/a.py", "x = 1\n")
+	write("exp/b.py", "y = 2\n")
+	write("mods/hook.ts", "export const r = 1\n")
+	for i := 0; i < 5; i++ {
+		write(filepath.Join("Temp", string(rune('a'+i))+".ts"), "export const s = 1\n")
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	lang, from, ok := DetectLanguage(dir)
+	if !ok || lang != LangPython {
+		t.Fatalf("DetectLanguage = %v %q %v, want python", lang, from, ok)
+	}
+	if from != "2 tracked .py files, no manifest" {
+		t.Errorf("from = %q", from)
+	}
+}
+
+func TestDetectLanguage_NoSourcesNoManifest(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "init", "-q")
+	cmd.Dir = dir
+	_ = cmd.Run()
+	if lang, _, ok := DetectLanguage(dir); ok {
+		t.Fatalf("DetectLanguage = %v, want unknown", lang)
 	}
 }

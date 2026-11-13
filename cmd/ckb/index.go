@@ -367,6 +367,8 @@ func performIndex(repoRoot string) indexResult {
 		fmt.Fprintln(os.Stderr, "  C#:         *.csproj, *.sln")
 		fmt.Fprintln(os.Stderr, "  PHP:        composer.json")
 		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "  Without a manifest: the language of most tracked .py, .ts or .js files")
+		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Or specify manually: ckb index --lang go")
 		return indexResult{Outcome: indexOutcomeNoLanguageDetected, Message: "could not detect project language"}
 	}
@@ -504,6 +506,7 @@ func performIndex(repoRoot string) indexResult {
 	fmt.Println()
 	fmt.Printf("Done! Indexed in %.1fs\n", duration.Seconds())
 	fmt.Printf("Index: %s (%.2f MB)\n", indexPath, float64(info.Size())/1024/1024)
+	excludeIndexFromGit(repoRoot, indexPath)
 	fmt.Println()
 	fmt.Println("Full code intelligence now available:")
 	fmt.Println("  findReferences - Find all usages of a symbol")

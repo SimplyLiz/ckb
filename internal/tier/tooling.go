@@ -299,7 +299,7 @@ var LanguageRequirements = map[Language]map[AnalysisTier][]IndexerRequirement{
 				Binary:      "scip-python",
 				VersionArgs: []string{"--version"},
 				InstallCmd: map[string]string{
-					"default": "pip install scip-python",
+					"default": "npm install -g @sourcegraph/scip-python",
 				},
 				Provider:     ProviderSCIP,
 				Capabilities: []Capability{CapDefinitions, CapReferences, CapCallGraph, CapTypeInfo},
