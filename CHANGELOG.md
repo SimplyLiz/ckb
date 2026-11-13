@@ -4,6 +4,73 @@ All notable changes to CKB will be documented in this file.
 
 ## [9.4.0] - 2026-11-08
 
+### Added — mixed repos, scripts and data
+
+- **`ckb index` builds one index for all of a repo's languages.** In a Go + Python or Go +
+  TypeScript repo it stopped at "multiple languages detected", and watch mode, the first index
+  and `reindex` refused, so one half stayed on text search. Every detected language with an
+  installed indexer now goes into one merged index. A missing indexer, or a language over the
+  size limit (now per language), leaves only that language out, named with its fix in `ckb
+  index`, `ckb status`, getStatus and an `index_partial` warning; installing the indexer makes
+  the next reindex bring it in. Python scripts without a manifest count from 5 tracked files.
+  `--lang` still indexes one language; incremental updates are skipped on a merged index.
+- **Bash scripts are no longer a blind spot for the tree-sitter tier.** `.sh`, `.bash` and
+  extensionless files with a bash/sh shebang get function symbols in searchSymbols and
+  listSymbols, and getFileComplexity reports cyclomatic and cognitive complexity per function
+  plus a `<toplevel>` unit for commands outside functions.
+- **Script calls are architecture edges.** What a shell script sources or runs (`source`/`.`,
+  `./x.sh`, `bash x.sh`, `python3 y.py`, `python3 -m pkg.mod`) is an import edge in
+  getArchitecture and explore, counted only when the target file exists in the repo.
+- **Generated and data paths stay out of hotspots, coupling and risk.** Declare them in
+  `.ckb/config.json` as `paths.generated` / `paths.data` (globs; a plain directory name
+  covers its subtree). Built-in generated patterns, `review.generatedPatterns` and
+  .json/.jsonl/.csv/.tsv files of 256 KiB or more count too. `getHotspots`, `analyzeCoupling`,
+  `auditRisk` and `assessChange`'s co-change check leave them out and say how many in `leftOut`.
+
+### Fixed — saying what CKB couldn't look at
+
+- **A missing indexer is waited for, not given up on.** When no indexer was installed, the first
+  index and watch mode switched off until the MCP server restarted. They now build as soon as the
+  indexer is on PATH (next watch tick, or within 30 s for the first index). The missing-index
+  warning also says when the install tool itself (npm, pip, go, cargo, …) is missing, and names
+  where each language was detected from. Streamed answers carry the warning too.
+- **`getStatus` reports `index.fresh` only while the SCIP backend serves the index**, and
+  `loaded` is always present. With the backend off it reported fresh from the metadata alone.
+- **`index.scip` stays out of `git status` on every path that writes it**: `ckb index` (also
+  when the index is current or updated incrementally), `ckb setup`, and the MCP server's watch,
+  first-index and reindex builds, through `.git/info/exclude`.
+- **A nested git repository or gitignored directory no longer decides the repo's language.** A
+  separate ignored checkout's `pyproject.toml` inside the repo made it a Python project.
+- **`getStatus` names the repo it serves.** Its note named the global registry default, which
+  other sessions' `ckb init` or `ckb repo use` rewrite, so it changed between calls in one session.
+- **The repo registry honors `CKB_HOME`.** It read `~/.ckb/repos.json` regardless, so a test or
+  sandboxed run with a temp `CKB_HOME` registered its repos in the real registry, and its
+  `ckb init` could make one the global default.
+- **`explainFile` lists a file's symbols without an index.** It took them only from SCIP, so every
+  file of an unindexed repo, or of a language the index leaves out, had 0 symbols; it now falls
+  back to the parser. `ckb dead-code` without an index prints "Not analyzed" instead of "No dead
+  code found. Analyzed 0 symbols."
+- **A password in a URL no longer runs to the next `@` on the line.** `password_in_url` matched
+  from `http://127.0.0.1:8081` to the `"$@"` ending a shell command. A URL's user, password and
+  host can't contain whitespace, quotes or delimiters, and now the patterns can't either; the
+  same fix applies to the MongoDB, PostgreSQL, MySQL and Redis URI patterns.
+- **`scanSecrets` says when it ran and how much it read.** `filesScanned` was 0 in every result,
+  and staged or history scans reported `scannedAt: 0001-01-01` and skipped the allowlist and
+  severity filter. All scopes now go through one scan path; `ckb scan-secrets --scope history`,
+  which scanned the working tree, now reads history.
+- **Allow a secret finding on its line or per rule.** A `ckb:allow-secret` or `gitleaks:allow`
+  comment suppresses findings on its line (suppressId `inline`). Path, path-regex and pattern
+  entries in `.ckb/secrets-allowlist.json` can carry `rules` or `secretTypes` and hide only those
+  findings. `**` in path entries now matches across directories.
+- **`findDeadCode` without an index says it didn't look.** An empty `deadCode` read as "no dead
+  code". The result now carries `analyzed: false` with `notAnalyzedReason`. The review's dead-code
+  check skips instead of passing when neither SCIP nor Cartographer could check.
+- **auditRisk stops flagging LLM code as security-sensitive.** Keywords match identifier parts
+  instead of substrings, and the defaults name credentials (`access_token`, `api_key`,
+  `hf_token`, `private_key`) instead of bare `token`, `key`, `hash`, `private` and `session`.
+  `.ckb/config.json` `audit.securityKeywords` replaces the list and `audit.disabledFactors` turns
+  a factor off. In a single-author repo bus factor 1 is no longer scored ("Assign backup owner").
+
 ### Added — the done check
 
 - **`doneCheck` in `assessChange` and `ckb changes`, and `ckb changes --check`.**
