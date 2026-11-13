@@ -63,12 +63,30 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) (*ScanResult, erro
 	var allFindings []SecretFinding
 	sources := make([]SourceInfo, 0)
 
-	// Run builtin scanner
-	if !opts.PreferExternal || (!opts.UseGitleaks && !opts.UseTrufflehog) {
-		builtinFindings, filesScanned, err := s.scanBuiltin(ctx, opts)
+	// Run builtin scanner. Staged and history scopes read git diffs instead of
+	// the working tree; every scope goes through here so the result carries
+	// the same metadata, allowlist and severity filter whichever was asked.
+	filesScanned := 0
+	if opts.Scope == ScopeHistory || opts.Scope == ScopeCommitRange || opts.Scope == ScopeStaged {
+		git := NewGitScanner(opts.RepoRoot)
+		var gitFindings []SecretFinding
+		var err error
+		if opts.Scope == ScopeStaged {
+			gitFindings, filesScanned, err = git.scanStaged(ctx)
+		} else {
+			gitFindings, filesScanned, err = git.scanHistory(ctx, opts)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("git %s scan failed: %w", opts.Scope, err)
+		}
+		allFindings = append(allFindings, gitFindings...)
+		sources = append(sources, SourceInfo{Name: "builtin", Findings: len(gitFindings)})
+	} else if !opts.PreferExternal || (!opts.UseGitleaks && !opts.UseTrufflehog) {
+		builtinFindings, n, err := s.scanBuiltin(ctx, opts)
 		if err != nil {
 			return nil, fmt.Errorf("builtin scan failed: %w", err)
 		}
+		filesScanned = n
 		allFindings = append(allFindings, builtinFindings...)
 		sources = append(sources, SourceInfo{
 			Name:     "builtin",
@@ -157,6 +175,7 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) (*ScanResult, erro
 
 	// Build summary
 	summary := buildSummary(allFindings)
+	summary.FilesScanned = filesScanned
 
 	return &ScanResult{
 		RepoRoot:   opts.RepoRoot,
