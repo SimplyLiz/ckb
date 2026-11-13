@@ -33,38 +33,20 @@ func NewAnalyzer(scipAdapter *scip.SCIPAdapter, repoRoot string, logger *slog.Lo
 // Analyze performs dead code detection with the given options.
 func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzerOptions) (*Result, error) {
 	if a.scipAdapter == nil || !a.scipAdapter.IsAvailable() {
-		return &Result{
-			DeadCode: []DeadCodeItem{},
-			Summary: DeadCodeSummary{
-				ByKind:     make(map[string]int),
-				ByCategory: make(map[string]int),
-			},
-		}, nil
+		return notAnalyzed("no SCIP index loaded; run 'ckb index'"), nil
 	}
 
 	// Get the underlying index for direct access
 	index := a.scipAdapter.GetIndex()
 	if index == nil {
-		return &Result{
-			DeadCode: []DeadCodeItem{},
-			Summary: DeadCodeSummary{
-				ByKind:     make(map[string]int),
-				ByCategory: make(map[string]int),
-			},
-		}, nil
+		return notAnalyzed("SCIP index not loaded; run 'ckb index'"), nil
 	}
 
 	// Get all symbols
 	allSymbols := a.scipAdapter.AllSymbols()
 	if allSymbols == nil {
 		a.logger.Debug("AllSymbols returned nil")
-		return &Result{
-			DeadCode: []DeadCodeItem{},
-			Summary: DeadCodeSummary{
-				ByKind:     make(map[string]int),
-				ByCategory: make(map[string]int),
-			},
-		}, nil
+		return notAnalyzed("SCIP index has no symbols"), nil
 	}
 
 	a.logger.Debug("Starting dead code analysis",
@@ -219,6 +201,7 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzerOptions) (*Result, 
 		DeadCode: deadCode,
 		Summary:  a.computeSummary(deadCode, totalAnalyzed),
 		Scope:    opts.Scope,
+		Analyzed: true,
 	}, nil
 }
 

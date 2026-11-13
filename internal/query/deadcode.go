@@ -45,6 +45,12 @@ type FindDeadCodeResponse struct {
 	// Scope that was analyzed.
 	Scope []string `json:"scope,omitempty"`
 
+	// Analyzed is false when the SCIP index the analysis needs is missing;
+	// DeadCode is then empty because nothing was checked, and
+	// NotAnalyzedReason says what to do.
+	Analyzed          bool   `json:"analyzed"`
+	NotAnalyzedReason string `json:"notAnalyzedReason,omitempty"`
+
 	// Provenance metadata.
 	Provenance *Provenance `json:"provenance,omitempty"`
 }
@@ -169,7 +175,9 @@ func (e *Engine) FindDeadCode(ctx context.Context, opts FindDeadCodeOptions) (*F
 			ByCategory:      result.Summary.ByCategory,
 			EstimatedLines:  result.Summary.EstimatedLines,
 		},
-		Scope: result.Scope,
+		Scope:             result.Scope,
+		Analyzed:          result.Analyzed,
+		NotAnalyzedReason: result.NotAnalyzedReason,
 	}
 
 	// Convert dead code items
@@ -192,7 +200,11 @@ func (e *Engine) FindDeadCode(ctx context.Context, opts FindDeadCodeOptions) (*F
 
 	// Build provenance
 	repoState, _ := e.GetRepoState(ctx, "head")
-	response.Provenance = e.buildProvenance(repoState, "head", startTime, nil, CompletenessInfo{})
+	completeness := CompletenessInfo{}
+	if !response.Analyzed {
+		completeness = CompletenessInfo{Score: 0, Reason: "not-analyzed", Details: response.NotAnalyzedReason}
+	}
+	response.Provenance = e.buildProvenance(repoState, "head", startTime, nil, completeness)
 
 	return response, nil
 }
