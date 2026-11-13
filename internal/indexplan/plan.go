@@ -32,6 +32,12 @@ type Plan struct {
 	Command    string
 	IndexerDir string
 	IndexPath  string
+	// base is Command without the output flag Build added for a custom index
+	// path, so a multi-language build can point the output somewhere else.
+	base string
+	// redirected marks a plan writingTo made: its indexer writes the output
+	// itself, so relocate has nothing to move, only paths to rebase.
+	redirected bool
 }
 
 // FailureKind says why no plan could be built.
@@ -140,6 +146,7 @@ func Build(repoRoot string, lang project.Language, manifest, compdbOverride, ind
 		command = indexer.Command
 	}
 
+	base := command
 	if needsOutputFlag {
 		command = fmt.Sprintf("%s --output %s", command, indexPath)
 	}
@@ -165,6 +172,7 @@ func Build(repoRoot string, lang project.Language, manifest, compdbOverride, ind
 		Command:    command,
 		IndexerDir: indexerDir,
 		IndexPath:  indexPath,
+		base:       base,
 	}, warning, nil
 }
 
@@ -200,7 +208,7 @@ func relocate(repoRoot string, plan *Plan) error {
 		return nil
 	}
 	written := filepath.Join(plan.IndexerDir, "index.scip")
-	if written != plan.IndexPath {
+	if written != plan.IndexPath && !plan.redirected {
 		if _, err := os.Stat(written); err == nil {
 			// Replaces the previous run's index at the target path.
 			if err := os.Rename(written, plan.IndexPath); err != nil {

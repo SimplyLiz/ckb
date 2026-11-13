@@ -74,11 +74,14 @@ func multiLangRepo(t *testing.T, pythonScript string) (dir, ckbDir string) {
 			t.Fatal(err)
 		}
 	}
-	fake("scip-go", "cp '"+goIdx+"' index.scip")
+	// Like the real indexers: index.scip in the working directory unless
+	// --output says otherwise, which a multi-language build always does.
+	const output = `out=index.scip; while [ $# -gt 0 ]; do [ "$1" = --output ] && { out=$2; shift; }; shift; done; `
+	fake("scip-go", output+"cp '"+goIdx+"' \"$out\"")
 	switch pythonScript {
 	case "":
 	case "ok":
-		fake("scip-python", "cp '"+pyIdx+"' index.scip")
+		fake("scip-python", output+"cp '"+pyIdx+"' \"$out\"")
 	default:
 		fake("scip-python", pythonScript)
 	}
