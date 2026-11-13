@@ -971,6 +971,35 @@ func (e *Engine) ExplainFile(ctx context.Context, opts ExplainFileOptions) (*Exp
 		})
 	}
 
+	// No index, or an index without this file's language: the parser still
+	// knows what the file defines. Without this, explainFile said "0 symbols"
+	// for every file of an unindexed repo.
+	if len(symbols) == 0 && e.treesitterExtractor != nil {
+		e.tsMu.Lock()
+		tsSyms, tsErr := e.treesitterExtractor.ExtractFile(ctx, filePath)
+		e.tsMu.Unlock()
+		if tsErr == nil && len(tsSyms) > 0 {
+			confidenceBasis = append(confidenceBasis, ConfidenceBasisItem{
+				Backend: "treesitter",
+				Status:  "available",
+			})
+			for _, sym := range tsSyms {
+				name := sym.Name
+				if sym.Container != "" {
+					name = sym.Container + "." + sym.Name
+				}
+				symbols = append(symbols, ExplainFileSymbol{
+					Name: name,
+					Kind: sym.Kind,
+					Line: sym.Line,
+				})
+				if sym.Container == "" && isExportedSymbol(sym.Name, "", language) {
+					exports = append(exports, sym.Name)
+				}
+			}
+		}
+	}
+
 	// Sort symbols by line number and limit to 15
 	sort.Slice(symbols, func(i, j int) bool {
 		return symbols[i].Line < symbols[j].Line
