@@ -264,12 +264,16 @@ func (s *MCPServer) getIndexStaleness() map[string]interface{} {
 	}
 
 	// Metadata describes the file on disk; "fresh" is only true if the
-	// running engine is actually serving it (#134).
-	if sb := s.engine().GetScipBackend(); sb != nil {
-		loaded := sb.IsAvailable()
-		result["loaded"] = loaded
-		if !loaded && !staleness.IsStale {
-			result["fresh"] = false
+	// running engine is actually serving it (#134). Without a SCIP backend
+	// (disabled in config) nothing serves it either.
+	sb := s.engine().GetScipBackend()
+	loaded := sb != nil && sb.IsAvailable()
+	result["loaded"] = loaded
+	if !loaded && !staleness.IsStale {
+		result["fresh"] = false
+		if sb == nil {
+			result["reason"] = "SCIP backend is disabled for this server, so the index file is not served"
+		} else {
 			result["reason"] = "index file not loaded by the running server"
 		}
 	}
