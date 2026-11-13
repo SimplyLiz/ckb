@@ -215,22 +215,32 @@ func runInitCore(opts initOptions) error {
 // Repos initialized before init wrote .git/info/exclude got the index as an
 // untracked file on every 'ckb index'; this catches them up. A tracked index, one
 // outside the repo, or one git already ignores is left alone, and so is a failure.
-func excludeIndexFromGit(repoRoot, indexPath string) {
+// Returns the index's repo-relative path when it added the exclude, "" otherwise;
+// it prints nothing, because 'ckb mcp' calls it with stdout as the transport.
+func excludeIndexFromGit(repoRoot, indexPath string) string {
 	rel, err := filepath.Rel(repoRoot, indexPath)
 	if err != nil || rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-		return
+		return ""
 	}
 	rel = filepath.ToSlash(rel)
 	if exec.Command("git", "-C", repoRoot, "ls-files", "--error-unmatch", "--", rel).Run() == nil { // #nosec G204 //nolint:gosec // fixed git subcommand; rel is the resolved index path
-		return
+		return ""
 	}
 	ignored := func(path string) bool {
 		return exec.Command("git", "-C", repoRoot, "check-ignore", "-q", "--", path).Run() == nil // #nosec G204 //nolint:gosec // fixed git subcommand
 	}
 	if ignored(rel) && ignored(".ckb/") {
-		return
+		return ""
 	}
-	if excludeFromGit(repoRoot, []string{".ckb/", "/" + rel}) == nil {
+	if excludeFromGit(repoRoot, []string{".ckb/", "/" + rel}) != nil {
+		return ""
+	}
+	return rel
+}
+
+// printIndexExcluded tells a terminal user about the exclude excludeIndexFromGit added.
+func printIndexExcluded(rel string) {
+	if rel != "" {
 		fmt.Printf("Kept .ckb/ and %s out of 'git status' through .git/info/exclude.\n", rel)
 	}
 }

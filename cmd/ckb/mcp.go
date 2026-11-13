@@ -388,6 +388,7 @@ func watchTick(repoRoot, ckbDir string, interval time.Duration, state *watchStat
 
 	case err == nil:
 		state.consecutiveFailures = 0
+		excludeBuiltIndex(repoRoot, logger)
 		// The engine read its SCIP index when it was built; without this the
 		// session keeps the old one (or none) until the server restarts.
 		if eng := loadedEngine(); eng != nil {
@@ -429,6 +430,7 @@ func runReindexForMCP(ctx context.Context, repoRoot string, scope mcp.ReindexSco
 	if scope != mcp.ReindexFull {
 		if lang, ok := watchDetectLanguage(repoRoot); ok && project.SupportsIncrementalIndexing(lang) {
 			if tryIncrementalIndexTo(repoRoot, ckbDir, lang, io.Discard) {
+				excludeBuiltIndex(repoRoot, logger)
 				return &mcp.ReindexRunInfo{Mode: "incremental"}, nil
 			}
 			logger.Debug("reindex: incremental not possible, running full build")
@@ -438,6 +440,7 @@ func runReindexForMCP(ctx context.Context, repoRoot string, scope mcp.ReindexSco
 	err := triggerReindex(ctx, repoRoot, ckbDir, index.TriggerManual, "mcp reindex", logger)
 	switch {
 	case err == nil:
+		excludeBuiltIndex(repoRoot, logger)
 		return &mcp.ReindexRunInfo{Mode: "full"}, nil
 	case errors.Is(err, errIndexerUnavailable), errors.Is(err, errRepoTooLarge):
 		return nil, fmt.Errorf("%w: %v", mcp.ErrReindexNotPossible, err)
@@ -445,6 +448,16 @@ func runReindexForMCP(ctx context.Context, repoRoot string, scope mcp.ReindexSco
 		return nil, mcp.ErrReindexLocked
 	default:
 		return nil, err
+	}
+}
+
+// excludeBuiltIndex keeps an index the server built (watch, first index, the
+// reindex tool) out of 'git status', as 'ckb index' does, for repos that were
+// initialized before init wrote .git/info/exclude. Logs instead of printing:
+// stdout is the JSON-RPC transport.
+func excludeBuiltIndex(repoRoot string, logger *slog.Logger) {
+	if rel := excludeIndexFromGit(repoRoot, resolveIndexPath(repoRoot)); rel != "" {
+		logger.Info("Kept .ckb/ and the index out of 'git status' through .git/info/exclude", "index", rel)
 	}
 }
 
