@@ -17,6 +17,11 @@ All notable changes to CKB will be documented in this file.
   The previous index stays at the index path until the merged one replaces it, so a session
   starting mid-build reads the old index. Only scip-clang, scip-ruby, scip-php and scip_dart,
   which CKB can't point at another output file, still run with the old index moved aside.
+  A repo without any manifest gets every source language with 3 or more tracked files, so
+  Python scripts beside a few TypeScript hooks are both indexed, not only the more common one.
+  The tsconfig.json that scip-typescript's `--infer-tsconfig` writes where none was is removed
+  after the run instead of showing up in `git status`, and the per-language file count is the
+  tracked files the index holds, not every file on disk.
 - **Bash scripts are no longer a blind spot for the tree-sitter tier.** `.sh`, `.bash` and
   extensionless files with a bash/sh shebang get function symbols in searchSymbols and
   listSymbols, and getFileComplexity reports cyclomatic and cognitive complexity per function

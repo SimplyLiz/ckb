@@ -217,3 +217,27 @@ func TestRunAll_AllFailedKeepsThePreviousIndex(t *testing.T) {
 		t.Errorf("index holds %v, want the previous one", docs)
 	}
 }
+
+// scip-typescript --infer-tsconfig writes a tsconfig.json where none was and
+// leaves it; the run removes it again, and never one that was there before.
+func TestRunOne_RemovesTheInferredTSConfig(t *testing.T) {
+	for _, had := range []bool{false, true} {
+		dir := t.TempDir()
+		if had {
+			writeFiles(t, dir, map[string]string{"tsconfig.json": `{"compilerOptions":{}}`})
+		}
+		plan := &Plan{Lang: project.LangTypeScript, Command: "scip-typescript index --infer-tsconfig",
+			IndexerDir: dir, IndexPath: filepath.Join(dir, "index.scip")}
+		runOne(dir, plan, func(p *Plan) error {
+			writeFiles(t, dir, map[string]string{"tsconfig.json": "{}", "index.scip": ""})
+			return nil
+		})
+		_, err := os.Stat(filepath.Join(dir, "tsconfig.json"))
+		if had && err != nil {
+			t.Errorf("the repo's own tsconfig.json was removed")
+		}
+		if !had && err == nil {
+			t.Errorf("the inferred tsconfig.json was left behind")
+		}
+	}
+}

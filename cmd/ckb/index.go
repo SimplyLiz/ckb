@@ -829,7 +829,9 @@ func printLargeRepoNotice(lang project.Language, fileCount int, indexPath string
 	fmt.Println("Run 'ckb doctor' to confirm the active tier.")
 }
 
-// countSourceFiles counts source files in the repository for the given language.
+// countSourceFiles counts source files in the repository for the given language:
+// the git-tracked ones in a git repo, which is what ends up in the index (ignored
+// scratch and vendored type stubs on disk don't), and every file outside one.
 func countSourceFiles(root string, lang project.Language) int {
 	extensions := getSourceExtensions(lang)
 	if len(extensions) == 0 {
@@ -839,6 +841,16 @@ func countSourceFiles(root string, lang project.Language) int {
 	extSet := make(map[string]bool)
 	for _, ext := range extensions {
 		extSet[ext] = true
+	}
+
+	if out, err := exec.Command("git", "-C", root, "ls-files", "-z").Output(); err == nil { // #nosec G204 //nolint:gosec // fixed git subcommand
+		count := 0
+		for _, path := range strings.Split(string(out), "\x00") {
+			if extSet[filepath.Ext(path)] && !strings.Contains("/"+path, "/node_modules/") {
+				count++
+			}
+		}
+		return count
 	}
 
 	count := 0

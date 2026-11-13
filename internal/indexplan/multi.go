@@ -212,6 +212,7 @@ func (p *Plan) writingTo(path string) *Plan {
 func runOne(repoRoot string, plan *Plan, run func(*Plan) error) LangResult {
 	start := time.Now()
 	res := LangResult{Plan: plan}
+	defer project.UndoInferredTSConfig(plan.IndexerDir, plan.Command)()
 	if err := run(plan); err != nil {
 		res.Err = err
 	} else if err := Finalize(repoRoot, plan); err != nil {

@@ -113,6 +113,7 @@ func (e *SCIPExtractor) RunIndexer(config *project.IndexerConfig) error {
 	cmd.Stdout = os.Stderr // Show indexer output
 	cmd.Stderr = os.Stderr
 
+	defer project.UndoInferredTSConfig(cmd.Dir, strings.Join(cmd.Args, " "))()
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("indexer failed: %w", err)
 	}
