@@ -1683,7 +1683,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			// A config file still writing a renamed or removed serialized key.
 			var configFiles []string
 			if detectLanguage(sym.File) == "go" {
-				configFiles = done.checkConfigKeys(sym.Name, goWireKeyChanges(sym.DeclarationBefore, sym.DeclarationAfter, declaration == impact.DeclRemoved))
+				configFiles = done.checkConfigKeys(sym, goWireKeyChanges(sym.DeclarationBefore, sym.DeclarationAfter, declaration == impact.DeclRemoved))
 			}
 			if viaAlias := done.checkRustAlias(ctx, usesFinder, sym); len(viaAlias) > 0 {
 				rustOpens = append(rustOpens, rustOpen{name: sym.Name, change: declaration, files: viaAlias})
