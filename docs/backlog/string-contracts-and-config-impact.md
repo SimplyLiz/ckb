@@ -15,6 +15,9 @@ What exists:
   and `graphql` files. A header name in a Go constant or a TS string isn't one.
 - Federation stays behind its preset with no new investment (decided 2026-11-09). This
   wish is the first concrete use case for it since then; it doesn't reverse that by itself.
+- Decided 2026-11-13: not built. One wish that wouldn't have changed its session's
+  outcome doesn't reopen federation. Revisit when a second client/server pair hits a
+  silent wire-name break.
 
 Shape, if built:
 
