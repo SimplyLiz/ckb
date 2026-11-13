@@ -1568,6 +1568,11 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			if openFiles, ok := done.checkSymbol(ctx, usesFinder, sym, declaration); ok {
 				handled = withoutFiles(changedFilePaths, openFiles)
 			}
+			// A config file still writing a renamed or removed serialized key.
+			var configFiles []string
+			if detectLanguage(sym.File) == "go" {
+				configFiles = done.checkConfigKeys(sym.Name, goWireKeyChanges(sym.DeclarationBefore, sym.DeclarationAfter, declaration == impact.DeclRemoved))
+			}
 			if viaAlias := done.checkRustAlias(ctx, usesFinder, sym); len(viaAlias) > 0 {
 				rustOpens = append(rustOpens, rustOpen{name: sym.Name, change: declaration, files: viaAlias})
 			}
@@ -1577,6 +1582,8 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 				contractConsumers = broken.files
 				contractChangedFiles = append(contractChangedFiles, broken.files...)
 			}
+			contractConsumers = append(contractConsumers, configFiles...)
+			contractChangedFiles = append(contractChangedFiles, configFiles...)
 			for i := range impactResult.TestImpact {
 				item := &impactResult.TestImpact[i]
 				if item.Distance == 1 && item.Location != nil && !handled[item.Location.FileId] {
@@ -2890,19 +2897,7 @@ var goWireTagRe = regexp.MustCompile(`\b(json|yaml|xml|toml):"([^",]*)`)
 // which no compiler checks: a client reading `originalCount` finds nothing. Only a
 // field with a tag says it is serialized; an untagged one may never be.
 func goWireKeyChange(before, after string, removed bool) string {
-	keys := func(decl string) map[string]string {
-		found := make(map[string]string)
-		if !strings.Contains(decl, "`") {
-			return found
-		}
-		for _, m := range goWireTagRe.FindAllStringSubmatch(decl[strings.Index(decl, "`"):], -1) {
-			if m[2] != "-" {
-				found[m[1]] = m[2]
-			}
-		}
-		return found
-	}
-	was, now := keys(before), keys(after)
+	was, now := goWireKeys(before), goWireKeys(after)
 	var notes []string
 	for _, format := range []string{"json", "yaml", "xml", "toml"} {
 		old, ok := was[format]

@@ -274,6 +274,14 @@ private, so only aggregates are here.
   the format's default is the contract's `detail`. The compact text now shows a
   declaration and its detail together.
 
+### Added — config files that still write a renamed key
+
+- **A renamed or removed serialized key lists the config files that write it.** When a
+  Go field's `json:`, `yaml:` or `toml:` key changes, the done check searches the repo's
+  tracked files of that format and lists each line still writing the old key, as
+  `port = 8080 (toml key "port" -> "listen_port")`; the files count as the contract's
+  consumers. Leaf keys only: `[server] port` and `[client] port` both match.
+
 ### Added — Python in the done check
 
 - **Python declarations are compared.** `def` and `class` signatures, module and class
