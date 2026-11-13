@@ -2,7 +2,7 @@
 description: "Review a branch, staged changes or a PR: CKB's structural checks first, then read only what CKB flags. Use for code review requests in a repo that has CKB."
 when_to_use: "Reviewing a whole branch, the staged changes or a pull request: 'review my branch', 'review PR 123', 'is this ready to merge'. Not for one function, file or pasted snippet: invoking it runs ckb review over the whole diff first."
 argument-hint: "[base-branch | staged | PR-number]"
-allowed-tools: Bash(ckb review *)
+allowed-tools: Bash("${CLAUDE_PLUGIN_ROOT}/scripts/ckb" review *)
 ---
 
 Run a CKB-augmented code review optimized for minimal token usage.
@@ -46,11 +46,11 @@ for the current branch against main, "staged" for the staged changes, a branch
 name for that base, a PR number for that PR's base (and its branch if it is
 checked out):
 
-!`ckb review --target='$ARGUMENTS' --format=json || true`
+!`"${CLAUDE_PLUGIN_ROOT}/scripts/ckb" review --target='$ARGUMENTS' --format=json || true`
 
 If that is an error instead of JSON (no CKB setup here, an unknown base branch,
-gh missing for a PR number), fix the cause or run `ckb review --base=<branch>`
-or `ckb review --staged` with `--format=json` yourself, then go on.
+gh missing for a PR number), fix the cause or run `"${CLAUDE_PLUGIN_ROOT}/scripts/ckb" review --base=<branch>`
+or `"${CLAUDE_PLUGIN_ROOT}/scripts/ckb" review --staged` with `--format=json` yourself, then go on.
 A `Note:` line before the JSON says what was reviewed instead of the PR.
 
 Parse the JSON output to extract:

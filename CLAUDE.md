@@ -109,6 +109,7 @@ Everything that has to repeat it is derived from there by
 | `npm/package.json` `optionalDependencies` | platform package pins |
 | `README.md` | MCP banner sample output |
 | `claude-plugin/.claude-plugin/plugin.json` | Claude Code plugin manifest (pinned: users only re-fetch on a version change) |
+| `claude-plugin/scripts/ckb` | `pin=`: the npm version the plugin falls back to, and the minimum minor of a local ckb |
 
 ```bash
 go run scripts/sync-version.go 9.4.0   # set everywhere
@@ -170,9 +171,9 @@ claude mcp add ckb -- npx @tastehub/ckb mcp
 
 `ckb setup --tool=claude-code` also installs the `/ckb-review` and `/ckb-audit` slash commands for Claude Code, which orchestrate CKB's structural analysis with LLM semantic review.
 
-The same two texts ship as a Claude Code plugin (`claude plugin marketplace add SimplyLiz/ckb && claude plugin install ckb@lisa`): `.claude-plugin/marketplace.json` at the repo root points at `claude-plugin/`, which holds the manifest, `.mcp.json` (`npx -y @tastehub/ckb mcp`), `skills/{review,audit}/SKILL.md`, `bin/ckb` and `hooks/hooks.json`. Those SKILL.md files are the single source of the skill texts — `setup.go` embeds them via `claude-plugin/skills.go`. Validate with `claude plugin validate ./claude-plugin` and `claude plugin validate .`.
+The same two texts ship as a Claude Code plugin (`claude plugin marketplace add SimplyLiz/ckb && claude plugin install ckb@lisa`): `.claude-plugin/marketplace.json` at the repo root points at `claude-plugin/`, which holds the manifest, `.mcp.json` (`scripts/ckb mcp`), `skills/{review,audit}/SKILL.md`, `scripts/ckb` and `hooks/hooks.json`. Those SKILL.md files are the single source of the skill texts — `setup.go` embeds them via `claude-plugin/skills.go`. Validate with `claude plugin validate ./claude-plugin` and `claude plugin validate .`.
 
-- **`bin/ckb`** is a shim Claude Code puts on the Bash tool's PATH (after the user's entries): the first other `ckb` on PATH, else `npx -y @tastehub/ckb`. The skills just call `ckb`. A command file from `ckb setup` has no shim behind it, so `claudeplugin.CommandText` rewrites the calls to npx there when `ckb` is not on PATH. Any new `ckb` call in a skill has to sit at a line start, after a backtick or in `Bash(` for that rewrite to catch it (`TestCommandTextWithoutCKBOnPath`).
+- **`scripts/ckb`** is the shim MCP server, skills and hook all start (`"${CLAUDE_PLUGIN_ROOT}/scripts/ckb"`; Claude Code substitutes the path into skill text, `allowed-tools` included, with the quotes). It runs a `ckb` on PATH with the plugin's major and at least its minor version, else `npx -y @tastehub/ckb@<pin>`. The `pin=` line is a `sync-version.go` site. **No top-level `bin/`**: claude.ai and org plugin sync reject the whole plugin for it (`TestShim`). A command file from `ckb setup` has no plugin root, so `claudeplugin.CommandText` replaces `PluginCKB` with `ckb`, or with the pinned npx call when `ckb` is not on PATH. New `ckb` calls in a skill must use `PluginCKB` (`TestSkillsCallTheShim`).
 - **`/ckb:review` injects** `` !`ckb review --target='$ARGUMENTS' --format=json || true` ``. Claude Code puts `$ARGUMENTS` into the line before the shell parses it, and a non-zero exit or a command `allowed-tools` doesn't cover aborts the whole skill — keep the `|| true` and the `allowed-tools: Bash(ckb review *)` line.
 - **`hooks/hooks.json`** runs `ckb hook session-start` (cmd/ckb/hook.go) on `startup|resume|clear|compact`: 1–3 lines on the repo's index state from `CheckFreshness`, `startupRefreshReason`, `diagnoseIndex` and the MCP warning texts. It must stay fast (Claude's first response waits for it) and never fail. PreToolUse/PostToolUse/Stop hooks are deliberately not part of the plugin.
 

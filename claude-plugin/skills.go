@@ -11,7 +11,9 @@ package claudeplugin
 
 import (
 	_ "embed"
-	"regexp"
+	"strings"
+
+	"github.com/SimplyLiz/CodeMCP/internal/version"
 )
 
 // ReviewSkill is skills/review/SKILL.md: frontmatter plus the /ckb:review body.
@@ -24,21 +26,24 @@ var ReviewSkill string
 //go:embed skills/audit/SKILL.md
 var AuditSkill string
 
-// NpxCommand runs CKB without an install.
-const NpxCommand = "npx -y @tastehub/ckb"
+// NpxCommand runs CKB without an install, pinned to the version that writes
+// the command file: the skills depend on its CLI flags.
+var NpxCommand = "npx -y @tastehub/ckb@" + version.Version
 
-// ckbCall matches `ckb` where a skill runs it: at the start of a line (bash
-// blocks), after a backtick (inline commands and !`...` injection) and in an
-// allowed-tools rule. Prose says "CKB".
-var ckbCall = regexp.MustCompile("(?m)(^|`|Bash\\()ckb ")
+// PluginCKB is how the skills call CKB: the plugin's scripts/ckb, whose path
+// Claude Code substitutes into the skill text when it loads it. Quoted, so a
+// plugin root with a space stays one word; the allowed-tools rule carries the
+// same quotes and matches.
+const PluginCKB = `"${CLAUDE_PLUGIN_ROOT}/scripts/ckb"`
 
-// CommandText is skill as a command file for ~/.claude/commands. The skills
-// call `ckb`, which the plugin's bin/ckb provides; a command file has no
-// plugin behind it, so where ckb is not on PATH (onPath false) every call
-// becomes NpxCommand. Otherwise the text is the skill as is.
+// CommandText is skill as a command file for ~/.claude/commands. A command
+// file has no plugin behind it and no ${CLAUDE_PLUGIN_ROOT}, so every
+// PluginCKB becomes `ckb` where ckb is on PATH (onPath true) and NpxCommand
+// otherwise.
 func CommandText(skill string, onPath bool) string {
+	call := NpxCommand
 	if onPath {
-		return skill
+		call = "ckb"
 	}
-	return ckbCall.ReplaceAllString(skill, "${1}"+NpxCommand+" ")
+	return strings.ReplaceAll(skill, PluginCKB, call)
 }

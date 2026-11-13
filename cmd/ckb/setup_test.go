@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	claudeplugin "github.com/SimplyLiz/CodeMCP/claude-plugin"
+	"github.com/SimplyLiz/CodeMCP/internal/version"
 )
 
 func TestAiToolsContainsGrok(t *testing.T) {
@@ -363,10 +364,10 @@ func TestInstallClaudeCodeSkills_NpxWithoutCKBOnPath(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if got := read(home, "ckb-review.md"); !strings.Contains(got, "!`npx -y @tastehub/ckb review --target=") {
+	if got := read(home, "ckb-review.md"); !strings.Contains(got, "!`npx -y @tastehub/ckb@"+version.Version+" review --target=") {
 		t.Errorf("without ckb on PATH the review command must inject through npx:\n%s", got)
 	}
-	if got := read(home, "ckb-audit.md"); !strings.Contains(got, "\nnpx -y @tastehub/ckb audit compliance") {
+	if got := read(home, "ckb-audit.md"); !strings.Contains(got, "\nnpx -y @tastehub/ckb@"+version.Version+" audit compliance") {
 		t.Error("without ckb on PATH the audit command must call npx")
 	}
 
@@ -383,7 +384,7 @@ func TestInstallClaudeCodeSkills_NpxWithoutCKBOnPath(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if got := read(home, "ckb-review.md"); got != claudeplugin.ReviewSkill {
-		t.Error("with ckb on PATH the review command must be the plugin skill as is")
+	if got := read(home, "ckb-review.md"); got != claudeplugin.CommandText(claudeplugin.ReviewSkill, true) {
+		t.Error("with ckb on PATH the review command must call ckb")
 	}
 }

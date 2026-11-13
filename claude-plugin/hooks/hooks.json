@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/ckb\" hook session-start 2>/dev/null || true",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/ckb\" hook session-start 2>/dev/null || true",
             "timeout": 15
           }
         ]

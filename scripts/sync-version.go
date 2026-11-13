@@ -70,6 +70,15 @@ var sites = []site{
 		pattern: regexp.MustCompile(`("version": ")([^"]+)(")`),
 		what:    "Claude Code plugin manifest",
 	},
+	{
+		// The npm version the plugin's MCP server, skills and hook fall back
+		// to, and the minimum minor a local ckb needs. Moves with plugin.json:
+		// the skills of one plugin version depend on the CLI flags of the same
+		// release.
+		path:    "claude-plugin/scripts/ckb",
+		pattern: regexp.MustCompile(`(?m)(^pin=)([0-9][^\s]*)()`),
+		what:    "Claude Code plugin ckb pin",
+	},
 }
 
 var semver = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
