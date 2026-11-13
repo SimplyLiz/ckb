@@ -15,7 +15,6 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/jobs"
 	lipClient "github.com/SimplyLiz/CodeMCP/internal/lip"
 	"github.com/SimplyLiz/CodeMCP/internal/query"
-	"github.com/SimplyLiz/CodeMCP/internal/repos"
 )
 
 // toolGetStatus implements the getStatus tool
@@ -131,35 +130,10 @@ func (s *MCPServer) toolGetStatus(params map[string]interface{}) (*envelope.Resp
 		hints = append(hints, fmt.Sprintf("Current preset: %s (%d tools)", preset, exposedCount))
 	}
 
-	// v8.0: Add repo-awareness hints based on resolution
-	resolved, _ := repos.ResolveActiveRepo("")
-	if resolved != nil {
-		switch resolved.Source {
-		case repos.ResolvedFromCWDGit:
-			// Auto-detected unregistered git repo
-			if resolved.State == repos.RepoStateUninitialized {
-				hints = append([]string{
-					fmt.Sprintf("⚠️ Auto-detected repo '%s' is not initialized. Run 'ckb init' then 'ckb repo add' to register it.", resolved.Entry.Name),
-				}, hints...)
-				suggestions = append(suggestions, fmt.Sprintf("Run 'cd %s && ckb init && ckb repo add %s .' to fully set up this repository", resolved.Entry.Path, resolved.Entry.Name))
-			} else {
-				hints = append([]string{
-					fmt.Sprintf("ℹ️ Using auto-detected repo '%s'. Run 'ckb repo add %s .' to register it permanently.", resolved.Entry.Name, resolved.Entry.Name),
-				}, hints...)
-			}
-			if resolved.SkippedDefault != "" {
-				hints = append(hints, fmt.Sprintf("Note: Default repo '%s' was skipped because you're in a different git repository.", resolved.SkippedDefault))
-			}
-		case repos.ResolvedFromDefault:
-			// Using default, but might be in a different directory
-			if resolved.DetectedGitRoot != "" && resolved.Entry != nil && resolved.DetectedGitRoot != resolved.Entry.Path {
-				hints = append([]string{
-					fmt.Sprintf("⚠️ Analyzing default repo '%s' but you appear to be in '%s'.", resolved.Entry.Name, filepath.Base(resolved.DetectedGitRoot)),
-				}, hints...)
-				suggestions = append(suggestions, fmt.Sprintf("If you want to analyze the current directory, run 'cd %s && ckb init && ckb repo add'", resolved.DetectedGitRoot))
-			}
-		}
-	}
+	// The repo this server serves, not a fresh resolution from the registry.
+	repoHints, repoSuggestions := s.servedRepoHints()
+	hints = append(repoHints, hints...)
+	suggestions = append(suggestions, repoSuggestions...)
 
 	// v8.0: Check for binary staleness
 	if warning := s.GetBinaryStaleWarning(); warning != "" {

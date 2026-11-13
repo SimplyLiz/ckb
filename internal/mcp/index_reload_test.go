@@ -6,11 +6,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/SimplyLiz/CodeMCP/internal/config"
 	"github.com/SimplyLiz/CodeMCP/internal/query"
+	"github.com/SimplyLiz/CodeMCP/internal/repos"
 	"github.com/SimplyLiz/CodeMCP/internal/storage"
 	"github.com/SimplyLiz/CodeMCP/internal/version"
 )
@@ -108,5 +110,51 @@ func TestIndexStaleness_NoSCIPBackendIsNeverFresh(t *testing.T) {
 	}
 	if r, _ := idx["reason"].(string); !strings.Contains(r, "disabled") {
 		t.Fatalf("reason = %q, want it to say the backend is disabled", r)
+	}
+}
+
+// getStatus names the repo it serves. It used to name the global registry's
+// default, which another session's 'ckb init' or 'ckb repo use' rewrites, so
+// the hint changed between two calls of one session.
+func TestGetStatus_RepoHintNamesServedRepoAndStaysPut(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // the registry lives under $HOME/.ckb
+	s, dir := newReindexTestServer(t, false)
+	if err := os.WriteFile(filepath.Join(dir, ".ckb", "config.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := repos.LoadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"rubik-wt", "pyfix"} {
+		if err := reg.Add(name, t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	repoHints := func(defaultRepo string) []string {
+		t.Helper()
+		if err := reg.SetDefault(defaultRepo); err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, h := range callStatus(t, s)["hints"].([]interface{}) {
+			if strings.Contains(strings.ToLower(h.(string)), "repo") && !strings.Contains(h.(string), "preset") {
+				out = append(out, h.(string))
+			}
+		}
+		return out
+	}
+	first, second := repoHints("rubik-wt"), repoHints("pyfix")
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("repo hints changed with the registry default:\n%v\n%v", first, second)
+	}
+	if len(first) != 1 || !strings.Contains(first[0], normalizePath(dir)) {
+		t.Fatalf("repo hints = %v, want one naming %s", first, dir)
+	}
+	for _, h := range first {
+		if strings.Contains(h, "rubik-wt") || strings.Contains(h, "pyfix") {
+			t.Fatalf("hint names a repo this server doesn't serve: %q", h)
+		}
 	}
 }
