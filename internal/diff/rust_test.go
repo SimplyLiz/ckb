@@ -296,3 +296,21 @@ func TestRustLiteralSkipsStrings(t *testing.T) {
 		})
 	}
 }
+
+// A Python import list puts several names on a line, closes with `)` and often carries
+// `# noqa`; a call's continuation line looks the same but has no import above it.
+func TestIsImportLine_PythonList(t *testing.T) {
+	lines := rustLines(`from lc1_account import (PRICES, PRICES_DATE, find_files,  # noqa: E402
+                         parse, price, ratios,
+                         saving, total)
+x = price(a,
+          b, c)
+from acct import (
+    price,  # used below
+)`)
+	for line, want := range map[int]bool{1: true, 2: true, 3: true, 5: false, 7: true} {
+		if got := isImportLine(lines, line); got != want {
+			t.Errorf("line %d (%q): %v, want %v", line, lines[line-1], got, want)
+		}
+	}
+}

@@ -400,3 +400,25 @@ func TestGenerateExplanation(t *testing.T) {
 		})
 	}
 }
+
+// A function calling twice is one caller, and the explanation names the transitive
+// ones the blast radius counts too.
+func TestCountCallers_Distinct(t *testing.T) {
+	loc := func(line int) *Location { return &Location{FileId: "a.py", StartLine: line} }
+	impact := []ImpactItem{
+		{Kind: DirectCaller, Distance: 1, StableId: "bill", Location: loc(415)},
+		{Kind: DirectCaller, Distance: 1, StableId: "bill", Location: loc(424)},
+		{Kind: DirectCaller, Distance: 1, StableId: "simulate", Location: loc(352)},
+		{Kind: DirectCaller, Distance: 1, Location: loc(10)}, // module level
+		{Kind: TransitiveCaller, Distance: 2, StableId: "run", Location: loc(487)},
+	}
+	if direct, all := countCallers(impact); direct != 3 || all != 4 {
+		t.Errorf("countCallers = %d, %d; want 3, 4", direct, all)
+	}
+	if got := RecomputeBlastRadius(impact).UniqueCallerCount; got != 4 {
+		t.Errorf("UniqueCallerCount = %d, want 4", got)
+	}
+	if got := generateExplanation(RiskMedium, nil, impact); got != "Medium risk: 3 direct caller(s), 4 with transitive ones, across 0 module(s). Changes require careful testing." {
+		t.Errorf("explanation = %q", got)
+	}
+}

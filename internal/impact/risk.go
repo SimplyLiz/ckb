@@ -127,12 +127,7 @@ func calculateVisibilityRisk(symbol *Symbol, impact []ImpactItem) float64 {
 
 // calculateDirectCallerRisk determines risk based on number of direct callers
 func calculateDirectCallerRisk(impact []ImpactItem) float64 {
-	directCallers := 0
-	for _, item := range impact {
-		if item.Kind == DirectCaller && item.Distance == 1 {
-			directCallers++
-		}
-	}
+	directCallers, _ := countCallers(impact)
 
 	// Logarithmic scale for caller count
 	// 0 callers = 0.0, 1 caller = 0.3, 5 callers = 0.6, 20+ callers = 1.0
@@ -215,28 +210,62 @@ func determineRiskLevel(score float64) RiskLevel {
 
 // generateExplanation creates a human-readable explanation
 func generateExplanation(level RiskLevel, factors []RiskFactor, impact []ImpactItem) string {
-	directCallers := 0
 	modules := make(map[string]bool)
-
 	for _, item := range impact {
-		if item.Kind == DirectCaller && item.Distance == 1 {
-			directCallers++
-		}
 		if item.ModuleId != "" {
 			modules[item.ModuleId] = true
 		}
 	}
-
 	moduleCount := len(modules)
+
+	directCallers, allCallers := countCallers(impact)
+	callers := fmt.Sprintf("%d direct caller(s)", directCallers)
+	if allCallers > directCallers {
+		callers = fmt.Sprintf("%d direct caller(s), %d with transitive ones,", directCallers, allCallers)
+	}
 
 	switch level {
 	case RiskHigh:
-		return fmt.Sprintf("High risk: %d direct caller(s) across %d module(s). Changes may break multiple components.", directCallers, moduleCount)
+		return fmt.Sprintf("High risk: %s across %d module(s). Changes may break multiple components.", callers, moduleCount)
 	case RiskMedium:
-		return fmt.Sprintf("Medium risk: %d direct caller(s) across %d module(s). Changes require careful testing.", directCallers, moduleCount)
+		return fmt.Sprintf("Medium risk: %s across %d module(s). Changes require careful testing.", callers, moduleCount)
 	case RiskLow:
-		return fmt.Sprintf("Low risk: %d direct caller(s) across %d module(s). Changes have limited impact.", directCallers, moduleCount)
+		return fmt.Sprintf("Low risk: %s across %d module(s). Changes have limited impact.", callers, moduleCount)
 	default:
 		return "Unknown risk level."
 	}
+}
+
+// countCallers counts distinct callers: direct ones (distance 1) and those at any
+// depth. A function calling twice is one caller; a caller without a symbol (code at
+// module level) is told apart by its file and line, and one with neither counts on
+// its own.
+func countCallers(impact []ImpactItem) (direct, all int) {
+	seenDirect := make(map[string]bool)
+	seenAll := make(map[string]bool)
+	for _, item := range impact {
+		if item.Kind != DirectCaller && item.Kind != TransitiveCaller {
+			continue
+		}
+		key := callerKey(item)
+		if key == "" || !seenAll[key] {
+			seenAll[key] = true
+			all++
+		}
+		if item.Kind == DirectCaller && item.Distance == 1 && (key == "" || !seenDirect[key]) {
+			seenDirect[key] = true
+			direct++
+		}
+	}
+	return direct, all
+}
+
+func callerKey(item ImpactItem) string {
+	if item.StableId != "" {
+		return item.StableId
+	}
+	if item.Location != nil && item.Location.FileId != "" {
+		return fmt.Sprintf("%s:%d", item.Location.FileId, item.Location.StartLine)
+	}
+	return ""
 }

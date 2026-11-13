@@ -143,8 +143,25 @@ func TestRepairPythonImports(t *testing.T) {
 		t.Errorf("PRICES occurrences = %v", got)
 	}
 	// shadow.py declares its own price: nothing of acct's is added there.
-	if added != 7 {
-		t.Errorf("added = %d, want 7", added)
+	// Seven occurrences added, and trim.py's import line given the import role.
+	if added != 8 {
+		t.Errorf("added = %d, want 8", added)
+	}
+	data, _ := os.ReadFile(indexPath)
+	var idx scippb.Index
+	if err := proto.Unmarshal(data, &idx); err != nil {
+		t.Fatal(err)
+	}
+	for _, doc := range idx.Documents {
+		for _, occ := range doc.Occurrences {
+			if occ.SymbolRoles&SymbolRoleDefinition != 0 || strings.HasPrefix(occ.Symbol, "local ") {
+				continue
+			}
+			onImport := (doc.RelativePath == "lib/trim.py" && occ.Range[0] <= 1) || (doc.RelativePath == "app/bill.py" && occ.Range[0] == 0)
+			if got := occ.SymbolRoles == SymbolRoleImport; got != onImport {
+				t.Errorf("%s:%v roles %d, import line %v", doc.RelativePath, occ.Range, occ.SymbolRoles, onImport)
+			}
+		}
 	}
 
 	// Running it again finds nothing left to add.

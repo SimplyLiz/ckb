@@ -363,7 +363,7 @@ func importStatement(lines []string, line int) (string, bool) {
 	if hasImportPrefix(text) {
 		return text, true
 	}
-	if !bareListEntry.MatchString(text) && !isUseTreeLine(text) {
+	if entry := importListEntry(text); !bareListEntry.MatchString(entry) && !isUseTreeLine(entry) {
 		return "", false
 	}
 	for current := line - 1; current >= 1 && current >= line-maxCallSpan; current-- {
@@ -375,11 +375,27 @@ func importStatement(lines []string, line int) (string, bool) {
 				strings.Count(previous, "(") > strings.Count(previous, ")")
 			return previous, open
 		}
-		if previous != "" && !isUseTreeLine(previous) {
+		if previous != "" && !isUseTreeLine(importListEntry(previous)) {
 			return "", false
 		}
 	}
 	return "", false
+}
+
+// importListEntry is a line of an import list without what may follow its names: a
+// trailing comment (`# noqa: E402`, `// why`) and the `)` closing a Python list.
+// Python puts several names on a line, `a, b, c)`, which the list checks then read.
+func importListEntry(text string) string {
+	for _, marker := range []string{" #", "\t#", " //", "\t//"} {
+		if at := strings.Index(text, marker); at >= 0 {
+			text = text[:at]
+		}
+	}
+	text = strings.TrimSpace(text)
+	if trimmed, ok := strings.CutSuffix(text, ")"); ok && !strings.Contains(trimmed, "(") {
+		text = strings.TrimSpace(trimmed)
+	}
+	return text
 }
 
 // isUseTreeLine says whether a line can be part of an import list. The characters

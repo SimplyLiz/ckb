@@ -41,6 +41,7 @@ type pyRepairDoc struct {
 	prefixes map[string]bool   // Module prefixes this document has occurrences of
 	utf8     bool              // Columns count bytes rather than UTF-16 units
 	starts   map[[2]int32]bool // Starts of the occurrences of a real symbol it already has
+	reads    map[int32]bool    // Lines with a read of a real symbol, which on an import line is the import
 }
 
 // pyImport is one module an import statement names.
@@ -63,8 +64,10 @@ type pyName struct {
 }
 
 // RepairPythonImports adds occurrences for the imports scip-python couldn't resolve,
-// as described above, and rewrites the index at indexPath in place. It returns how
-// many occurrences it added. An index without Python documents is left as it is.
+// as described above, gives the occurrences on import lines the import role instead
+// of scip-python's read, and rewrites the index at indexPath in place. It returns how
+// many occurrences and import lines it changed. An index without Python documents, or
+// with nothing to change, is left as it is.
 func RepairPythonImports(repoRoot, indexPath string) (int, error) {
 	data, err := os.ReadFile(indexPath) // #nosec G304 -- path from the index plan
 	if err != nil {
@@ -111,13 +114,28 @@ func RepairPythonImports(repoRoot, indexPath string) (int, error) {
 	}
 
 	additions := make(map[string][]*scippb.Occurrence)
+	importLines := make(map[string]map[int32]bool)
 	total := 0
 	for _, d := range docs {
 		f := files[d.path]
-		if f == nil || len(f.imports) == 0 {
+		if f == nil {
 			continue
 		}
 		masked := maskPython(f.lines)
+		// scip-python gives the names of an import statement the read role, which
+		// outside a function reads as a caller at module level. They're imports.
+		for line := range pythonImportLines(masked) {
+			if d.reads[line] {
+				if importLines[d.path] == nil {
+					importLines[d.path] = make(map[int32]bool)
+				}
+				importLines[d.path][line] = true
+				total++
+			}
+		}
+		if len(f.imports) == 0 {
+			continue
+		}
 		add := func(line, col int, name, symbol string, roles int32) {
 			start := [2]int32{int32(line), int32(pyColumn(f.lines[line], col, d.utf8))} // #nosec G115 -- line and column of a source file
 			if d.starts[start] {
@@ -200,7 +218,7 @@ func RepairPythonImports(repoRoot, indexPath string) (int, error) {
 	if total == 0 {
 		return 0, nil
 	}
-	if err := rewriteDocuments(indexPath, data, additions); err != nil {
+	if err := rewriteDocuments(indexPath, data, additions, importLines); err != nil {
 		return 0, err
 	}
 	return total, nil
@@ -227,12 +245,16 @@ func scanPythonDocs(data []byte) ([]*pyRepairDoc, error) {
 			prefixes: make(map[string]bool),
 			utf8:     doc.PositionEncoding == scippb.PositionEncoding_UTF8CodeUnitOffsetFromLineStart,
 			starts:   make(map[[2]int32]bool, len(doc.Occurrences)),
+			reads:    make(map[int32]bool),
 		}
 		for _, occ := range doc.Occurrences {
 			// An unresolved name gets a `local N` occurrence, which the repair's own
 			// occurrence goes beside: only a real symbol there means it resolved.
 			if len(occ.Range) >= 2 && !strings.HasPrefix(occ.Symbol, "local ") {
 				d.starts[[2]int32{occ.Range[0], occ.Range[1]}] = true
+				if isImportRead(occ) {
+					d.reads[occ.Range[0]] = true
+				}
 			}
 			prefix, rest, ok := pyModulePrefix(occ.Symbol)
 			if !ok {
@@ -478,7 +500,7 @@ func eachIndexField(data []byte, fn func(protowire.Number, []byte) error) error 
 
 // rewriteDocuments writes data back to indexPath with the occurrences appended to
 // the documents they belong to, atomically, keeping every other field as it was.
-func rewriteDocuments(indexPath string, data []byte, additions map[string][]*scippb.Occurrence) (err error) {
+func rewriteDocuments(indexPath string, data []byte, additions map[string][]*scippb.Occurrence, importLines map[string]map[int32]bool) (err error) {
 	info, err := os.Stat(indexPath)
 	if err != nil {
 		return err
@@ -513,7 +535,13 @@ func rewriteDocuments(indexPath string, data []byte, additions map[string][]*sci
 			if err = proto.Unmarshal(payload, &doc); err != nil {
 				return fmt.Errorf("%s: parsing document: %w", indexPath, err)
 			}
-			if extra := additions[doc.RelativePath]; len(extra) > 0 {
+			extra, imports := additions[doc.RelativePath], importLines[doc.RelativePath]
+			if len(extra) > 0 || len(imports) > 0 {
+				for _, occ := range doc.Occurrences {
+					if len(occ.Range) >= 2 && imports[occ.Range[0]] && isImportRead(occ) {
+						occ.SymbolRoles = occ.SymbolRoles&^SymbolRoleReadAccess | SymbolRoleImport
+					}
+				}
 				doc.Occurrences = append(doc.Occurrences, extra...)
 				sort.SliceStable(doc.Occurrences, func(i, j int) bool {
 					a, c := doc.Occurrences[i].Range, doc.Occurrences[j].Range
@@ -549,4 +577,33 @@ func rewriteDocuments(indexPath string, data []byte, additions map[string][]*sci
 		return err
 	}
 	return os.Rename(tmp.Name(), indexPath)
+}
+
+// isImportRead is an occurrence scip-python writes for a name an import statement
+// names: a read of a real symbol, not a definition and not yet an import.
+func isImportRead(occ *scippb.Occurrence) bool {
+	return occ.SymbolRoles&SymbolRoleReadAccess != 0 &&
+		occ.SymbolRoles&(SymbolRoleDefinition|SymbolRoleImport|SymbolRoleWriteAccess) == 0 &&
+		!strings.HasPrefix(occ.Symbol, "local ")
+}
+
+// pythonImportLines are the 0-based lines of import statements, including the
+// continuation lines of a parenthesized `from m import (...)`, dotted and relative
+// modules too. lines are masked.
+func pythonImportLines(lines []string) map[int32]bool {
+	out := make(map[int32]bool)
+	for i := 0; i < len(lines); i++ {
+		text := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(text, "import ") && !(strings.HasPrefix(text, "from ") && strings.Contains(text, " import")) {
+			continue
+		}
+		out[int32(i)] = true // #nosec G115 -- line of a source file
+		open := strings.Count(text, "(") - strings.Count(text, ")")
+		for open > 0 && i+1 < len(lines) {
+			i++
+			out[int32(i)] = true // #nosec G115 -- line of a source file
+			open += strings.Count(lines[i], "(") - strings.Count(lines[i], ")")
+		}
+	}
+	return out
 }
