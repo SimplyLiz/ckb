@@ -382,7 +382,7 @@ func TestInferVisibility(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name+"/"+tt.kind, func(t *testing.T) {
-			result := inferVisibility(tt.name, tt.kind)
+			result := inferVisibility(tt.name, tt.kind, "")
 			if result != tt.expected {
 				t.Errorf("inferVisibility(%q, %q) = %q, want %q", tt.name, tt.kind, result, tt.expected)
 			}
@@ -857,5 +857,23 @@ func TestRankSearchResults_ExactCaseBeatsFoldNoTies(t *testing.T) {
 	// Kind ranking still counts: fold-matched type beats an exact-case member.
 	if score("Model", "class") <= score("model", "property") {
 		t.Errorf("fold class should still beat exact property")
+	}
+}
+
+// A module-level Python or TypeScript name is public unless an underscore says
+// otherwise; case means nothing there.
+func TestInferFTSVisibility_PythonAndTS(t *testing.T) {
+	py := "scip-python python . 0123 `exp.lc1_account`/"
+	cases := []struct{ id, name, want string }{
+		{py + "price().", "price", "public"},
+		{py + "_bill().", "_bill", "private"},
+		{py + "__init__:", "__init__", "public"},
+		{"scip-typescript npm mods 1.0 hooks/`register.ts`/register.", "register", "public"},
+		{"scip-go gomod x v1 `x/q`/engine#build().", "build", "private"},
+	}
+	for _, c := range cases {
+		if got := inferFTSVisibility(c.id, c.name, "function"); got != c.want {
+			t.Errorf("inferFTSVisibility(%q) = %q, want %q", c.name, got, c.want)
+		}
 	}
 }

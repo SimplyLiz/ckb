@@ -3,8 +3,10 @@ package modules
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/SimplyLiz/CodeMCP/internal/paths"
 )
@@ -30,6 +32,15 @@ type ModuleContext struct {
 // ImportClassifier classifies import edges
 type ImportClassifier struct {
 	context *ModuleContext
+
+	// pyModules maps a Python module name to the tracked files of that name, built
+	// on the first import that needs it (one reaching through sys.path).
+	pyModulesOnce sync.Once
+	pyModules     map[string][]string
+
+	// goModule is the module path in the repo's go.mod, read once.
+	goModuleOnce sync.Once
+	goModule     string
 }
 
 // NewImportClassifier creates a new import classifier
@@ -204,6 +215,11 @@ func (c *ImportClassifier) isLocalModule(importStr string, fromFile string) bool
 	return paths.IsWithinRepo(absPath, c.context.RepoRoot)
 }
 
+// ResolveImport resolves an import to the repo-relative file it reaches, or "".
+func (c *ImportClassifier) ResolveImport(importStr string, fromFile string) string {
+	return c.resolveImport(importStr, fromFile)
+}
+
 // resolveImport attempts to resolve an import to a file path
 func (c *ImportClassifier) resolveImport(importStr string, fromFile string) string {
 	// Language-specific resolution logic
@@ -273,12 +289,27 @@ func (c *ImportClassifier) resolveDartImport(importStr string, fromFile string) 
 
 // resolveGoImport resolves a Go import
 func (c *ImportClassifier) resolveGoImport(importStr string) string {
-	// Go imports are module-based
-	// Check if import starts with the current module path
-	// Note: Full resolution would require reading go.mod to get the module path.
-	// This is a simplified implementation that returns empty for now.
-	_ = c.context.Modules // acknowledge modules exist but resolution is not implemented
-	_ = importStr
+	c.goModuleOnce.Do(func() {
+		content, err := os.ReadFile(filepath.Join(c.context.RepoRoot, "go.mod")) // #nosec G304 -- the repo's go.mod
+		if err != nil {
+			return
+		}
+		for _, line := range strings.Split(string(content), "\n") {
+			if fields := strings.Fields(line); len(fields) >= 2 && fields[0] == "module" {
+				c.goModule = strings.Trim(fields[1], `"`)
+				return
+			}
+		}
+	})
+	if c.goModule == "" {
+		return ""
+	}
+	if importStr == c.goModule {
+		return "."
+	}
+	if rest, ok := strings.CutPrefix(importStr, c.goModule+"/"); ok {
+		return rest
+	}
 	return ""
 }
 
@@ -303,7 +334,52 @@ func (c *ImportClassifier) resolvePythonImport(importStr string, fromFile string
 		return paths.NormalizePath(rel)
 	}
 
+	// A top-level package of the repo: `import pkg.mod` from anywhere.
+	if _, err := os.Stat(filepath.Join(c.context.RepoRoot, importPath)); err == nil {
+		return paths.NormalizePath(filepath.ToSlash(importPath))
+	}
+
+	// A script that puts a sibling directory on sys.path imports its modules by
+	// bare name. The file of that name is it: the only one, or the only one whose
+	// directory the importer spells.
+	if strings.Contains(importStr, ".") {
+		return ""
+	}
+	content, err := os.ReadFile(filepath.Join(c.context.RepoRoot, fromFile)) // #nosec G304 -- a file of the repo being scanned
+	if err != nil || !strings.Contains(string(content), "sys.path") {
+		return ""
+	}
+	c.pyModulesOnce.Do(c.loadPythonModules)
+	candidates := c.pyModules[importStr]
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+	var spelled []string
+	for _, candidate := range candidates {
+		if dir := filepath.Base(filepath.Dir(candidate)); dir != "." && strings.Contains(string(content), `"`+dir+`"`) {
+			spelled = append(spelled, candidate)
+		}
+	}
+	if len(spelled) == 1 {
+		return spelled[0]
+	}
 	return ""
+}
+
+// loadPythonModules indexes the repo's tracked Python files by module name.
+func (c *ImportClassifier) loadPythonModules() {
+	c.pyModules = make(map[string][]string)
+	cmd := exec.Command("git", "-C", c.context.RepoRoot, "ls-files", "-z", "--", "*.py") // #nosec G204 -- fixed git subcommand
+	out, err := cmd.Output()
+	if err != nil {
+		return
+	}
+	for _, file := range strings.Split(string(out), "\x00") {
+		name := strings.TrimSuffix(filepath.Base(file), ".py")
+		if file != "" && name != "__init__" {
+			c.pyModules[name] = append(c.pyModules[name], file)
+		}
+	}
 }
 
 // isDeclaredDependency checks if an import is a declared dependency

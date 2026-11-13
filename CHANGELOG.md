@@ -238,6 +238,25 @@ Claude Code mods, with no manifest anywhere.
   direct caller(s)" sat next to a count of 7. Callers are now distinct (by symbol,
   else file and line) in the count, the risk factor and the explanation, which also
   names the transitive count: "9 direct caller(s), 16 with transitive ones".
+- **Python and TypeScript names aren't "internal" for being lowercase.** The search
+  and tree-sitter paths read visibility by Go's rule, so `price`, imported by six
+  files, was `internal`, and in `explore` every function of a Python directory
+  ranked below its UPPERCASE constants. In `.py`, `.ts` and `.js` files a leading
+  underscore is private and everything else public. `explore` breaks ties by body
+  size, and halves the rank of a test file's symbols unless tests are explored: the
+  top ten for a directory of scripts were two test fixture classes and eight
+  constants, now its ten largest functions.
+- **`explore` and the architecture see a repo's own imports.** An import was
+  internal only if it started with `.` or `/`, so a Python script's sibling module
+  and a Go repo's own packages were `externalDeps`. Python imports now resolve beside
+  the file, from the repo root and, in a file that touches `sys.path`, by module name
+  to the repo's file of that name; Go imports by the module path in `go.mod` (that
+  resolver was a stub). The directory architecture of the scripts repo gets its
+  `roi → living-context` edge (8 imports), which it had as 0.
+- **Git-ignored files stay out.** scip-python indexes the whole directory, so a
+  git-ignored scratch directory (or a virtualenv not starting with `.`) ended up in
+  the index; the repair drops those documents. The directory architecture skipped
+  hidden directories only and listed it too.
 - **`ckb review` shows skipped checks.** They were left out of the text output, so a
   check that didn't look read like one that passed.
 - **The review's dead code no longer reports functions called in their own file.**

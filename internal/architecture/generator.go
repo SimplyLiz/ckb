@@ -377,12 +377,20 @@ func (g *ArchitectureGenerator) buildDirectoryEdges(directories []*modules.Infer
 
 	// Aggregate edges by (fromDir, toDir)
 	edgeMap := make(map[string]*edgeAccumulator)
+	// Python imports by bare module name, including those through sys.path, are
+	// resolved to their file; the path matching below only knows directories.
+	pyResolver := modules.NewImportClassifier(&modules.ModuleContext{RepoRoot: g.repoRoot, Language: modules.LanguagePython})
 
 	for _, imp := range imports {
 		fromDir := extractDirectoryPath(imp.From)
 
 		// Resolve the import target to a directory path
 		toDir := g.resolveImportToDirectory(imp, goModulePrefix, dirSet)
+		if toDir == "" && strings.HasSuffix(imp.From, ".py") {
+			if file := pyResolver.ResolveImport(imp.To, imp.From); file != "" && dirSet[extractDirectoryPath(file)] {
+				toDir = extractDirectoryPath(file)
+			}
+		}
 		if toDir == "" {
 			continue // Could not resolve
 		}

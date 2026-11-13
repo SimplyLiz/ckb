@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -77,6 +78,18 @@ func RepairPythonImports(repoRoot, indexPath string) (int, error) {
 	docs, err := scanPythonDocs(data)
 	if err != nil || len(docs) == 0 {
 		return 0, err
+	}
+	// scip-python indexes the whole directory, scratch and virtualenvs git ignores
+	// included. Those documents go; nothing tracked imports them.
+	dropped := gitIgnored(repoRoot, docs)
+	if len(dropped) > 0 {
+		kept := docs[:0]
+		for _, d := range docs {
+			if !dropped[d.path] {
+				kept = append(kept, d)
+			}
+		}
+		docs = kept
 	}
 	byModule := make(map[string][]*pyRepairDoc)
 	for _, d := range docs {
@@ -215,10 +228,11 @@ func RepairPythonImports(repoRoot, indexPath string) (int, error) {
 			}
 		}
 	}
+	total += len(dropped)
 	if total == 0 {
 		return 0, nil
 	}
-	if err := rewriteDocuments(indexPath, data, additions, importLines); err != nil {
+	if err := rewriteDocuments(indexPath, data, additions, importLines, dropped); err != nil {
 		return 0, err
 	}
 	return total, nil
@@ -500,7 +514,7 @@ func eachIndexField(data []byte, fn func(protowire.Number, []byte) error) error 
 
 // rewriteDocuments writes data back to indexPath with the occurrences appended to
 // the documents they belong to, atomically, keeping every other field as it was.
-func rewriteDocuments(indexPath string, data []byte, additions map[string][]*scippb.Occurrence, importLines map[string]map[int32]bool) (err error) {
+func rewriteDocuments(indexPath string, data []byte, additions map[string][]*scippb.Occurrence, importLines map[string]map[int32]bool, dropped map[string]bool) (err error) {
 	info, err := os.Stat(indexPath)
 	if err != nil {
 		return err
@@ -534,6 +548,9 @@ func rewriteDocuments(indexPath string, data []byte, additions map[string][]*sci
 			var doc scippb.Document
 			if err = proto.Unmarshal(payload, &doc); err != nil {
 				return fmt.Errorf("%s: parsing document: %w", indexPath, err)
+			}
+			if dropped[doc.RelativePath] {
+				continue
 			}
 			extra, imports := additions[doc.RelativePath], importLines[doc.RelativePath]
 			if len(extra) > 0 || len(imports) > 0 {
@@ -606,4 +623,27 @@ func pythonImportLines(lines []string) map[int32]bool {
 		}
 	}
 	return out
+}
+
+// gitIgnored are the documents whose files git ignores. Outside a git repo, or if git
+// fails, none are.
+func gitIgnored(repoRoot string, docs []*pyRepairDoc) map[string]bool {
+	var paths strings.Builder
+	for _, d := range docs {
+		paths.WriteString(d.path)
+		paths.WriteByte(0)
+	}
+	cmd := exec.Command("git", "-C", repoRoot, "check-ignore", "-z", "--stdin") // #nosec G204 -- fixed git subcommand; paths come on stdin
+	cmd.Stdin = strings.NewReader(paths.String())
+	out, err := cmd.Output()
+	if err != nil {
+		return nil // Exit 1: none ignored; anything else: don't guess
+	}
+	ignored := make(map[string]bool)
+	for _, path := range strings.Split(string(out), "\x00") {
+		if path != "" {
+			ignored[path] = true
+		}
+	}
+	return ignored
 }

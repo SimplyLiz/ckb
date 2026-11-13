@@ -143,6 +143,7 @@ func DetectInferredDirectories(repoRoot string, opts InferOptions) ([]*InferredD
 	}
 
 	var directories []*InferredDirectory
+	ignoredByGit := GitIgnoredDirs(repoRoot)
 
 	// Walk the directory tree up to MaxDepth
 	err := filepath.WalkDir(scanRoot, func(path string, d os.DirEntry, walkErr error) error {
@@ -175,7 +176,7 @@ func DetectInferredDirectories(repoRoot string, opts InferOptions) ([]*InferredD
 
 		// Skip ignored directories
 		dirName := filepath.Base(path)
-		if ignoreMap[dirName] || strings.HasPrefix(dirName, ".") {
+		if ignoreMap[dirName] || strings.HasPrefix(dirName, ".") || ignoredByGit[filepath.ToSlash(relPath)] {
 			return filepath.SkipDir
 		}
 
