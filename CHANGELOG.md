@@ -263,6 +263,12 @@ Claude Code mods, with no manifest anywhere.
 - **Review reviewers say what their number is.** It's the share of changed files a
   person has lines in, so `alice (100%) · bob (100%)` looked like a broken split. The
   label says so now, and the change's own author shows as `(author)`.
+- **An empty lookup in a language the index doesn't cover says so.** An index is
+  built for one language: with Python indexed, `searchSymbols("register", scope
+  mods/)` over two TypeScript mods answered `no-results`, which reads as "doesn't
+  exist". When `searchSymbols` finds nothing or `symbolExists` says `false`, and the
+  scope has tracked files of a language with no document in the index, the response
+  carries `notIndexed` (`typescript (5 files)`) and a warning to read those files.
 - **`ckb review` shows skipped checks.** They were left out of the text output, so a
   check that didn't look read like one that passed.
 - **The review's dead code no longer reports functions called in their own file.**
