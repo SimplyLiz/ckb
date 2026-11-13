@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	sitter "github.com/smacker/go-tree-sitter"
+	"github.com/smacker/go-tree-sitter/bash"
 	"github.com/smacker/go-tree-sitter/golang"
 	"github.com/smacker/go-tree-sitter/java"
 	"github.com/smacker/go-tree-sitter/javascript"
@@ -70,6 +71,8 @@ func getLanguage(lang Language) (*sitter.Language, error) {
 		return java.GetLanguage(), nil
 	case LangKotlin:
 		return kotlin.GetLanguage(), nil
+	case LangBash:
+		return bash.GetLanguage(), nil
 	default:
 		return nil, fmt.Errorf("unsupported language: %s", lang)
 	}
@@ -90,6 +93,9 @@ func GetFunctionNodeTypes(lang Language) []string {
 		return []string{"method_declaration", "constructor_declaration", "lambda_expression"}
 	case LangKotlin:
 		return []string{"function_declaration", "lambda_literal", "anonymous_function"}
+	case LangBash:
+		// Both "foo() { ... }" and "function foo { ... }".
+		return []string{"function_definition"}
 	default:
 		return nil
 	}
@@ -172,6 +178,18 @@ func GetDecisionNodeTypes(lang Language) []string {
 			"binary_expression", // for && and ||
 			"elvis_expression",  // ?:
 		}
+	case LangBash:
+		return []string{
+			"if_statement",
+			"elif_clause",
+			"case_item", // each arm of a case, like a switch case
+			"for_statement",
+			"c_style_for_statement",
+			"while_statement",   // also "until": the grammar uses one node
+			"list",              // cmd1 && cmd2, cmd1 || cmd2
+			"binary_expression", // && and || inside [[ ]] and (( ))
+			"ternary_expression",
+		}
 	default:
 		return nil
 	}
@@ -179,7 +197,7 @@ func GetDecisionNodeTypes(lang Language) []string {
 
 // IsBooleanOperator checks if a binary expression node is && or ||.
 func IsBooleanOperator(node *sitter.Node, source []byte, lang Language) bool {
-	if node.Type() != "binary_expression" && node.Type() != "boolean_operator" {
+	if !isOperatorNodeType(node.Type()) {
 		return false
 	}
 
@@ -191,7 +209,7 @@ func IsBooleanOperator(node *sitter.Node, source []byte, lang Language) bool {
 		}
 
 		switch lang {
-		case LangGo, LangJavaScript, LangTypeScript, LangTSX, LangRust, LangJava, LangKotlin:
+		case LangGo, LangJavaScript, LangTypeScript, LangTSX, LangRust, LangJava, LangKotlin, LangBash:
 			content := string(source[child.StartByte():child.EndByte()])
 			if content == "&&" || content == "||" {
 				return true
@@ -205,6 +223,13 @@ func IsBooleanOperator(node *sitter.Node, source []byte, lang Language) bool {
 	}
 
 	return false
+}
+
+// isOperatorNodeType reports whether nodes of this type count toward
+// complexity only when their operator is a boolean one (&&, ||, and, or).
+// Bash's "list" is a command list joined by && or ||.
+func isOperatorNodeType(t string) bool {
+	return t == "binary_expression" || t == "boolean_operator" || t == "list"
 }
 
 // GetNestingNodeTypes returns node types that increase nesting depth for cognitive complexity.
@@ -273,6 +298,15 @@ func GetNestingNodeTypes(lang Language) []string {
 			"do_while_statement",
 			"try_expression",
 			"lambda_literal",
+		}
+	case LangBash:
+		return []string{
+			"if_statement",
+			"case_statement",
+			"for_statement",
+			"c_style_for_statement",
+			"while_statement",
+			"subshell",
 		}
 	default:
 		return nil

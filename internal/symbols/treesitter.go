@@ -6,7 +6,6 @@ package symbols
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -46,8 +45,7 @@ func (e *Extractor) ExtractFile(ctx context.Context, path string) ([]Symbol, err
 		return nil, err
 	}
 
-	ext := strings.ToLower(filepath.Ext(path))
-	lang, ok := complexity.LanguageFromExtension(ext)
+	lang, ok := complexity.LanguageFromPath(path)
 	if !ok {
 		return nil, nil // Unsupported language, return empty
 	}
@@ -117,8 +115,8 @@ func (e *Extractor) ExtractDirectoryWithOptions(ctx context.Context, root string
 		if opts.Filter != nil && !opts.Filter(p) {
 			continue
 		}
-		ext := strings.ToLower(filepath.Ext(p))
-		if _, ok := complexity.LanguageFromExtension(ext); !ok {
+		// Extensionless files are sniffed for a shell shebang.
+		if _, ok := complexity.LanguageFromPath(p); !ok {
 			continue
 		}
 		symbols, extractErr := e.ExtractFile(ctx, p)
@@ -214,6 +212,8 @@ func getFunctionNodeTypes(lang complexity.Language) []string {
 		return []string{}
 	case complexity.LangKotlin:
 		return []string{"function_declaration"}
+	case complexity.LangBash:
+		return []string{"function_definition"}
 	default:
 		return nil
 	}
@@ -279,7 +279,7 @@ func getFunctionName(node *sitter.Node, source []byte, lang complexity.Language)
 	case complexity.LangJavaScript, complexity.LangTypeScript, complexity.LangTSX:
 		nameNode = node.ChildByFieldName("name")
 
-	case complexity.LangPython:
+	case complexity.LangPython, complexity.LangBash:
 		nameNode = node.ChildByFieldName("name")
 
 	case complexity.LangRust:
