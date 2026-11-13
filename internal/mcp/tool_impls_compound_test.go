@@ -378,3 +378,15 @@ func TestCompactPrepareChange_TargetLabelAndHint(t *testing.T) {
 		t.Errorf("a file target should point at a symbol target: %q", file.Hint)
 	}
 }
+
+// The compact view is the MCP default, so what a modify score assumes has to
+// reach it, not only the full response.
+func TestCompactPrepareChange_CarriesRiskBasis(t *testing.T) {
+	const basis = "Scored as an edit that keeps the declaration; assessChange rescores the real diff."
+	c := buildMCPCompactPrepareChange("x", &query.PrepareChangeResponse{
+		RiskAssessment: &query.PrepareRisk{Level: "low", Basis: basis},
+	}, "scip")
+	if c.RiskBasis != basis {
+		t.Errorf("risk_basis = %q, want %q", c.RiskBasis, basis)
+	}
+}

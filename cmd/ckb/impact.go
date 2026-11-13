@@ -24,8 +24,10 @@ type CompactPrepareChange struct {
 	TestsNeeded   []string `json:"tests_needed"`   // top 5
 	OwnerSuggest  string   `json:"owner_suggest,omitempty"`
 	Summary       string   `json:"summary"`
-	Backend       string   `json:"backend"`
-	Accuracy      string   `json:"accuracy"`
+	// RiskBasis is what the risk assumes, for modify: that the declaration stays.
+	RiskBasis string `json:"risk_basis,omitempty"`
+	Backend   string `json:"backend"`
+	Accuracy  string `json:"accuracy"`
 }
 
 var (
@@ -199,9 +201,9 @@ func runPrepareChange(cmd *cobra.Command, args []string) {
 
 // buildCompactPrepareChange builds a CompactPrepareChange from a PrepareChangeResponse.
 func buildCompactPrepareChange(target string, r *query.PrepareChangeResponse, activeBackend string) CompactPrepareChange {
-	risk := "unknown"
+	risk, riskBasis := "unknown", ""
 	if r.RiskAssessment != nil {
-		risk = r.RiskAssessment.Level
+		risk, riskBasis = r.RiskAssessment.Level, r.RiskAssessment.Basis
 	}
 
 	// Collect unique affected files from direct dependents (top 10)
@@ -249,6 +251,7 @@ func buildCompactPrepareChange(target string, r *query.PrepareChangeResponse, ac
 		AffectedFiles: affectedFiles,
 		TestsNeeded:   testsNeeded,
 		Summary:       summary,
+		RiskBasis:     riskBasis,
 		Backend:       activeBackend,
 		Accuracy:      envelope.AccuracyForBackend(activeBackend),
 	}
