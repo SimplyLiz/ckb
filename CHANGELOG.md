@@ -363,7 +363,16 @@ private, so only aggregates are here.
   worker, unwired drops from 20 to 10. Only esbuild is checked on a real repo.
 - **One analyzeImpact row per consumer and line.** `lc.Win(p), lc.SubWin(p)` constructs
   two classes that both run `Win.__init__`, and the line was listed twice: 6 rows for 5
-  consumers. Counts and the risk score were already per consumer.
+  consumers. Counts and the risk score were already per consumer. The done check listed
+  the same line twice too, once plain and once via `SubWin`; it is listed once now.
+- **prepareChange scores a symbol edit the way assessChange does.** The two tools had
+  different formulas, prepareChange adding weights for caller count, spread, visibility
+  and tests, assessChange averaging changed symbols, direct and transitive consumers and
+  modules, so one body edit got two scores whatever the bands: on a fixture 0.15 before,
+  0.26 after. A symbol target is now scored with assessChange's formula on the same
+  consumers, as an edit that keeps the declaration; visibility, test files and co-change
+  are still listed but no longer weighted. Rubik's `price`: 9 direct, 7 transitive, 2
+  modules, low in both. File and module targets keep the old formula.
 - **Changed symbols carry a qualified name.** `qualifiedName` in changedSymbols, open
   sites and rarely groups (`Backend.Priority`, `Win.__init__`), shown by the compact text
   and `ckb changes`. Renaming an interface method and its implementations gave three

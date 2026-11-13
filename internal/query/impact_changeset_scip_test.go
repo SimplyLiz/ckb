@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -580,5 +581,25 @@ func TestHasReachingTest_WideConsumerKeepsItsTest(t *testing.T) {
 	consumer := ImpactItem{StableId: symLone, Location: &LocationInfo{FileId: "lone/lone.go"}}
 	if !engine.hasReachingTest(context.Background(), consumer) {
 		t.Error("by/by_test.go reaches Lone through By")
+	}
+}
+
+// prepareChange scored a modify on a formula of its own, so one body edit had two
+// levels: Rubik's price medium before the edit, low after it. It now scores an edit
+// that keeps the declaration the way assessChange scores that diff.
+func TestPrepareChange_ModifyScoredLikeAssessChangeBodyEdit(t *testing.T) {
+	engine := changeSetEngine(t)
+	after := runChangeSet(t, engine, AnalyzeChangeSetOptions{DiffContent: bodyEditOfTarget, TransitiveDepth: 2})
+	before, err := engine.PrepareChange(context.Background(), PrepareChangeOptions{Target: symTarget, ChangeType: ChangeModify})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.RiskScore == nil || before.RiskAssessment == nil {
+		t.Fatalf("missing risk: %+v / %+v", after.RiskScore, before.RiskAssessment)
+	}
+	want := math.Round(after.RiskScore.Score*100) / 100
+	if before.RiskAssessment.Score != want || before.RiskAssessment.Level != after.RiskScore.Level {
+		t.Errorf("prepareChange %v %s, assessChange %v %s for the same body edit (factors %v)",
+			before.RiskAssessment.Score, before.RiskAssessment.Level, want, after.RiskScore.Level, before.RiskAssessment.Factors)
 	}
 }
