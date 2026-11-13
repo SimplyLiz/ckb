@@ -395,7 +395,7 @@ func (a *ImpactAnalyzer) computeBlastRadius(allImpact []ImpactItem) *BlastRadius
 func RecomputeBlastRadius(allImpact []ImpactItem) *BlastRadius {
 	moduleSet := make(map[string]bool)
 	fileSet := make(map[string]bool)
-	callerCount := 0
+	_, callerCount := countCallers(allImpact)
 
 	for _, item := range allImpact {
 		if item.ModuleId != "" {
@@ -403,9 +403,6 @@ func RecomputeBlastRadius(allImpact []ImpactItem) *BlastRadius {
 		}
 		if item.Location != nil && item.Location.FileId != "" {
 			fileSet[item.Location.FileId] = true
-		}
-		if item.Kind == DirectCaller || item.Kind == TransitiveCaller {
-			callerCount++
 		}
 	}
 

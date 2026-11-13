@@ -55,7 +55,7 @@
     }
   ],
   "riskScore": {
-    "explanation": "Low risk: 0 direct caller(s) across 2 module(s). Changes have limited impact.",
+    "explanation": "Low risk: 0 direct caller(s), 2 with transitive ones, across 2 module(s). Changes have limited impact.",
     "level": "low",
     "score": 0.39
   },

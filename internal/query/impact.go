@@ -476,6 +476,11 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 					len(refsResult.References), refsResult.TotalReferences))
 			}
 			for _, ref := range refsResult.References {
+				// An import only brings the name in; the uses after it are the
+				// callers. As an item it was a nameless "unknown" at module level.
+				if ref.Kind == "import" {
+					continue
+				}
 				fromModule := ""
 				if ref.Location.Path != "" {
 					fromModule = filepath.Dir(ref.Location.Path)

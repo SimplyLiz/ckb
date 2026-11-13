@@ -225,6 +225,19 @@ Claude Code mods, with no manifest anywhere.
   compares against the working tree now and says so for another `targetRef`; its
   `totalBaseSymbols` and `totalTargetSymbols`, always 0 and the count of every
   exported symbol, are gone.
+- **An import isn't a caller.** scip-python gives the names in an import statement
+  the read role, and a read outside any function counted as a direct caller:
+  `analyzeImpact` listed `from lc1_account import (... price ...)` as a caller with
+  no name and no ID. The index repair gives those occurrences the import role, and
+  `analyzeImpact` leaves imports out of its items; the uses after them are the
+  callers. `findReferences` counted the line's name as a `[read]`: a Python list line
+  with several names, a closing `)` or a `# noqa` wasn't recognized as part of the
+  import.
+- **Callers are counted once.** `uniqueCallerCount` counted every call site, direct
+  and transitive, so a function calling twice was two, and the explanation's "5
+  direct caller(s)" sat next to a count of 7. Callers are now distinct (by symbol,
+  else file and line) in the count, the risk factor and the explanation, which also
+  names the transitive count: "9 direct caller(s), 16 with transitive ones".
 - **`ckb review` shows skipped checks.** They were left out of the text output, so a
   check that didn't look read like one that passed.
 - **The review's dead code no longer reports functions called in their own file.**
