@@ -209,16 +209,18 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 	}
 
 	defs := changeableDefinitions(doc)
-	if lang := declarationLanguage(filePath); lang == "go" || lang == "ts" {
+	if lang := declarationLanguage(filePath); lang == "go" || lang == "ts" || lang == "rust" {
 		indexAll := readText().oldAll
 		if side == indexMatchesNew {
 			indexAll = readText().newAll
 		}
-		if lang == "go" {
+		switch lang {
+		case "go":
 			defs = withGoValueExtents(defs, indexAll)
-		} else {
+		case "ts":
 			defs = withTSValueExtents(defs, indexAll)
 		}
+		defs = withTypeBodyExtents(defs, indexAll, lang)
 	}
 	python := declarationLanguage(filePath) == "python"
 	var pythonIndexAll map[int]string
@@ -380,7 +382,8 @@ type wholeChange struct {
 // the index's side all their lines changed, and the other side doesn't mention
 // the name, which would make it a rewrite. Only a side the index covers can show
 // this, and a bound inferred from the next function says nothing about where the
-// definition really ends, so there only its own line is checked.
+// definition really ends, so there only its own line is checked. So too for a type
+// body read from the text, as the index alone had it.
 func wholeDefinitionChanges(file *impact.ChangedFile, defs []*SymbolDefInfo, side indexSide) map[string]wholeChange {
 	changed := make(map[int]bool)
 	var otherSide []string
@@ -405,8 +408,12 @@ func wholeDefinitionChanges(file *impact.ChangedFile, defs []*SymbolDefInfo, sid
 	whole := make(map[string]wholeChange)
 	for _, def := range defs {
 		start, end := def.StartLine, def.EndLine
-		if def.Precision == scip.BoundsInferred {
+		switch {
+		case def.Precision == scip.BoundsInferred:
 			start, end = def.DefLine, def.DefLine
+		case isTextExtendedType(def):
+			// A body read from the text may end at a brace the diff gives the type before.
+			end = start
 		}
 		lines := make([]int, 0, end-start+1)
 		for line := start; line <= end && changed[line]; line++ {
