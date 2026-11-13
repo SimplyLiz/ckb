@@ -4,7 +4,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	scippb "github.com/sourcegraph/scip/bindings/go/scip"
 
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
 )
@@ -108,5 +111,96 @@ func TestCheckConfigKeys(t *testing.T) {
 	}
 	if c.filesRead != 0 {
 		t.Errorf("config files spent %d of the use budget", c.filesRead)
+	}
+}
+
+func TestGoTagOnlyChange(t *testing.T) {
+	for _, tt := range []struct {
+		before, after string
+		want          bool
+	}{
+		{"Port int `toml:\"port\"`", "Port int `toml:\"listen_port\"`", true},
+		{"Port int `toml:\"port\"` // the port", "Port   int `toml:\"listen_port\"`", true},
+		{"Port int `toml:\"port\"`", "Port int", true},
+		{"Port int", "Port int `json:\"port\"`", true},
+		{"Port int `toml:\"port\"`", "Port int64 `toml:\"listen_port\"`", false},
+		{"Port int `toml:\"port\"`", "ListenPort int `toml:\"port\"`", false},
+		{"func F(a int)", "func F(a int64)", false},
+		{"Port int", "Port int", false},
+	} {
+		if got := goTagOnlyChange(tt.before, tt.after); got != tt.want {
+			t.Errorf("goTagOnlyChange(%q, %q) = %v, want %v", tt.before, tt.after, got, tt.want)
+		}
+	}
+}
+
+const (
+	symConfig     = "scip-go gomod example.com/m v1 `example.com/m/lib`/Config#"
+	symConfigPort = "scip-go gomod example.com/m v1 `example.com/m/lib`/Config#Port."
+	symServer     = "scip-go gomod example.com/m v1 `example.com/m/lib`/ServerConfig#"
+	symServerPort = "scip-go gomod example.com/m v1 `example.com/m/lib`/ServerConfig#Port."
+	symUse        = "scip-go gomod example.com/m v1 `example.com/m/app`/Use()."
+)
+
+// configFixture is a repo with a nested config struct, a Go function using its
+// fields, and config files writing them.
+func configFixture(t *testing.T, files map[string]string) (*Engine, string) {
+	t.Helper()
+	field := func(symbol string, line int32, kind scippb.SymbolInformation_Kind) (*scippb.SymbolInformation, *scippb.Occurrence) {
+		return &scippb.SymbolInformation{Symbol: symbol, Kind: kind},
+			&scippb.Occurrence{Symbol: symbol, Range: []int32{line, 1, 5}, SymbolRoles: int32(scippb.SymbolRole_Definition), EnclosingRange: []int32{line, 0, line, 40}}
+	}
+	conf := &scippb.Document{RelativePath: "lib/conf.go", Language: "go"}
+	for _, f := range []struct {
+		symbol string
+		line   int32
+		kind   scippb.SymbolInformation_Kind
+	}{
+		{symConfig, 2, scippb.SymbolInformation_Struct},
+		{symConfigPort, 3, scippb.SymbolInformation_Field},
+		{symServer, 7, scippb.SymbolInformation_Struct},
+		{symServerPort, 8, scippb.SymbolInformation_Field},
+	} {
+		info, occ := field(f.symbol, f.line, f.kind)
+		conf.Symbols = append(conf.Symbols, info)
+		conf.Occurrences = append(conf.Occurrences, occ)
+	}
+	conf.Occurrences[0].EnclosingRange = []int32{2, 0, 5, 1}
+	conf.Occurrences[2].EnclosingRange = []int32{7, 0, 9, 1}
+	use := fixtureDoc("app/use.go", []fixtureFunc{{symUse, 4, 8}},
+		[]fixtureRef{{symConfigPort, 5}, {symServerPort, 6}})
+	engine := changeSetEngine(t, conf, use)
+	root := engine.repoRoot
+	writeRepoFile(t, root, ".gitignore", ".ckb/\nindex.scip\n")
+	for path, content := range doneCheckFiles {
+		writeRepoFile(t, root, path, content)
+	}
+	writeRepoFile(t, root, "lib/conf.go", "package lib\n\ntype Config struct {\n\tPort   int          `toml:\"port\"`\n\tServer ServerConfig `toml:\"server\"`\n}\n\ntype ServerConfig struct {\n\tPort int `toml:\"port\"`\n}\n")
+	writeRepoFile(t, root, "app/use.go", "package app\n\nimport \"example.com/m/lib\"\n\nfunc Use(c lib.Config) {\n\tc.Port = 1\n\tc.Server.Port = 2\n\t_ = c\n}\n")
+	for path, content := range files {
+		writeRepoFile(t, root, path, content)
+	}
+	gitInit(t, root)
+	engine.scipAdapter.GetIndex().IndexedCommit = headCommit(t, root)
+	return engine, root
+}
+
+// Only the tag of a field changed: `c.Port` compiles as before, so the Go use isn't
+// open; the config file still writing the old key is.
+func TestDoneCheck_TagOnlyChangeListsOnlyConfigSites(t *testing.T) {
+	engine, root := configFixture(t, map[string]string{"config/example.toml": "port = 1\n"})
+	editRepoFile(t, root, "lib/conf.go", "Port   int          `toml:\"port\"`", "Port   int          `toml:\"listen_port\"`")
+
+	resp := runChangeSet(t, engine, AnalyzeChangeSetOptions{})
+
+	check := resp.DoneCheck
+	if check.Status != DoneCheckOpen {
+		t.Fatalf("status = %s: %s", check.Status, check.Note)
+	}
+	if len(check.OpenSites) != 1 || check.OpenSites[0].File != "config/example.toml" {
+		t.Fatalf("openSites = %+v, want only the config line", check.OpenSites)
+	}
+	if got := strings.Join(resp.ConsumerFiles.ContractChanged, ","); got != "config/example.toml" {
+		t.Errorf("contractChanged = %q, want the config file only", got)
 	}
 }

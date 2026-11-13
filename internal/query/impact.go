@@ -1671,8 +1671,14 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 				outsideNames[name] = sourceFamily(sym.File)
 				done.noteGoDeclaration(name, sym.File)
 			}
-			if openFiles, ok := done.checkSymbol(ctx, usesFinder, sym, declaration); ok {
-				handled = withoutFiles(changedFilePaths, openFiles)
+			// A Go field whose struct tag is all that changed: its Go uses compile as
+			// before, only what reads or writes the serialized key can break.
+			tagOnly := declaration == impact.DeclChanged && detectLanguage(sym.File) == "go" &&
+				goTagOnlyChange(sym.DeclarationBefore, sym.DeclarationAfter)
+			if !tagOnly {
+				if openFiles, ok := done.checkSymbol(ctx, usesFinder, sym, declaration); ok {
+					handled = withoutFiles(changedFilePaths, openFiles)
+				}
 			}
 			// A config file still writing a renamed or removed serialized key.
 			var configFiles []string
@@ -1682,24 +1688,32 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			if viaAlias := done.checkRustAlias(ctx, usesFinder, sym); len(viaAlias) > 0 {
 				rustOpens = append(rustOpens, rustOpen{name: sym.Name, change: declaration, files: viaAlias})
 			}
-			broken := findBrokenContract(sym.Name, declaration, impactResult.DirectImpact, handled)
+			var broken *brokenContract
+			switch {
+			case !tagOnly:
+				broken = findBrokenContract(sym.Name, declaration, impactResult.DirectImpact, handled)
+			case len(configFiles) > 0:
+				broken = &brokenContract{name: sym.Name, change: declaration, consumers: configFiles, files: configFiles}
+			}
 			if broken != nil {
 				brokenContracts = append(brokenContracts, *broken)
 				contractConsumers = broken.files
 				contractChangedFiles = append(contractChangedFiles, broken.files...)
 			}
-			contractConsumers = append(contractConsumers, configFiles...)
-			contractChangedFiles = append(contractChangedFiles, configFiles...)
-			for i := range impactResult.TestImpact {
-				item := &impactResult.TestImpact[i]
-				if item.Distance == 1 && item.Location != nil && !handled[item.Location.FileId] {
-					contractChangedTests = append(contractChangedTests, item.Location.FileId)
+			if !tagOnly {
+				contractConsumers = append(contractConsumers, configFiles...)
+				contractChangedFiles = append(contractChangedFiles, configFiles...)
+				for i := range impactResult.TestImpact {
+					item := &impactResult.TestImpact[i]
+					if item.Distance == 1 && item.Location != nil && !handled[item.Location.FileId] {
+						contractChangedTests = append(contractChangedTests, item.Location.FileId)
+					}
 				}
-			}
-			for i := range impactResult.DirectImpact {
-				item := &impactResult.DirectImpact[i]
-				if isTestFile(item.Location) && !handled[item.Location.FileId] {
-					contractChangedTests = append(contractChangedTests, item.Location.FileId)
+				for i := range impactResult.DirectImpact {
+					item := &impactResult.DirectImpact[i]
+					if isTestFile(item.Location) && !handled[item.Location.FileId] {
+						contractChangedTests = append(contractChangedTests, item.Location.FileId)
+					}
 				}
 			}
 			if broken == nil && impactResult.Visibility != nil &&
