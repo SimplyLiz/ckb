@@ -300,3 +300,33 @@ func TestGoStructFieldTypes(t *testing.T) {
 		}
 	}
 }
+
+// A holder of pointers, `[]*T{` or `map[K]*T{`, holds elements like any other: a plain
+// expression in it was built elsewhere, and only an elided `{…}`, which Go reads as
+// `&T{…}`, builds a T by its fields.
+func TestGoLiteral_PointerHolders(t *testing.T) {
+	tests := []struct {
+		line string
+		want bool
+	}{
+		{"enclosing = []*T{decorated}", false},
+		{"best, bestSpan = []*T{def}, span", false},
+		{"defs := f([]*T{class, uid}, lines)", false},
+		{"m := map[string]*T{k: v}", false},
+		{"arr := [2]*T{a, b}", false},
+		{"q := []*pkg.T{entry}", false},
+		{"xs := []*T{{A: 1}, {B: 2}}", true},
+		{"m := map[string]*T{\"a\": {A: 1}}", true},
+		{"xs := []T{{A: 1}}", true},
+		{"p := &T{A: 1}", true},
+	}
+	for _, tt := range tests {
+		if _, ok := goLiteral([]string{tt.line}, 1, 0, "T"); ok != tt.want {
+			t.Errorf("%q: literal = %v, want %v", tt.line, ok, tt.want)
+		}
+	}
+	keys, positional, ok := GoLiteralKeys([]string{"xs := []*T{{A: 1}, {1, 2}}"}, 1, 0, "T")
+	if !ok || strings.Join(keys, " ") != "A" || !positional {
+		t.Errorf("[]*T elements: got %v positional=%v ok=%v, want A positional", keys, positional, ok)
+	}
+}

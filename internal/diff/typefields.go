@@ -348,7 +348,7 @@ func goLiteral(lines []string, line, column int, name string) (end int, ok bool)
 	}
 	// `[]Name{` and `map[K]Name{` hold elements: only a `{` in the first one builds a
 	// value by its fields. `[]Name{existing}` names a value that was built elsewhere.
-	if strings.HasSuffix(trimQualifier(text[:start]), "]") {
+	if goElementHolder(text[:start]) {
 		first := inside
 		if at := strings.IndexByte(first, ','); at >= 0 {
 			first = first[:at]
@@ -358,6 +358,14 @@ func goLiteral(lines []string, line, column int, name string) (end int, ok bool)
 		}
 	}
 	return braceEnd(lines, line, len(text)-len(rest)), true
+}
+
+// goElementHolder says whether the text before a type's name makes the name an element
+// type: `[]`, `[N]`, `map[K]`, with or without a `*`, as in `[]*Name{` and
+// `map[K]*Name{`. Their elements are values; an elided `{…}` among them, which Go reads
+// as `Name{…}` or `&Name{…}`, is the only literal of the type.
+func goElementHolder(prefix string) bool {
+	return strings.HasSuffix(strings.TrimSuffix(trimQualifier(prefix), "*"), "]")
 }
 
 // tsConstruction finds a place that builds an object as the named type: `: Name = {`,
@@ -619,7 +627,7 @@ func GoLiteralKeys(lines []string, line, column int, name string) (keys []string
 	if !ok {
 		return nil, false, false
 	}
-	holder := strings.HasSuffix(trimQualifier(text[:start]), "]")
+	holder := goElementHolder(text[:start])
 	seen := make(map[string]bool)
 	read := func(content string) {
 		for _, entry := range goSplitEntries(content) {
