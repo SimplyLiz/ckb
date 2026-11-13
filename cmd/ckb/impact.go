@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -650,6 +651,9 @@ type ChangedSymbolCLI struct {
 	Note       string  `json:"note,omitempty"`
 	// Declaration: unchanged (a body edit), compatible, changed or removed (heuristic).
 	Declaration string `json:"declaration,omitempty"`
+	// QualifiedName is Name with its enclosing type, "Backend.Priority"; omitted when
+	// it has none.
+	QualifiedName string `json:"qualifiedName,omitempty"`
 }
 
 // BlastRadiusCLI summarizes the impact spread
@@ -691,6 +695,8 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 			Confidence:  sym.Confidence,
 			Note:        sym.Note,
 			Declaration: sym.Declaration,
+
+			QualifiedName: sym.QualifiedName,
 		})
 	}
 
@@ -972,7 +978,7 @@ func formatImpactMarkdown(resp *ChangeSetResponseCLI) string {
 				break
 			}
 			b.WriteString(fmt.Sprintf("| `%s` | `%s` | %s | %.0f%% |\n",
-				sym.Name, sym.File, sym.ChangeType, sym.Confidence*100))
+				cmp.Or(sym.QualifiedName, sym.Name), sym.File, sym.ChangeType, sym.Confidence*100))
 		}
 		b.WriteString("\n</details>\n\n")
 	}

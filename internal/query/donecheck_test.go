@@ -421,7 +421,7 @@ func TestDoneCheck_OrdersSitesByLikelihood(t *testing.T) {
 	if check.OpenCount != 7 || check.Status != DoneCheckOpen {
 		t.Errorf("openCount %d, status %s: the count is every untouched use", check.OpenCount, check.Status)
 	}
-	if fmt.Sprintf("%+v", check.Rarely) != "[{Symbol:Kind Change: Via: Count:1 Files:1 Uses:map[annotation:1]} {Symbol:s.key Change: Via: Count:1 Files:1 Uses:map[read:1]}]" {
+	if fmt.Sprintf("%+v", check.Rarely) != "[{Symbol:Kind Change: Via: Count:1 Files:1 Uses:map[annotation:1] QualifiedName:} {Symbol:s.key Change: Via: Count:1 Files:1 Uses:map[read:1] QualifiedName:}]" {
 		t.Errorf("rarely groups = %+v", check.Rarely)
 	}
 }

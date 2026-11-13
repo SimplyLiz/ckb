@@ -296,6 +296,7 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 			Confidence: sym.confidence,
 			HunkIndex:  sym.hunkIndex,
 		}
+		entry.QualifiedName = QualifiedSymbolName(symbolID, entry.Name)
 		if !sym.substantive {
 			entry.Trivial = true
 			entry.Confidence = confidenceTrivial
@@ -680,6 +681,26 @@ func (m *DiffSymbolMapper) symbolName(symbolID, defName string) string {
 		return name
 	}
 	return extractSymbolName(symbolID)
+}
+
+// QualifiedSymbolName is name with the type enclosing the symbol, read from its SCIP
+// ID: "Backend.Priority" for `Backend#Priority().`, "Win.__init__" for
+// `Win#__init__().`. Empty when the ID has no enclosing type or can't be parsed, and
+// when name already carries it.
+func QualifiedSymbolName(symbolID, name string) string {
+	if name == "" || strings.HasPrefix(symbolID, "file:") || scip.IsLocalSymbol(symbolID) {
+		return ""
+	}
+	id, err := scip.ParseSCIPIdentifier(symbolID)
+	if err != nil {
+		return ""
+	}
+	container := id.GetContainerName()
+	// The legacy parse joins whatever precedes the last '.', package path and all.
+	if container == "" || container == name || strings.ContainsAny(container, "/` ") || strings.HasPrefix(name, container+".") {
+		return ""
+	}
+	return container + "." + name
 }
 
 // attributedSymbol accumulates the changes attributed to one definition.

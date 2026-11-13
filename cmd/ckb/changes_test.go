@@ -375,3 +375,32 @@ func TestWriteDoneCheck(t *testing.T) {
 		t.Errorf("no check should print nothing, got %q", b.String())
 	}
 }
+
+// Three changed Priority methods: the contract lines and the done check's sites say
+// whose, and a qualified name of twenty characters still has a space before its file.
+func TestFormatChangesHuman_QualifiedNames(t *testing.T) {
+	resp := &ChangeSetResponseCLI{
+		Summary: &ChangeSummaryCLI{SymbolsChanged: 2},
+		ChangedSymbols: []ChangedSymbolCLI{
+			{Name: "Priority", QualifiedName: "Backend.Priority", File: "internal/backends/backend.go"},
+			{Name: "Priority", QualifiedName: "SCIPAdapter.Priority", File: "internal/backends/scip/adapter.go"},
+		},
+		Contracts: []ContractSignalCLI{
+			{Symbol: "Priority", File: "internal/backends/backend.go", Kind: "definition-removed"},
+			{Symbol: "Priority", File: "internal/backends/scip/adapter.go", Kind: "definition-removed"},
+		},
+		DoneCheck: &query.DoneCheck{Status: "open", OpenCount: 1, OpenSites: []query.OpenSite{
+			{Symbol: "Priority", QualifiedName: "SCIPAdapter.Priority", Change: "removed", File: "internal/backends/scip/adapter_test.go", Line: 9, Code: "a.Priority()"},
+		}},
+	}
+	out := formatChangesHuman(resp, false)
+	for _, want := range []string{
+		"  Backend.Priority    internal/backends/backend.go\n",
+		"  SCIPAdapter.Priority internal/backends/scip/adapter.go\n",
+		"[SCIPAdapter.Priority removed]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in\n%s", want, out)
+		}
+	}
+}

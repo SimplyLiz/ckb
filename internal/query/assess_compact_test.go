@@ -302,3 +302,54 @@ func TestCompactAssessChange_SameNameContracts(t *testing.T) {
 		}
 	}
 }
+
+// Renaming an interface method and its implementations changed three symbols named
+// Priority: the contracts and the open sites now say whose, from the qualified name,
+// while the JSON symbol fields keep the bare name the checks match by.
+func TestCompactAssessChange_QualifiedNames(t *testing.T) {
+	r := &AnalyzeChangeSetResponse{
+		Summary: &ChangeSummary{FilesChanged: 3},
+		ChangedSymbols: []ChangedSymbolInfo{
+			{Name: "Priority", QualifiedName: "Backend.Priority", File: "backends/backend.go"},
+			{Name: "Priority", QualifiedName: "LspAdapter.Priority", File: "backends/lsp/adapter.go"},
+			{Name: "simulate", File: "lc/lc1_account.py"},
+		},
+		Contracts: []ContractSignal{
+			{Symbol: "Priority", File: "backends/backend.go", Kind: "definition-removed"},
+			{Symbol: "Priority", File: "backends/lsp/adapter.go", Kind: "definition-removed"},
+			{Symbol: "simulate", File: "lc/lc1_account.py", Kind: "possible-contract-change"},
+		},
+		DoneCheck: &DoneCheck{Status: "open", OpenCount: 1, OpenSites: []OpenSite{
+			{Symbol: "Priority", QualifiedName: "LspAdapter.Priority", Change: "removed", File: "backends/lsp/lsp_test.go", Line: 138, Code: "adapter.Priority()"},
+		}},
+	}
+	text := CompactAssessChangeFrom(r).Text()
+	for _, want := range []string{
+		"definition-removed Backend.Priority\n",
+		"definition-removed LspAdapter.Priority\n",
+		"possible-contract-change simulate\n",
+		"LspAdapter.Priority (removed)\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in\n%s", want, text)
+		}
+	}
+	if r.Contracts[0].Symbol != "Priority" || r.DoneCheck.OpenSites[0].Symbol != "Priority" {
+		t.Error("the response's symbol fields were changed")
+	}
+}
+
+// Sites of two changed symbols with one bare name are counted apart.
+func TestGroupRarely_ByQualifiedName(t *testing.T) {
+	groups := groupRarely([]OpenSite{
+		{Symbol: "Priority", QualifiedName: "Backend.Priority", Change: "removed", File: "a.go", Use: "read"},
+		{Symbol: "Priority", QualifiedName: "LspAdapter.Priority", Change: "removed", File: "b.go", Use: "read"},
+		{Symbol: "Priority", QualifiedName: "LspAdapter.Priority", Change: "removed", File: "c.go", Use: "read"},
+	})
+	if len(groups) != 2 || groups[0].QualifiedName != "Backend.Priority" || groups[1].Count != 2 {
+		t.Fatalf("groups = %+v, want Backend.Priority 1 and LspAdapter.Priority 2", groups)
+	}
+	if line := rarelyLine(groups[1]); !strings.HasPrefix(line, "LspAdapter.Priority (removed): 2 in 2 files") {
+		t.Errorf("rarelyLine = %q", line)
+	}
+}

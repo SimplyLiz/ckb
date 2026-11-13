@@ -74,6 +74,8 @@ type RarelyGroup struct {
 	Files  int    `json:"files"`
 	// Uses counts them by use: annotation, read.
 	Uses map[string]int `json:"uses"`
+	// QualifiedName is the symbol's, as on its sites.
+	QualifiedName string `json:"qualifiedName,omitempty"`
 }
 
 // OpenSite is one use of a changed declaration that the diff left as it was.
@@ -94,6 +96,9 @@ type OpenSite struct {
 	// literal, switch, annotation or read. The sites are ordered by it, the first
 	// being the ones a change is likely to break. Empty for any other site.
 	Use string `json:"use,omitempty"`
+	// QualifiedName is Symbol with its enclosing type, where the changed symbol has
+	// one: "LspAdapter.Priority". For display; Symbol stays the bare name.
+	QualifiedName string `json:"qualifiedName,omitempty"`
 
 	// literalLines is how many lines past Line a literal site's braces reach; zero
 	// for any other site.
@@ -515,7 +520,8 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 			Unverified: result.Unverified,
 			Via:        via,
 
-			literalLines: literalLines,
+			QualifiedName: sym.QualifiedName,
+			literalLines:  literalLines,
 		})
 	}
 	if len(missingAt) > 0 {
@@ -606,13 +612,15 @@ func groupRarely(sites []OpenSite) []RarelyGroup {
 	at := make(map[[3]string]int)
 	files := make(map[[3]string]map[string]bool)
 	for _, s := range sites {
-		key := [3]string{s.Symbol, s.Change, s.Via}
+		// By the qualified name where there is one: three changed Priority methods are
+		// three groups.
+		key := [3]string{cmp.Or(s.QualifiedName, s.Symbol), s.Change, s.Via}
 		i, ok := at[key]
 		if !ok {
 			i = len(groups)
 			at[key] = i
 			files[key] = make(map[string]bool)
-			groups = append(groups, RarelyGroup{Symbol: s.Symbol, Change: s.Change, Via: s.Via, Uses: make(map[string]int)})
+			groups = append(groups, RarelyGroup{Symbol: s.Symbol, Change: s.Change, Via: s.Via, Uses: make(map[string]int), QualifiedName: s.QualifiedName})
 		}
 		groups[i].Count++
 		groups[i].Uses[s.Use]++

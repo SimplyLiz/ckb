@@ -1,6 +1,7 @@
 package query
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"strings"
@@ -180,7 +181,7 @@ func CompactAssessChangeFor(r *AnalyzeChangeSetResponse, opts CompactAssessOptio
 		for _, s := range sites[page[0]:page[1]] {
 			cd.OpenSites = append(cd.OpenSites, CompactOpenSite{
 				At:       fmt.Sprintf("%s:%d", s.File, s.Line),
-				Symbol:   s.Symbol,
+				Symbol:   cmp.Or(s.QualifiedName, s.Symbol),
 				Code:     s.Code,
 				Consumer: s.Consumer,
 				Via:      s.Via,
@@ -218,8 +219,15 @@ func CompactAssessChangeFor(r *AnalyzeChangeSetResponse, opts CompactAssessOptio
 	}
 
 	if want(AssessFocusRisk) {
+		qualified := make(map[[2]string]string, len(r.ChangedSymbols))
+		for _, s := range r.ChangedSymbols {
+			if s.QualifiedName != "" {
+				qualified[[2]string{s.Name, s.File}] = s.QualifiedName
+			}
+		}
 		for _, k := range r.Contracts {
-			c.Contracts = append(c.Contracts, CompactContract{Kind: k.Kind, Symbol: k.Symbol, File: k.File, Before: k.Before, After: k.After, Detail: k.Detail})
+			symbol := cmp.Or(qualified[[2]string{k.Symbol, k.File}], k.Symbol)
+			c.Contracts = append(c.Contracts, CompactContract{Kind: k.Kind, Symbol: symbol, File: k.File, Before: k.Before, After: k.After, Detail: k.Detail})
 		}
 		if cf := r.ConsumerFiles; cf != nil {
 			c.Consumers = cf.Direct
@@ -286,7 +294,7 @@ func rarelyLine(g RarelyGroup) string {
 			uses = append(uses, fmt.Sprintf("%d %s", n, use))
 		}
 	}
-	line := fmt.Sprintf("%s: %d in %s", siteHead(g.Symbol, g.Change, g.Via), g.Count, plural(g.Files, "file"))
+	line := fmt.Sprintf("%s: %d in %s", siteHead(cmp.Or(g.QualifiedName, g.Symbol), g.Change, g.Via), g.Count, plural(g.Files, "file"))
 	if len(uses) > 0 {
 		line += ", " + strings.Join(uses, ", ")
 	}

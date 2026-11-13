@@ -41,6 +41,10 @@ type ChangedSymbol struct {
 	// package: removed for the package's code, and for the test files of its directory,
 	// which still see it, what comparing it with where it went says.
 	TestsSee DeclarationChange
+	// QualifiedName is Name with its enclosing type, "Backend.Priority" or
+	// "Win.__init__", for display; empty when the symbol has none. Name stays the
+	// bare name, which the checks match uses by.
+	QualifiedName string
 }
 
 // DeclarationChange is what a change did to a definition's declaration, for code

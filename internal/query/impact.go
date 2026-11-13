@@ -1445,6 +1445,9 @@ type ChangedSymbolInfo struct {
 	Declaration string `json:"declaration,omitempty"`
 	// Trivial is set when only comments or whitespace changed in it.
 	Trivial bool `json:"trivial,omitempty"`
+	// QualifiedName is Name with its enclosing type, "Backend.Priority"; omitted when
+	// the symbol has none. Name stays the bare name.
+	QualifiedName string `json:"qualifiedName,omitempty"`
 }
 
 // Recommendation suggests an action based on impact analysis.
@@ -1859,6 +1862,8 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			Note:        sym.Note,
 			Declaration: string(symbolDeclarationChange(sym)),
 			Trivial:     sym.Trivial,
+
+			QualifiedName: sym.QualifiedName,
 		}
 	}
 
