@@ -1124,6 +1124,11 @@ func (s *MCPServer) toolAnalyzeImpact(params map[string]interface{}) (*envelope.
 	if impactResp.ConsumerFiles != nil {
 		data["consumerFiles"] = impactResp.ConsumerFiles
 	}
+	if len(impactResp.NameMatchImplementations) > 0 {
+		// Types with a one-method interface's method in packages that don't import
+		// the interface's: not counted in directImpact.
+		data["nameMatchImplementations"] = impactResp.NameMatchImplementations
+	}
 	if impactResp.Truncated {
 		data["truncated"] = true
 		data["truncationInfo"] = impactResp.TruncationInfo

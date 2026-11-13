@@ -3,6 +3,7 @@ package impact
 import (
 	"fmt"
 	"math"
+	"strings"
 )
 
 // RiskLevel represents the risk level of a change
@@ -219,9 +220,16 @@ func generateExplanation(level RiskLevel, factors []RiskFactor, impact []ImpactI
 	moduleCount := len(modules)
 
 	directCallers, allCallers := countCallers(impact)
-	callers := fmt.Sprintf("%d direct caller(s)", directCallers)
+	parts := []string{fmt.Sprintf("%d direct caller(s)", directCallers)}
 	if allCallers > directCallers {
-		callers = fmt.Sprintf("%d direct caller(s), %d with transitive ones,", directCallers, allCallers)
+		parts = append(parts, fmt.Sprintf("%d with transitive ones", allCallers))
+	}
+	if impls := countImplementations(impact); impls > 0 {
+		parts = append(parts, fmt.Sprintf("%d implementation(s)", impls))
+	}
+	callers := strings.Join(parts, ", ")
+	if len(parts) > 1 {
+		callers += ","
 	}
 
 	switch level {
@@ -268,4 +276,15 @@ func callerKey(item ImpactItem) string {
 		return fmt.Sprintf("%s:%d", item.Location.FileId, item.Location.StartLine)
 	}
 	return ""
+}
+
+// countImplementations counts the implementations among the impact items.
+func countImplementations(impact []ImpactItem) int {
+	n := 0
+	for _, item := range impact {
+		if item.Kind == ImplementsInterface {
+			n++
+		}
+	}
+	return n
 }

@@ -1131,7 +1131,7 @@ func TestModifyRiskBasis(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := modifyRiskBasis(c.changeType, c.callers, c.public, c.score)
+			got := modifyRiskBasis(c.changeType, c.callers, 0, c.public, c.score)
 			if c.want == "" {
 				if got != "" {
 					t.Errorf("basis = %q, want none", got)
