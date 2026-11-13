@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/complexity"
+	"github.com/SimplyLiz/CodeMCP/internal/config"
 	"github.com/SimplyLiz/CodeMCP/internal/coupling"
 	"github.com/SimplyLiz/CodeMCP/internal/pathclass"
 )
@@ -24,6 +26,11 @@ type Analyzer struct {
 	complexityAnalyzer *complexity.Analyzer
 	// classes keeps generated and data paths (.ckb/config.json paths) out of the audit.
 	classes *pathclass.Classifier
+	// settings is .ckb/config.json "audit": keywords and disabled factors.
+	settings settings
+
+	authorsOnce  sync.Once
+	singleAuthor bool
 }
 
 // NewAnalyzer creates a new risk analyzer
@@ -32,13 +39,18 @@ func NewAnalyzer(repoRoot string, logger *slog.Logger) *Analyzer {
 	if complexity.IsAvailable() {
 		ca = complexity.NewAnalyzer()
 	}
-	classes := pathclass.Load(repoRoot)
+	cfg, err := config.LoadConfig(repoRoot)
+	if err != nil {
+		cfg = nil
+	}
+	classes := pathclass.FromConfig(repoRoot, cfg)
 	return &Analyzer{
 		repoRoot:           repoRoot,
 		logger:             logger,
 		couplingAnalyzer:   coupling.NewAnalyzer(repoRoot, logger).WithClasses(classes),
 		complexityAnalyzer: ca,
 		classes:            classes,
+		settings:           newSettings(cfg),
 	}
 }
 
@@ -173,6 +185,13 @@ func (a *Analyzer) analyzeFile(ctx context.Context, repoRoot, file string) (*Ris
 	if activeContributor != "" {
 		busValue += fmt.Sprintf(" (%s only)", activeContributor)
 	}
+	// With one author in the whole history every file has bus factor 1; that
+	// is the repo's situation, not this file's risk, and "assign a backup
+	// owner" has nobody to assign.
+	if busFactor == 1 && a.singleAuthorRepo(ctx) {
+		busContrib = 0
+		busValue += "; single-author repo, not scored"
+	}
 	factors = append(factors, RiskFactor{
 		Factor:       FactorBusFactor,
 		Value:        busValue,
@@ -240,6 +259,15 @@ func (a *Analyzer) analyzeFile(ctx context.Context, repoRoot, file string) (*Ris
 		Weight:       RiskWeights[FactorChurn],
 		Contribution: churnContrib,
 	})
+
+	// Factors disabled in .ckb/config.json audit.disabledFactors stay listed
+	// but score nothing.
+	for i := range factors {
+		if a.settings.disabled[factors[i].Factor] {
+			factors[i].Contribution = 0
+			factors[i].Value = "disabled (audit.disabledFactors)"
+		}
+	}
 
 	// Calculate total risk score
 	totalScore := 0.0
@@ -435,15 +463,14 @@ func (a *Analyzer) detectSecurityKeywords(filePath string) []string {
 		return nil
 	}
 
-	textLower := strings.ToLower(string(content))
-	found := make([]string, 0)
-
-	for _, kw := range SecurityKeywords {
-		if strings.Contains(textLower, kw) {
-			found = append(found, kw)
-		}
+	keywords := a.settings.keywords
+	if keywords == nil {
+		keywords = compileKeywords(SecurityKeywords)
 	}
-
+	found := matchSecurityKeywords(string(content), keywords)
+	if found == nil {
+		found = make([]string, 0)
+	}
 	return found
 }
 

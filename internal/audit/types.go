@@ -114,12 +114,22 @@ var RiskWeights = map[string]float64{
 	FactorChurn:             0.05,
 }
 
-// SecurityKeywords are keywords that indicate security-sensitive code
+// SecurityKeywords are keywords that indicate security-sensitive code. Each
+// matches identifier parts, not substrings (see matchSecurityKeywords), and
+// .ckb/config.json audit.securityKeywords replaces the list for a repo.
+//
+// Bare "token", "key", "hash", "private" and "session" are not in it: they
+// are a tokenizer's tokens, a dict's keys, a hash map, a Java modifier and
+// requests.Session as often as they are credentials. The compounds that are
+// credentials are listed instead.
 var SecurityKeywords = []string{
-	"password", "secret", "token", "key", "credential",
-	"auth", "encrypt", "decrypt", "hash", "salt",
-	"private", "certificate", "oauth", "jwt", "session",
-	"apikey", "api_key", "access_token", "refresh_token",
+	"password", "passwd", "secret", "credential",
+	"auth", "authenticate", "authentication", "authorize", "authorization",
+	"encrypt", "encrypted", "encryption", "decrypt", "decrypted", "decryption",
+	"salt", "bcrypt", "hmac", "certificate", "oauth", "jwt",
+	"apikey", "api_key", "access_key", "secret_key", "private_key", "signing_key",
+	"access_token", "refresh_token", "auth_token", "bearer_token", "id_token",
+	"session_token", "session_id", "csrf_token", "api_token", "hf_token", "github_token",
 }
 
 // GetRiskLevel returns the risk level based on score

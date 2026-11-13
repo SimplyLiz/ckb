@@ -75,6 +75,20 @@ type Config struct {
 
 	// Path classes left out of hotspots, co-change coupling and risk scoring
 	Paths PathsConfig `json:"paths" mapstructure:"paths"`
+
+	// auditRisk tuning
+	Audit AuditConfig `json:"audit" mapstructure:"audit"`
+}
+
+// AuditConfig tunes auditRisk for a repo. Empty fields keep the defaults.
+type AuditConfig struct {
+	// SecurityKeywords replaces the built-in keyword list of the
+	// security_sensitive factor. A keyword matches an identifier or a run of
+	// its parts: "access_token" matches accessToken, ACCESS_TOKEN and
+	// get_access_token, "token" any identifier with a part "token".
+	SecurityKeywords []string `json:"securityKeywords,omitempty" mapstructure:"securityKeywords"`
+	// DisabledFactors are risk factors not scored, e.g. ["security_sensitive"].
+	DisabledFactors []string `json:"disabledFactors,omitempty" mapstructure:"disabledFactors"`
 }
 
 // PathsConfig declares repo paths that hold generated files or data rather than
