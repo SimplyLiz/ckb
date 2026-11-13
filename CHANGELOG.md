@@ -339,14 +339,19 @@ private, so only aggregates are here.
   bare `visibility`/`direct-callers`/`module-spread`/`impact-kind` factor names, which
   never fed the score, are gone. A modify risk says what it assumes in
   `riskAssessment.basis` (`risk_basis` in compact): the declaration stays, and a changed
-  one whose callers are left as they are is at least high in assessChange.
+  one whose callers are left as they are is at least high in assessChange. prepareChange
+  now uses assessChange's level bands (0.4/0.6/0.8, was 0.3/0.5/0.7), so renaming
+  `MaxResults` is no longer critical before the edit and high after it; scores are
+  unchanged. analyzeImpact keeps 0.4/0.7, its score is another formula.
 - **A change inside a Go type's body names the type.** scip-go gives types no enclosing
   range, so a field or interface method inserted mid-body fell between definitions and
   became a file-level entry at 0.3; changedSymbols, review's breaking, blast-radius and
   affected-tests checks didn't name the type and impact found none of its users. The
-  type's extent now runs to its closing brace (0.8). TS and Rust indexers send ranges;
-  the same fallback covers older ones. Adding a field to `SymbolDefInfo` on CKB: 0
-  consumers before, 15 direct after.
+  type's extent now runs to its closing brace (0.8), unless the same hunk changes a
+  member of that type: renaming a field together with its doc comment is the field's
+  change, not its struct's (`SearchOptions.MaxResults`: 10 direct consumers, not 13). TS
+  and Rust indexers send ranges; the same fallback covers older ones. Adding a field to
+  `SymbolDefInfo` on CKB: 0 consumers before, 15 direct after.
 - **A slice or map of pointers to a struct is not its literal.** `[]*T{x}` and
   `map[K]*T{k: v}` were open sites whenever T's fields changed (3 false ones on CKB for
   the field above, now clear). An elided element (`[]*T{{…}}`) still counts, read per
@@ -356,6 +361,13 @@ private, so only aggregates are here.
   root bundler configs, along with esbuild/tsup command-line entries and webpack's
   `--entry`; `join(root, "src/…")` counts. On a Next.js app with an esbuild-built PDF
   worker, unwired drops from 20 to 10. Only esbuild is checked on a real repo.
+- **One analyzeImpact row per consumer and line.** `lc.Win(p), lc.SubWin(p)` constructs
+  two classes that both run `Win.__init__`, and the line was listed twice: 6 rows for 5
+  consumers. Counts and the risk score were already per consumer.
+- **Changed symbols carry a qualified name.** `qualifiedName` in changedSymbols, open
+  sites and rarely groups (`Backend.Priority`, `Win.__init__`), shown by the compact text
+  and `ckb changes`. Renaming an interface method and its implementations gave three
+  entries named `Priority`. `name` stays the bare name the checks match by.
 
 ### Fixed — a repo of Python scripts
 
