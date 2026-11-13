@@ -53,6 +53,12 @@ const maxRustBodyLines = 5000
 // generics and a where clause, means a unit or tuple struct, which has none. col is past the name, so the
 // `(` of `pub(crate)` is behind it. A body whose end isn't found is unread.
 func bracedBody(lines []string, start, col int) (string, Body) {
+	body, _, state := bracedBodyEnd(lines, start, col)
+	return body, state
+}
+
+// bracedBodyEnd is bracedBody, and the 0-based line of the closing brace.
+func bracedBodyEnd(lines []string, start, col int) (string, int, Body) {
 	var body strings.Builder
 	code := newRustCode()
 	depth, angle := 0, 0
@@ -74,7 +80,7 @@ func bracedBody(lines []string, start, col int) (string, Body) {
 			case c == '}':
 				depth--
 				if depth == 0 {
-					return body.String(), BodyRead
+					return body.String(), i, BodyRead
 				}
 			case depth == 0 && c == '<':
 				angle++
@@ -83,7 +89,7 @@ func bracedBody(lines []string, start, col int) (string, Body) {
 			case depth == 0 && angle == 0 && strings.HasPrefix(text[j:], "where") && (j == 0 || !isIdentByte(text[j-1])) && (j+5 == len(text) || !isIdentByte(text[j+5])):
 				where = true
 			case depth == 0 && angle == 0 && (c == ';' || c == '(' && !where):
-				return "", BodyNone
+				return "", 0, BodyNone
 			}
 			if depth > 0 {
 				body.WriteByte(c)
@@ -93,7 +99,7 @@ func bracedBody(lines []string, start, col int) (string, Body) {
 			body.WriteByte(' ')
 		}
 	}
-	return "", BodyUnread
+	return "", 0, BodyUnread
 }
 
 var (
