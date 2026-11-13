@@ -624,9 +624,16 @@ Claude Code mods, with no manifest anywhere.
   skill as text instead of aborting it, and the skill says how to go on.
   `when_to_use` keeps it to whole branches, staged changes and PRs. Measured on a
   staged two-line change with Haiku: two turns, the model read only the diff.
-- **The review skill asked for `--compact`, which `ckb review` never had.**
-  `2>/dev/null` hid the error, so since the skill was written the model got
-  nothing back and ran the review a second time on its own.
+- **`ckb review --compact`.** The review skill asked for `--compact`, which `ckb
+  review` never had; `2>/dev/null` hid the error, so the model got nothing back and
+  ran the review a second time on its own. The flag now exists: one line of JSON
+  with verdict, score, the checks that did not pass, the 30 most important
+  findings and counts per severity for the rest, plus effort, reviewers and health.
+  It is the MCP `reviewPR` compact form (same function, which there keeps 10
+  findings and gains the per-severity counts, effort and reviewers). On 4 commits
+  of CKB: 38 KB of `--format=json`, past the ~30,000 characters Claude Code
+  inlines from an injected command, against 5.4 KB; on 25 commits 7.6 KB. The
+  skill injects `--compact`.
 - **The plugin brings its own `ckb`, pinned to its release.** MCP server, skills
   and SessionStart hook all start `claude-plugin/scripts/ckb`, so one rule decides
   which ckb runs: a `ckb` on PATH with the plugin's major version and at least its

@@ -46,24 +46,27 @@ for the current branch against main, "staged" for the staged changes, a branch
 name for that base, a PR number for that PR's base (and its branch if it is
 checked out):
 
-!`"${CLAUDE_PLUGIN_ROOT}/scripts/ckb" review --target='$ARGUMENTS' --format=json || true`
+!`"${CLAUDE_PLUGIN_ROOT}/scripts/ckb" review --target='$ARGUMENTS' --compact || true`
 
 If that is an error instead of JSON (no CKB setup here, an unknown base branch,
 gh missing for a PR number), fix the cause or run `"${CLAUDE_PLUGIN_ROOT}/scripts/ckb" review --base=<branch>`
-or `"${CLAUDE_PLUGIN_ROOT}/scripts/ckb" review --staged` with `--format=json` yourself, then go on.
+or `"${CLAUDE_PLUGIN_ROOT}/scripts/ckb" review --staged` with `--compact` yourself, then go on.
 A `Note:` line before the JSON says what was reviewed instead of the PR.
 
 Parse the JSON output to extract:
-- `score`, `verdict` — overall quality
-- `checks[]` — status + summary per check (15 checks: breaking, secrets, tests, complexity,
-  coupling, hotspots, risk, health, dead-code, test-gaps, blast-radius, comment-drift,
-  format-consistency, bug-patterns, split)
-- `findings[]` — severity + file + message + ruleId
+- `score`, `verdict`, `verdictReason` — overall quality and what decided it
+- `activeChecks[]` — name + status + summary of each check that warned or failed;
+  `passedChecks[]` — names of the checks that passed
+- `findings[]` — the 30 most important (blocking first, then by severity): check,
+  severity, file, line, message, ruleId; `remainingFindings` and
+  `remainingBySeverity` count the rest. For those, run the review yourself with
+  `--format=json` and read only the checks you need
+- `limitations[]` — what the review could not see
 - `narrative` — CKB AI-generated summary (if available)
 - `prTier` — small/medium/large
 - `reviewEffort` — estimated hours + complexity
 - `reviewers[]` — suggested reviewers with expertise areas
-- `healthReport` — degraded/improved file counts
+- `health` — degraded/improved file counts
 
 From the output, build three lists:
 - **SKIP**: passed checks — don't touch these files or topics
