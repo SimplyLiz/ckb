@@ -233,3 +233,77 @@ func TestTypeBodyEnd(t *testing.T) {
 		t.Errorf("type group: typeBodyEnd = %d, want 4", got)
 	}
 }
+
+// goOpts is opts/opts.go, the shape of backends.SearchOptions:
+//
+//	1 package opts
+//	2
+//	3 type Options struct {
+//	4 	// Max limits the results
+//	5 	Max int
+//	6
+//	7 	// Tests includes test files
+//	8 	Tests bool
+//	9 }
+var goOpts = strings.Split("package opts\n\ntype Options struct {\n\t// Max limits the results\n\tMax int\n\n\t// Tests includes test files\n\tTests bool\n}", "\n")
+
+func goOptsDoc() *scip.Document {
+	pkg := "scip-go gomod example.com/demo abc `example.com/demo/opts`/"
+	return &scip.Document{
+		RelativePath: "opts/opts.go",
+		Occurrences: []*scip.Occurrence{
+			def(pkg, 0),
+			def(pkg+"Options#", 2),
+			def(pkg+"Options#Max.", 4),
+			def(pkg+"Options#Tests.", 7),
+		},
+		Symbols: []*scip.SymbolInformation{
+			{Symbol: pkg + "Options#", DisplayName: "Options", Kind: 49},
+			{Symbol: pkg + "Options#Max.", DisplayName: "Max", Kind: 15},
+			{Symbol: pkg + "Options#Tests.", DisplayName: "Tests", Kind: 15},
+		},
+	}
+}
+
+func replaceLines(lines []string, at int, with ...string) []string {
+	out := append([]string{}, lines[:at]...)
+	out = append(out, with...)
+	return append(out, lines[at+len(with):]...)
+}
+
+// Renaming a field with its doc comment is the field's change: the comment line sits
+// only in the struct's body read from the text, and naming the struct too would add
+// the struct's consumers to a rename that leaves them alone (MaxResults -> Limit).
+func TestMapToSymbols_GoFieldRenamedWithItsComment(t *testing.T) {
+	newLines := replaceLines(goOpts, 3, "\t// Limit limits the results", "\tLimit int")
+	diffText := fileDiff("opts/opts.go", "@@ -3,4 +3,4 @@\n type Options struct {\n-\t// Max limits the results\n-\tMax int\n+\t// Limit limits the results\n+\tLimit int\n \n")
+	got := mapDocWith(t, goOptsDoc(), diffText, readerFor(goOpts, newLines))
+	if names(got) != "Max" {
+		t.Fatalf("changed symbols = %q, want Max alone", names(got))
+	}
+
+	t.Run("a changed comment alone is still the struct's", func(t *testing.T) {
+		newLines := replaceLines(goOpts, 3, "\t// Max caps the results")
+		diffText := fileDiff("opts/opts.go", "@@ -3,3 +3,3 @@\n type Options struct {\n-\t// Max limits the results\n+\t// Max caps the results\n \tMax int\n")
+		got := mapDocWith(t, goOptsDoc(), diffText, readerFor(goOpts, newLines))
+		if names(got) != "Options" || !got[0].Trivial {
+			t.Fatalf("got %+v, want Options, trivial", got)
+		}
+	})
+	t.Run("a field inserted with a comment is the struct's", func(t *testing.T) {
+		newLines := insertLines(goOpts, 5, "\t// Extra is new", "\tExtra int")
+		diffText := fileDiff("opts/opts.go", "@@ -5,2 +5,4 @@\n \tMax int\n+\t// Extra is new\n+\tExtra int\n \n")
+		got := mapDocWith(t, goOptsDoc(), diffText, readerFor(goOpts, newLines))
+		if names(got) != "Options" {
+			t.Fatalf("changed symbols = %q, want Options", names(got))
+		}
+	})
+	t.Run("the declaration line stays the struct's", func(t *testing.T) {
+		newLines := replaceLines(goOpts, 2, "type Opts struct {", "\t// Limit limits the results", "\tLimit int")
+		diffText := fileDiff("opts/opts.go", "@@ -2,4 +2,4 @@\n \n-type Options struct {\n-\t// Max limits the results\n-\tMax int\n+type Opts struct {\n+\t// Limit limits the results\n+\tLimit int\n \n")
+		got := mapDocWith(t, goOptsDoc(), diffText, readerFor(goOpts, newLines))
+		if names(got) != "Max Options" {
+			t.Fatalf("changed symbols = %q, want Max Options", names(got))
+		}
+	})
+}

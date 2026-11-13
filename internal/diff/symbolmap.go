@@ -245,11 +245,17 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 			if python {
 				decorated = pythonDecoratedDef(block, side, defs, pythonIndexAll)
 			}
-			for i, pos := range blockPositions(block, side) {
-				enclosing := pos.enclosing(defs)
+			positions := blockPositions(block, side)
+			enclosings := make([][]*SymbolDefInfo, len(positions))
+			for i, pos := range positions {
+				enclosings[i] = pos.enclosing(defs)
 				if decorated != nil {
-					enclosing = []*SymbolDefInfo{decorated}
+					enclosings[i] = []*SymbolDefInfo{decorated}
 				}
+			}
+			membersOverTypeBodies(positions, enclosings)
+			for i, pos := range positions {
+				enclosing := enclosings[i]
 				for _, def := range enclosing {
 					found[def.Symbol] = found[def.Symbol].merge(def, hunkIdx, pos.confidence(def))
 					found[def.Symbol].lines = append(found[def.Symbol].lines, newFileLines(block)...)
@@ -336,6 +342,71 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 	}
 
 	return result, nil
+}
+
+// membersOverTypeBodies gives the members a block changes the block's lines that only a
+// type body read from the text holds, such as a renamed field's doc comment: the type
+// itself did not change, its member did, and naming the type too would add the type's
+// consumers. A block with no member of that type of its own, a field inserted into
+// the body, stays the type's, and so does the line declaring the type.
+func membersOverTypeBodies(positions []indexPosition, enclosings [][]*SymbolDefInfo) {
+	for i, enclosing := range enclosings {
+		if len(enclosing) == 0 || !allTextExtendedTypes(enclosing) || declaresAny(positions[i], enclosing) {
+			continue
+		}
+		var members []*SymbolDefInfo
+		for j, other := range enclosings {
+			if j == i {
+				continue
+			}
+			for _, def := range other {
+				if !isTextExtendedType(def) && insideAny(def, enclosing) && !containsDef(members, def) {
+					members = append(members, def)
+				}
+			}
+		}
+		if len(members) > 0 {
+			enclosings[i] = members
+		}
+	}
+}
+
+func allTextExtendedTypes(defs []*SymbolDefInfo) bool {
+	for _, def := range defs {
+		if !isTextExtendedType(def) {
+			return false
+		}
+	}
+	return true
+}
+
+// declaresAny says whether the position is the line one of the definitions is declared on.
+func declaresAny(pos indexPosition, defs []*SymbolDefInfo) bool {
+	for _, def := range defs {
+		if !pos.isGap && (pos.line == def.StartLine || pos.line == def.DefLine) {
+			return true
+		}
+	}
+	return false
+}
+
+// insideAny says whether def lies within the lines of one of the types.
+func insideAny(def *SymbolDefInfo, types []*SymbolDefInfo) bool {
+	for _, t := range types {
+		if t.StartLine <= def.StartLine && def.EndLine <= t.EndLine {
+			return true
+		}
+	}
+	return false
+}
+
+func containsDef(defs []*SymbolDefInfo, def *SymbolDefInfo) bool {
+	for _, d := range defs {
+		if d.Symbol == def.Symbol {
+			return true
+		}
+	}
+	return false
 }
 
 // positionText returns the diff text behind one of blockPositions' positions: a
