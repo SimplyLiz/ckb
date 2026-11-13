@@ -606,11 +606,18 @@ func (s *MCPServer) toolSearchSymbols(params map[string]interface{}) (*envelope.
 		ExecutionMs:     timer.ElapsedMs(),
 	})
 
-	return NewToolResponse().
+	resp := NewToolResponse().
 		Data(data).
 		WithProvenance(searchResp.Provenance).
-		WithTruncation(searchResp.Truncated, len(symbols), searchResp.TotalCount, "max-symbols").
-		Build(), nil
+		WithTruncation(searchResp.Truncated, len(symbols), searchResp.TotalCount, "max-symbols")
+	// No result in a language the index has no file of says nothing about the code.
+	if len(symbols) == 0 {
+		if note := s.engine().UnindexedNote(scope); note != "" {
+			data["notIndexed"] = s.engine().UnindexedLanguages(scope)
+			resp.Warning(note)
+		}
+	}
+	return resp.Build(), nil
 }
 
 // toolSymbolExists implements the symbolExists tool.
@@ -656,11 +663,15 @@ func (s *MCPServer) toolSymbolExists(params map[string]interface{}) (*envelope.R
 	if result.StaleIndex {
 		data["staleIndex"] = result.StaleIndex
 	}
-
-	return NewToolResponse().
-		Data(data).
-		WithProvenance(result.Provenance).
-		Build(), nil
+	// exists:false in a language the index has no file of is no answer at all.
+	resp := NewToolResponse().Data(data).WithProvenance(result.Provenance)
+	if !result.Exists {
+		if note := s.engine().UnindexedNote(scope); note != "" {
+			data["notIndexed"] = s.engine().UnindexedLanguages(scope)
+			resp.Warning(note)
+		}
+	}
+	return resp.Build(), nil
 }
 
 // toolFindReferences implements the findReferences tool
