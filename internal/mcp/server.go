@@ -91,6 +91,7 @@ type MCPServer struct {
 	// IndexDiagnoser), cached per repo.
 	indexDiagnoser IndexDiagnoser
 	missingIndex   missingIndexCache
+	partialIndex   missingIndexCache
 }
 
 // NewMCPServer creates a new MCP server in legacy single-engine mode

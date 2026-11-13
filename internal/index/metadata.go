@@ -52,6 +52,43 @@ type IndexMeta struct {
 	Indexer     string       `json:"indexer"`
 	IndexerArgs []string     `json:"indexerArgs,omitempty"`
 	LastRefresh *LastRefresh `json:"lastRefresh,omitempty"`
+
+	// Languages are the languages whose indexer output is in the index, one
+	// entry each. Absent in metadata written before multi-language indexing:
+	// such an index holds one language.
+	Languages []LanguageIndex `json:"languages,omitempty"`
+	// Skipped are the languages the repo has that the index doesn't cover,
+	// with why and what fixes it, so answers about their files can say they
+	// come from text search.
+	Skipped []SkippedLanguage `json:"skippedLanguages,omitempty"`
+}
+
+// LanguageIndex is one language's share of a SCIP index.
+type LanguageIndex struct {
+	Language string `json:"language"`
+	Indexer  string `json:"indexer"`
+	Files    int    `json:"files"`
+}
+
+// SkippedLanguage is a detected language left out of the index.
+type SkippedLanguage struct {
+	Language string `json:"language"`
+	Files    int    `json:"files,omitempty"`
+	// Reason says why, e.g. "scip-python not installed".
+	Reason string `json:"reason"`
+	// Fix is the command that gets it into the index, if there is one.
+	Fix string `json:"fix,omitempty"`
+	// Indexer is the binary whose absence left the language out. Once it is
+	// on PATH the index counts as stale (see CheckFreshness), so the next
+	// reindex, watch tick or 'ckb index' brings the language in.
+	Indexer string `json:"indexer,omitempty"`
+}
+
+// MultiLanguage reports whether the index merges several indexers' output.
+// Incremental indexing reruns one indexer over the whole index file, which
+// would drop the other languages, so it only applies to a single-language index.
+func (m *IndexMeta) MultiLanguage() bool {
+	return m != nil && len(m.Languages) > 1
 }
 
 // FreshnessResult describes index freshness status.
@@ -115,6 +152,31 @@ func (m *IndexMeta) Save(ckbDir string) error {
 // For git repos, compares against current repo state.
 // For non-git repos, falls back to time-based staleness (24h).
 func (m *IndexMeta) CheckFreshness(repoRoot string) FreshnessResult {
+	result := m.checkFreshness(repoRoot)
+	if result.Fresh {
+		if reason := m.indexerInstalledSince(); reason != "" {
+			result.Fresh = false
+			result.Reason = reason
+		}
+	}
+	return result
+}
+
+// indexerInstalledSince names a language left out for want of its indexer
+// whose indexer is on PATH now: the index is missing what one build would add.
+func (m *IndexMeta) indexerInstalledSince() string {
+	for _, s := range m.Skipped {
+		if s.Indexer == "" {
+			continue
+		}
+		if _, err := exec.LookPath(s.Indexer); err == nil {
+			return fmt.Sprintf("%s is installed now; %s is not in the index yet", s.Indexer, s.Language)
+		}
+	}
+	return ""
+}
+
+func (m *IndexMeta) checkFreshness(repoRoot string) FreshnessResult {
 	if m == nil {
 		return FreshnessResult{
 			Fresh:  false,

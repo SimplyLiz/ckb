@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -162,6 +161,11 @@ func (rm *RefreshManager) runIncrementalUpdate(ctx context.Context, repoPath str
 	if indexplan.IsNested(repoPath, lang) {
 		return nil, "nested project", nil
 	}
+	// The incremental update reruns one indexer over the index file; on a
+	// merged index that would drop every other language.
+	if meta, metaErr := index.LoadMeta(filepath.Join(repoPath, ".ckb")); metaErr == nil && meta.MultiLanguage() {
+		return nil, "index holds several languages", nil
+	}
 
 	indexer := incremental.NewIncrementalIndexer(repoPath, db, indexplan.IncrementalConfig(repoPath), rm.logger)
 	if needsFull, reason := indexer.NeedsFullReindex(); needsFull {
@@ -221,20 +225,36 @@ func (rm *RefreshManager) RunFullReindexWithTrigger(ctx context.Context, repoPat
 
 	rm.stdLogger.Printf("Starting full reindex for %s (trigger: %s)", repoPath, trigger)
 
-	// Detect language
-	lang, manifest, _ := project.DetectAllLanguages(repoPath)
-	if lang == project.LangUnknown {
+	// Same recipe as 'ckb index': every detected language, nested manifests,
+	// custom index paths, and the languages whose command needs building. A
+	// language whose indexer is missing is left out and recorded as skipped.
+	targets := indexplan.DetectTargets(repoPath)
+	if len(targets) == 0 {
 		result.Error = "could not detect project language"
 		result.Duration = time.Since(start)
 		rm.stdLogger.Printf("Full reindex failed for %s: %s", repoPath, result.Error)
 		return result
 	}
-
-	// Same recipe as 'ckb index': nested manifests, custom index paths, and the
-	// languages whose command needs building.
-	plan, _, failure := indexplan.Build(repoPath, lang, manifest, "", indexplan.ResolveIndexPath(repoPath))
-	if failure != nil {
-		result.Error = failure.Message
+	indexPath := indexplan.ResolveIndexPath(repoPath)
+	var plans []*indexplan.Plan
+	var skipped []index.SkippedLanguage
+	for _, t := range targets {
+		plan, _, failure := indexplan.Build(repoPath, t.Lang, t.Manifest, "", indexPath)
+		if failure != nil {
+			skip := index.SkippedLanguage{Language: string(t.Lang), Reason: failure.Message}
+			if info := project.GetIndexerInfo(t.Lang); info != nil && failure.Kind == indexplan.FailureIndexerMissing {
+				skip.Fix = info.InstallCommand
+				if f := strings.Fields(info.CheckCommand); len(f) > 0 {
+					skip.Indexer = f[0]
+				}
+			}
+			skipped = append(skipped, skip)
+			continue
+		}
+		plans = append(plans, plan)
+	}
+	if len(plans) == 0 {
+		result.Error = skipped[0].Reason
 		result.Duration = time.Since(start)
 		rm.stdLogger.Printf("Full reindex failed for %s: %s", repoPath, result.Error)
 		return result
@@ -260,37 +280,22 @@ func (rm *RefreshManager) RunFullReindexWithTrigger(ctx context.Context, repoPat
 	}
 	defer lock.Release()
 
-	// Run indexer
-	parts := strings.Fields(plan.Command)
-	if len(parts) == 0 {
-		result.Error = "empty indexer command"
-		result.Duration = time.Since(start)
-		return result
-	}
-
-	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...) // #nosec G204 //nolint:gosec // command from trusted indexer config
-	cmd.Dir = plan.IndexerDir
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		result.Error = fmt.Sprintf("indexer failed: %v (%s)", err, strings.TrimSpace(stderr.String()))
-		result.Duration = time.Since(start)
-		rm.stdLogger.Printf("Full reindex failed for %s: %s", repoPath, result.Error)
-		return result
-	}
-
-	if err := indexplan.Finalize(repoPath, plan); err != nil {
-		result.Error = err.Error()
-		result.Duration = time.Since(start)
-		rm.stdLogger.Printf("Full reindex failed for %s: %s", repoPath, result.Error)
-		return result
-	}
-
-	// An indexer can exit 0 without producing anything. That must not be recorded
-	// as a fresh index.
-	if _, statErr := os.Stat(plan.IndexPath); statErr != nil {
-		result.Error = fmt.Sprintf("indexer completed but %s was not created", plan.IndexPath)
+	results, runErr := indexplan.RunAll(repoPath, plans, func(plan *indexplan.Plan) error {
+		parts := strings.Fields(plan.Command)
+		if len(parts) == 0 {
+			return fmt.Errorf("empty indexer command")
+		}
+		cmd := exec.CommandContext(ctx, parts[0], parts[1:]...) // #nosec G204 //nolint:gosec // command from trusted indexer config
+		cmd.Dir = plan.IndexerDir
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("indexer failed: %v (%s)", err, strings.TrimSpace(stderr.String()))
+		}
+		return nil
+	})
+	if runErr != nil {
+		result.Error = runErr.Error()
 		result.Duration = time.Since(start)
 		rm.stdLogger.Printf("Full reindex failed for %s: %s", repoPath, result.Error)
 		return result
@@ -300,17 +305,36 @@ func (rm *RefreshManager) RunFullReindexWithTrigger(ctx context.Context, repoPat
 
 	// Update metadata with refresh trigger info
 	meta := &index.IndexMeta{
-		CreatedAt:   time.Now(),
-		Duration:    duration.Round(time.Millisecond * 100).String(),
-		Indexer:     plan.Indexer.CheckCommand,
-		IndexerArgs: parts,
+		CreatedAt: time.Now(),
+		Duration:  duration.Round(time.Millisecond * 100).String(),
 		LastRefresh: &index.LastRefresh{
 			At:          time.Now(),
 			Trigger:     trigger,
 			TriggerInfo: triggerInfo,
 			DurationMs:  duration.Milliseconds(),
 		},
+		Skipped: skipped,
 	}
+	var indexers []string
+	incrementalTracking := false
+	for _, r := range results {
+		if r.Err != nil {
+			rm.stdLogger.Printf("Warning: %s left out of the index for %s: %v", r.Plan.Lang, repoPath, r.Err)
+			meta.Skipped = append(meta.Skipped, index.SkippedLanguage{
+				Language: string(r.Plan.Lang),
+				Reason:   fmt.Sprintf("%s failed: %v", r.Plan.Indexer.CheckCommand, r.Err),
+				Fix:      "ckb index",
+			})
+			continue
+		}
+		if meta.IndexerArgs == nil {
+			meta.IndexerArgs = strings.Fields(r.Plan.Command)
+		}
+		indexers = append(indexers, r.Plan.Indexer.CheckCommand)
+		meta.Languages = append(meta.Languages, index.LanguageIndex{Language: string(r.Plan.Lang), Indexer: r.Plan.Indexer.CheckCommand})
+		incrementalTracking = incrementalTracking || project.SupportsIncrementalIndexing(r.Plan.Lang)
+	}
+	meta.Indexer = strings.Join(indexers, ", ")
 
 	if rs, rsErr := repostate.ComputeRepoState(repoPath); rsErr == nil {
 		meta.CommitHash = rs.HeadCommit
@@ -322,7 +346,7 @@ func (rm *RefreshManager) RunFullReindexWithTrigger(ctx context.Context, repoPat
 	}
 
 	// Without tracking data the next incremental refresh has nothing to start from.
-	if project.SupportsIncrementalIndexing(lang) {
+	if incrementalTracking {
 		rm.populateIncrementalTracking(repoPath)
 	}
 
