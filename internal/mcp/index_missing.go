@@ -106,15 +106,21 @@ func (s *MCPServer) missingIndexWarnings(toolName string) []envelope.Warning {
 // missingIndexMessage builds the warning text from the diagnosis.
 func (s *MCPServer) missingIndexMessage(repoRoot string) string {
 	canReindex := s.reindexRunner != nil && s.toolActive("reindex")
+	if s.indexDiagnoser == nil {
+		return MissingIndexMessage(IndexDiagnosis{Ready: true}, canReindex)
+	}
+	return MissingIndexMessage(s.indexDiagnoser(repoRoot), canReindex)
+}
+
+// MissingIndexMessage is the missing-index warning for diagnosis d. canReindex
+// says whether the session has the reindex tool; without it the next step is
+// 'ckb index' in a terminal. The SessionStart hook ('ckb hook session-start')
+// says the same thing at the start of a session.
+func MissingIndexMessage(d IndexDiagnosis, canReindex bool) string {
 	reindexStep := "Call the reindex tool to build it."
 	if !canReindex {
 		reindexStep = "Run 'ckb index' in a terminal; this server loads the index on its next call."
 	}
-
-	if s.indexDiagnoser == nil {
-		return missingIndexText + reindexStep
-	}
-	d := s.indexDiagnoser(repoRoot)
 	switch {
 	case d.Ready && d.Note != "":
 		return missingIndexText + reindexStep + " " + d.Note
@@ -166,7 +172,17 @@ func (s *MCPServer) partialIndexWarnings(toolName, repoRoot string) []envelope.W
 // partialIndexMessage builds the partial-coverage text from the index metadata.
 func (s *MCPServer) partialIndexMessage(repoRoot string) string {
 	meta, err := index.LoadMeta(filepath.Join(repoRoot, ".ckb"))
-	if err != nil || meta == nil || len(meta.Skipped) == 0 {
+	if err != nil {
+		return ""
+	}
+	return PartialIndexMessage(meta, s.reindexRunner != nil && s.toolActive("reindex"))
+}
+
+// PartialIndexMessage names the languages the index described by meta leaves
+// out, with what gets each one in; "" when it leaves none out. canReindex is
+// as for MissingIndexMessage.
+func PartialIndexMessage(meta *index.IndexMeta, canReindex bool) string {
+	if meta == nil || len(meta.Skipped) == 0 {
 		return ""
 	}
 	parts := make([]string, 0, len(meta.Skipped))
@@ -178,7 +194,7 @@ func (s *MCPServer) partialIndexMessage(repoRoot string) string {
 		parts = append(parts, p)
 	}
 	step := " Then call the reindex tool."
-	if s.reindexRunner == nil || !s.toolActive("reindex") {
+	if !canReindex {
 		step = " Then run 'ckb index'; this server loads the index on its next call."
 	}
 	return partialIndexText + strings.Join(parts, "; ") + "." + step

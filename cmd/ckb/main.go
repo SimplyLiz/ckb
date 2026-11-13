@@ -73,8 +73,10 @@ func isTerminal(f *os.File) bool {
 	return term.IsTerminal(int(f.Fd())) // #nosec G115 -- a file descriptor fits in int
 }
 
-// isMCPCommand checks if the current command is 'mcp' or 'serve'. These must
-// not show update notifications as it would break protocols. It resolves the
+// isMCPCommand checks if the current command is 'mcp', 'serve' or 'hook'. These
+// must not show update notifications as it would break protocols. 'hook' also
+// skips the update check, whose refresh main waits up to 500 ms for: Claude's
+// first response waits for a SessionStart hook. It resolves the
 // command through cobra so a flag in front (`ckb -v mcp`) cannot hide it.
 func isMCPCommand() bool {
 	return isMCPCommandArgs(os.Args[1:])
@@ -82,7 +84,7 @@ func isMCPCommand() bool {
 
 func isMCPCommandArgs(args []string) bool {
 	name := commandName(args)
-	return name == "mcp" || name == "serve"
+	return name == "mcp" || name == "serve" || name == "hook"
 }
 
 // isCompletionCommand reports shell completion: `ckb completion zsh` runs from
