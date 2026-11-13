@@ -8,6 +8,7 @@ package indexplan
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -172,7 +173,29 @@ func Build(repoRoot string, lang project.Language, manifest, compdbOverride, ind
 // index.scip into their working directory unless told otherwise, and they record
 // document paths relative to that directory; every CKB consumer expects the
 // configured index path and repo-relative document paths.
+//
+// A Python index also gets the imports scip-python couldn't resolve repaired (see
+// scip.RepairPythonImports); a failure there keeps the index as the indexer wrote it.
 func Finalize(repoRoot string, plan *Plan) error {
+	if err := relocate(repoRoot, plan); err != nil {
+		return err
+	}
+	if plan.Lang == project.LangPython {
+		RepairPython(repoRoot, plan.IndexPath)
+	}
+	return nil
+}
+
+// RepairPython adds the occurrences of imports scip-python left unresolved to the
+// index at indexPath. Best effort: the index stays usable as written if it fails.
+func RepairPython(repoRoot, indexPath string) {
+	if _, err := scip.RepairPythonImports(repoRoot, indexPath); err != nil {
+		slog.Warn("Could not repair the Python imports in the index", "index", indexPath, "error", err.Error())
+	}
+}
+
+// relocate moves and rebases an index an indexer wrote in a subdirectory.
+func relocate(repoRoot string, plan *Plan) error {
 	if plan.IndexerDir == repoRoot {
 		return nil
 	}
