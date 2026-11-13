@@ -18,6 +18,7 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/complexity"
 	"github.com/SimplyLiz/CodeMCP/internal/coupling"
 	"github.com/SimplyLiz/CodeMCP/internal/errors"
+	"github.com/SimplyLiz/CodeMCP/internal/modules"
 	"github.com/SimplyLiz/CodeMCP/internal/output"
 	"github.com/SimplyLiz/CodeMCP/internal/version"
 )
@@ -477,7 +478,7 @@ func (e *Engine) getExploreSymbols(ctx context.Context, targetType, absPath, rel
 							EndLine:   sym.EndLine,
 						},
 						Visibility: &VisibilityInfo{
-							Visibility: inferVisibility(sym.Name, sym.Kind),
+							Visibility: inferVisibility(sym.Name, sym.Kind, relFile),
 							Confidence: 0.5,
 							Source:     "treesitter",
 						},
@@ -520,6 +521,13 @@ func (e *Engine) getExploreSymbols(ctx context.Context, targetType, absPath, rel
 			lines = endLine - line + 1
 		}
 
+		// A test's fixture class isn't what the code under it is about, unless
+		// the tests are what's being explored.
+		if file != "" && isTestFilePath(file) && !isTestFilePath(relTarget+"/") {
+			importance /= 2
+			reason = "test " + reason
+		}
+
 		symbols = append(symbols, ExploreSymbol{
 			StableId:   sym.StableId,
 			Name:       sym.Name,
@@ -535,8 +543,16 @@ func (e *Engine) getExploreSymbols(ctx context.Context, targetType, absPath, rel
 	}
 
 	// Sort by importance
-	sort.Slice(symbols, func(i, j int) bool {
-		return symbols[i].Importance > symbols[j].Importance
+	// Ties (tree-sitter functions carry no ranking, so they all score alike) go to
+	// the bigger body: a 40-line run() says more about a directory than a getter.
+	sort.SliceStable(symbols, func(i, j int) bool {
+		if symbols[i].Importance != symbols[j].Importance {
+			return symbols[i].Importance > symbols[j].Importance
+		}
+		if symbols[i].Lines != symbols[j].Lines {
+			return symbols[i].Lines > symbols[j].Lines
+		}
+		return symbols[i].File+symbols[i].Name < symbols[j].File+symbols[j].Name
 	})
 
 	// Apply limit
@@ -689,12 +705,12 @@ func skipExploreDirectory(name string) bool {
 func (e *Engine) getExploreDependencies(ctx context.Context, targetType, absPath, relTarget string) *ExploreDependencies {
 	deps := &ExploreDependencies{}
 
+	internal := e.exploreImportClassifier()
 	if targetType == "file" {
 		// For single file, parse imports
 		imports := parseFileImports(absPath)
 		for _, imp := range imports {
-			// Internal = relative path (starts with . or /)
-			isInternal := strings.HasPrefix(imp, ".") || strings.HasPrefix(imp, "/")
+			isInternal := internal(imp, absPath)
 			deps.Imports = append(deps.Imports, ExploreDependency{
 				Name:     imp,
 				Internal: isInternal,
@@ -707,7 +723,7 @@ func (e *Engine) getExploreDependencies(ctx context.Context, targetType, absPath
 		}
 	} else {
 		// For directory, aggregate imports from files with limits
-		importSet := make(map[string]bool)
+		importSet := make(map[string]string) // Import -> the first file naming it
 		fileCount := 0
 		truncated := false
 
@@ -738,8 +754,11 @@ func (e *Engine) getExploreDependencies(ctx context.Context, targetType, absPath
 
 			fileCount++
 			for _, imp := range parseFileImports(path) {
+				if _, seen := importSet[imp]; seen {
+					continue
+				}
 				if len(importSet) < maxExploreImports {
-					importSet[imp] = true
+					importSet[imp] = path
 				} else {
 					truncated = true
 					break
@@ -750,9 +769,8 @@ func (e *Engine) getExploreDependencies(ctx context.Context, targetType, absPath
 
 		deps.Truncated = truncated
 
-		for imp := range importSet {
-			// Internal = relative path (starts with . or /)
-			isInternal := strings.HasPrefix(imp, ".") || strings.HasPrefix(imp, "/")
+		for imp, from := range importSet {
+			isInternal := internal(imp, from)
 			deps.Imports = append(deps.Imports, ExploreDependency{
 				Name:     imp,
 				Internal: isInternal,
@@ -773,6 +791,38 @@ func (e *Engine) getExploreDependencies(ctx context.Context, targetType, absPath
 	sort.Strings(deps.ExternalDeps)
 
 	return deps
+}
+
+// exploreImportClassifier says whether an import in a file reaches the repo's own
+// code: a relative path, a Go package of the module, a Python module of the repo
+// (beside the file, from the root, or through sys.path). One classifier per language,
+// so each reads go.mod or lists the Python files once.
+func (e *Engine) exploreImportClassifier() func(imp, absFile string) bool {
+	classifiers := make(map[string]*modules.ImportClassifier)
+	return func(imp, absFile string) bool {
+		if strings.HasPrefix(imp, ".") || strings.HasPrefix(imp, "/") {
+			return true
+		}
+		var lang string
+		switch strings.ToLower(filepath.Ext(absFile)) {
+		case ".go":
+			lang = modules.LanguageGo
+		case ".py", ".pyi":
+			lang = modules.LanguagePython
+		default:
+			return false
+		}
+		c := classifiers[lang]
+		if c == nil {
+			c = modules.NewImportClassifier(&modules.ModuleContext{RepoRoot: e.repoRoot, Language: lang})
+			classifiers[lang] = c
+		}
+		rel, err := filepath.Rel(e.repoRoot, absFile)
+		if err != nil {
+			return false
+		}
+		return c.ResolveImport(imp, filepath.ToSlash(rel)) != ""
+	}
 }
 
 // extractQuotedString extracts a string between double quotes from a line

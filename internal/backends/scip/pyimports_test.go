@@ -3,6 +3,7 @@ package scip
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -206,5 +207,43 @@ func TestMaskPython(t *testing.T) {
 	}
 	if !strings.HasSuffix(got[3], "y = lc.z") {
 		t.Errorf("after the string closes: %q", got[3])
+	}
+}
+
+// scip-python indexes git-ignored scratch too; the repair drops those documents.
+func TestRepairPythonImports_DropsIgnored(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	for rel, body := range map[string]string{".gitignore": "Temp/\n", "a.py": "x = 1\n", "Temp/scratch.py": "y = 2\n"} {
+		p := filepath.Join(root, rel)
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out, err := exec.Command("git", "-C", root, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	idx := &scippb.Index{Documents: []*scippb.Document{
+		{RelativePath: "a.py", Occurrences: []*scippb.Occurrence{pyDef(0, 0, 1, pySym("a", "x."))}},
+		{RelativePath: "Temp/scratch.py", Occurrences: []*scippb.Occurrence{pyDef(0, 0, 1, pySym("Temp.scratch", "y."))}},
+	}}
+	data, _ := proto.Marshal(idx)
+	indexPath := filepath.Join(root, "index.scip")
+	if err := os.WriteFile(indexPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RepairPythonImports(root, indexPath); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(indexPath)
+	var got scippb.Index
+	if err := proto.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Documents) != 1 || got.Documents[0].RelativePath != "a.py" {
+		t.Errorf("documents = %v, want only a.py", got.Documents)
 	}
 }

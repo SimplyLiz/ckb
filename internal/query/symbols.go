@@ -602,7 +602,7 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 						ModuleId: filepath.Dir(s.FilePath),
 						Location: e.ftsResultLocation(s.ID, s.FilePath),
 						Visibility: &VisibilityInfo{
-							Visibility: inferVisibility(s.Name, s.Kind),
+							Visibility: inferVisibility(s.Name, s.Kind, s.FilePath),
 							Confidence: 0.6,
 							Source:     "lip",
 						},
@@ -1366,7 +1366,7 @@ func (e *Engine) searchWithTreesitter(ctx context.Context, opts SearchSymbolsOpt
 				EndLine:   sym.EndLine,
 			},
 			Visibility: &VisibilityInfo{
-				Visibility: inferVisibility(sym.Name, sym.Kind),
+				Visibility: inferVisibility(sym.Name, sym.Kind, relPath),
 				Confidence: 0.5, // Lower confidence for inferred visibility
 				Source:     "treesitter",
 			},
@@ -1389,7 +1389,13 @@ func generateTreesitterSymbolId(path, name, kind string, line int) string {
 // inferVisibility guesses visibility from naming conventions.
 // inferFTSVisibility is inferVisibility for an FTS row, which also has the SCIP
 // ID: an exported Go name on an unexported type (engine#Build) is not public API.
+//
+// Python and TypeScript/JavaScript don't spell visibility by case: a module-level
+// `price` is as public as `Price` in Go, and only a leading underscore says otherwise.
 func inferFTSVisibility(id, name, kind string) string {
+	if strings.HasPrefix(id, "scip-python ") || strings.HasPrefix(id, "scip-typescript ") {
+		return underscoreVisibility(name)
+	}
 	if strings.HasPrefix(id, "scip-go ") {
 		if parsed, err := scip.ParseSCIPIdentifier(id); err == nil {
 			if container := parsed.GetContainerName(); container != "" && container[0] >= 'a' && container[0] <= 'z' {
@@ -1397,12 +1403,18 @@ func inferFTSVisibility(id, name, kind string) string {
 			}
 		}
 	}
-	return inferVisibility(name, kind)
+	return inferVisibility(name, kind, "")
 }
 
-func inferVisibility(name, kind string) string {
+// path is the declaring file where known: in Python, TypeScript and JavaScript case
+// says nothing about visibility, a leading underscore does.
+func inferVisibility(name, kind, path string) string {
 	if name == "" {
 		return "unknown"
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".py", ".pyi", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs":
+		return underscoreVisibility(name)
 	}
 
 	// Go convention: lowercase = package-private, uppercase = exported
@@ -1420,4 +1432,18 @@ func inferVisibility(name, kind string) string {
 	}
 
 	return "internal"
+}
+
+// underscoreVisibility is visibility by Python's and JavaScript's convention: a
+// leading underscore is private, a dunder is the language's protocol and public.
+func underscoreVisibility(name string) string {
+	switch {
+	case name == "":
+		return "unknown"
+	case strings.HasPrefix(name, "__") && strings.HasSuffix(name, "__"):
+		return "public"
+	case strings.HasPrefix(name, "_"):
+		return "private"
+	}
+	return "public"
 }
