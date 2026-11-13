@@ -54,4 +54,4 @@ Code Health:
   C ↑ protocol/modbus.go (65)
   2 degraded · 1 improved · avg -4.7
 
-Reviewers: @alice (85%) · @bob (45%)
+Reviewers (has lines in % of changed files): @alice 85% · @bob 45%

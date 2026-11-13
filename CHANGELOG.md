@@ -257,6 +257,12 @@ Claude Code mods, with no manifest anywhere.
   git-ignored scratch directory (or a virtualenv not starting with `.`) ended up in
   the index; the repair drops those documents. The directory architecture skipped
   hidden directories only and listed it too.
+- **The review estimate adds up.** Two minutes per changed file were always counted
+  but only listed from six files on: "~13min" came with "4 min from 26 LOC" as its
+  only factor. The file switches are listed whenever they count.
+- **Review reviewers say what their number is.** It's the share of changed files a
+  person has lines in, so `alice (100%) · bob (100%)` looked like a broken split. The
+  label says so now, and the change's own author shows as `(author)`.
 - **`ckb review` shows skipped checks.** They were left out of the text output, so a
   check that didn't look read like one that passed.
 - **The review's dead code no longer reports functions called in their own file.**

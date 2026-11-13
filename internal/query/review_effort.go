@@ -70,7 +70,9 @@ func estimateReviewEffort(diffStats []git.DiffStats, breakdown *ChangeBreakdown,
 	// File switch overhead: ~2 min per file
 	fileSwitchMinutes := float64(len(diffStats)) * 2.0
 	totalMinutes += fileSwitchMinutes
-	if len(diffStats) > 5 {
+	// Listed whenever it counts: hidden below 6 files, 4 files' 8 minutes made a
+	// 13-minute estimate whose factors added up to 4.
+	if fileSwitchMinutes > 0 {
 		factors = append(factors, fmt.Sprintf("%.0f min from %d file switches", fileSwitchMinutes, len(diffStats)))
 	}
 
