@@ -171,7 +171,7 @@ func CountCommitsBetween(repoRoot, fromCommit, toCommit string) (int, error) {
 
 // VerifyCommitExists checks if a commit exists in the repository
 func VerifyCommitExists(repoRoot, commit string) bool {
-	cmd := exec.Command("git", "cat-file", "-e", commit)
+	cmd := exec.Command("git", "cat-file", "-e", commit) // #nosec G204 -- fixed binary, no shell; commit is the index's recorded hash
 	cmd.Dir = repoRoot
 	err := cmd.Run()
 	return err == nil

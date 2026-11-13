@@ -427,7 +427,7 @@ func (c *doneChecker) gitGrep(dir, pattern string) []grepHit {
 	if dir != "" && dir != "." {
 		pathspec = dir + "/**/*.rs"
 	}
-	cmd := exec.Command("git", "grep", "-n", "-E", "-e", pattern, "--", pathspec)
+	cmd := exec.Command("git", "grep", "-n", "-E", "-e", pattern, "--", pathspec) // #nosec G204 -- fixed binary, no shell; -e and -- keep pattern and pathspec from being read as options
 	cmd.Dir = c.repoRoot
 	out, err := cmd.Output()
 	if err != nil {

@@ -138,7 +138,7 @@ func readCoChangeHistory(ctx context.Context, repoRoot string, paths []string) (
 }
 
 func gitOutput(ctx context.Context, repoRoot string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- fixed binary, no shell; args are git subcommands and hashes from git itself
 	cmd.Dir = repoRoot
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

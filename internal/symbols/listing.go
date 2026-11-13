@@ -84,7 +84,7 @@ func gitListFiles(ctx context.Context, root string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, gitBin, "ls-files", "-co", "--exclude-standard", "-z")
+	cmd := exec.CommandContext(ctx, gitBin, "ls-files", "-co", "--exclude-standard", "-z") // #nosec G204 -- git from PATH with constant arguments
 	cmd.Dir = root
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

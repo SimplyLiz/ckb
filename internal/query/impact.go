@@ -2220,7 +2220,7 @@ func (e *Engine) diffFileReader(staged bool, baseBranch string) diff.FileReader 
 	var oldRev string
 	var resolved bool
 	show := func(object string) []string {
-		cmd := exec.Command("git", "show", object)
+		cmd := exec.Command("git", "show", object) // #nosec G204 -- fixed binary, no shell; object is <rev>:<path> from the diff
 		cmd.Dir = e.repoRoot
 		out, err := cmd.Output()
 		if err != nil {
@@ -2278,7 +2278,7 @@ func (e *Engine) getGitDiff(staged bool, baseBranch string) (string, error) {
 		base = ""
 	}
 	run := func(args []string) (string, error) {
-		cmd := exec.Command("git", args...)
+		cmd := exec.Command("git", args...) // #nosec G204 -- fixed binary, no shell; args are diff subcommands and the caller's own base ref
 		cmd.Dir = e.repoRoot
 		out, err := cmd.Output()
 		return string(out), err
