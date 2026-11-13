@@ -245,3 +245,38 @@ func TestCheckSymbol_PythonInitSubclass(t *testing.T) {
 		t.Errorf("sites = %q, want %q", got, want)
 	}
 }
+
+// `Foo(1), Bar(2)` on one line constructs Foo and Bar, and both run Foo.__init__: the
+// function was listed twice with the same line (via_module on the Rubik copy, six rows
+// for five consumers).
+func TestAnalyzeImpact_PythonInitOneRowPerConsumerLine(t *testing.T) {
+	root := t.TempDir()
+	writeRepoFile(t, root, "pkg/shapes.py", "class Foo:\n    def __init__(self, x):\n        self.x = x\n\n\nclass Bar(Foo):\n    pass\n")
+	writeRepoFile(t, root, "pkg/use.py", "from pkg.shapes import Foo, Bar\n\n\ndef both():\n    return Foo(1), Bar(2)\n")
+	def, read, imp := scippb.SymbolRole_Definition, scippb.SymbolRole_ReadAccess, scippb.SymbolRole_Import
+	shapes := pyDoc("pkg/shapes.py", []pyOcc{
+		{pyPkg + "Foo#", 0, 2, def},
+		{pyPkg + "Foo#__init__().", 1, 2, def},
+		{pyPkg + "Bar#", 5, 6, def},
+		{pyPkg + "Foo#", 5, 0, read},
+	}, map[string]string{pyPkg + "Bar#": pyPkg + "Foo#"})
+	uses := pyDoc("pkg/use.py", []pyOcc{
+		{pyPkg + "Foo#", 0, 0, imp},
+		{pyPkg + "Bar#", 0, 0, imp},
+		{pyUse + "both().", 3, 4, def},
+		{pyPkg + "Foo#", 4, 0, read},
+		{pyPkg + "Bar#", 4, 0, read},
+	}, nil)
+	engine := scipEngine(t, root, "scip-python", []*scippb.Document{shapes, uses})
+	resp, err := engine.AnalyzeImpact(context.Background(), AnalyzeImpactOptions{SymbolId: pyPkg + "Foo#__init__().", Depth: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.DirectImpact) != 1 || resp.DirectImpact[0].StableId != pyUse+"both()." {
+		var got []string
+		for _, it := range resp.DirectImpact {
+			got = append(got, fmt.Sprintf("%s@%v", it.StableId, it.Location))
+		}
+		t.Errorf("direct = %v, want both() once", got)
+	}
+}

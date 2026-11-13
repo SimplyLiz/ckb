@@ -576,12 +576,20 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 			} else {
 				incomplete = append(incomplete, "couldn't look up the constructions of the class")
 			}
+			// One row per consumer and line: `lc.Win(p), lc.SubWin(p)` constructs
+			// Win and SubWin on one line, and both run Win.__init__.
+			seenRows := make(map[string]bool, len(references))
 			for _, ref := range references {
 				// An import only brings the name in; the uses after it are the
 				// callers. As an item it was a nameless "unknown" at module level.
 				if ref.Kind == "import" {
 					continue
 				}
+				row := fmt.Sprintf("%s\x00%s\x00%d\x00%s", ref.FromSymbol, ref.Location.Path, ref.Location.Line, ref.Kind)
+				if seenRows[row] {
+					continue
+				}
+				seenRows[row] = true
 				fromModule := ""
 				if ref.Location.Path != "" {
 					fromModule = filepath.Dir(ref.Location.Path)
