@@ -55,7 +55,13 @@ func typeFixtureDoc(path, lang string, occs []typeOcc) *scippb.Document {
 
 func typeFixtureRepo(t *testing.T) (*Engine, string) {
 	t.Helper()
-	engine := changeSetEngine(t,
+	return typeFixtureRepoWith(t, nil)
+}
+
+// typeFixtureRepoWith is typeFixtureRepo with more files, and their documents.
+func typeFixtureRepoWith(t *testing.T, extra map[string]string, extraDocs ...*scippb.Document) (*Engine, string) {
+	t.Helper()
+	docs := []*scippb.Document{
 		typeFixtureDoc("cv/cv.go", "go", []typeOcc{{symGoCV, 3, 5, true, scippb.SymbolInformation_Struct}}),
 		typeFixtureDoc("cv/importer.go", "go", []typeOcc{
 			{symGoImport, 2, 5, true, scippb.SymbolInformation_Function},
@@ -76,13 +82,17 @@ func typeFixtureRepo(t *testing.T) (*Engine, string) {
 			{symTSCV, 2, 36, false, 0}, // ): CV {
 			{symTSCV, 8, 20, false, 0}, // : CV = {
 		}),
-	)
+	}
+	engine := changeSetEngine(t, append(docs, extraDocs...)...)
 	root := engine.repoRoot
 	writeRepoFile(t, root, ".gitignore", ".ckb/\nindex.scip\n")
 	for path, content := range doneCheckFiles {
 		writeRepoFile(t, root, path, content)
 	}
 	for path, content := range typeFixtureFiles {
+		writeRepoFile(t, root, path, content)
+	}
+	for path, content := range extra {
 		writeRepoFile(t, root, path, content)
 	}
 	gitInit(t, root)
@@ -124,6 +134,25 @@ func TestDoneCheck_GoFieldAddedBreaksOnlyPositionalLiterals(t *testing.T) {
 		if site.Via != "fields of CV changed" || site.Change != "changed" || site.Symbol != "CV" {
 			t.Errorf("site = %+v", site)
 		}
+	}
+}
+
+// A slice or map of pointers to the type holds values built elsewhere. Only an elided
+// element, `{"q", "n"}` for `&CV{"q", "n"}`, builds one, and a positional one breaks.
+func TestDoneCheck_GoPointerHoldersAreNotLiterals(t *testing.T) {
+	holders := "package cv\n\nvar Ps = []*CV{&P}\n\nvar M = map[string]*CV{\"p\": &P}\n\nvar Q = []*CV{{\"q\", \"n\"}}\n\nvar K = []*CV{{Title: \"k\"}}\n"
+	engine, root := typeFixtureRepoWith(t, map[string]string{"cv/holders.go": holders},
+		typeFixtureDoc("cv/holders.go", "go", []typeOcc{
+			{symGoCV, 2, 12, false, 0}, // []*CV{&P}
+			{symGoCV, 4, 22, false, 0}, // map[string]*CV{
+			{symGoCV, 6, 11, false, 0}, // []*CV{{"q", "n"}}
+			{symGoCV, 8, 11, false, 0}, // []*CV{{Title: "k"}}
+		}))
+	editRepoFile(t, root, "cv/cv.go", "\tTitle string\n", "\tTitle string\n\tName  string\n")
+
+	check := runChangeSet(t, engine, AnalyzeChangeSetOptions{}).DoneCheck
+	if got := openSiteKeys(check); fmt.Sprint(got) != "[cv/holders.go:7 cv/positional.go:3]" {
+		t.Errorf("open sites = %v, want the positional literals alone", got)
 	}
 }
 
