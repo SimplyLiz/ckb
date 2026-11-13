@@ -127,15 +127,29 @@ func compareInterface(before, after map[string]string) interfaceChange {
 	return change
 }
 
-// checkInterface classifies each implementation of one changed interface into files.
-func (c *doneChecker) checkInterface(index implIndex, filePath, name string, iface goInterface, change interfaceChange, files map[string]bool) {
+// goImpl is a type that implements a Go interface, found by goImplementations.
+type goImpl struct {
+	typeID, typeName string
+	found            *scip.GoTypeMethods
+	// nameOnly: a one-method interface, and the type's package neither is nor
+	// imports the interface's. It satisfies it, but may never be used as it.
+	nameOnly bool
+}
+
+// goImplementations lists the types implementing the interface name declared in
+// ifaceFile with the methods iface has: the index's implementation relationships,
+// and concrete types defining every one of those methods with the same signature
+// where sigOf can read it. extra names methods to look up on each type as well.
+// It also returns the interface's symbol, "" if the index has none.
+func goImplementations(index implIndex, ifaceFile, name string, iface goInterface, extra []string,
+	sigOf func(path, typeName, method string) (string, bool), sees func(*scip.GoTypeMethods) bool) ([]goImpl, string) {
 	oldNames := make([]string, 0, len(iface.methods))
 	for method := range iface.methods {
 		oldNames = append(oldNames, method)
 	}
 	sort.Strings(oldNames)
 
-	ifaceSym := index.TypeSymbolIn(filePath, name)
+	ifaceSym := index.TypeSymbolIn(ifaceFile, name)
 	related := make(map[string]bool)
 	if ifaceSym != "" {
 		for _, id := range index.Implementations(ifaceSym) {
@@ -148,28 +162,41 @@ func (c *doneChecker) checkInterface(index implIndex, filePath, name string, ifa
 		}
 	}
 
-	types := index.GoMethodsNamed(append(append([]string{}, oldNames...), change.added...))
+	types := index.GoMethodsNamed(append(append([]string{}, oldNames...), extra...))
 	typeIDs := make([]string, 0, len(types))
 	for id := range types {
 		typeIDs = append(typeIDs, id)
 	}
 	sort.Strings(typeIDs)
 
-	via := "implements " + name
+	var impls []goImpl
 	for _, typeID := range typeIDs {
 		found := types[typeID]
 		typeName := scip.SymbolSimpleName(typeID)
 		if typeName == "" {
 			continue
 		}
-		if !related[typeID] && !c.implementsByName(found, typeName, iface.methods, oldNames) {
+		if !related[typeID] && !implementsByName(found, typeName, iface.methods, oldNames, sigOf) {
 			continue
 		}
 		// A one-method interface, String() or Close(), is satisfied by every type with
 		// such a method, and the index's implementation relationships say no more
 		// than that. One whose package can't even see the interface breaks only where
 		// some third package uses it as one.
-		nameOnly := len(iface.methods) == 1 && !c.goSeesPackage(found, filePath)
+		nameOnly := len(iface.methods) == 1 && !sees(found)
+		impls = append(impls, goImpl{typeID: typeID, typeName: typeName, found: found, nameOnly: nameOnly})
+	}
+	return impls, ifaceSym
+}
+
+// checkInterface classifies each implementation of one changed interface into files.
+func (c *doneChecker) checkInterface(index implIndex, filePath, name string, iface goInterface, change interfaceChange, files map[string]bool) {
+	impls, ifaceSym := goImplementations(index, filePath, name, iface, change.added, c.goMethodSig,
+		func(found *scip.GoTypeMethods) bool { return c.goSeesPackage(found, filePath) })
+
+	via := "implements " + name
+	for _, impl := range impls {
+		found, typeName, nameOnly := impl.found, impl.typeName, impl.nameOnly
 		methodSym := func(method string) impact.ChangedSymbol {
 			id := ifaceSym + method + "."
 			if ifaceSym == "" {
@@ -220,6 +247,14 @@ const useNameMatch = "name-match"
 // goSeesPackage says whether the type's package is the interface's or imports it.
 // Unknown (no go.mod found, unreadable directory) counts as seeing it.
 func (c *doneChecker) goSeesPackage(found *scip.GoTypeMethods, ifaceFile string) bool {
+	if c.goSees == nil {
+		c.goSees = make(map[string]bool)
+	}
+	return goSeesPackage(c.repoRoot, c.goSees, found, ifaceFile)
+}
+
+// goSeesPackage is doneChecker.goSeesPackage with its cache passed in.
+func goSeesPackage(repoRoot string, cache map[string]bool, found *scip.GoTypeMethods, ifaceFile string) bool {
 	typeFile := found.Type.Path
 	if typeFile == "" {
 		for _, site := range found.Methods {
@@ -232,17 +267,14 @@ func (c *doneChecker) goSeesPackage(found *scip.GoTypeMethods, ifaceFile string)
 		return true
 	}
 	key := typeDir + "\x00" + ifaceDir
-	if seen, ok := c.goSees[key]; ok {
+	if seen, ok := cache[key]; ok {
 		return seen
 	}
 	sees := true
-	if importPath := goImportPath(c.repoRoot, ifaceDir); importPath != "" {
-		sees = goDirImports(filepath.Join(c.repoRoot, typeDir), importPath)
+	if importPath := goImportPath(repoRoot, ifaceDir); importPath != "" {
+		sees = goDirImports(filepath.Join(repoRoot, typeDir), importPath)
 	}
-	if c.goSees == nil {
-		c.goSees = make(map[string]bool)
-	}
-	c.goSees[key] = sees
+	cache[key] = sees
 	return sees
 }
 
@@ -305,13 +337,14 @@ func receiverType(id string) string {
 
 // implementsByName says whether a type defines every method of the interface as it was,
 // with the same signature where its declaration can be read.
-func (c *doneChecker) implementsByName(found *scip.GoTypeMethods, typeName string, methods map[string]string, names []string) bool {
+func implementsByName(found *scip.GoTypeMethods, typeName string, methods map[string]string, names []string,
+	sigOf func(path, typeName, method string) (string, bool)) bool {
 	for _, method := range names {
 		site, ok := found.Methods[method]
 		if !ok {
 			return false
 		}
-		if sig, ok := c.goMethodSig(site.Path, typeName, method); ok && sig != methods[method] {
+		if sig, ok := sigOf(site.Path, typeName, method); ok && sig != methods[method] {
 			return false
 		}
 	}

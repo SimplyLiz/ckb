@@ -58,6 +58,11 @@ type AnalyzeImpactResponse struct {
 	// is kept out of DirectImpact, TransitiveImpact and everything counted from
 	// them, so a well-tested symbol doesn't look like a widely used one.
 	TestImpact []ImpactItem `json:"-"`
+	// NameMatchImplementations are types with the method of a one-method Go
+	// interface whose package doesn't import the interface's. They satisfy it, but
+	// break only where a third package uses them as it, so they are listed here and
+	// not counted in DirectImpact.
+	NameMatchImplementations []ImpactItem `json:"nameMatchImplementations,omitempty"`
 	// ConsumerFiles lists every file behind the item lists, which are budgeted.
 	ConsumerFiles  *ConsumerFiles     `json:"consumerFiles,omitempty"`
 	Truncated      bool               `json:"truncated,omitempty"`
@@ -608,6 +613,14 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 		}
 	}
 
+	// A Go interface method's implementations don't reference it, and break with it.
+	var nameMatchImpls []ImpactItem
+	if symbolInfo.Location != nil {
+		implRefs, nameMatch := e.goImplementationRefs(symbolIdForLookup, symbolInfo.Location.FileId)
+		refs = append(refs, implRefs...)
+		nameMatchImpls = implementationItems(nameMatch)
+	}
+
 	// Without IncludeTests, test code isn't counted as a consumer, but it still uses
 	// the symbol and is reported as such.
 	var testRefs []impact.Reference
@@ -846,23 +859,24 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 	}
 
 	resp := &AnalyzeImpactResponse{
-		Symbol:            symbolInfo,
-		Visibility:        visibility,
-		RiskScore:         riskScore,
-		BlastRadius:       blastRadius,
-		DirectImpact:      directImpact,
-		TransitiveImpact:  transitiveImpact,
-		ModulesAffected:   modulesAffected,
-		ObservedUsage:     observedUsage,
-		RelatedDecisions:  relatedDecisions,
-		DocsToUpdate:      docsToUpdate,
-		BlendedConfidence: blendedConfidence,
-		TestImpact:        testImpact,
-		ConsumerFiles:     consumerFiles,
-		Truncated:         truncationInfo != nil,
-		TruncationInfo:    truncationInfo,
-		Provenance:        provenance,
-		Drilldowns:        drilldowns,
+		Symbol:                   symbolInfo,
+		Visibility:               visibility,
+		RiskScore:                riskScore,
+		BlastRadius:              blastRadius,
+		DirectImpact:             directImpact,
+		TransitiveImpact:         transitiveImpact,
+		ModulesAffected:          modulesAffected,
+		ObservedUsage:            observedUsage,
+		RelatedDecisions:         relatedDecisions,
+		DocsToUpdate:             docsToUpdate,
+		BlendedConfidence:        blendedConfidence,
+		TestImpact:               testImpact,
+		NameMatchImplementations: nameMatchImpls,
+		ConsumerFiles:            consumerFiles,
+		Truncated:                truncationInfo != nil,
+		TruncationInfo:           truncationInfo,
+		Provenance:               provenance,
+		Drilldowns:               drilldowns,
 	}
 
 	// Augment with Cartographer architectural simulation for the symbol's file.
@@ -2389,6 +2403,11 @@ func findBrokenContract(name string, change impact.DeclarationChange, direct []I
 	for i := range direct {
 		item := &direct[i]
 		if isTestFile(item.Location) || (item.Location != nil && handled[item.Location.FileId]) {
+			continue
+		}
+		// Implementations are the done check's (checkImplementations), which knows
+		// what the diff did to the interface: removing a method breaks none of them.
+		if item.Kind == kindImplementation {
 			continue
 		}
 		consumer := item.Name

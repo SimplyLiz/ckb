@@ -349,6 +349,9 @@ type ImpactResponseCLI struct {
 	ConsumerFiles  *query.ConsumerFiles `json:"consumerFiles,omitempty"`
 	Truncated      bool                 `json:"truncated,omitempty"`
 	TruncationInfo *TruncationInfoCLI   `json:"truncationInfo,omitempty"`
+	// NameMatchImplementations: types with a one-method interface's method whose
+	// package doesn't import the interface's. Not counted in directImpact.
+	NameMatchImplementations []ImpactItemCLI `json:"nameMatchImplementations,omitempty"`
 }
 
 // TruncationInfoCLI says how much of a list was cut.
@@ -400,9 +403,9 @@ type ModuleImpactCLI struct {
 	DirectCount int    `json:"directCount,omitempty"`
 }
 
-func convertImpactResponse(symbolID string, resp *query.AnalyzeImpactResponse) *ImpactResponseCLI {
-	directImpact := make([]ImpactItemCLI, 0, len(resp.DirectImpact))
-	for _, item := range resp.DirectImpact {
+func impactItemsCLI(items []query.ImpactItem) []ImpactItemCLI {
+	out := make([]ImpactItemCLI, 0, len(items))
+	for _, item := range items {
 		impactItem := ImpactItemCLI{
 			StableID:   item.StableId,
 			Name:       item.Name,
@@ -419,28 +422,17 @@ func convertImpactResponse(symbolID string, resp *query.AnalyzeImpactResponse) *
 				StartColumn: item.Location.StartColumn,
 			}
 		}
-		directImpact = append(directImpact, impactItem)
+		out = append(out, impactItem)
 	}
+	return out
+}
 
-	transitiveImpact := make([]ImpactItemCLI, 0, len(resp.TransitiveImpact))
-	for _, item := range resp.TransitiveImpact {
-		impactItem := ImpactItemCLI{
-			StableID:   item.StableId,
-			Name:       item.Name,
-			Kind:       item.Kind,
-			Distance:   item.Distance,
-			ModuleID:   item.ModuleId,
-			Confidence: item.Confidence,
-		}
-		if item.Location != nil {
-			impactItem.Location = &LocationCLI{
-				FileID:      item.Location.FileId,
-				Path:        item.Location.FileId,
-				StartLine:   item.Location.StartLine,
-				StartColumn: item.Location.StartColumn,
-			}
-		}
-		transitiveImpact = append(transitiveImpact, impactItem)
+func convertImpactResponse(symbolID string, resp *query.AnalyzeImpactResponse) *ImpactResponseCLI {
+	directImpact := impactItemsCLI(resp.DirectImpact)
+	transitiveImpact := impactItemsCLI(resp.TransitiveImpact)
+	var nameMatch []ImpactItemCLI
+	if len(resp.NameMatchImplementations) > 0 {
+		nameMatch = impactItemsCLI(resp.NameMatchImplementations)
 	}
 
 	modulesAffected := make([]ModuleImpactCLI, 0, len(resp.ModulesAffected))
@@ -461,6 +453,8 @@ func convertImpactResponse(symbolID string, resp *query.AnalyzeImpactResponse) *
 		ConsumerFiles:    resp.ConsumerFiles,
 		Truncated:        resp.Truncated,
 		TruncationInfo:   convertTruncation(resp.TruncationInfo),
+
+		NameMatchImplementations: nameMatch,
 	}
 
 	if resp.Symbol != nil {

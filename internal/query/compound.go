@@ -1519,11 +1519,17 @@ type PrepareDependent struct {
 // PrepareTransitive summarizes transitive impact.
 type PrepareTransitive struct {
 	// DirectCallers counts the direct consumers, all of them: directDependents is
-	// cut to the response budget.
+	// cut to the response budget. Implementations are counted apart.
 	DirectCallers int `json:"directCallers"`
-	TotalCallers  int `json:"totalCallers"`
-	ModuleSpread  int `json:"moduleSpread"`
-	MaxDepth      int `json:"maxDepth"`
+	// Implementations counts the types implementing a Go interface or interface
+	// method target, listed in directDependents as kind implements-interface.
+	Implementations int `json:"implementations,omitempty"`
+	// NameMatchImplementations counts types that have a one-method interface's
+	// method but whose package doesn't import the interface's: not counted above.
+	NameMatchImplementations int `json:"nameMatchImplementations,omitempty"`
+	TotalCallers             int `json:"totalCallers"`
+	ModuleSpread             int `json:"moduleSpread"`
+	MaxDepth                 int `json:"maxDepth"`
 }
 
 // PrepareTest describes a test that may need updating.
@@ -1862,8 +1868,9 @@ func (e *Engine) getPrepareImpact(ctx context.Context, symbolId string) (*prepar
 	sortImpactItems(direct)
 	sortImpactItems(transitive)
 	imp := &prepareImpact{
-		transitive: summarizeTransitive(&AnalyzeImpactResponse{DirectImpact: direct, TransitiveImpact: transitive}),
-		tests:      allConsumers(direct, transitive, impactResp.TestImpact),
+		transitive: summarizeTransitive(&AnalyzeImpactResponse{DirectImpact: direct, TransitiveImpact: transitive,
+			NameMatchImplementations: impactResp.NameMatchImplementations}),
+		tests: allConsumers(direct, transitive, impactResp.TestImpact),
 	}
 	if limit := e.compressor.GetBudget().MaxImpactItems; limit > 0 && len(direct) > limit {
 		direct = direct[:limit]
@@ -2218,18 +2225,29 @@ func (e *Engine) calculatePrepareRisk(
 	var suggestions []string
 
 	// dependents is cut to the response budget; the summary counts them all.
-	callers := len(dependents)
-	if transitive != nil && transitive.DirectCallers > callers {
-		callers = transitive.DirectCallers
+	callers, impls := 0, 0
+	for _, d := range dependents {
+		if d.Kind == kindImplementation {
+			impls++
+		} else {
+			callers++
+		}
 	}
+	if transitive != nil && transitive.DirectCallers+transitive.Implementations > callers+impls {
+		callers, impls = transitive.DirectCallers, transitive.Implementations
+	}
+	described := describeDependents(callers, impls)
 
 	// Factor: Number of direct dependents
-	if callers > 10 {
+	if callers+impls > 10 {
 		score += 0.25
-		factors = append(factors, fmt.Sprintf("High dependent count (%d direct callers)", callers))
-	} else if callers > 5 {
+		factors = append(factors, fmt.Sprintf("High dependent count (%s)", described))
+	} else if callers+impls > 5 {
 		score += 0.15
-		factors = append(factors, fmt.Sprintf("Moderate dependent count (%d direct callers)", callers))
+		factors = append(factors, fmt.Sprintf("Moderate dependent count (%s)", described))
+	}
+	if transitive != nil && transitive.NameMatchImplementations > 0 {
+		factors = append(factors, fmt.Sprintf("%d more type(s) have the method, in packages that don't import the interface's: not counted, they break only where used as it", transitive.NameMatchImplementations))
 	}
 
 	// Factor: Module spread
@@ -2294,9 +2312,16 @@ func (e *Engine) calculatePrepareRisk(
 	// change once it is in a diff (applyContractChangesToRisk). Without it the
 	// two tools disagree on one change: prepareChange low, assessChange high.
 	// modify has no floor: it can't tell a body edit from a signature change.
-	if (changeType == ChangeDelete || changeType == ChangeRename) && callers > 0 && roundedScore < highRiskFloor {
+	// Implementations break on a rename of the interface method they implement,
+	// not on its deletion (an extra method is no error) nor on a rename or delete
+	// of the interface type (Go interfaces are satisfied structurally).
+	broken := callers
+	if changeType == ChangeRename && !strings.HasSuffix(target.SymbolId, "#") {
+		broken += impls
+	}
+	if (changeType == ChangeDelete || changeType == ChangeRename) && broken > 0 && roundedScore < highRiskFloor {
 		roundedScore = highRiskFloor
-		factors = append(factors, fmt.Sprintf("%s breaks %d production caller(s) unless they change too", changeType, callers))
+		factors = append(factors, fmt.Sprintf("%s breaks %s unless they change too", changeType, describeBroken(callers, broken-callers)))
 	}
 
 	level := "low"
@@ -2311,7 +2336,7 @@ func (e *Engine) calculatePrepareRisk(
 	return &PrepareRisk{
 		Level:       level,
 		Score:       roundedScore,
-		Basis:       modifyRiskBasis(changeType, callers, target.Visibility == "public", roundedScore),
+		Basis:       modifyRiskBasis(changeType, callers, impls, target.Visibility == "public", roundedScore),
 		Factors:     factors,
 		Suggestions: suggestions,
 	}
@@ -2324,18 +2349,38 @@ func (e *Engine) calculatePrepareRisk(
 // declaration: high while production callers stay as they are, medium for an
 // exported one without any. Where the score already reaches that floor there is
 // nothing to qualify.
-func modifyRiskBasis(changeType ChangeType, callers int, public bool, score float64) string {
+func modifyRiskBasis(changeType ChangeType, callers, impls int, public bool, score float64) string {
 	if changeType != ChangeModify {
 		return ""
 	}
 	const assumed = "Scored as an edit that keeps the declaration; assessChange rescores the real diff."
 	switch {
-	case callers > 0 && score < highRiskFloor:
-		return fmt.Sprintf("%s If the signature or type changes and the %d production caller(s) stay as they are, it is at least high (%.1f).", assumed, callers, highRiskFloor)
-	case callers == 0 && public && score < mediumRiskFloor:
+	case callers+impls > 0 && score < highRiskFloor:
+		return fmt.Sprintf("%s If the signature or type changes and the %s stay as they are, it is at least high (%.1f).", assumed, describeBroken(callers, impls), highRiskFloor)
+	case callers+impls == 0 && public && score < mediumRiskFloor:
 		return fmt.Sprintf("%s If the exported declaration changes, it is at least medium (%.1f): consumers in other repos can't be seen.", assumed, mediumRiskFloor)
 	}
 	return ""
+}
+
+// describeDependents names direct callers and implementations, the second only
+// when there are any.
+func describeDependents(callers, impls int) string {
+	if impls == 0 {
+		return fmt.Sprintf("%d direct callers", callers)
+	}
+	return fmt.Sprintf("%d direct callers, %d implementations", callers, impls)
+}
+
+// describeBroken names what a change breaks: production callers, implementations.
+func describeBroken(callers, impls int) string {
+	switch {
+	case impls == 0:
+		return fmt.Sprintf("%d production caller(s)", callers)
+	case callers == 0:
+		return fmt.Sprintf("%d implementation(s)", impls)
+	}
+	return fmt.Sprintf("%d production caller(s) and %d implementation(s)", callers, impls)
 }
 
 // =============================================================================
@@ -2571,6 +2616,12 @@ func (e *Engine) BatchSearch(ctx context.Context, opts BatchSearchOptions) (*Bat
 func summarizeTransitive(resp *AnalyzeImpactResponse) *PrepareTransitive {
 	moduleSet := make(map[string]bool)
 	maxDepth := 0
+	impls := 0
+	for _, imp := range resp.DirectImpact {
+		if imp.Kind == kindImplementation {
+			impls++
+		}
+	}
 	for _, list := range [][]ImpactItem{resp.DirectImpact, resp.TransitiveImpact} {
 		for _, imp := range list {
 			if imp.ModuleId != "" {
@@ -2582,9 +2633,11 @@ func summarizeTransitive(resp *AnalyzeImpactResponse) *PrepareTransitive {
 		}
 	}
 	return &PrepareTransitive{
-		DirectCallers: len(resp.DirectImpact),
-		TotalCallers:  len(resp.TransitiveImpact) + len(resp.DirectImpact),
-		ModuleSpread:  len(moduleSet),
-		MaxDepth:      maxDepth,
+		DirectCallers:            len(resp.DirectImpact) - impls,
+		Implementations:          impls,
+		NameMatchImplementations: len(resp.NameMatchImplementations),
+		TotalCallers:             len(resp.TransitiveImpact) + len(resp.DirectImpact),
+		ModuleSpread:             len(moduleSet),
+		MaxDepth:                 maxDepth,
 	}
 }
