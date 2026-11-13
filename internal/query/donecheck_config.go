@@ -64,6 +64,26 @@ func goWireKeys(decl string) map[string]string {
 	return found
 }
 
+// goTagOnlyChange says whether two declarations of a Go field differ in nothing but
+// the struct tag (and comments): the name and type the Go code uses are the same.
+func goTagOnlyChange(before, after string) bool {
+	if !strings.Contains(before, "`") && !strings.Contains(after, "`") {
+		return false
+	}
+	strip := func(decl string) string {
+		if i := strings.Index(decl, "//"); i >= 0 && !strings.Contains(decl[i:], "`") {
+			decl = decl[:i]
+		}
+		decl = goStructTagRe.ReplaceAllString(decl, "")
+		return strings.Join(strings.Fields(decl), " ")
+	}
+	was, now := strip(before), strip(after)
+	return was != "" && was == now
+}
+
+// goStructTagRe is a field's raw-string struct tag.
+var goStructTagRe = regexp.MustCompile("`[^`]*`")
+
 // configFormat is the serialization a tracked file is written in, or "".
 func configFormat(path string) string {
 	switch strings.ToLower(filepath.Ext(path)) {

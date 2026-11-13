@@ -66,5 +66,7 @@ Still open:
   encoding/json and BurntSushi/toml match case-insensitively, so the old key may still work.
 - **The config side** (a diff that renames a key in a config file → the field and the
   `cfg["key"]` readers) isn't built.
-- **A tag-only change still lists the field's Go uses** (`c.Port`) as open: the
-  declaration text differs, though no Go code breaks.
+- ~~A tag-only change still lists the field's Go uses~~ Fixed 2026-11-13: a Go field
+  whose declaration differs only in its struct tag skips its Go uses; only the config
+  lines are open sites and contract consumers. String literals of the old key in code
+  (a test asserting `{"port":…}`) aren't searched.
