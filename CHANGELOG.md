@@ -575,6 +575,16 @@ Claude Code mods, with no manifest anywhere.
   rust-analyzer index (`rust`) tracked no file at all.
 - **The update box only goes to a terminal.** Agents and scripts capture stderr
   with the result and were filtering the box out of every call by hand.
+- **An index that fell behind HEAD catches up when `ckb mcp` starts.** The first
+  index was built once and then left alone without `--watch`, which the plugin
+  doesn't pass: two weeks of commits later prepareChange answered from code the
+  index had never seen. Now a session start refreshes it once in the background,
+  incremental where the language allows, under the same machine-wide lock as the
+  first index. Only new commits, another branch or a newly installed indexer
+  trigger it; uncommitted edits alone don't, and neither does an index without
+  metadata. The size limit and missing indexers end it the way they end watch mode.
+  Verified on a Go repo: commit after indexing, start `ckb mcp`, index metadata
+  moves to HEAD.
 
 ### Fixed — found by running CKB on its own repo
 
