@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"time"
+
+	"github.com/SimplyLiz/CodeMCP/internal/paths"
 )
 
 // RepoState represents the current state of a registered repository.
@@ -39,22 +41,25 @@ const currentRegistryVersion = 1
 
 var namePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
-// GetRegistryPath returns the path to the global registry file.
+// GetRegistryPath returns the path to the global registry file, under
+// $CKB_HOME like the rest of CKB's global state (default ~/.ckb). It used to
+// ignore CKB_HOME, so a test or a sandboxed run registered its temp repos in
+// the user's real registry and could make one the default.
 func GetRegistryPath() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := paths.GetCKBHome()
 	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
+		return "", fmt.Errorf("failed to get CKB home directory: %w", err)
 	}
-	return filepath.Join(home, ".ckb", "repos.json"), nil
+	return filepath.Join(home, "repos.json"), nil
 }
 
 // GetLockPath returns the path to the registry lock file.
 func GetLockPath() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := paths.GetCKBHome()
 	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
+		return "", fmt.Errorf("failed to get CKB home directory: %w", err)
 	}
-	return filepath.Join(home, ".ckb", "repos.lock"), nil
+	return filepath.Join(home, "repos.lock"), nil
 }
 
 // LoadRegistry loads the registry from disk.
