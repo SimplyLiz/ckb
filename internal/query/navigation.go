@@ -1327,30 +1327,8 @@ func (e *Engine) ListEntrypoints(ctx context.Context, opts ListEntrypointsOption
 			Status:  "available",
 		})
 
-		// Search for main functions
-		mainResults, _ := e.scipAdapter.SearchSymbols(ctx, "main", backends.SearchOptions{
-			MaxResults: 50,
-			Kind:       []string{"function"},
-		})
-
-		if mainResults != nil {
-			for _, sym := range mainResults.Symbols {
-				if sym.Name == "main" && strings.Contains(sym.Location.Path, "/cmd/") {
-					fanOut := e.scipAdapter.GetCalleeCount(sym.StableID)
-					entrypoints = append(entrypoints, EntrypointV52{
-						SymbolId: sym.StableID,
-						Name:     sym.Name,
-						Type:     "cli",
-						Location: &LocationInfo{
-							FileId:    sym.Location.Path,
-							StartLine: sym.Location.Line,
-						},
-						DetectionBasis: "naming",
-						FanOut:         fanOut,
-					})
-				}
-			}
-		}
+		// The functions programs start in (see programMains).
+		entrypoints = append(entrypoints, e.programMains(e.scipAdapter.GetIndex())...)
 
 		// Search for handler patterns
 		handlerPatterns := []string{"Handle", "Handler", "Serve", "Route"}
