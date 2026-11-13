@@ -332,7 +332,7 @@ func (a *Analyzer) generateRecommendations(correlations []Correlation, targetFil
 
 // executeGit executes a git command and returns the output
 func (a *Analyzer) executeGit(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- fixed binary, no shell; args are built by this package
 	cmd.Dir = a.repoRoot
 
 	output, err := cmd.Output()

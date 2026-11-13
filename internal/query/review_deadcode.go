@@ -346,7 +346,7 @@ func symbolReferencedInPackage(repoRoot, filePath, symbolName string) bool {
 
 	// Use grep to search for the symbol name in sibling .go files, excluding
 	// the declaring file itself and test files.
-	cmd := exec.Command("grep", "-rl", "--include=*.go", symbolName, absDir)
+	cmd := exec.Command("grep", "-rl", "--include=*.go", "-e", symbolName, "--", absDir) // #nosec G204 -- fixed binary, no shell; -e and -- keep the symbol name from being read as an option
 	out, err := cmd.Output()
 	if err != nil {
 		return false // grep found nothing or errored

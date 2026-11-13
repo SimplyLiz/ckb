@@ -768,7 +768,7 @@ func (c *doneChecker) readOld(file *impact.ChangedFile, path string) []string {
 }
 
 func (c *doneChecker) gitShow(object string) []string {
-	cmd := exec.Command("git", "show", object)
+	cmd := exec.Command("git", "show", object) // #nosec G204 -- fixed binary, no shell; object is <rev>:<path> from the diff
 	cmd.Dir = c.repoRoot
 	out, err := cmd.Output()
 	if err != nil {
