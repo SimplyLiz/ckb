@@ -1,17 +1,14 @@
 ---
 description: "Review a branch, staged changes or a PR: CKB's structural checks first, then read only what CKB flags. Use for code review requests in a repo that has CKB."
+when_to_use: "Reviewing a whole branch, the staged changes or a pull request: 'review my branch', 'review PR 123', 'is this ready to merge'. Not for one function, file or pasted snippet: invoking it runs ckb review over the whole diff first."
 argument-hint: "[base-branch | staged | PR-number]"
+allowed-tools: Bash(ckb review *)
 ---
 
 Run a CKB-augmented code review optimized for minimal token usage.
 
 ## Input
 $ARGUMENTS - Optional: base branch (default: main), or "staged" for staged changes, or a PR number
-
-## Running CKB
-
-The commands below call `ckb`. If it is not on PATH, run them through npx instead,
-replacing `ckb` with `npx -y @tastehub/ckb`.
 
 ## Philosophy
 
@@ -44,20 +41,17 @@ so pre-existing issues interacting with new code won't surface.
 
 ## Phase 1: Structural scan (~1k tokens into context)
 
-```bash
-ckb review --base=main --format=json --compact 2>/dev/null
-```
+CKB already ran, before you read this, on what the skill's argument names: none
+for the current branch against main, "staged" for the staged changes, a branch
+name for that base, a PR number for that PR's base (and its branch if it is
+checked out):
 
-If a PR number was given:
-```bash
-BASE=$(gh pr view $ARGUMENTS --json baseRefName -q .baseRefName)
-ckb review --base=$BASE --format=json --compact 2>/dev/null
-```
+!`ckb review --target='$ARGUMENTS' --format=json || true`
 
-If "staged" was given:
-```bash
-ckb review --staged --format=json --compact 2>/dev/null
-```
+If that is an error instead of JSON (no CKB setup here, an unknown base branch,
+gh missing for a PR number), fix the cause or run `ckb review --base=<branch>`
+or `ckb review --staged` with `--format=json` yourself, then go on.
+A `Note:` line before the JSON says what was reviewed instead of the PR.
 
 Parse the JSON output to extract:
 - `score`, `verdict` — overall quality
@@ -90,7 +84,8 @@ the code is semantically correct.
 Do NOT read the full diff. Do NOT read every changed file.
 
 **For files CKB flagged (INVESTIGATE list):**
-Read only the changed hunks via `git diff main...HEAD -- <file>`.
+Read only the changed hunks via `git diff <base>...HEAD -- <file>` (`<base>` as in
+Phase 1, main by default), or `git diff --cached -- <file>` for staged changes.
 
 **For new files** (CKB has no history — these are your biggest blind spot):
 - If it's a new package/module: read the entry point and types/interfaces first,

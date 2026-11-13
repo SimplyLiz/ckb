@@ -1,0 +1,37 @@
+#!/bin/sh
+# ckb for the CKB Claude Code plugin. Claude Code puts the plugin's bin/ on the
+# PATH of the shell it runs commands in, after the user's own entries, so
+# skills can call `ckb` without the user installing it.
+#
+# Runs the first other `ckb` on PATH (brew, npm -g, go install, a release
+# binary), else `npx -y @tastehub/ckb`. Directories already passed through by
+# a copy of this script are skipped via CKB_PLUGIN_SHIM_DIRS, so two plugin
+# versions on PATH cannot hand the call back and forth forever.
+
+self_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P)
+CKB_PLUGIN_SHIM_DIRS="${CKB_PLUGIN_SHIM_DIRS:+$CKB_PLUGIN_SHIM_DIRS:}$self_dir"
+export CKB_PLUGIN_SHIM_DIRS
+
+found=""
+old_ifs=$IFS
+IFS=:
+for dir in $PATH; do
+	[ -n "$dir" ] || dir=.
+	[ -x "$dir/ckb" ] && [ ! -d "$dir/ckb" ] || continue
+	real=$(cd "$dir" 2>/dev/null && pwd -P) || continue
+	skip=""
+	for seen in $CKB_PLUGIN_SHIM_DIRS; do
+		[ "$real" = "$seen" ] && skip=1 && break
+	done
+	[ -z "$skip" ] && found="$dir/ckb" && break
+done
+IFS=$old_ifs
+
+if [ -n "$found" ]; then
+	exec "$found" "$@"
+fi
+if command -v npx >/dev/null 2>&1; then
+	exec npx -y @tastehub/ckb "$@"
+fi
+echo "ckb: not installed, and npx is not on PATH to fetch it. Install one: npm install -g @tastehub/ckb, or brew install simplyliz/ckb/ckb" >&2
+exit 127
