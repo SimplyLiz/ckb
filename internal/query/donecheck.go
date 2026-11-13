@@ -267,7 +267,20 @@ func (c *doneChecker) checkSymbol(ctx context.Context, adapter referenceFinder, 
 	if change == impact.DeclChanged && strings.HasSuffix(sym.File, ".rs") {
 		query.arrayLengths, _ = diff.ArrayLengthChange(sym.DeclarationBefore, sym.DeclarationAfter)
 	}
+	if change == impact.DeclChanged && diff.DeclarationLanguage(sym.File) == "python" {
+		query.pyKeywords = diff.PythonRenamedKeywords(sym.DeclarationBefore, sym.DeclarationAfter, query.name)
+	}
 	ok := c.checkUses(ctx, adapter, sym, query, openFiles)
+	if class := diff.PythonInitClass(sym.SymbolID); class != "" && change == impact.DeclChanged {
+		// `Root(x)` calls Root.__init__, but its reference is to Root: the class's
+		// calls are this declaration's uses too. A subclass's own super().__init__
+		// is a use of __init__ and was looked at above.
+		classSym := sym
+		classSym.SymbolID = class
+		query.name = scip.SymbolSimpleName(class)
+		query.pyCallsOnly = true
+		ok = c.checkUses(ctx, adapter, classSym, query, openFiles) && ok
+	}
 	return openFiles, ok
 }
 
@@ -305,6 +318,12 @@ type useQuery struct {
 	// readsOnly skips a key where an object literal sets it: what was written still
 	// fits a type that got wider.
 	readsOnly bool
+	// pyKeywords holds the old names of the parameters a Python def renamed, when
+	// that is all it did: only a call passing one of them by keyword breaks.
+	pyKeywords []string
+	// pyCallsOnly counts only the uses that call the name: a class's, for its
+	// __init__. Naming it as a base or in isinstance is no call.
+	pyCallsOnly bool
 	// arrayLengths holds the old lengths of a Rust declaration that only changed the
 	// length of its array type. A use that doesn't spell one of them rarely breaks.
 	arrayLengths []string
@@ -429,6 +448,12 @@ func (c *doneChecker) checkReference(ref *backends.Reference, sym impact.Changed
 
 	if query.readsOnly && diff.TSIsPropertyWrite(newLines, result.Line, query.name) {
 		return
+	}
+	if query.pyCallsOnly && !diff.PythonIsCall(newLines, result.Line, query.name) {
+		return
+	}
+	if query.pyKeywords != nil && !diff.PythonCallPassesKeyword(newLines, result.Line, query.name, query.pyKeywords) {
+		return // Passes the renamed parameters by position, or not at all
 	}
 	// Only the literals that lack what the type now requires are open, each at its
 	// own line. One that can't be read stays listed as it is.

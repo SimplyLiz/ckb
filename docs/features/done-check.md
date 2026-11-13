@@ -135,6 +135,48 @@ variable of a changed type, a callback whose parameter type is inferred from one
 alias of an alias (`Partial<Profile>`), and a key set under a quoted name, which reads as
 missing.
 
+## Python: parameter names, decorators and `__init__`
+
+Python declarations are compared like the others, from text: a `def` or `class` up to
+the colon of its body, a module or class value up to its `=`. Visibility is the name, a
+leading underscore is private, so `compareAPI` leaves `_helper` out (with
+`ignorePrivate`, the default); the done check and the review's breaking check don't,
+since a private use left behind breaks just the same.
+
+Three things differ from the other languages:
+
+- **A parameter's name is part of the signature.** Any caller may pass it by keyword.
+  When a rename is all that changed, only the calls that pass an old name as a keyword
+  are open, and the calls that unpack a mapping (`f(**opts)`), whose keys aren't read.
+  Names before a `/` and a method's leading `self` or `cls` don't count.
+- **Decorators are part of the declaration.** Adding `@property` or `@staticmethod`
+  changes every call. A decorator added, changed or removed above a def is that def's
+  change, not the enclosing class's.
+- **A changed `__init__` lists the class's calls.** scip-python records `Root()` as a
+  use of `Root`, so the check also looks at the class's references and keeps the ones
+  that call it: not `class Sub(Root)` or `isinstance(x, Root)`.
+
+Measured on a repo of Python scripts (no manifest, `sys.path` imports), each change
+checked against mypy `--check-untyped-defs` and the unit tests:
+
+| Change | Broken (mypy / tests) | Open | Missed |
+|---|---|---|---|
+| required parameter added to a module function | 19 | 19 | 0 |
+| keyword parameter renamed | 2 | 10 | 0 |
+| function renamed, callers left | 1 | 1 | 0 |
+| method gained a required parameter | 26 | 26 | 0 |
+| `@property` added to a method | 1 (8 test errors) | 1 | 0 |
+| `__init__` gained a required parameter | 1 | 1 | 0 |
+| body only | 0 | clear | 0 |
+
+The 8 extra open calls for the rename pass `**dict(...)` built two lines up; they don't
+hold the name, but reading that needs more than the call.
+
+Not seen: a subclass without its own `__init__` (`Sub()` calls `Root.__init__`), uses
+through `getattr` or a string, and a module attribute changed by assignment elsewhere.
+A class's bases are compared as a list: one added at the end is compatible, any other
+change is a change.
+
 ## Files that usually change together
 
 References reach a use of a changed declaration. They don't reach an importer that
@@ -185,7 +227,8 @@ It compares text and compiles nothing, so it says "open", never "safe".
   you want. A retargeted type (`type ID int` to `type ID string`) lists every use of the type,
   and many of those may still compile. In Go and TypeScript a changed member set lists the
   literals and constructions above, but not a function whose signature names the type, and
-  a retargeted type isn't followed through the functions naming it. Python has none of this.
+  a retargeted type isn't followed through the functions naming it. Python has none of this:
+  a changed class lists only its own uses.
 - **Rust, still not seen:** an added enum variant, which breaks a `match` without a wildcard;
   `Self { .. }` literals, which don't spell the struct's name; a `.method()` on a later line
   counts as untouched even when the commit changed that line.

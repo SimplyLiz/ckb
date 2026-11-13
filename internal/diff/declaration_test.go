@@ -58,6 +58,29 @@ func TestCompareDeclarations(t *testing.T) {
 		{"rust pub added", "rust", "f", "fn f(a: i32)", "pub fn f(a: i32)", compatible},
 		{"rust pub narrowed", "rust", "f", "pub fn f(a: i32)", "pub(crate) fn f(a: i32)", changed},
 		{"rust generics", "rust", "f", "fn f<T: Fn(i32) -> i32>(a: T)", "fn f<T: Fn(i32) -> i32>(b: T)", same},
+
+		{"python added required", "python", "f", "def f(a)", "def f(a, b)", changed},
+		{"python added default", "python", "f", "def f(a)", "def f(a, b=None)", compatible},
+		{"python added kwargs", "python", "f", "def f(a)", "def f(a, **kwargs)", compatible},
+		{"python added keyword-only default", "python", "f", "def f(a)", "def f(a, *, b=1)", compatible},
+		{"python added keyword-only required", "python", "f", "def f(a)", "def f(a, *, b)", changed},
+		{"python made keyword-only", "python", "f", "def f(a, b=1)", "def f(a, *, b=1)", changed},
+		{"python renamed", "python", "f", "def f(a)", "def f(b)", changed},
+		{"python positional-only renamed", "python", "f", "def f(a, /)", "def f(b, /)", same},
+		{"python self renamed", "python", "m", "def m(self, a)", "def m(this, a)", changed},
+		{"python default value", "python", "f", "def f(a=1)", "def f(a=2)", same},
+		{"python default removed", "python", "f", "def f(a=1)", "def f(a)", changed},
+		{"python removed with default", "python", "f", "def f(a, b=1)", "def f(a)", changed},
+		{"python annotation", "python", "f", "def f(a: int)", "def f(a: str)", changed},
+		{"python return", "python", "f", "def f() -> int", "def f() -> tuple[int, str]", changed},
+		{"python reformatted", "python", "f", "def f(\n a: int,\n b=1,\n)", "def f(a: int, b=1)", same},
+		{"python async", "python", "f", "def f(a)", "async def f(a)", changed},
+		{"python became property", "python", "m", "def m(self)", "@property def m(self)", changed},
+		{"python decorator in its call", "python", "f", "@cache(f) def f(a)", "@cache(f) def f(a, b=1)", compatible},
+		{"python base added", "python", "C", "class C(A)", "class C(A, B)", compatible},
+		{"python base removed", "python", "C", "class C(A, B)", "class C(A)", changed},
+		{"python value annotation", "python", "X", "X: int", "X: str", changed},
+		{"python value", "python", "X", "X", "X", same},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -100,6 +123,17 @@ func TestReadDeclaration(t *testing.T) {
 		{"rust const", "rust", []string{"pub const LIMIT: usize = 3;"}, "pub const LIMIT: usize", true},
 		{"rust static of a generic type", "rust", []string{"static NUMBERED: LazyLock<Vec<(Kind, Regex)>> = LazyLock::new(|| {", "    vec![]"}, "static NUMBERED: LazyLock<Vec<(Kind, Regex)>>", true},
 		{"rust default with >=", "rust", []string{"const OK: bool = A >= B;"}, "const OK: bool", true},
+
+		{"python def", "python", []string{"def f(a, b=1) -> int:", "    return a"}, "def f(a, b=1) -> int", true},
+		{"python multi-line", "python", []string{"def f(", "    a: int,  # why", "    b: dict[str, int] = {},", ") -> None:", "    pass"}, "def f( a: int, b: dict[str, int] = {}, ) -> None", true},
+		{"python method", "python", []string{"    async def run(self, x):", "        await x"}, "async def run(self, x)", true},
+		{"python lambda default", "python", []string{"def f(key=lambda x: x):", "    pass"}, "def f(key=lambda x: x)", true},
+		{"python string with colon", "python", []string{`def f(sep=": "):`, "    pass"}, `def f(sep=": ")`, true},
+		{"python class", "python", []string{"class C(Base, metaclass=M):", "    x = 1"}, "class C(Base, metaclass=M)", true},
+		{"python constant", "python", []string{"LIMIT = 3"}, "LIMIT", true},
+		{"python annotated constant", "python", []string{"PRICES: dict[str, float] = {", "    'a': 1,", "}"}, "PRICES: dict[str, float]", true},
+		{"python bare annotation", "python", []string{"    name: str", "    age: int"}, "name: str", true},
+		{"python runs out of diff", "python", []string{"def f(", "    a,"}, "def f( a,", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -220,8 +254,8 @@ func TestClassifyDeclaration(t *testing.T) {
 	})
 
 	t.Run("a language it can't read gets no answer", func(t *testing.T) {
-		file := changedFile("a.py", 2, []string{"def F(a):"}, []string{"def F(a, b):"}, []int{3}, []int{3})
-		got, _, _ := classifyDeclaration(file, def, "F", indexMatchesOld, impact.ChangeModified, "a.py")
+		file := changedFile("a.rb", 2, []string{"", "def F(a)"}, []string{"", "def F(a, b)"}, []int{3}, []int{3})
+		got, _, _ := classifyDeclaration(file, def, "F", indexMatchesOld, impact.ChangeModified, "a.rb")
 		if got != "" {
 			t.Errorf("got %q", got)
 		}

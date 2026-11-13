@@ -274,6 +274,18 @@ private, so only aggregates are here.
   the format's default is the contract's `detail`. The compact text now shows a
   declaration and its detail together.
 
+### Added — Python in the done check
+
+- **Python declarations are compared.** `def` and `class` signatures, module and class
+  values: a Python change was `not_assessed` in the done check, `skip` in the review's
+  breaking check and `notCompared` in `compareAPI`. A parameter's name counts, since any
+  call may pass it by keyword; a rename alone leaves open only the calls that pass the old
+  name or unpack a mapping. Decorators count (`@property` changes every call), and a
+  changed `__init__` lists the calls of its class. `compareAPI` leaves names with a
+  leading underscore out, and Go's lowercase ones, as `ignorePrivate` always said. On a
+  repo of Python scripts, 7 changes checked against mypy and the tests: 50 of 50 broken
+  uses found, 8 open uses that weren't broken. `docs/features/done-check.md` has the table.
+
 ### Fixed — a repo of Python scripts
 
 Found running the usual workflow on a repo of 28 Python scripts and two TypeScript
@@ -305,7 +317,7 @@ Claude Code mods, with no manifest anywhere.
   three now use the change set's declaration comparison: a public declaration whose
   signature changed or that is gone is a change, an error when the repo still uses
   the old form and a warning when every use was updated. Where a public declaration
-  changed in a language that isn't compared (Python, Java, ...), the check is `skip`
+  changed in a language that isn't compared (Java, C#, ...), the check is `skip`
   naming the files, and `compareAPI` lists them as `notCompared`. `compareAPI` only
   compares against the working tree now and says so for another `targetRef`; its
   `totalBaseSymbols` and `totalTargetSymbols`, always 0 and the count of every

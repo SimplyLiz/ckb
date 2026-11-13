@@ -1898,7 +1898,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		// v7.6 Breaking Change Detection Tool
 		{
 			Name:        "compareAPI",
-			Description: "Use this to detect breaking API changes since a base ref — public declarations whose signature changed or that were removed or renamed, compared from the diff against the working tree (Go, TypeScript/JavaScript, Rust). Files of other languages where public declarations changed come back as notCompared, not as safe. For general change impact (not API-specific), use assessChange.",
+			Description: "Use this to detect breaking API changes since a base ref — public declarations whose signature changed or that were removed or renamed, compared from the diff against the working tree (Go, TypeScript/JavaScript, Rust, Python). Files of other languages where public declarations changed come back as notCompared, not as safe. For general change impact (not API-specific), use assessChange.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{

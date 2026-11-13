@@ -220,6 +220,15 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 			defs = withTSValueExtents(defs, indexAll)
 		}
 	}
+	python := declarationLanguage(filePath) == "python"
+	var pythonIndexAll map[int]string
+	if python {
+		pythonIndexAll = readText().oldAll
+		if side == indexMatchesNew {
+			pythonIndexAll = readText().newAll
+		}
+		defs = withPythonDecoratorExtents(defs, pythonIndexAll)
+	}
 	found := make(map[string]*attributedSymbol)
 	var unresolvedLines []int
 	var unresolvedRemoved []string
@@ -230,8 +239,15 @@ func (m *DiffSymbolMapper) mapFileToSymbols(file *impact.ChangedFile) ([]impact.
 			resolved := false
 			trivial := isTrivialBlock(filePath, block)
 			var outside []string
+			var decorated *SymbolDefInfo
+			if python {
+				decorated = pythonDecoratedDef(block, side, defs, pythonIndexAll)
+			}
 			for i, pos := range blockPositions(block, side) {
 				enclosing := pos.enclosing(defs)
+				if decorated != nil {
+					enclosing = []*SymbolDefInfo{decorated}
+				}
 				for _, def := range enclosing {
 					found[def.Symbol] = found[def.Symbol].merge(def, hunkIdx, pos.confidence(def))
 					found[def.Symbol].lines = append(found[def.Symbol].lines, newFileLines(block)...)

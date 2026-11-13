@@ -11,7 +11,8 @@ import (
 
 // This file compares a definition's declaration across a diff: did its signature
 // change, or only its body? It reads text, not types, so it is a heuristic. It
-// knows Go, TypeScript/JavaScript and Rust; anything else gets no answer.
+// knows Go, TypeScript/JavaScript, Rust and Python (python.go); anything else gets
+// no answer.
 
 // DeclarationContextLines is how much context a diff needs for a multi-line
 // signature to be readable from it.
@@ -20,7 +21,8 @@ const DeclarationContextLines = 12
 const maxDeclarationLines = 40
 
 // declarationLanguage returns the syntax to read a file with, or "".
-// DeclarationLanguage is the language whose declarations are compared: go, ts or rust.
+// DeclarationLanguage is the language whose declarations are compared: go, ts, rust
+// or python.
 func DeclarationLanguage(path string) string { return declarationLanguage(path) }
 
 func declarationLanguage(path string) string {
@@ -31,6 +33,8 @@ func declarationLanguage(path string) string {
 		return "ts"
 	case ".rs":
 		return "rust"
+	case ".py", ".pyi":
+		return "python"
 	}
 	return ""
 }
@@ -158,6 +162,9 @@ func classifyDeclarationIn(text *fileText, deleted bool, def *SymbolDefInfo, nam
 
 	indexDecl := readDeclaration(indexAll, line, lang)
 	indexDecl.text = withGoGroupKeyword(indexAll, line, indexDecl.text, lang)
+	if lang == "python" {
+		indexDecl.text = withPythonDecorators(indexAll, line, indexDecl.text)
+	}
 
 	otherLine, inContext := toOther[line]
 	if !inContext {
@@ -171,6 +178,9 @@ func classifyDeclarationIn(text *fileText, deleted bool, def *SymbolDefInfo, nam
 	}
 	otherDecl := readDeclaration(otherAll, otherLine, lang)
 	otherDecl.text = withGoGroupKeyword(otherAll, otherLine, otherDecl.text, lang)
+	if lang == "python" {
+		otherDecl.text = withPythonDecorators(otherAll, otherLine, otherDecl.text)
+	}
 
 	before, after = indexDecl.text, otherDecl.text
 	if side == indexMatchesNew {
@@ -252,6 +262,9 @@ var (
 // readDeclaration reads a declaration starting at start: everything up to its body
 // or, for a value, its initializer.
 func readDeclaration(lines map[int]string, start int, lang string) declaration {
+	if lang == "python" {
+		return readPythonDeclaration(lines, start)
+	}
 	var out strings.Builder
 	depth, angle := 0, 0
 	inBlockComment := false
@@ -402,7 +415,7 @@ func isComparison(text string, i int) bool {
 }
 
 var (
-	declKeywordRe  = regexp.MustCompile(`\b(func|fn|function|const|let|var|static|type|class|interface|enum|struct|trait|union)\b`)
+	declKeywordRe  = regexp.MustCompile(`\b(func|fn|function|def|const|let|var|static|type|class|interface|enum|struct|trait|union)\b`)
 	modifierOnlyRe = regexp.MustCompile(`^\s*((export|default|declare|abstract|public|private|protected|static|readonly|override|async|get|set|pub(\([^)]*\))?|unsafe|mut|ref)\s+)*$`)
 	goReceiverRe   = regexp.MustCompile(`^\s*func\s*\(\s*(?:[A-Za-z_]\w*\s+)?\*?([A-Za-z_]\w*)`)
 )
@@ -454,6 +467,10 @@ func declaresSame(text, like, name, lang string) bool {
 	if lang == "go" {
 		return goDeclaresBareName(rest)
 	}
+	if lang == "python" {
+		// `X = 1` and `X: int`; `X(1)` and `X == 1` are uses.
+		return strings.HasPrefix(rest, ":") || strings.HasPrefix(rest, "=") && !strings.HasPrefix(rest, "==")
+	}
 	return rest != "" && strings.IndexByte("(<:=?,", rest[0]) >= 0
 }
 
@@ -481,7 +498,7 @@ var (
 func namesFollowKeyword(prefix, keyword string) bool {
 	between := prefix[strings.LastIndex(prefix, keyword)+len(keyword):]
 	switch keyword {
-	case "func", "fn", "function":
+	case "func", "fn", "function", "def":
 		return afterFuncKeywordRe.MatchString(between)
 	case "const", "let", "var", "static":
 		return afterValueKeywordRe.MatchString(between)
@@ -573,6 +590,9 @@ type parameter struct {
 }
 
 func parseDeclaration(text, name, lang string) parsedDeclaration {
+	if lang == "python" {
+		return parsePythonDeclaration(text, name)
+	}
 	var parsed parsedDeclaration
 	text, parsed.visibility = stripVisibility(text, lang)
 

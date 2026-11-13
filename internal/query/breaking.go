@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/breaking"
+	"github.com/SimplyLiz/CodeMCP/internal/diff"
 )
 
 // CompareAPIOptions configures API comparison
@@ -60,7 +61,7 @@ type APIChangeSummary struct {
 
 // CompareAPI compares the declarations a diff changed, from BaseRef's fork point to
 // the working tree: the change set's declaration comparison (Go, TypeScript and
-// JavaScript, Rust) says which public declarations changed their signature or are
+// JavaScript, Rust, Python) says which public declarations changed their signature or are
 // gone. Declarations of other languages can't be compared; the files they changed in
 // are NotCompared, so an empty Changes doesn't read as "nothing broke".
 //
@@ -83,7 +84,7 @@ func (e *Engine) CompareAPI(ctx context.Context, opts CompareAPIOptions) (*Compa
 	if err != nil {
 		return nil, err
 	}
-	changes, notCompared := apiChangesFromContracts(cs.Contracts, opts.Scope, opts.IncludeMinor)
+	changes, notCompared := apiChangesFromContracts(cs.Contracts, opts.Scope, opts.IncludeMinor, opts.IgnorePrivate)
 
 	completeness := CompletenessInfo{Score: 0.8, Reason: "declaration-diff"}
 	if len(notCompared) > 0 {
@@ -127,12 +128,13 @@ func (e *Engine) CompareAPI(ctx context.Context, opts CompareAPIOptions) (*Compa
 // A changed signature or a removed declaration of a public symbol is breaking; a
 // compatible one only with includeMinor. A public declaration that couldn't be read
 // ("possible-contract-change") is no change: its file is returned as not compared.
-// Test files aren't API.
-func apiChangesFromContracts(contracts []ContractSignal, scope []string, includeMinor bool) ([]breaking.APIChange, []string) {
+// Test files aren't API, and with ignorePrivate neither are the symbols whose name
+// makes them private.
+func apiChangesFromContracts(contracts []ContractSignal, scope []string, includeMinor, ignorePrivate bool) ([]breaking.APIChange, []string) {
 	var changes []breaking.APIChange
 	notCompared := make(map[string]bool)
 	for _, c := range contracts {
-		if isTestFilePath(c.File) || !inAPIScope(c.File, scope) {
+		if isTestFilePath(c.File) || !inAPIScope(c.File, scope) || ignorePrivate && privateByName(c.Symbol, c.File) {
 			continue
 		}
 		change := breaking.APIChange{
@@ -172,6 +174,24 @@ func apiChangesFromContracts(contracts []ContractSignal, scope []string, include
 	}
 	sort.Strings(files)
 	return changes, files
+}
+
+// privateByName says whether a symbol is private in a language whose names alone
+// say so: Go's lowercase, Python's leading underscore (a dunder such as __init__ is
+// public). Its signature isn't API, though a use left behind is still a bug, which
+// the review's breaking check reports. Elsewhere the declaration decides.
+func privateByName(symbol, file string) bool {
+	name := leafName(symbol)
+	if name == "" {
+		return false
+	}
+	switch diff.DeclarationLanguage(file) {
+	case "go":
+		return !isExportedSymbol(name, "", "go")
+	case "python":
+		return strings.HasPrefix(name, "_") && !(strings.HasPrefix(name, "__") && strings.HasSuffix(name, "__"))
+	}
+	return false
 }
 
 func inAPIScope(file string, scope []string) bool {
