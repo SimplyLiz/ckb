@@ -204,3 +204,19 @@ func (c *IndexerConfig) IsInstalled() bool {
 func (c *IndexerConfig) HasFixedOutput() bool {
 	return c.FixedOutput != ""
 }
+
+// UndoInferredTSConfig returns what removes the tsconfig.json that
+// scip-typescript's --infer-tsconfig writes into dir when dir has none, and
+// leaves behind: an untracked file in the user's repo after every index. A
+// tsconfig.json that was there before is never touched; a command without the
+// flag gets a no-op. Call it before the indexer runs, the result after.
+func UndoInferredTSConfig(dir, command string) func() {
+	if !strings.Contains(command, "--infer-tsconfig") {
+		return func() {}
+	}
+	path := filepath.Join(dir, "tsconfig.json")
+	if _, err := os.Lstat(path); err == nil {
+		return func() {}
+	}
+	return func() { _ = os.Remove(path) }
+}

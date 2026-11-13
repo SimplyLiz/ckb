@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -148,8 +149,8 @@ func DetectAllLanguages(root string) (Language, string, []Language) {
 	}
 
 	if len(detected) == 0 {
-		if lang, from := detectBySourceFiles(root); lang != LangUnknown {
-			return lang, from, []Language{lang}
+		if langs, from := detectBySourceFiles(root); len(langs) > 0 {
+			return langs[0], from, langs
 		}
 		return LangUnknown, "", nil
 	}
@@ -197,17 +198,24 @@ var sourceOnlyLanguages = map[string]Language{
 	".mjs": LangJavaScript,
 }
 
-// detectBySourceFiles picks the language of most tracked source files when the repo
-// has no manifest at all, such as a directory of Python scripts. Only git-tracked
-// files count, so ignored scratch and installed packages don't decide. The second
-// result says what the choice came from, for the "Detected ... (from ...)" line; it
-// holds no slash, so nothing takes it for a nested manifest.
-func detectBySourceFiles(root string) (Language, string) {
+// minSecondarySourceFiles is how many tracked files a language needs, beside the
+// most common one, to be indexed too in a repo without a manifest. Fewer are a
+// config file or a helper script, not worth running an indexer for.
+const minSecondarySourceFiles = 3
+
+// detectBySourceFiles picks the languages of the tracked source files when the
+// repo has no manifest at all, such as a directory of Python scripts beside a few
+// TypeScript hooks. The language of most files comes first; another follows when
+// it has minSecondarySourceFiles. Only git-tracked files count, so ignored scratch,
+// installed packages and nested repos (git lists none of their files) don't decide.
+// The second result says what the first language came from, for the "Detected ...
+// (from ...)" line; it holds no slash, so nothing takes it for a nested manifest.
+func detectBySourceFiles(root string) ([]Language, string) {
 	cmd := exec.Command("git", "ls-files", "-z")
 	cmd.Dir = root
 	out, err := cmd.Output()
 	if err != nil {
-		return LangUnknown, ""
+		return nil, ""
 	}
 	counts := make(map[Language]int)
 	exts := make(map[Language]string)
@@ -222,16 +230,19 @@ func detectBySourceFiles(root string) (Language, string) {
 			exts[lang] = ext
 		}
 	}
-	best, bestCount := LangUnknown, 0
-	for _, lang := range []Language{LangPython, LangTypeScript, LangJavaScript} {
-		if counts[lang] > bestCount {
-			best, bestCount = lang, counts[lang]
+	// Stable order: count, then this priority on a tie.
+	order := []Language{LangPython, LangTypeScript, LangJavaScript}
+	sort.SliceStable(order, func(i, j int) bool { return counts[order[i]] > counts[order[j]] })
+	if counts[order[0]] == 0 {
+		return nil, ""
+	}
+	langs := []Language{order[0]}
+	for _, lang := range order[1:] {
+		if counts[lang] >= minSecondarySourceFiles {
+			langs = append(langs, lang)
 		}
 	}
-	if best == LangUnknown {
-		return LangUnknown, ""
-	}
-	return best, fmt.Sprintf("%d tracked %s files, no manifest", bestCount, exts[best])
+	return langs, fmt.Sprintf("%d tracked %s files, no manifest", counts[order[0]], exts[order[0]])
 }
 
 // skipManifestDir says whether a directory below the root can hold no manifest

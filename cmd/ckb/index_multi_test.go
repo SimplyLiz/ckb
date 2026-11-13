@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -243,5 +244,33 @@ func TestIndexedTargets_FlagChoiceSticks(t *testing.T) {
 	}
 	if targets, _ := indexedTargets(dir); len(targets) != 2 {
 		t.Errorf("targets = %v, want go and python", targets)
+	}
+}
+
+// The file count is the tracked files, the ones the index holds, not every file
+// on disk: an ignored scratch directory doesn't count.
+func TestCountSourceFiles_TrackedOnly(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range map[string]string{".gitignore": "Temp/\n", "a.py": "", "b/c.py": "", "Temp/x.py": "", "Temp/y.py": ""} {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := countSourceFiles(dir, project.LangPython); n != 4 {
+		t.Fatalf("outside git: %d, want 4 files on disk", n)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	if n := countSourceFiles(dir, project.LangPython); n != 2 {
+		t.Fatalf("in git: %d, want the 2 tracked files", n)
 	}
 }

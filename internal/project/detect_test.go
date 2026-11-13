@@ -948,3 +948,37 @@ func TestDetectLanguage_NoSourcesNoManifest(t *testing.T) {
 		t.Fatalf("DetectLanguage = %v, want unknown", lang)
 	}
 }
+
+// Scripts beside a few TypeScript hooks, both without a manifest: both languages
+// are indexed, the more common one first. A lone .js config file is not a language.
+func TestDetectAllLanguages_SourceFilesSeveralLanguages(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{"exp/a.py", "exp/b.py", "exp/c.py", "exp/d.py",
+		"mods/x/hooks/register.ts", "mods/x/tests/x.test.ts", "mods/x/types/index.d.ts",
+		"eslint.config.js"} {
+		write(f)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	primary, from, all := DetectAllLanguages(dir)
+	if primary != LangPython || from != "4 tracked .py files, no manifest" {
+		t.Fatalf("primary = %v %q, want python from 4 .py files", primary, from)
+	}
+	if len(all) != 2 || all[0] != LangPython || all[1] != LangTypeScript {
+		t.Fatalf("all = %v, want [python typescript]", all)
+	}
+}
