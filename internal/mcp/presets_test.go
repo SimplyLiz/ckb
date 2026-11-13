@@ -14,8 +14,9 @@ func TestPresetFiltering(t *testing.T) {
 	// Test core preset (default)
 	// v8.3: Core now includes explainPath, getModuleResponsibilities, exportForLLM
 	coreTools := server.GetFilteredTools()
-	if len(coreTools) != 26 {
-		t.Errorf("expected 26 core tools, got %d", len(coreTools))
+	// v9.4: +1 reindex, so an agent in a repo without an index can build one = 27
+	if len(coreTools) != 27 {
+		t.Errorf("expected 27 core tools, got %d", len(coreTools))
 	}
 
 	// Verify compound tools come first (preferred for AI workflows)
@@ -25,7 +26,7 @@ func TestPresetFiltering(t *testing.T) {
 		"findReferences", "getCallGraph", "traceUsage",
 		"getArchitecture", "getModuleOverview", "getModuleResponsibilities", "listKeyConcepts",
 		"analyzeImpact", "getHotspots", "exportForLLM",
-		"getStatus", "switchProject", "planRefactor", "expandToolset",
+		"getStatus", "reindex", "switchProject", "planRefactor", "expandToolset",
 	}
 	for i, expected := range expectedFirst {
 		if i >= len(coreTools) {

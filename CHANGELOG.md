@@ -337,6 +337,18 @@ Claude Code mods, with no manifest anywhere.
 
 ### Fixed — first contact with a repo
 
+- **A repo without an index says so, and says what to do.** When the indexer
+  wasn't installed, the first index `ckb mcp` builds failed into its log, and
+  every answer after that came from text search with nothing in it to show why.
+  Now each MCP response served without a loaded SCIP index carries a warning
+  (`index_missing`, or `index_building` while a build runs) naming the next step,
+  checked against the machine: the install command for a missing indexer, then
+  `reindex`; `ckb index --lang` for a repo with several languages; `ckb index
+  --scip` above the size limit. `reindex` joins the core preset (27 tools), so an
+  agent can build the index without a terminal. `ckb setup` checks the same
+  thing and prints it, instead of promising a background build that won't happen.
+  Verified on a fresh Python repo: warning with `npm install -g
+  @sourcegraph/scip-python`, install, `reindex` → `reindexed`, warning gone.
 - **`ckb changes` and `assessChange` no longer call a change low risk when they
   could not look.** Without a SCIP index there is no consumer graph, so "0
   consumers" meant nobody checked, and the headline still read `Risk: LOW`. The

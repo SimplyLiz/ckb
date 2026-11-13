@@ -26,7 +26,7 @@ const DefaultPreset = PresetCore
 // Core must enable one complete workflow without expansion.
 // Default workflow: "Investigate & Assess Impact"
 var Presets = map[string][]string{
-	// Core: 26 tools - enables "Investigate & Assess Impact" workflow completely
+	// Core: 27 tools - enables "Investigate & Assess Impact" workflow completely
 	// v8.0: Added compound tools (explore, understand, prepareChange, batchGet, batchSearch)
 	// to reduce tool calls by 60-70% for common workflows
 	PresetCore: {
@@ -66,6 +66,7 @@ var Presets = map[string][]string{
 
 		// System
 		"getStatus",
+		"reindex",       // Builds the index when there is none: without it nothing above has SCIP
 		"switchProject", // v8.1: Dynamic project switching
 
 		// v8.1 Refactoring compound tool
@@ -145,7 +146,7 @@ var Presets = map[string][]string{
 		"findReferences", "getCallGraph", "traceUsage",
 		"getArchitecture", "getModuleOverview", "getModuleResponsibilities", "listKeyConcepts",
 		"analyzeImpact", "getHotspots", "exportForLLM",
-		"getStatus", "switchProject", "planRefactor", "expandToolset",
+		"getStatus", "reindex", "switchProject", "planRefactor", "expandToolset",
 		// Federation-specific
 		"listFederations",
 		"federationStatus",
@@ -179,7 +180,7 @@ var Presets = map[string][]string{
 		"findReferences", "getCallGraph", "traceUsage",
 		"getArchitecture", "getModuleOverview", "getModuleResponsibilities", "listKeyConcepts",
 		"analyzeImpact", "getHotspots", "exportForLLM",
-		"getStatus", "switchProject", "planRefactor", "expandToolset",
+		"getStatus", "reindex", "switchProject", "planRefactor", "expandToolset",
 		// Docs-specific
 		"indexDocs",
 		"getDocsForSymbol",
@@ -285,6 +286,7 @@ var coreToolOrder = []string{
 	"getHotspots",
 	"exportForLLM",
 	"getStatus",
+	"reindex",
 	"switchProject",
 	"planRefactor",
 	"expandToolset",

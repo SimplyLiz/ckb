@@ -315,6 +315,22 @@ func ensureProjectReady() error {
 	}
 
 	if !setupIndexNow && !setupNoWatch {
+		// The background build only happens if nothing stops it; say so now,
+		// while someone is reading, instead of letting the agent find out.
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get current directory: %w", err)
+		}
+		if d := diagnoseIndex(cwd); !d.Ready {
+			fmt.Println("CKB cannot build the code index yet:")
+			fmt.Println("  " + d.Problem)
+			if d.ThenReindex {
+				fmt.Println("  After that, watch mode builds it when your agent starts CKB (or run `ckb index`).")
+			}
+			fmt.Println("  Until then, references, callers and impact come from text search and can miss uses.")
+			fmt.Println()
+			return nil
+		}
 		fmt.Println("CKB is indexing in the background when your agent starts it (watch mode).")
 		fmt.Println("Run `ckb index` now to do it in the foreground.")
 		fmt.Println()
