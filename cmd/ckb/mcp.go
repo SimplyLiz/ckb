@@ -244,6 +244,7 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		logger.Info("Watch mode enabled", "pollInterval", watchInterval.String())
 	} else if hasCkbDir(repoRoot) {
 		startFirstIndex(repoRoot, logger)
+		startStartupRefresh(repoRoot, logger)
 	}
 
 	if err := server.Start(); err != nil {
@@ -436,16 +437,8 @@ func watchTick(repoRoot, ckbDir string, interval time.Duration, state *watchStat
 func runReindexForMCP(ctx context.Context, repoRoot string, scope mcp.ReindexScope, logger *slog.Logger) (*mcp.ReindexRunInfo, error) {
 	ckbDir := filepath.Join(repoRoot, ".ckb")
 
-	if scope != mcp.ReindexFull {
-		// Incremental reruns one indexer over the whole index: one language only
-		// (tryIncrementalIndexTo also refuses an index that holds several).
-		if targets, ok := indexedTargets(repoRoot); ok && len(targets) == 1 && project.SupportsIncrementalIndexing(targets[0].Lang) {
-			if tryIncrementalIndexTo(repoRoot, ckbDir, targets[0].Lang, io.Discard) {
-				excludeBuiltIndex(repoRoot, logger)
-				return &mcp.ReindexRunInfo{Mode: "incremental"}, nil
-			}
-			logger.Debug("reindex: incremental not possible, running full build")
-		}
+	if scope != mcp.ReindexFull && tryIncrementalReindex(repoRoot, ckbDir, logger) {
+		return &mcp.ReindexRunInfo{Mode: "incremental"}, nil
 	}
 
 	note, err := triggerReindex(ctx, repoRoot, ckbDir, index.TriggerManual, "mcp reindex", logger)
@@ -460,6 +453,23 @@ func runReindexForMCP(ctx context.Context, repoRoot string, scope mcp.ReindexSco
 	default:
 		return nil, err
 	}
+}
+
+// tryIncrementalReindex updates the index incrementally where the language
+// supports it. False means a full build is needed. Incremental reruns one
+// indexer over the whole index: one language only (tryIncrementalIndexTo also
+// refuses an index that holds several).
+func tryIncrementalReindex(repoRoot, ckbDir string, logger *slog.Logger) bool {
+	targets, ok := indexedTargets(repoRoot)
+	if !ok || len(targets) != 1 || !project.SupportsIncrementalIndexing(targets[0].Lang) {
+		return false
+	}
+	if tryIncrementalIndexTo(repoRoot, ckbDir, targets[0].Lang, io.Discard) {
+		excludeBuiltIndex(repoRoot, logger)
+		return true
+	}
+	logger.Debug("reindex: incremental not possible, running full build")
+	return false
 }
 
 // excludeBuiltIndex keeps an index the server built (watch, first index, the

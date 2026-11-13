@@ -10,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SimplyLiz/CodeMCP/internal/index"
 	"github.com/SimplyLiz/CodeMCP/internal/repos"
+	"github.com/SimplyLiz/CodeMCP/internal/repostate"
 )
 
 func gitInitTemp(t *testing.T) string {
@@ -263,5 +265,73 @@ func TestExcludeBuiltIndex_LogsNotPrints(t *testing.T) {
 	}
 	if got := gitStatusPorcelain(t, dir); got != "" {
 		t.Fatalf("git status = %q, want clean", got)
+	}
+}
+
+// The startup refresh runs for a HEAD that moved past the index, and not for
+// a fresh index, uncommitted edits alone, or an index without metadata.
+func TestStartupRefreshReason(t *testing.T) {
+	repo := gitInitTemp(t)
+	ckbDir := filepath.Join(repo, ".ckb")
+	if err := os.MkdirAll(ckbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git", "info", "exclude"), []byte(".ckb/\n/index.scip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "index.scip"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit := func(file, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, file), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{{"add", "."}, {"-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", file}} {
+			if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+	}
+	saveMeta := func() {
+		t.Helper()
+		rs, err := repostate.ComputeRepoState(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta := &index.IndexMeta{Version: 1, CommitHash: rs.HeadCommit, RepoStateID: rs.RepoStateID}
+		if err := meta.Save(ckbDir); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, _, ok := startupRefreshReason(repo, ckbDir); ok {
+		t.Error("refresh wanted for an index without metadata")
+	}
+
+	commit("a.go", "package a\n")
+	saveMeta()
+	if _, reason, ok := startupRefreshReason(repo, ckbDir); ok {
+		t.Errorf("refresh wanted for a fresh index: %s", reason)
+	}
+
+	if err := os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n\nvar x = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, reason, ok := startupRefreshReason(repo, ckbDir); ok {
+		t.Errorf("refresh wanted for uncommitted edits alone: %s", reason)
+	}
+
+	commit("b.go", "package a\n")
+	trigger, reason, ok := startupRefreshReason(repo, ckbDir)
+	if !ok || trigger != index.TriggerHEAD || reason != "1 commit(s) behind HEAD" {
+		t.Errorf("got (%q, %q, %v), want head-changed, 1 commit behind", trigger, reason, ok)
+	}
+
+	if err := os.Remove(filepath.Join(repo, "index.scip")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := startupRefreshReason(repo, ckbDir); ok {
+		t.Error("refresh wanted without an index: that is startFirstIndex's job")
 	}
 }

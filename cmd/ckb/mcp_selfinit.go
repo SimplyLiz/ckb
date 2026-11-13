@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -104,8 +106,9 @@ func hasCkbDir(repoRoot string) bool {
 // without --watch, so without this a fresh repo would stay on git-only
 // features for good. A single watchTick brings the same guards as watch mode
 // (errRepoTooLarge, errIndexerUnavailable, the index lock) and reloads the
-// result into the running engine. An existing index, stale or not, is left
-// alone: keeping it current is what --watch opts into.
+// result into the running engine. An existing index is left alone here;
+// startStartupRefresh catches it up once if HEAD moved, and keeping it current
+// during the session is what --watch opts into.
 //
 // Nobody asked for this build, so it has to stay cheap for the machine: a linked
 // worktree gets none (agents open them by the dozen, and each would index the
@@ -143,6 +146,100 @@ func startFirstIndex(repoRoot string, logger *slog.Logger) {
 			}
 		}
 	}()
+}
+
+// startStartupRefresh brings an index that fell behind HEAD up to date once,
+// in the background, when 'ckb mcp' starts without --watch. Without it an
+// index built on install stays where it was: two weeks of commits later the
+// agent asks prepareChange about code the index has never seen, and nothing
+// tells it so unless it calls getStatus.
+//
+// Only a moved HEAD (new commits, another branch) or a newly installed indexer
+// triggers it. Uncommitted edits alone don't: they change with every session,
+// and an index rebuild per session start is what watch mode opts into. An
+// index without metadata was built by hand or by an old version; its state is
+// unknown, so it is left alone too.
+//
+// Incremental first where the language supports it, the full build otherwise,
+// under the same machine-wide lock as the first index: nobody asked for this
+// build either, and several sessions starting at once in different repos must
+// not run several indexers. errRepoTooLarge and a missing indexer end it
+// quietly; triggerReindex enforces both.
+func startStartupRefresh(repoRoot string, logger *slog.Logger) {
+	ckbDir := filepath.Join(repoRoot, ".ckb")
+	trigger, reason, ok := startupRefreshReason(repoRoot, ckbDir)
+	if !ok {
+		return
+	}
+	go func() {
+		if !refreshIndexOnce(repoRoot, ckbDir, trigger, reason, logger) {
+			return
+		}
+		if eng := loadedEngine(); eng != nil {
+			if err := eng.ReloadSCIP(context.Background()); err != nil {
+				logger.Warn("Index refreshed but reloading it into the server failed", "error", err.Error())
+			}
+		}
+	}()
+}
+
+// startupRefreshReason says why the index needs a refresh at startup, and
+// false when it doesn't (see startStartupRefresh for what counts).
+func startupRefreshReason(repoRoot, ckbDir string) (index.RefreshTrigger, string, bool) {
+	if !pathExists(resolveIndexPath(repoRoot)) {
+		return "", "", false
+	}
+	meta, err := index.LoadMeta(ckbDir)
+	if err != nil || meta == nil {
+		return "", "", false
+	}
+	f := meta.CheckFreshness(repoRoot)
+	if f.Fresh || f.HasUncommitted {
+		return "", "", false
+	}
+	if f.CommitsBehind > 0 {
+		return index.TriggerHEAD, fmt.Sprintf("%d commit(s) behind HEAD", f.CommitsBehind), true
+	}
+	if f.IndexedCommit != "" && f.CurrentCommit != "" && f.IndexedCommit != f.CurrentCommit {
+		return index.TriggerHEAD, f.Reason, true
+	}
+	return index.TriggerStale, f.Reason, true
+}
+
+// refreshIndexOnce runs the startup refresh under the machine-wide lock.
+// True when the index changed and the engine should reload it.
+func refreshIndexOnce(repoRoot, ckbDir string, trigger index.RefreshTrigger, reason string, logger *slog.Logger) bool {
+	lockDir, err := firstIndexLockDir()
+	if err != nil {
+		logger.Warn("Skipping the startup index refresh", "error", err.Error())
+		return false
+	}
+	machineLock, err := index.AcquireLock(lockDir)
+	if err != nil {
+		logger.Info("Another background index is running on this machine; skipping the startup refresh")
+		return false
+	}
+	defer machineLock.Release()
+
+	logger.Info("Index is stale, refreshing it in the background", "reason", reason)
+	if tryIncrementalReindex(repoRoot, ckbDir, logger) {
+		logger.Info("Index refreshed", "mode", "incremental")
+		return true
+	}
+	note, err := triggerReindex(context.Background(), repoRoot, ckbDir, trigger, reason, logger)
+	switch {
+	case err == nil:
+		excludeBuiltIndex(repoRoot, logger)
+		logger.Info("Index refreshed", "mode", "full", "note", note)
+		return true
+	case errors.Is(err, errIndexLocked):
+		logger.Info("Another process is indexing this repo; leaving the refresh to it")
+	case errors.Is(err, errIndexerUnavailable), errors.Is(err, errRepoTooLarge):
+		logger.Info("Startup index refresh not possible", "reason", err.Error(), "hint", "run 'ckb index'")
+	default:
+		logger.Warn("Startup index refresh failed", "error", err.Error())
+	}
+	return false
 }
 
 // firstIndexTick runs one watchTick under the machine-wide first-index lock.
