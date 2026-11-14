@@ -124,7 +124,15 @@ data, in every build.
   exact ties, now broken by path). Hidden coupling needs a SCIP index covering both files:
   with no import graph of its own, CKB will not call a link absent that it cannot see. On
   Ingestible, whose index holds only the TypeScript site, the Python pair Cartographer
-  reported is therefore no longer one.
+  reported is therefore no longer one; with `scip-python` on PATH `ckb index` adds Python and
+  the pair is back (same 71 %, 5 commits).
+- **Python module imports in a src layout resolve.** scip-python defines `src/pkg/b.py` as
+  module `src.pkg.b` but references it as `pkg.b`, so `import pkg.b` and `from pkg import b`
+  linked nothing, and in tests outside the package, whose imported names scip-python leaves as
+  locals, no import linked anything. Hidden coupling then took a test and the module it
+  imports for an unlinked pair. A module reference CKB finds no definition for now matches the
+  one module of the same package whose name ends in it (none if two do). Ingestible's Python
+  file graph goes from 212 to 465 edges, all of the new ones from `tests/`.
 
 ### Fixed — saying what CKB couldn't look at
 

@@ -134,7 +134,9 @@ func (g *importGraph) add(from, to string, kind importKind, lang string) {
 	g.languages[lang] = true
 }
 
-// definedIn returns the repo file defining symbol, or "".
+// definedIn returns the repo file defining symbol, or "". A Python module
+// symbol the index references but never defines resolves through
+// pythonModuleSuffixes.
 func definedIn(idx *scip.SCIPIndex, symbol string) string {
 	if idx.DefinitionIndex == nil || strings.HasPrefix(symbol, "local ") {
 		return ""
@@ -142,7 +144,31 @@ func definedIn(idx *scip.SCIPIndex, symbol string) string {
 	if def := idx.DefinitionIndex[symbol]; def != nil && def.Doc != nil {
 		return def.Doc.RelativePath
 	}
+	if strings.HasPrefix(symbol, "scip-python ") && strings.HasSuffix(symbol, "/__init__:") {
+		return pythonModules(idx)[symbol]
+	}
 	return ""
+}
+
+var pythonModuleCache = struct {
+	sync.Mutex
+	byIndex map[*scip.SCIPIndex]map[string]string
+}{byIndex: map[*scip.SCIPIndex]map[string]string{}}
+
+// pythonModules returns pythonModuleSuffixes of idx, built once per loaded
+// index.
+func pythonModules(idx *scip.SCIPIndex) map[string]string {
+	pythonModuleCache.Lock()
+	defer pythonModuleCache.Unlock()
+	if m, ok := pythonModuleCache.byIndex[idx]; ok {
+		return m
+	}
+	m := pythonModuleSuffixes(idx)
+	for k := range pythonModuleCache.byIndex {
+		delete(pythonModuleCache.byIndex, k)
+	}
+	pythonModuleCache.byIndex[idx] = m
+	return m
 }
 
 // addTSDocument adds the imports of a TypeScript/JavaScript document: every
@@ -363,6 +389,71 @@ func (g *importGraph) addPythonDocument(idx *scip.SCIPIndex, doc *scip.Document,
 			g.add(doc.RelativePath, to, kind, "python")
 		}
 	}
+}
+
+// pythonModuleSuffixes maps module symbols that scip-python references but
+// never defines to the file defining them. In a src layout it defines a module
+// by its path ("`src.pkg.b`/__init__:") and references it by its import name
+// ("`pkg.b`/__init__:"), so `import pkg.b` and `from pkg import b` resolve to
+// nothing. Each defined module registers every dotted suffix under its own
+// package; a suffix two files share is dropped.
+func pythonModuleSuffixes(idx *scip.SCIPIndex) map[string]string {
+	out := map[string]string{}
+	ambiguous := map[string]bool{}
+	for sym, def := range idx.DefinitionIndex {
+		if def == nil || def.Doc == nil || importLanguage(def.Doc.RelativePath) != "py" {
+			continue
+		}
+		prefix, module, ok := pythonModuleSymbol(sym)
+		if !ok {
+			continue
+		}
+		parts := strings.Split(module, ".")
+		for i := 1; i < len(parts); i++ {
+			key := prefix + pythonModuleDescriptor(strings.Join(parts[i:], "."))
+			if _, defined := idx.DefinitionIndex[key]; defined || ambiguous[key] {
+				continue
+			}
+			if prev, seen := out[key]; seen && prev != def.Doc.RelativePath {
+				delete(out, key)
+				ambiguous[key] = true
+				continue
+			}
+			out[key] = def.Doc.RelativePath
+		}
+	}
+	return out
+}
+
+// pythonModuleSymbol splits a scip-python module symbol
+// "scip-python python <pkg> <version> `a.b`/__init__:" into its prefix up to
+// the descriptor and the dotted module name.
+func pythonModuleSymbol(sym string) (prefix, module string, ok bool) {
+	if !strings.HasPrefix(sym, "scip-python ") || !strings.HasSuffix(sym, "/__init__:") {
+		return "", "", false
+	}
+	head := strings.TrimSuffix(sym, "/__init__:")
+	sp := strings.LastIndexByte(head, ' ')
+	if sp < 0 {
+		return "", "", false
+	}
+	prefix, module = head[:sp+1], head[sp+1:]
+	if strings.HasPrefix(module, "`") && strings.HasSuffix(module, "`") && len(module) >= 2 {
+		module = module[1 : len(module)-1]
+	}
+	if module == "" || strings.ContainsAny(module, "`/ ") {
+		return "", "", false
+	}
+	return prefix, module, true
+}
+
+// pythonModuleDescriptor writes a module name the way scip-python does:
+// backquoted when it has a dot.
+func pythonModuleDescriptor(module string) string {
+	if strings.Contains(module, ".") {
+		return "`" + module + "`/__init__:"
+	}
+	return module + "/__init__:"
 }
 
 // pythonImportStatements finds the import statements of a Python file with

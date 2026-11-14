@@ -224,6 +224,44 @@ func TestPythonImportGraph(t *testing.T) {
 	}
 }
 
+// scip-python in a src layout defines a module by its path ("`src.pkg.b`")
+// and references it by its import name ("`pkg.b`"); the edge still counts.
+func TestPythonSrcLayoutModuleImports(t *testing.T) {
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, "src/pkg"), 0o755)
+	_ = os.WriteFile(filepath.Join(root, "src/pkg/a.py"), []byte("import pkg.b\nfrom pkg import c\n"), 0o644)
+	const p = "scip-python python pkg 0.1 "
+	idx := &scip.SCIPIndex{DocumentsByPath: map[string]*scip.Document{}, DefinitionIndex: map[string]*scip.OccurrenceRef{}}
+	add := func(path, sym string, refs ...*scip.Occurrence) {
+		def := &scip.Occurrence{Range: []int32{0, 0, 0}, Symbol: sym, SymbolRoles: scip.SymbolRoleDefinition}
+		doc := &scip.Document{RelativePath: path, Occurrences: append([]*scip.Occurrence{def}, refs...)}
+		idx.Documents = append(idx.Documents, doc)
+		idx.DocumentsByPath[path] = doc
+		idx.DefinitionIndex[sym] = &scip.OccurrenceRef{Doc: doc, Occ: def}
+	}
+	add("src/pkg/a.py", p+"`src.pkg.a`/__init__:",
+		&scip.Occurrence{Range: []int32{0, 7, 12}, Symbol: p + "`pkg.b`/__init__:"},
+		&scip.Occurrence{Range: []int32{1, 5, 8}, Symbol: p + "pkg/__init__:"},
+		&scip.Occurrence{Range: []int32{1, 16, 17}, Symbol: p + "`pkg.c`/__init__:"},
+		&scip.Occurrence{Range: []int32{1, 16, 17}, Symbol: "scip-python python other 1.0 `pkg.c`/__init__:"}) // another package's pkg.c
+	add("src/pkg/__init__.py", p+"`src.pkg`/__init__:")
+	add("src/pkg/b.py", p+"`src.pkg.b`/__init__:")
+	add("src/pkg/c.py", p+"`src.pkg.c`/__init__:")
+	add("lib/pkg/c.py", p+"`lib.pkg.c`/__init__:") // makes "pkg.c" ambiguous
+	g := buildImportGraph(idx, root)
+	for _, to := range []string{"src/pkg/b.py", "src/pkg/__init__.py"} {
+		if g.edges["src/pkg/a.py"][to] != importStatic {
+			t.Errorf("a → %s missing: %v", to, g.edges["src/pkg/a.py"])
+		}
+	}
+	if _, ok := g.edges["src/pkg/a.py"]["src/pkg/c.py"]; ok {
+		t.Error("pkg.c is defined twice (src/, lib/): no guess")
+	}
+	if !filesLinked(idx, "src/pkg/b.py", "src/pkg/a.py") {
+		t.Error("hidden coupling must see the module import as a link")
+	}
+}
+
 func TestCycleFindingsOnlyForChangedFiles(t *testing.T) {
 	all := []cycles.Cycle{
 		{Nodes: []string{"a.ts", "b.ts"}, Size: 2, Edges: []cycles.CycleEdge{{From: "b.ts", To: "a.ts", Recommended: true}}},

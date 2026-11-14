@@ -188,7 +188,7 @@ func referencesInto(idx *scip.SCIPIndex, from, to string) bool {
 		if occ == nil || occ.SymbolRoles&scip.SymbolRoleDefinition != 0 || strings.HasPrefix(occ.Symbol, "local ") {
 			continue
 		}
-		if def := idx.DefinitionIndex[occ.Symbol]; def != nil && def.Doc != nil && def.Doc.RelativePath == to {
+		if definedIn(idx, occ.Symbol) == to {
 			return true
 		}
 	}
