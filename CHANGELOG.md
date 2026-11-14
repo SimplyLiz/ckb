@@ -35,6 +35,47 @@ All notable changes to CKB will be documented in this file.
   .json/.jsonl/.csv/.tsv files of 256 KiB or more count too. `getHotspots`, `analyzeCoupling`,
   `auditRisk` and `assessChange`'s co-change check leave them out and say how many in `leftOut`.
 
+### Fixed — builds with Cartographer (`-tags cartographer`)
+
+Measured on CKB, Lebenslauf, Ingestible and Morphon: with the library linked, several
+answers were worse than without it.
+
+- **Co-change comes from CKB's analyzer again.** prepareChange replaced the coupling
+  analyzer's list with Cartographer's pairs, so two-commit pairs at score 1.0 pushed out
+  strong ones, every pair was `isHidden`, and the ten of them added a "High coupling" risk
+  factor; it also took 54 s instead of 2 s on CKB (now 8 s). Cartographer now only marks a
+  listed pair hidden, and only when both files are source code, the pair co-changed 3+
+  times, passes the caller's correlation floor, and CKB sees no link either: not one Go
+  package, and with a SCIP index neither file uses a symbol the other defines. "No import
+  link" was wrong for most measured pairs (Go same-package files, TypeScript `@/` aliases,
+  inline Rust paths). review's hidden-coupling findings (all 7 on CKB were such pairs),
+  getHotspots `cochangePartners`, getOwnership `coChangePartners` and the PR split graph use
+  the same floors; planRefactor no longer asks a second time with a floor of 2.
+- **planRefactor takes seconds, not minutes.** It ran auditRisk over every file of the repo
+  and kept the top item, which was rarely the target: 711 s on CKB, now 22 s, scoring only
+  the target. The coupling analyzer lists up to 200 commits per `git show` instead of one.
+- **No zeros presented as findings.** A library that emits snake_case JSON (v4.0.3) decodes
+  into empty fields without an error. `archImpact` is now left out unless its target module
+  decoded, getArchitecture's Cartographer fields need decoded graph metadata, and
+  detectShotgunSurgery / getArchitecturalEvolution say the library is too old instead of
+  returning zero counts. analyzeImpact's `SimulateChange` no longer runs inside
+  prepareChange's per-symbol loop, review's blast-radius loop or the change-set walk.
+- **getArchitecture returns `archHealth`, `archCycles`, `archGodModules`, `archBridgeNodes`.**
+  The MCP handler never copied them into its response.
+- **The layers check reads `layers.toml` where Cartographer does:** `layers.toml`, then
+  `.codecartographer/layers.toml`, then the old `.cartographer/layers.toml`. Without a config
+  it skips instead of passing against an empty one, and it skips when the library returns
+  violations without file paths (42 on CKB were reported as a pass).
+- **exportForLLM adds a skeleton only when asked.** The full skeleton rode along on every
+  call (0.2–1.3 MB, absolute paths; 1.6 MB → 244 KB on CKB). `tokenBudget` and `focusFiles`
+  are now in the input schema and give the ranked skeleton, whose decoding was broken (the
+  library returns an array) and is fixed.
+- **listKeyConcepts without SCIP names concepts after source files only**, not benchmark
+  result JSON (Morphon).
+- `internal/cartographer` has an integration test (`go test -tags cartographer
+  ./internal/cartographer/`) that runs every bridge function CKB calls against a small Go +
+  TS git repo. It fails against the pinned v4.0.3 until Cartographer serializes camelCase.
+
 ### Fixed — saying what CKB couldn't look at
 
 - **A missing indexer is waited for, not given up on.** When no indexer was installed, the first
