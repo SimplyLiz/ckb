@@ -151,3 +151,29 @@ func TestAnalyze_ScriptNotScoredForTests(t *testing.T) {
 		t.Errorf("lib.py test_coverage = %+v, want 15", f)
 	}
 }
+
+// AnalyzeFile scores one file the same way Analyze does, script rule included.
+func TestAnalyzeFile_MatchesAnalyze(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"run.py": "#!/usr/bin/env python3\nprint('x')\n",
+		"lib.py": "def f():\n    return 1\n",
+	})
+	a := NewAnalyzer(dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	res, err := a.Analyze(context.Background(), AuditOptions{RepoRoot: dir, MinScore: 0.001})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range res.Items {
+		got, err := NewAnalyzer(dir, slog.New(slog.NewTextHandler(io.Discard, nil))).AnalyzeFile(context.Background(), want.File)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.RiskScore != want.RiskScore {
+			t.Errorf("%s: AnalyzeFile score %.1f, Analyze %.1f", want.File, got.RiskScore, want.RiskScore)
+		}
+	}
+	if len(res.Items) != 2 {
+		t.Fatalf("Analyze returned %d items, want 2", len(res.Items))
+	}
+}

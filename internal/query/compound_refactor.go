@@ -117,33 +117,24 @@ func (e *Engine) PlanRefactor(ctx context.Context, opts PlanRefactorOptions) (*P
 		defer wg.Done()
 		filePath := opts.Target
 		// If target is a symbol ID, we'll get the path from prepareResult later
-		if filepath.Ext(filePath) == "" && filePath != "" {
-			// Likely a symbol ID, skip file-level audit for now
+		if filepath.Ext(filePath) == "" || !fileExists(filepath.Join(e.repoRoot, filePath)) {
+			// A symbol ID or no file: no file-level audit
 			return
 		}
+		// Score only the target. Analyze over the whole repo (blame, churn and a
+		// co-change pass per file) took more than 10 minutes on CKB itself and
+		// then kept the single top item, which was rarely the target.
 		analyzer := audit.NewAnalyzer(e.repoRoot, e.logger)
-		analysisResult, err := analyzer.Analyze(ctx, audit.AuditOptions{
-			RepoRoot: e.repoRoot,
-			MinScore: 0, // include everything for this specific file
-			Limit:    1,
-		})
+		item, err := analyzer.AnalyzeFile(ctx, filePath)
 		if err != nil {
 			mu.Lock()
 			warnings = append(warnings, fmt.Sprintf("auditRisk: %s", err.Error()))
 			mu.Unlock()
 			return
 		}
-		if analysisResult != nil && len(analysisResult.Items) > 0 {
-			// Find the item matching our target
-			for i, item := range analysisResult.Items {
-				if item.File == filePath || filepath.Base(item.File) == filepath.Base(filePath) {
-					mu.Lock()
-					riskItem = &analysisResult.Items[i]
-					mu.Unlock()
-					return
-				}
-			}
-		}
+		mu.Lock()
+		riskItem = item
+		mu.Unlock()
 	}()
 
 	// 3. Test gap analysis

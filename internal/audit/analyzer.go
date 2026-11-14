@@ -145,6 +145,23 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AuditOptions) (*RiskAnalysi
 	}, nil
 }
 
+// AnalyzeFile scores one repo-relative file the way Analyze scores each file,
+// without walking the rest of the repository. Analyze runs blame, churn and a
+// co-change analysis per file; callers that want one file's risk (planRefactor)
+// spent minutes on a large repo going through Analyze and then picking the file
+// out of the result.
+func (a *Analyzer) AnalyzeFile(ctx context.Context, file string) (*RiskItem, error) {
+	file = filepath.ToSlash(file)
+	// Whether a script is standalone depends on who imports it, so only then is
+	// the repo's file list needed.
+	if _, ok := scriptLanguages[filepath.Ext(file)]; ok && runsDirectly(filepath.Join(a.repoRoot, file)) {
+		if files, err := a.findSourceFiles(a.repoRoot); err == nil {
+			a.scripts = standaloneScripts(a.repoRoot, files, a.logger)
+		}
+	}
+	return a.analyzeFile(ctx, a.repoRoot, file)
+}
+
 // analyzeFile analyzes a single file for risk
 func (a *Analyzer) analyzeFile(ctx context.Context, repoRoot, file string) (*RiskItem, error) {
 	factors := make([]RiskFactor, 0, 8)
