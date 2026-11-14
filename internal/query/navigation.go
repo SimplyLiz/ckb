@@ -2594,7 +2594,7 @@ type HotspotV52 struct {
 	RiskLevel  string             `json:"riskLevel"`            // low, medium, high
 	Ranking    *RankingV52        `json:"ranking"`
 	// CochangePartners lists other files that frequently change together with this file
-	// (from Cartographer temporal coupling analysis). Only populated when built with -tags cartographer.
+	// (git history, at least 3 shared commits, strongest first, at most 3).
 	CochangePartners []string `json:"cochangePartners,omitempty"`
 }
 
@@ -2836,34 +2836,14 @@ func (e *Engine) GetHotspots(ctx context.Context, opts GetHotspotsOptions) (*Get
 		QueryDurationMs: time.Since(startTime).Milliseconds(),
 	}
 
-	// Augment hotspots with Cartographer co-change partners (temporal coupling).
-	// Surfaces files that frequently change together — captured from git history.
-	if cartographer.Available() && len(response.Hotspots) > 0 {
-		if pairs, cerr := cartographer.GitCochange(e.repoRoot, 0, minHiddenCoChanges); cerr == nil && len(pairs) > 0 {
-			pairs = strongCochangePairs(pairs, prepareMinCorrelation)
-			hotspotSet := make(map[string]struct{}, len(response.Hotspots))
-			for _, h := range response.Hotspots {
-				hotspotSet[h.FilePath] = struct{}{}
-			}
-			// Build filePath → top partners map (limit to 3 per file, strongest first).
-			partnerMap := make(map[string][]string)
-			for _, pair := range pairs {
-				if _, isHotspot := hotspotSet[pair.FileA]; isHotspot {
-					if len(partnerMap[pair.FileA]) < 3 {
-						partnerMap[pair.FileA] = append(partnerMap[pair.FileA], pair.FileB)
-					}
-				}
-				if _, isHotspot := hotspotSet[pair.FileB]; isHotspot {
-					if len(partnerMap[pair.FileB]) < 3 {
-						partnerMap[pair.FileB] = append(partnerMap[pair.FileB], pair.FileA)
-					}
-				}
-			}
-			for i := range response.Hotspots {
-				if partners, ok := partnerMap[response.Hotspots[i].FilePath]; ok {
-					response.Hotspots[i].CochangePartners = partners
-				}
-			}
+	// Co-change partners (temporal coupling): files that frequently change
+	// together with each hotspot, from git history.
+	for i := range response.Hotspots {
+		if ctx.Err() != nil {
+			break
+		}
+		for _, p := range e.cochangePartners(ctx, response.Hotspots[i].FilePath, prepareMinCorrelation, 3, nil) {
+			response.Hotspots[i].CochangePartners = append(response.Hotspots[i].CochangePartners, p.FileB)
 		}
 	}
 

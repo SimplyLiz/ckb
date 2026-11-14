@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/errors"
 	"github.com/SimplyLiz/CodeMCP/internal/output"
 	"github.com/SimplyLiz/CodeMCP/internal/ownership"
@@ -69,8 +68,7 @@ type GetOwnershipResponse struct {
 	Provenance      *Provenance             `json:"provenance,omitempty"`
 	Drilldowns      []output.Drilldown      `json:"drilldowns,omitempty"`
 	// CoChangePartners lists files that frequently change together with this path
-	// (from Cartographer temporal coupling). Implicitly relevant for ownership/review.
-	// Only populated when the binary is built with -tags cartographer.
+	// (git history, at least 3 shared commits). Implicitly relevant for ownership/review.
 	CoChangePartners []string `json:"coChangePartners,omitempty"`
 }
 
@@ -242,26 +240,11 @@ func (e *Engine) GetOwnership(ctx context.Context, opts GetOwnershipOptions) (*G
 		})
 	}
 
-	// Augment with Cartographer co-change partners — files that frequently change
-	// together with this path. These are implicit co-owners even if not in CODEOWNERS.
+	// Co-change partners — files that frequently change together with this
+	// path. These are implicit co-owners even if not in CODEOWNERS.
 	var coChangePartners []string
-	if cartographer.Available() {
-		if pairs, err := cartographer.GitCochange(e.repoRoot, 0, minHiddenCoChanges); err == nil {
-			for _, p := range strongCochangePairs(pairs, prepareMinCorrelation) {
-				partner := ""
-				if p.FileA == normalizedPath {
-					partner = p.FileB
-				} else if p.FileB == normalizedPath {
-					partner = p.FileA
-				}
-				if partner != "" && !isCouplingNoiseFile(partner) {
-					coChangePartners = append(coChangePartners, partner)
-				}
-				if len(coChangePartners) >= 5 {
-					break
-				}
-			}
-		}
+	for _, p := range e.cochangePartners(ctx, normalizedPath, prepareMinCorrelation, 5, isCouplingNoiseFile) {
+		coChangePartners = append(coChangePartners, p.FileB)
 	}
 
 	return &GetOwnershipResponse{
