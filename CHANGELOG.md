@@ -35,70 +35,72 @@ All notable changes to CKB will be documented in this file.
   .json/.jsonl/.csv/.tsv files of 256 KiB or more count too. `getHotspots`, `analyzeCoupling`,
   `auditRisk` and `assessChange`'s co-change check leave them out and say how many in `leftOut`.
 
-### Fixed — builds with Cartographer (`-tags cartographer`)
+### Changed — Cartographer removed
 
-Measured on CKB, Lebenslauf, Ingestible and Morphon: with the library linked, several
-answers were worse than without it.
+CKB no longer links the Cartographer library: no `-tags cartographer`, no prebuilt static
+lib fetched at build time, no `third_party/cartographer`. Measured on CKB, Lebenslauf,
+Ingestible and Morphon, the results worth having (cycles, co-change, bridges, god modules,
+dispersion) now come from CKB's own SCIP index and git history in every build, in every
+indexed language; the rest went. Release binaries are still built with cgo on native runners,
+for the tree-sitter parsers, so the glibc floor check stays.
 
-- **Co-change comes from CKB's analyzer again.** prepareChange replaced the coupling
-  analyzer's list with Cartographer's pairs, so two-commit pairs at score 1.0 pushed out
-  strong ones, every pair was `isHidden`, and the ten of them added a "High coupling" risk
-  factor; it also took 54 s instead of 2 s on CKB (now 8 s). Cartographer now only marks a
-  listed pair hidden, and only when both files are source code, the pair co-changed 3+
-  times, passes the caller's correlation floor, and CKB sees no link either: not one Go
-  package, and with a SCIP index neither file uses a symbol the other defines. "No import
-  link" was wrong for most measured pairs (Go same-package files, TypeScript `@/` aliases,
-  inline Rust paths). review's hidden-coupling findings (all 7 on CKB were such pairs),
-  getHotspots `cochangePartners`, getOwnership `coChangePartners` and the PR split graph use
-  the same floors; planRefactor no longer asks a second time with a floor of 2. (The pairs
-  now come from CKB's own history; see the next section.)
-- **planRefactor takes seconds, not minutes.** It ran auditRisk over every file of the repo
-  and kept the top item, which was rarely the target: 711 s on CKB, now 22 s, scoring only
-  the target. The coupling analyzer lists up to 200 commits per `git show` instead of one.
-- **No zeros presented as findings.** A library that emits snake_case JSON (v4.0.3) decodes
-  into empty fields without an error. `archImpact` is now left out unless its target module
-  decoded, getArchitecture's Cartographer fields need decoded graph metadata, and
-  detectShotgunSurgery / getArchitecturalEvolution say the library is too old instead of
-  returning zero counts. analyzeImpact's `SimulateChange` no longer runs inside
-  prepareChange's per-symbol loop, review's blast-radius loop or the change-set walk.
-- **getArchitecture returns `archHealth`, `archCycles`, `archGodModules`, `archBridgeNodes`.**
-  The MCP handler never copied them into its response.
-- **The layers check reads `layers.toml` where Cartographer does:** `layers.toml`, then
-  `.codecartographer/layers.toml`, then the old `.cartographer/layers.toml`. Without a config
-  it skips instead of passing against an empty one, and it skips when the library returns
-  violations without file paths (42 on CKB were reported as a pass).
-- **exportForLLM adds a skeleton only when asked.** The full skeleton rode along on every
-  call (0.2–1.3 MB, absolute paths; 1.6 MB → 244 KB on CKB). `tokenBudget` and `focusFiles`
-  are now in the input schema and give the ranked skeleton, whose decoding was broken (the
-  library returns an array) and is fixed.
-- **listKeyConcepts without SCIP names concepts after source files only**, not benchmark
-  result JSON (Morphon).
-- **review's Cartographer dead-code findings carry their line.** "Unreferenced export"
-  findings had no line, so the changed-lines filter kept them all: every old public
-  function of a changed file was reported (11 on Morphon, whose SCIP findings were all
-  dropped as unchanged), and a declaration SCIP had already reported came out twice.
-- `internal/cartographer` has an integration test (`go test -tags cartographer
-  ./internal/cartographer/`) that runs every bridge function CKB calls against a small Go +
-  TS git repo. It failed against v4.0.3, whose structs reached the C ABI in snake_case.
-- **The build pins Cartographer v4.1.0** (`scripts/fetch-cartographer-lib.sh`, `Makefile`,
-  header): camelCase at the C ABI, a cache across FFI calls (all calls on CKB 122 s → 19 s,
-  prepareChange 54 s → 0.9 s), and import resolution for Go packages, tsconfig aliases,
-  Python and Rust `crate::` paths. archImpact, the arch-health and shotgun checks and
-  getArchitecturalEvolution return values instead of zeros.
-- **The bridge risk factor counts only real bridges, computed by CKB.** analyzeImpact
+- **Bridges are computed by CKB, and the risk factor counts only real ones.** analyzeImpact
   multiplied the risk by 1 + Cartographer's betweenness/1000, which fired on nearly every
   central file (96 of 618 files in a Next.js app were "bridges"). A bridge is now an
-  articulation point of the file graph that cuts off at least 3 files, computed from the
-  SCIP index (`internal/query/bridges.go`, ported from Cartographer aebfbd4): files are
-  joined by cross-file references in any indexed language and by TS/Python imports, lazy
-  ones included; tests, generated files and build output (`.next/`, `dist/`, vendored code)
-  stay out, and Go package files hang together through a weightless package node. The
-  multiplier is 1 + min(cut, 50)/50, capped at 2.0; the factor is named `bridge_cut` (was
+  articulation point of the file graph that cuts off at least 3 files
+  (`internal/query/bridges.go`, ported from Cartographer aebfbd4): files are joined by
+  cross-file SCIP references in any language and by TS/Python imports, lazy ones included;
+  tests, generated files and build output (`.next/`, `dist/`, vendored code) stay out, and Go
+  package files hang together through a weightless package node. The multiplier is
+  1 + min(cut, 50)/50, capped at 2.0; the factor is named `bridge_cut` (was
   `bridge_centrality`). On the same Next.js app CKB finds Cartographer's one bridge
-  (`src/lib/utils.ts`, cuts off 4) plus two behind a `lazy(() => import(...))` that
-  Cartographer does not resolve; on CKB itself none. getArchitecture's `archBridgeNodes`
-  and `archHealth.bridgeCount` come from the same computation, as repo-relative paths, and
-  no longer need the cartographer build.
+  (`src/lib/utils.ts`, cuts off 4) plus two behind a `lazy(() => import(...))` Cartographer
+  does not resolve; on CKB itself none. Without the `.next/` exclusion Next.js's generated
+  `validator.ts`, which references every page, hid every bridge.
+- **God modules on SCIP**: Cartographer's rule (15+ dependency units, 40+ declarations), with
+  a Go package as one unit and parameters, fields and scip-typescript meta symbols not counted
+  as declarations. Lebenslauf: `src/server/archive.ts`, the file Cartographer's rule picks.
+- **arch-health reports god modules (warning) and bridges (info) among the changed files**,
+  next to the cycles it already reported, and runs on any SCIP index. Cartographer's
+  project-wide god-module and layer-violation counts and its health score are gone.
+- **getArchitecture's `archHealth` (`bridgeCount`, `cycleCount`, `godModuleCount`,
+  `cycleLanguages`), `archCycles`, `archGodModules` and `archBridgeNodes` come from the
+  index**, as repo-relative paths. `healthScore` and `layerViolationCount` are gone. The MCP
+  handler copies them into its response (it never did).
+- **prepareChange names a runtime import cycle through the file, a bridge or a god module as
+  risk factors.** `archImpact` is gone from prepareChange and analyzeImpact: Cartographer's
+  "may introduce a dependency cycle" meant the file already sat in one, and its layer check ran
+  on an empty default config.
+- **detectShotgunSurgery runs on the co-change history**: partners, the entropy of how the
+  co-changes spread, a score against the most dispersed file. A partner needs 3 shared commits
+  (was 1) and tests are left out; `limit` caps the files returned (it was a commit count).
+- **review's PR split joins changed files by SCIP references, imports and co-change** in one
+  pass; the per-file coupling analyzer, capped at 20 files and skipped above 200, is gone.
+  blast-radius escalates high-churn files with the co-change history's churn.
+- **explore lists a directory's languages; listKeyConcepts without SCIP walks every source
+  language** (not only .go/.ts/.js/.py) and names concepts after source files only, not
+  benchmark result JSON (Morphon).
+- **Removed, with nothing in their place:** the MCP tools `queryContext`, `contextHealth`,
+  `getArchitecturalEvolution` (it replayed snapshots earlier calls had written), `getBlastRadius`
+  (analyzeImpact/prepareChange cover it) and `renderArchitecture` — 106 tools, was 111; they
+  failed on every build without the library. Also exportForLLM's `rankedSkeleton`
+  (`tokenBudget`, `focusFiles`), getModuleOverview's `skeleton`, summarizeDiff's
+  `functionChanges`, the `layers` review check (it needed a Cartographer `layers.toml`), the
+  dead-code check's unreferenced-exports phase (a name heuristic below the SCIP reference
+  count), and the Cartographer entries in `ckb doctor` and `ckb status`.
+
+### Fixed — planRefactor and co-change
+
+- **planRefactor takes seconds, not minutes.** It ran auditRisk over every file of the repo
+  and kept the top item, which was rarely the target: 711 s on CKB, now 22 s, scoring only
+  the target. The coupling analyzer lists up to 200 commits per `git show` instead of one; no
+  second co-change pass with a floor of 2.
+- **prepareChange's co-change list no longer carries two-commit pairs at score 1.0**, every
+  pair marked hidden, or a "High coupling" factor from ten of them. A pair is hidden only when
+  both files are source code, it co-changed 3+ times, passes the caller's correlation floor,
+  and CKB sees no link: not one Go package, and with a SCIP index neither file uses a symbol
+  the other defines. review's hidden coupling, getHotspots `cochangePartners`, getOwnership
+  `coChangePartners` and the PR split use the same floors.
 
 ### Changed — cycles and co-change no longer need Cartographer
 
@@ -117,8 +119,7 @@ data, in every build.
   cannot be read, the import counts as static: a stale index may report a cycle, not hide one.
 - **arch-health reports a cycle only when the change touches one of its files**, naming the
   files and the edge to break. It was "N circular dependency cycle(s) in project" without a
-  file, on every review. Without a TS/JS/Python index and without Cartographer it skips.
-  Cartographer's health score, god modules and layer violations stay as they were.
+  file, on every review.
 - **getHotspots `cochangePartners`, getOwnership `coChangePartners`, review's hidden coupling
   and the PR split graph read git history themselves** (`coupling.History`): the last 500
   commits, bot and formatting commits and commits over 50 files dropped, lockfiles, assets and
@@ -188,7 +189,7 @@ data, in every build.
   findings. `**` in path entries now matches across directories.
 - **`findDeadCode` without an index says it didn't look.** An empty `deadCode` read as "no dead
   code". The result now carries `analyzed: false` with `notAnalyzedReason`. The review's dead-code
-  check skips instead of passing when neither SCIP nor Cartographer could check.
+  check skips instead of passing without the SCIP index.
 - **auditRisk stops flagging LLM code as security-sensitive.** Keywords match identifier parts
   instead of substrings, and the defaults name credentials (`access_token`, `api_key`,
   `hf_token`, `private_key`) instead of bare `token`, `key`, `hash`, `private` and `session`.

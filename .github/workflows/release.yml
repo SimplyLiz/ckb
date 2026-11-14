@@ -20,12 +20,12 @@ env:
   GLIBC_FLOOR: "2.34"
 
 # Cross-platform binaries are built with cgo on native runners so the
-# Cartographer fast tier (prebuilt static lib fetched from SimplyLiz/
-# CodeCartographer) is linked in — CGO_ENABLED=0 cross-compiling from one runner
-# can't do that. Archives are uploaded straight to the release from each build
-# job (no actions/upload-artifact), so the Actions artifact storage quota can
-# never block a release. Windows has no Cartographer lib upstream, so it ships
-# the pure-Go stub tier.
+# tree-sitter parsers (go-tree-sitter: complexity, bug-patterns, symbol
+# extraction, structural perf) are compiled in — CGO_ENABLED=0 would leave
+# their pure-Go stubs. Archives are uploaded straight to the release from each
+# build job (no actions/upload-artifact), so the Actions artifact storage quota
+# can never block a release. Windows builds without cgo (no C toolchain set up
+# there), as before.
 jobs:
   preflight:
     name: Validate + draft release
@@ -107,14 +107,13 @@ jobs:
           - os: macos-latest
             goos: darwin
             goarch: arm64
-            cartographer: true
+            cgo: true
           # x86_64 cross-built on Apple Silicon (clang is a native macOS cross
-          # compiler); links the x86_64 Cartographer .a. Avoids the scarce
-          # macos-13 Intel runners.
+          # compiler). Avoids the scarce macos-13 Intel runners.
           - os: macos-latest
             goos: darwin
             goarch: amd64
-            cartographer: true
+            cgo: true
             cc: "clang -arch x86_64"
           # Pinned to 22.04 (glibc 2.35) on purpose — do not move to -latest.
           # A cgo build's glibc requirement is decided by the runner image, not
@@ -126,16 +125,16 @@ jobs:
           - os: ubuntu-22.04
             goos: linux
             goarch: amd64
-            cartographer: true
+            cgo: true
           - os: ubuntu-22.04-arm
             goos: linux
             goarch: arm64
-            cartographer: true
-          # Windows: no upstream Cartographer static lib → pure-Go stub tier.
+            cgo: true
+          # Windows: pure Go, tree-sitter features fall back to their stubs.
           - os: windows-latest
             goos: windows
             goarch: amd64
-            cartographer: false
+            cgo: false
     defaults:
       run:
         shell: bash
@@ -166,13 +165,10 @@ jobs:
           OUT="ckb"
           [ "$GOOS" = "windows" ] && OUT="ckb.exe"
 
-          if [ "${{ matrix.cartographer }}" = "true" ]; then
-            # Fetch the pinned, checksum-verified prebuilt static lib for this
-            # target and link it (no Rust toolchain needed).
-            bash scripts/fetch-cartographer-lib.sh "$GOOS" "$GOARCH"
+          if [ "${{ matrix.cgo }}" = "true" ]; then
             export CGO_ENABLED=1
             if [ -n "${{ matrix.cc }}" ]; then export CC="${{ matrix.cc }}"; fi
-            GOOS="$GOOS" GOARCH="$GOARCH" go build -tags cartographer -ldflags "$LDFLAGS" -o "$OUT" ./cmd/ckb
+            GOOS="$GOOS" GOARCH="$GOARCH" go build -ldflags "$LDFLAGS" -o "$OUT" ./cmd/ckb
           else
             export CGO_ENABLED=0
             GOOS="$GOOS" GOARCH="$GOARCH" go build -ldflags "$LDFLAGS" -o "$OUT" ./cmd/ckb

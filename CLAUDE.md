@@ -89,8 +89,8 @@ Releases are fully automated via `.github/workflows/release.yml`, triggered by p
 4. Merge to main, tag `vX.Y.Z`, push the tag
 5. The pipeline handles everything else:
    - Runs `go test -race ./...`
-   - Builds each target on a native runner (cgo + the prebuilt Cartographer
-     static lib) and uploads the archives straight to the GitHub Release
+   - Builds each target on a native runner (cgo for the tree-sitter parsers)
+     and uploads the archives straight to the GitHub Release
    - Updates Homebrew tap (`SimplyLiz/homebrew-ckb`)
    - Publishes `@tastehub/ckb` + 5 platform packages to npm
 

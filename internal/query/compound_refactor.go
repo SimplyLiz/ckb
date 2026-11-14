@@ -207,10 +207,9 @@ func (e *Engine) PlanRefactor(ctx context.Context, opts PlanRefactorOptions) (*P
 			}
 		}
 
-		// No second Cartographer pass here: prepareChange already marked the
+		// No second co-change pass here: prepareChange already marked the
 		// hidden pairs, and its rules (3+ co-changes, CKB's correlation floor,
-		// no link CKB can see) are the ones that held up when measured. The
-		// fallback this replaced asked Cartographer again with a floor of 2.
+		// no link CKB can see) are the ones that held up when measured.
 	}
 
 	// Risk assessment

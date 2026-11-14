@@ -218,16 +218,11 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      # Mirrors the release build exactly — same runner image, same cgo +
-      # cartographer link. A plain `go build` would not reproduce the problem,
-      # because the symbols that caused #243 come from the Rust static lib.
+      # Mirrors the release build: same runner image, cgo on (tree-sitter).
+      # The symbols that caused #243 came from the Rust static lib, removed in
+      # 9.4.0; any cgo build still inherits the runner's glibc, so the check stays.
       - name: Build the way the release does
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          bash scripts/fetch-cartographer-lib.sh linux ${{ matrix.goarch }}
-          CGO_ENABLED=1 go build -tags cartographer -ldflags="-s -w" -o ckb ./cmd/ckb
+        run: CGO_ENABLED=1 go build -ldflags="-s -w" -o ckb ./cmd/ckb
 
       - name: Check glibc floor
         run: go run scripts/check-glibc-floor.go --max "$GLIBC_FLOOR" ./ckb
