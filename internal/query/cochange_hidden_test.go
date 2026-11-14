@@ -46,6 +46,7 @@ func TestHiddenCouplingIsHidden(t *testing.T) {
 	for _, p := range []cartographer.CoChangePair{
 		{FileA: "svc/a.go", FileB: "web/b.ts", Count: 5, CouplingScore: 0.8},
 		{FileA: "pkg/x.go", FileB: "pkg/y.go", Count: 5, CouplingScore: 0.9},
+		{FileA: "svc/a.go", FileB: "CHANGELOG.md", Count: 9, CouplingScore: 0.9},
 	} {
 		h.scores[p.FileA+"\x00"+p.FileB] = p
 		h.scores[p.FileB+"\x00"+p.FileA] = p
@@ -56,11 +57,14 @@ func TestHiddenCouplingIsHidden(t *testing.T) {
 	if h.isHidden("pkg/x.go", "pkg/y.go") {
 		t.Error("same-package Go files are linked, not hidden")
 	}
+	if h.isHidden("svc/a.go", "CHANGELOG.md") {
+		t.Error("a changelog imports nothing; the pair is not hidden coupling")
+	}
 	if h.isHidden("svc/a.go", "pkg/x.go") {
 		t.Error("a pair Cartographer did not report is not hidden")
 	}
-	if got := len(h.candidates()); got != 2 {
-		t.Errorf("candidates = %d, want 2 (each pair once)", got)
+	if got := len(h.candidates()); got != 3 {
+		t.Errorf("candidates = %d, want 3 (each pair once)", got)
 	}
 	var nilH *hiddenCoupling
 	if nilH.isHidden("a", "b") || nilH.candidates() != nil {
