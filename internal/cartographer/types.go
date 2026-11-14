@@ -37,11 +37,17 @@ type GraphNode struct {
 
 // GraphEdge represents an import/dependency relationship.
 type GraphEdge struct {
-	Source   string `json:"source"`
-	Target   string `json:"target"`
+	Source string `json:"source"`
+	Target string `json:"target"`
+	// EdgeType is the kind of the importing file: "runtime", "test" or "doc",
+	// or "type" for a type-only import (TS `import type`, Python under
+	// `if TYPE_CHECKING:`), which Cartographer leaves out of cycle detection.
+	// Module-level graphs carry only "runtime" and "type".
 	EdgeType string `json:"edgeType"`
 	// Resolution is the confidence with which the import was resolved:
-	// "exact", "suffix", or "fuzzy". Treat "fuzzy" edges as low-confidence.
+	// "exact", "package" (a Go import resolved to its package directory: one
+	// edge to every file of that package, so count the directory, not the
+	// files, as one dependency), "suffix", or "fuzzy". Treat "fuzzy" edges as low-confidence.
 	Resolution string `json:"resolution,omitempty"`
 }
 
