@@ -24,7 +24,7 @@ import (
 //   - its score passes the caller's correlation floor,
 //   - both files are in the SCIP index, and
 //   - CKB finds no link: not the same Go package, and neither file references
-//     a symbol the other defines.
+//     a symbol the other defines (between Go files: the other's package).
 //
 // Without an index nothing is hidden. Cartographer's import graph was the only
 // other "no link" evidence, and measured on four repos (2026-11-14) it was
@@ -167,13 +167,22 @@ func (hc *hiddenCoupling) isHiddenLink(a, b string) bool {
 
 // filesLinked reports whether two repo-relative files are statically
 // connected: Go files of the same directory (one package), or — with a SCIP
-// index — one file referencing a symbol the other defines.
+// index — one file referencing a symbol the other defines. Between two Go
+// files the other's whole package counts: Go imports a package, not a file,
+// so internal/query/donecheck.go is linked to every file of internal/diff it
+// imports, internal/diff/usesite_test.go included. A _test.go file belongs to
+// its directory's package; an external test package (package foo_test) sits
+// in the same directory and is covered by the first rule.
 func filesLinked(idx *scip.SCIPIndex, a, b string) bool {
-	if filepath.Ext(a) == ".go" && filepath.Ext(b) == ".go" && filepath.Dir(a) == filepath.Dir(b) {
+	goPair := filepath.Ext(a) == ".go" && filepath.Ext(b) == ".go"
+	if goPair && filepath.Dir(a) == filepath.Dir(b) {
 		return true
 	}
 	if idx == nil {
 		return false
+	}
+	if goPair {
+		return referencesPackage(idx, a, filepath.Dir(b)) || referencesPackage(idx, b, filepath.Dir(a))
 	}
 	return referencesInto(idx, a, b) || referencesInto(idx, b, a)
 }
@@ -193,4 +202,44 @@ func referencesInto(idx *scip.SCIPIndex, from, to string) bool {
 		}
 	}
 	return false
+}
+
+// referencesPackage reports whether document from uses a symbol defined in a
+// Go file of directory dir.
+func referencesPackage(idx *scip.SCIPIndex, from, dir string) bool {
+	return goPackagesReferenced(idx, from)[dir]
+}
+
+var goPackageRefCache = struct {
+	sync.Mutex
+	idx   *scip.SCIPIndex
+	byDoc map[string]map[string]bool
+}{}
+
+// goPackagesReferenced returns the directories of the Go files defining a
+// symbol document from references, computed once per document and loaded
+// index: a scan asks for the same file in many pairs.
+func goPackagesReferenced(idx *scip.SCIPIndex, from string) map[string]bool {
+	goPackageRefCache.Lock()
+	defer goPackageRefCache.Unlock()
+	if goPackageRefCache.idx != idx {
+		goPackageRefCache.idx = idx
+		goPackageRefCache.byDoc = map[string]map[string]bool{}
+	}
+	if dirs, ok := goPackageRefCache.byDoc[from]; ok {
+		return dirs
+	}
+	dirs := map[string]bool{}
+	if doc := idx.GetDocument(from); doc != nil && idx.DefinitionIndex != nil {
+		for _, occ := range doc.Occurrences {
+			if occ == nil || occ.SymbolRoles&scip.SymbolRoleDefinition != 0 || strings.HasPrefix(occ.Symbol, "local ") {
+				continue
+			}
+			if to := definedIn(idx, occ.Symbol); to != "" && filepath.Ext(to) == ".go" {
+				dirs[filepath.Dir(to)] = true
+			}
+		}
+	}
+	goPackageRefCache.byDoc[from] = dirs
+	return dirs
 }
