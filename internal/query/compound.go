@@ -2143,10 +2143,8 @@ func (e *Engine) languageSupportsTestDiscovery(target *PrepareChangeTarget) bool
 const prepareMinCorrelation = 0.3
 
 // getPrepareCoChanges finds files that historically change together, from
-// CKB's coupling analyzer. With Cartographer, a listed pair is marked IsHidden
-// when it also passes the hidden-coupling rules (see cochange_hidden.go);
-// Cartographer's own pair list replaced the analyzer's before and swapped
-// strong pairs for two-commit ones scored 1.0.
+// CKB's coupling analyzer. With a SCIP index, a listed pair is marked IsHidden
+// when it also passes the hidden-coupling rules (see cochange_hidden.go).
 func (e *Engine) getPrepareCoChanges(ctx context.Context, path string) ([]PrepareCoChange, error) {
 	analyzer := coupling.NewAnalyzer(e.repoRoot, e.logger)
 	result, err := analyzer.Analyze(ctx, coupling.AnalyzeOptions{
@@ -2172,8 +2170,8 @@ func (e *Engine) getPrepareCoChanges(ctx context.Context, path string) ([]Prepar
 			candidates = true
 		}
 	}
-	if candidates && cartographer.Available() && ctx.Err() == nil {
-		if hidden := e.newHiddenCoupling(prepareMinCorrelation); hidden != nil {
+	if candidates && ctx.Err() == nil {
+		if hidden := e.newHiddenCoupling(ctx, prepareMinCorrelation); hidden != nil {
 			for i := range coChanges {
 				if coChanges[i].CoChanges >= minHiddenCoChanges {
 					coChanges[i].IsHidden = hidden.isHidden(path, coChanges[i].File)

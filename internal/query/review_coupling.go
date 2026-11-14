@@ -8,12 +8,10 @@ import (
 	"io"
 	"math"
 	"os/exec"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends/git"
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/coupling"
 )
 
@@ -266,49 +264,31 @@ func (e *Engine) checkCouplingGaps(ctx context.Context, changedFiles []string, d
 		})
 	}
 
-	// Augment with Cartographer hidden coupling: co-change pairs with no static
-	// link. newHiddenCoupling applies the 3-commit floor and the same
-	// correlation floor as above, and drops pairs CKB sees linked (same Go
-	// package, SCIP references) — "no import link" was wrong for most of
-	// Cartographer's pairs when measured.
-	if cartographer.Available() {
-		if hc := e.newHiddenCoupling(minCorrelation); hc != nil {
-			hidden := hc.candidates()
-			sort.Slice(hidden, func(i, j int) bool {
-				if hidden[i].CouplingScore != hidden[j].CouplingScore {
-					return hidden[i].CouplingScore > hidden[j].CouplingScore
-				}
-				return hidden[i].FileA+hidden[i].FileB < hidden[j].FileA+hidden[j].FileB
-			})
-			existing := make(map[string]bool, len(gaps)*2)
-			for _, g := range gaps {
-				existing[g.ChangedFile+"\x00"+g.MissingFile] = true
-				existing[g.MissingFile+"\x00"+g.ChangedFile] = true
+	// Hidden coupling: co-change pairs scored against the less-changed file
+	// (so a file that always follows the changed one counts even when the
+	// changed file mostly changes alone) with no static link CKB can see.
+	// newHiddenCoupling needs a SCIP index; hiddenPartners applies the
+	// 3-commit floor, the same correlation floor as above and the link check.
+	if hc := e.newHiddenCoupling(ctx, minCorrelation); hc != nil {
+		existing := make(map[string]bool, len(gaps)*2)
+		for _, g := range gaps {
+			existing[g.ChangedFile+"\x00"+g.MissingFile] = true
+			existing[g.MissingFile+"\x00"+g.ChangedFile] = true
+		}
+		// Cap hidden-coupling findings at N per changed file. The regular
+		// co-change pass caps too; without it, large/vendor-sync PRs produce
+		// hundreds of weak hits that drown out actionable findings.
+		const maxHiddenPerFile = 3
+		for _, changedFile := range filesToCheck {
+			if ctx.Err() != nil {
+				break
 			}
-			// Cap hidden-coupling findings at N per changed file. The regular
-			// co-change pass uses Limit:5 — match that intent here. Without a
-			// per-file cap, large/vendor-sync PRs produce hundreds of weak
-			// hits that drown out actionable findings.
-			const maxHiddenPerFile = 3
-			perFile := make(map[string]int)
-			for _, pair := range hidden {
-				srcChanged := changedSet[pair.FileA]
-				tgtChanged := changedSet[pair.FileB]
-				if !srcChanged && !tgtChanged {
-					continue
+			n := 0
+			for _, pair := range hc.hiddenPartners(changedFile) {
+				if n >= maxHiddenPerFile {
+					break
 				}
-				changedFile, missingFile := pair.FileA, pair.FileB
-				if tgtChanged && !srcChanged {
-					changedFile, missingFile = pair.FileB, pair.FileA
-				}
-				// Filter noise on BOTH sides. The regular co-change pass skips
-				// noise-changed files at filesToCheck assembly; this pass walks
-				// hidden pairs directly and must filter the changed side too,
-				// otherwise files like .gitignore (which co-change with everything
-				// in any vendor/release PR) produce a flood of meaningless hits.
-				if isCouplingNoiseFile(changedFile) {
-					continue
-				}
+				missingFile := pair.FileB
 				if changedSet[missingFile] || isCouplingNoiseFile(missingFile) {
 					continue
 				}
@@ -316,24 +296,19 @@ func (e *Engine) checkCouplingGaps(ctx context.Context, changedFiles []string, d
 				if existing[key] {
 					continue
 				}
-				if perFile[changedFile] >= maxHiddenPerFile {
-					continue
-				}
-				if !hc.isHidden(changedFile, missingFile) {
-					continue
-				}
 				existing[key] = true
-				perFile[changedFile]++
+				existing[missingFile+"\x00"+changedFile] = true
+				n++
 				gaps = append(gaps, CouplingGap{
 					ChangedFile:  changedFile,
 					MissingFile:  missingFile,
-					CoChangeRate: pair.CouplingScore,
+					CoChangeRate: pair.Score,
 				})
 				findings = append(findings, ReviewFinding{
 					Check:      "coupling",
 					Severity:   "warning",
 					File:       changedFile,
-					Message:    fmt.Sprintf("Hidden coupling: %s co-changes with %s (%.0f%% score, %d commits, no import or reference link)", changedFile, missingFile, pair.CouplingScore*100, pair.Count),
+					Message:    fmt.Sprintf("Hidden coupling: %s co-changes with %s (%.0f%% score, %d commits, no import or reference link)", changedFile, missingFile, pair.Score*100, pair.Count),
 					Suggestion: fmt.Sprintf("Consider also changing %s — it co-changes with %s but has no direct import relationship", missingFile, changedFile),
 					Category:   "coupling",
 					RuleID:     "ckb/coupling/hidden",
