@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/cycles"
@@ -51,24 +52,39 @@ func (e *Engine) FindCycles(ctx context.Context, opts FindCyclesOptions) (*FindC
 		return nil, err
 	}
 
-	// Get architecture at the requested granularity
-	archResp, err := e.GetArchitecture(ctx, GetArchitectureOptions{
-		Granularity:  opts.Granularity,
-		TargetPath:   opts.TargetPath,
-		InferModules: true,
-	})
-	if err != nil {
-		return nil, err
+	// File cycles come from the SCIP import graph when the index covers a
+	// language whose import kinds CKB reads: the architecture's file graph
+	// holds unresolved module strings and finds none. Only static imports
+	// count; type-only and lazy ones cannot form a cycle at load time.
+	var result *cycles.DetectResult
+	reason := "dependency-graph-cycles"
+	if opts.Granularity == "file" && e.hasConsumerGraph() {
+		if g := fileImportGraph(e.scipAdapter.GetIndex(), e.repoRoot); g != nil && len(g.languages) > 0 {
+			result = runtimeCyclesUnder(g, opts.TargetPath, opts.MaxCycles)
+			reason = "scip-import-graph-runtime-cycles"
+		}
 	}
 
-	// Extract nodes and adjacency from architecture response
-	nodes, adjacency, edgeMeta := extractGraph(archResp, opts.Granularity)
+	if result == nil {
+		// Get architecture at the requested granularity
+		archResp, err := e.GetArchitecture(ctx, GetArchitectureOptions{
+			Granularity:  opts.Granularity,
+			TargetPath:   opts.TargetPath,
+			InferModules: true,
+		})
+		if err != nil {
+			return nil, err
+		}
 
-	// Run cycle detection
-	detector := cycles.NewDetector()
-	result := detector.Detect(nodes, adjacency, edgeMeta, cycles.DetectOptions{
-		MaxCycles: opts.MaxCycles,
-	})
+		// Extract nodes and adjacency from architecture response
+		nodes, adjacency, edgeMeta := extractGraph(archResp, opts.Granularity)
+
+		// Run cycle detection
+		detector := cycles.NewDetector()
+		result = detector.Detect(nodes, adjacency, edgeMeta, cycles.DetectOptions{
+			MaxCycles: opts.MaxCycles,
+		})
+	}
 	result.Granularity = opts.Granularity
 
 	// Build summary
@@ -89,7 +105,7 @@ func (e *Engine) FindCycles(ctx context.Context, opts FindCyclesOptions) (*FindC
 			Tool:          "findCycles",
 			Provenance: e.buildProvenance(repoState, "full", startTime, backendContribs, CompletenessInfo{
 				Score:  0.85,
-				Reason: "dependency-graph-cycles",
+				Reason: reason,
 			}),
 		},
 		Cycles:      result.Cycles,
@@ -99,6 +115,33 @@ func (e *Engine) FindCycles(ctx context.Context, opts FindCyclesOptions) (*FindC
 	}
 
 	return resp, nil
+}
+
+// runtimeCyclesUnder returns the graph's runtime cycles with a file under
+// target (all when target is empty), at most maxCycles.
+func runtimeCyclesUnder(g *importGraph, target string, maxCycles int) *cycles.DetectResult {
+	target = strings.TrimSuffix(target, "/")
+	var kept []cycles.Cycle
+	for _, c := range g.runtimeCycles() {
+		if target != "" {
+			in := false
+			for _, n := range c.Nodes {
+				if n == target || strings.HasPrefix(n, target+"/") {
+					in = true
+					break
+				}
+			}
+			if !in {
+				continue
+			}
+		}
+		kept = append(kept, c)
+	}
+	res := &cycles.DetectResult{Cycles: kept, TotalCycles: len(kept)}
+	if maxCycles > 0 && len(kept) > maxCycles {
+		res.Cycles = kept[:maxCycles]
+	}
+	return res
 }
 
 // extractGraph extracts nodes, adjacency list, and edge metadata from an architecture response.

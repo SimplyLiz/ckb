@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
+	"github.com/SimplyLiz/CodeMCP/internal/coupling"
 )
 
 func TestFilesLinked(t *testing.T) {
@@ -42,15 +42,25 @@ func TestFilesLinked(t *testing.T) {
 }
 
 func TestHiddenCouplingIsHidden(t *testing.T) {
-	h := &hiddenCoupling{scores: map[string]cartographer.CoChangePair{}}
-	for _, p := range []cartographer.CoChangePair{
-		{FileA: "svc/a.go", FileB: "web/b.ts", Count: 5, CouplingScore: 0.8},
-		{FileA: "pkg/x.go", FileB: "pkg/y.go", Count: 5, CouplingScore: 0.9},
-		{FileA: "svc/a.go", FileB: "CHANGELOG.md", Count: 9, CouplingScore: 0.9},
-	} {
-		h.scores[p.FileA+"\x00"+p.FileB] = p
-		h.scores[p.FileB+"\x00"+p.FileA] = p
+	doc := func(p string) *scip.Document { return &scip.Document{RelativePath: p} }
+	idx := &scip.SCIPIndex{DocumentsByPath: map[string]*scip.Document{}}
+	for _, p := range []string{"svc/a.go", "web/b.ts", "pkg/x.go", "pkg/y.go", "web/c.ts"} {
+		idx.DocumentsByPath[p] = doc(p)
 	}
+	var commits [][]string
+	for i := 0; i < 5; i++ {
+		commits = append(commits,
+			[]string{"svc/a.go", "web/b.ts", "CHANGELOG.md"},
+			[]string{"pkg/x.go", "pkg/y.go"})
+	}
+	// Two shared commits: under the floor whatever the score.
+	commits = append(commits, []string{"svc/a.go", "web/c.ts"}, []string{"svc/a.go", "web/c.ts"})
+	// web/d.ts is not in the index: its links are unknown, not absent.
+	for i := 0; i < 4; i++ {
+		commits = append(commits, []string{"svc/a.go", "web/d.ts"})
+	}
+	h := &hiddenCoupling{h: coupling.HistoryFromCommits(commits), idx: idx, minCorrelation: 0.5}
+
 	if !h.isHidden("web/b.ts", "svc/a.go") {
 		t.Error("unlinked pair should be hidden")
 	}
@@ -60,27 +70,21 @@ func TestHiddenCouplingIsHidden(t *testing.T) {
 	if h.isHidden("svc/a.go", "CHANGELOG.md") {
 		t.Error("a changelog imports nothing; the pair is not hidden coupling")
 	}
-	if h.isHidden("svc/a.go", "pkg/x.go") {
-		t.Error("a pair Cartographer did not report is not hidden")
+	if h.isHidden("svc/a.go", "web/c.ts") {
+		t.Error("two shared commits are under the floor")
 	}
-	if got := len(h.candidates()); got != 3 {
-		t.Errorf("candidates = %d, want 3 (each pair once)", got)
+	if h.isHidden("svc/a.go", "web/d.ts") {
+		t.Error("a file outside the index has unknown links")
+	}
+	if h.isHidden("svc/a.go", "pkg/x.go") {
+		t.Error("files that never changed together are not hidden")
+	}
+	got := h.hiddenPartners("svc/a.go")
+	if len(got) != 1 || got[0].FileB != "web/b.ts" || got[0].Count != 5 {
+		t.Errorf("hiddenPartners(svc/a.go) = %+v, want only web/b.ts with 5 commits", got)
 	}
 	var nilH *hiddenCoupling
-	if nilH.isHidden("a", "b") || nilH.candidates() != nil {
+	if nilH.isHidden("a", "b") || nilH.hiddenPartners("a") != nil {
 		t.Error("nil hiddenCoupling must report nothing")
-	}
-}
-
-func TestStrongCochangePairs(t *testing.T) {
-	in := []cartographer.CoChangePair{
-		{FileA: "a", FileB: "b", Count: 2, CouplingScore: 1.0}, // two commits: dropped
-		{FileA: "a", FileB: "c", Count: 4, CouplingScore: 0.5},
-		{FileA: "a", FileB: "d", Count: 9, CouplingScore: 0.9},
-		{FileA: "a", FileB: "e", Count: 6, CouplingScore: 0.2}, // under the floor
-	}
-	got := strongCochangePairs(in, 0.3)
-	if len(got) != 2 || got[0].FileB != "d" || got[1].FileB != "c" {
-		t.Errorf("got %+v, want d then c", got)
 	}
 }

@@ -50,7 +50,8 @@ answers were worse than without it.
   link" was wrong for most measured pairs (Go same-package files, TypeScript `@/` aliases,
   inline Rust paths). review's hidden-coupling findings (all 7 on CKB were such pairs),
   getHotspots `cochangePartners`, getOwnership `coChangePartners` and the PR split graph use
-  the same floors; planRefactor no longer asks a second time with a floor of 2.
+  the same floors; planRefactor no longer asks a second time with a floor of 2. (The pairs
+  now come from CKB's own history; see the next section.)
 - **planRefactor takes seconds, not minutes.** It ran auditRisk over every file of the repo
   and kept the top item, which was rarely the target: 711 s on CKB, now 22 s, scoring only
   the target. The coupling analyzer lists up to 200 commits per `git show` instead of one.
@@ -84,6 +85,36 @@ answers were worse than without it.
   prepareChange 54 s → 0.9 s), and import resolution for Go packages, tsconfig aliases,
   Python and Rust `crate::` paths. archImpact, the arch-health and shotgun checks and
   getArchitecturalEvolution return values instead of zeros.
+
+### Changed — cycles and co-change no longer need Cartographer
+
+The three Cartographer results the four-repo measurement found useful now come from CKB's own
+data, in every build.
+
+- **Import cycles come from the SCIP index, classified by import site.** review's arch-health
+  check and `findCycles` with `granularity: "file"` read the file graph off the index (an
+  indexer already resolved every import, `@/` aliases included) and keep only imports that run
+  when the module loads: `import type`, `import { type A }`, `if TYPE_CHECKING:` blocks,
+  `await import()` and imports inside a Python function cannot close a cycle. TypeScript,
+  JavaScript and Python; Go is left out (package cycles do not compile) and Rust too (module
+  cycles inside a crate are legal). On Lebenslauf this gives Cartographer's 3-file editor
+  cycle and nothing else; `findCycles` used to find none, since the architecture's file graph
+  holds unresolved module strings. When a file changed after indexing and the import site
+  cannot be read, the import counts as static: a stale index may report a cycle, not hide one.
+- **arch-health reports a cycle only when the change touches one of its files**, naming the
+  files and the edge to break. It was "N circular dependency cycle(s) in project" without a
+  file, on every review. Without a TS/JS/Python index and without Cartographer it skips.
+  Cartographer's health score, god modules and layer violations stay as they were.
+- **getHotspots `cochangePartners`, getOwnership `coChangePartners`, review's hidden coupling
+  and the PR split graph read git history themselves** (`coupling.History`): the last 500
+  commits, bot and formatting commits and commits over 50 files dropped, lockfiles, assets and
+  vendored directories left out, each pair scored against the less-changed file with the
+  same prior as Cartographer. Hotspot partners were empty in builds without the library (0 of
+  20 on CKB and Lebenslauf, now 20/20 and 19/20; the same files as Cartographer's except
+  exact ties, now broken by path). Hidden coupling needs a SCIP index covering both files:
+  with no import graph of its own, CKB will not call a link absent that it cannot see. On
+  Ingestible, whose index holds only the TypeScript site, the Python pair Cartographer
+  reported is therefore no longer one.
 
 ### Fixed — saying what CKB couldn't look at
 
