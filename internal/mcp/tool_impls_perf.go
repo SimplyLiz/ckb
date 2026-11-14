@@ -11,7 +11,7 @@ import (
 )
 
 // toolScanPerformance detects hidden coupling: file pairs that co-change
-// frequently in git but have no static import edge between them.
+// frequently in git but have no link in the SCIP index.
 func (s *MCPServer) toolScanPerformance(params map[string]interface{}) (*envelope.Response, error) {
 	minCorrelation := 0.3
 	if v, ok := params["minCorrelation"].(float64); ok {
@@ -21,11 +21,6 @@ func (s *MCPServer) toolScanPerformance(params map[string]interface{}) (*envelop
 	minCoChanges := 3
 	if v, ok := params["minCoChanges"].(float64); ok {
 		minCoChanges = int(v)
-	}
-
-	windowDays := 365
-	if v, ok := params["windowDays"].(float64); ok {
-		windowDays = int(v)
 	}
 
 	limit := 50
@@ -42,15 +37,10 @@ func (s *MCPServer) toolScanPerformance(params map[string]interface{}) (*envelop
 		}
 	}
 
-	repoRoot := s.engine().GetRepoRoot()
-	analyzer := perf.NewAnalyzer(repoRoot, s.logger)
-
-	ctx := context.Background()
-	result, err := analyzer.Scan(ctx, perf.ScanOptions{
+	result, err := s.engine().ScanHiddenCoupling(context.Background(), perf.ScanOptions{
 		Scope:          scope,
 		MinCorrelation: minCorrelation,
 		MinCoChanges:   minCoChanges,
-		WindowDays:     windowDays,
 		Limit:          limit,
 	})
 	if err != nil {

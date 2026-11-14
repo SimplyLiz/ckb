@@ -2730,24 +2730,19 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		// v8.4 Performance scan
 		{
 			Name:        "scanPerformance",
-			Description: "Detect hidden coupling (despite the name, this does not measure performance): file pairs that co-change frequently in git history but have no static import edge between them. Hidden coupling indicates implicit shared state or behavioral coupling that the dependency graph cannot see, and is the highest-signal structural risk for refactoring and maintenance cost.",
+			Description: "Detect hidden coupling (despite the name, this does not measure performance): file pairs that co-changed in the last 500 commits but have no link in the SCIP index (neither file references a symbol the other defines, not one Go package). Needs an index: without one, summary.notAssessed says so and no pair is reported. Hidden coupling indicates implicit shared state or behavioral coupling that the dependency graph cannot see, and is the highest-signal structural risk for refactoring and maintenance cost.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"minCorrelation": map[string]interface{}{
 						"type":        "number",
 						"default":     0.3,
-						"description": "Minimum co-change correlation threshold (0–1). Higher values return only the most tightly coupled pairs.",
+						"description": "Minimum co-change score (0–1): shared commits / (commits of the less-changed file + 2). 5 of 5 scores 0.71. Higher values return only the most tightly coupled pairs.",
 					},
 					"minCoChanges": map[string]interface{}{
 						"type":        "number",
 						"default":     3,
 						"description": "Minimum number of shared commits. Filters out spurious pairs from low-activity files.",
-					},
-					"windowDays": map[string]interface{}{
-						"type":        "number",
-						"default":     365,
-						"description": "Git history window in days.",
 					},
 					"limit": map[string]interface{}{
 						"type":        "number",
@@ -2759,7 +2754,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 						"items": map[string]interface{}{
 							"type": "string",
 						},
-						"description": "Limit analysis to these repo-relative paths. Empty means whole repo.",
+						"description": "Only pairs whose files both lie under these repo-relative paths. Empty means whole repo.",
 					},
 				},
 			},

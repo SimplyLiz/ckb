@@ -12,9 +12,8 @@ import (
 //
 //   recordCommit         — O(files²) pair-building called once per commit
 //   buildCoChangePairs   — full git-log parse loop (simulated, no git I/O)
-//   importCouldReferTo   — per-candidate import string matching
 //   shouldIgnore         — per-file path filter on every commit
-//   correlationLevel     — per-pair level classification
+//   CorrelationLevel     — per-pair level classification
 //   ScanPipeline         — composite: pair-building + correlation + ignore filter
 //
 // Baselines (Apple M4 Pro, arm64, -count=1 -benchmem):
@@ -25,14 +24,9 @@ import (
 //   recordCommit/50files:          ~74 µs/op, 197000 B/op,  34 allocs/op
 //   recordCommit_Reuse/10files:   ~1.0 µs/op,      0 B/op,   0 allocs/op  ← reused maps
 //   recordCommit_WithIgnored:      ~522 ns/op,    744 B/op,   3 allocs/op  ← 5 real + 5 ignored
-//   importCouldReferTo/1import:    ~48 ns/op,      0 B/op,   0 allocs/op
-//   importCouldReferTo/10imports: ~277 ns/op,      0 B/op,   0 allocs/op
-//   importCouldReferTo/50imports: ~1.3 µs/op,      0 B/op,   0 allocs/op
-//   importCouldReferTo_Hit:        ~34 ns/op,      0 B/op,   0 allocs/op  ← early exit
-//   importCouldReferTo_Miss:      ~513 ns/op,      0 B/op,   0 allocs/op  ← full scan
 //   shouldIgnore/ignored:         ~1.8 ns/op,      0 B/op,   0 allocs/op
 //   shouldIgnore/not_ignored:     ~7.1 ns/op,      0 B/op,   0 allocs/op
-//   correlationLevel:            ~0.26 ns/op,      0 B/op,   0 allocs/op
+//   CorrelationLevel:            ~0.26 ns/op,      0 B/op,   0 allocs/op
 //   CoChangePipeline/100c_5f:     ~38 µs/op,   55888 B/op,  12 allocs/op
 //   CoChangePipeline/500c_10f:   ~630 µs/op,  406802 B/op,  29 allocs/op  ← seen-map lifted (was 1526)
 //   CoChangePipeline/1kc_20f:    ~4.8 ms/op, 1586994 B/op,  75 allocs/op  ← seen-map lifted (was 3072)
@@ -174,88 +168,6 @@ func BenchmarkCoChangePipelineSimulated(b *testing.B) {
 	}
 }
 
-// BenchmarkImportCouldReferTo measures per-candidate import matching.
-// Called once per candidate pair (after correlation filtering) — typically
-// a small fraction of total pairs, but the miss path scans all imports.
-func BenchmarkImportCouldReferTo(b *testing.B) {
-	targetFile := "internal/jobs/scheduler.go"
-
-	sizes := []struct {
-		name    string
-		imports []string
-	}{
-		{
-			"1import",
-			[]string{"github.com/SimplyLiz/CodeMCP/internal/query"},
-		},
-		{
-			"10imports",
-			[]string{
-				"context", "fmt", "os", "time", "sync",
-				"github.com/SimplyLiz/CodeMCP/internal/config",
-				"github.com/SimplyLiz/CodeMCP/internal/storage",
-				"github.com/SimplyLiz/CodeMCP/internal/errors",
-				"github.com/spf13/cobra",
-				"go.opentelemetry.io/otel",
-			},
-		},
-		{
-			"50imports",
-			func() []string {
-				imps := make([]string, 50)
-				for i := range imps {
-					imps[i] = fmt.Sprintf("github.com/SimplyLiz/CodeMCP/internal/pkg%d", i)
-				}
-				return imps
-			}(),
-		},
-	}
-
-	for _, sz := range sizes {
-		b.Run(sz.name, func(b *testing.B) {
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				importCouldReferTo(sz.imports, targetFile)
-			}
-		})
-	}
-}
-
-// BenchmarkImportCouldReferTo_Hit measures the early-exit path where the first
-// or second import matches, avoiding a full scan.
-func BenchmarkImportCouldReferTo_Hit(b *testing.B) {
-	// Match is at position 0 — best case.
-	imports := []string{
-		"github.com/SimplyLiz/CodeMCP/internal/jobs",
-		"github.com/SimplyLiz/CodeMCP/internal/query",
-		"github.com/SimplyLiz/CodeMCP/internal/storage",
-	}
-	target := "internal/jobs/scheduler.go"
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		importCouldReferTo(imports, target)
-	}
-}
-
-// BenchmarkImportCouldReferTo_Miss measures the full-scan path where no import
-// matches. This is the common case — most co-changing pairs are unrelated.
-func BenchmarkImportCouldReferTo_Miss(b *testing.B) {
-	imports := make([]string, 20)
-	for i := range imports {
-		imports[i] = fmt.Sprintf("github.com/SimplyLiz/CodeMCP/internal/unrelated%d", i)
-	}
-	target := "internal/jobs/scheduler.go"
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		importCouldReferTo(imports, target)
-	}
-}
-
 // BenchmarkShouldIgnore measures the path-prefix filter called on every file
 // in every commit. Should be branch-predictor-friendly (most files don't match).
 func BenchmarkShouldIgnore(b *testing.B) {
@@ -289,13 +201,13 @@ func BenchmarkCorrelationLevel(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		correlationLevel(values[i%len(values)])
+		CorrelationLevel(values[i%len(values)])
 	}
 }
 
 // BenchmarkCorrelationFilter measures the candidate filtering pass: iterate pairs,
 // apply minCorrelation + minCoChanges, compute correlation. This is the in-memory
-// work between buildCoChangePairs and the import-edge check.
+// work after buildCoChangePairs.
 func BenchmarkCorrelationFilter(b *testing.B) {
 	// Build a realistic pair map: 200 files × 200 files / 2 = ~20k pairs.
 	const nFiles = 200
