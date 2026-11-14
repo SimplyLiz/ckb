@@ -75,7 +75,7 @@ func (e *Engine) suggestPRSplit(ctx context.Context, diffStats []git.DiffStats, 
 	// Fall back to the per-file coupling analyzer for non-Cartographer builds;
 	// skip for very large PRs where the O(n) cost is prohibitive.
 	if cartographer.Available() {
-		e.addCartographerEdges(files, adj)
+		e.addCartographerEdges(ctx, files, adj)
 	} else if len(diffStats) <= 200 {
 		e.addCouplingEdges(ctx, files, adj)
 	}
@@ -142,7 +142,7 @@ func (e *Engine) suggestPRSplit(ctx context.Context, diffStats []git.DiffStats, 
 // addCartographerEdges enriches the adjacency graph using Cartographer's
 // static import graph and git co-change pairs — a single pass per data source
 // instead of O(n) git subprocess calls.
-func (e *Engine) addCartographerEdges(files []string, adj map[string]map[string]bool) {
+func (e *Engine) addCartographerEdges(ctx context.Context, files []string, adj map[string]map[string]bool) {
 	fileSet := make(map[string]bool, len(files))
 	for _, f := range files {
 		fileSet[f] = true
@@ -163,9 +163,9 @@ func (e *Engine) addCartographerEdges(files []string, adj map[string]map[string]
 	}
 
 	// Temporal coupling edges (co-change ≥ 0.5, strong signal only).
-	if pairs, err := cartographer.GitCochange(e.repoRoot, 0, minHiddenCoChanges); err == nil {
-		for _, p := range strongCochangePairs(pairs, 0.5) {
-			if fileSet[p.FileA] && fileSet[p.FileB] {
+	for _, f := range files {
+		for _, p := range e.cochangePartners(ctx, f, 0.5, 0, nil) {
+			if fileSet[p.FileB] {
 				adj[p.FileA][p.FileB] = true
 				adj[p.FileB][p.FileA] = true
 			}
