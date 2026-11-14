@@ -49,6 +49,7 @@ class Ckb < Formula
 
   def install
     bin.install "ckb"
+    prefix.install "LICENSE", "THIRD-PARTY-LICENSES"
   end
 
   def caveats

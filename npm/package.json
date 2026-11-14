@@ -40,14 +40,15 @@
   },
   "license": "SEE LICENSE IN LICENSE",
   "scripts": {
-    "prepublishOnly": "cp ../README.md ./README.md && cp ../LICENSE ./LICENSE"
+    "prepublishOnly": "cp ../README.md ./README.md && cp ../LICENSE ./LICENSE && cp ../THIRD-PARTY-LICENSES ./THIRD-PARTY-LICENSES"
   },
   "author": "SimplyLiz",
   "bin": {
     "ckb": "bin/ckb.js"
   },
   "files": [
-    "bin"
+    "bin",
+    "THIRD-PARTY-LICENSES"
   ],
   "optionalDependencies": {
     "@tastehub/ckb-darwin-arm64": "9.4.0",

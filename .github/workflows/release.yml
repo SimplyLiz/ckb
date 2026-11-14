@@ -186,10 +186,10 @@ jobs:
           # packages (which download these by name) keep working unchanged.
           if [ "$GOOS" = "windows" ]; then
             ARCHIVE="ckb_${VERSION}_windows_amd64.zip"
-            7z a "$ARCHIVE" "$OUT" README.md LICENSE >/dev/null
+            7z a "$ARCHIVE" "$OUT" README.md LICENSE THIRD-PARTY-LICENSES >/dev/null
           else
             ARCHIVE="ckb_${VERSION}_${GOOS}_${GOARCH}.tar.gz"
-            tar -czf "$ARCHIVE" "$OUT" README.md LICENSE
+            tar -czf "$ARCHIVE" "$OUT" README.md LICENSE THIRD-PARTY-LICENSES
           fi
 
           echo "Uploading $ARCHIVE to release $TAG"
@@ -267,7 +267,7 @@ jobs:
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
 
-          # Publish main package (prepublishOnly copies README.md and LICENSE)
+          # Publish main package (prepublishOnly copies README.md, LICENSE and THIRD-PARTY-LICENSES)
           if ! npm publish --access public 2>&1 | tee /tmp/npm-publish.log; then
             if grep -q "already exists" /tmp/npm-publish.log; then
               echo "::warning::Main package version already exists, skipping"
