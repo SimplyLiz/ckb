@@ -8,7 +8,6 @@ bin/
 # Binaries
 /ckb
 /ckb-test
-/ckb-bench
 /ckb_fresh
 coverage.out
 *_test

@@ -2028,15 +2028,6 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 						"type":        "integer",
 						"description": "Limit total symbols",
 					},
-					"tokenBudget": map[string]interface{}{
-						"type":        "integer",
-						"description": "Add a signature skeleton ranked by relevance and cut to this many tokens (Cartographer builds only). Omitted: no skeleton",
-					},
-					"focusFiles": map[string]interface{}{
-						"type":        "array",
-						"items":       map[string]interface{}{"type": "string"},
-						"description": "Repo-relative files the ranked skeleton centers on (with tokenBudget)",
-					},
 				},
 			},
 		},
@@ -2069,136 +2060,22 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 				},
 			},
 		},
-		// v8.6 cartographer context tools
+		// v8.6 co-change dispersion
 		{
 			Name:        "detectShotgunSurgery",
-			Description: "Detect files exhibiting the shotgun surgery smell: a change to them historically required simultaneous edits across many unrelated files. Ranks results by co-change dispersion score. Use before large refactors to identify high-blast-radius files.",
+			Description: "Detect files exhibiting the shotgun surgery smell: a change to them historically required simultaneous edits across many other files. Ranks source files by co-change partners (each with at least 3 shared commits in the recent git history; tests, bots and formatting-only commits left out), with the entropy of how evenly the co-changes spread. Use before large refactors to identify high-blast-radius files.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"limit": map[string]interface{}{
 						"type":        "integer",
-						"description": "Max number of commits to analyse (default 100)",
+						"description": "Max number of files to return (default 20)",
 					},
 					"min_partners": map[string]interface{}{
 						"type":        "integer",
 						"description": "Minimum co-change partner count to qualify as a suspect (default 3)",
 					},
 				},
-			},
-		},
-		{
-			Name:        "getArchitecturalEvolution",
-			Description: "Show how architectural health (health score, debt indicators) has changed over git history. Returns snapshots ranked by time with a trend label (improving/stable/degrading) and actionable recommendations.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"days": map[string]interface{}{
-						"type":        "integer",
-						"description": "Number of days of git history to scan (default 90)",
-					},
-				},
-			},
-		},
-		{
-			Name:        "getBlastRadius",
-			Description: "Graph-theoretic blast radius for a file or module: returns direct dependents and dependencies up to max_related hops. Works without a SCIP index; complements analyzeImpact for repos without indexing.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"target": map[string]interface{}{
-						"type":        "string",
-						"description": "Repo-relative file path or module ID to analyse",
-					},
-					"max_related": map[string]interface{}{
-						"type":        "integer",
-						"description": "Maximum related modules to return (default 50)",
-					},
-				},
-				"required": []string{"target"},
-			},
-		},
-		{
-			Name:        "renderArchitecture",
-			Description: "Render the project's module-level import graph as a Mermaid or Graphviz (DOT) diagram, ready to paste into IDEs that render Mermaid inline (Cursor, Claude Desktop, VS Code markdown preview, GitHub). With `focus` set, returns a BFS neighborhood (both imports and imported-by) around the given module to depth `depth`; without `focus`, returns the top-N most-connected nodes as an at-a-glance shape of the codebase. Response includes `truncated: true` when the node cap kicked in — tighten focus or lower depth to get a complete view.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"format": map[string]interface{}{
-						"type":        "string",
-						"description": "Output diagram format (default mermaid)",
-						"enum":        []string{"mermaid", "dot"},
-						"default":     "mermaid",
-					},
-					"focus": map[string]interface{}{
-						"type":        "string",
-						"description": "Optional anchor: module ID, repo-relative file path, or path suffix (e.g. 'server.rs'). When set, the diagram is a BFS neighborhood around this node; when absent, returns the top-N most-connected nodes.",
-					},
-					"depth": map[string]interface{}{
-						"type":        "integer",
-						"description": "BFS depth from `focus` over undirected import edges (default 2). Ignored when `focus` is absent.",
-						"default":     2,
-					},
-					"max_nodes": map[string]interface{}{
-						"type":        "integer",
-						"description": "Cap on nodes rendered; response sets `truncated: true` if the cap was hit (default 40).",
-						"default":     40,
-					},
-				},
-			},
-		},
-		{
-			Name:        "queryContext",
-			Description: "Retrieve the most relevant code context for a task or question. Runs the cartographer PKG retrieval pipeline: BM25 content search → personalized PageRank skeleton → context health scoring. Returns a ready-to-use context bundle with token count and A–F quality grade. Use this before starting any non-trivial coding task.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"query": map[string]interface{}{
-						"type":        "string",
-						"description": "Natural language description of the task or question (e.g. 'add pagination to the user list API')",
-					},
-					"budget": map[string]interface{}{
-						"type":        "integer",
-						"default":     8000,
-						"description": "Token budget for the skeleton portion",
-					},
-					"model": map[string]interface{}{
-						"type":        "string",
-						"default":     "claude",
-						"description": "Target model family for context window sizing: claude (200K), gpt4 (128K), llama (128K), gpt35 (16K)",
-						"enum":        []string{"claude", "gpt4", "llama", "gpt35"},
-					},
-					"maxSearchResults": map[string]interface{}{
-						"type":        "integer",
-						"default":     20,
-						"description": "Max BM25 search hits used as PageRank personalization seeds",
-					},
-				},
-				"required": []string{"query"},
-			},
-		},
-		{
-			Name:        "contextHealth",
-			Description: "Score the quality of an LLM context bundle on 6 research-backed metrics: signal density, compression density, position health (U-shaped attention bias), entity density, utilisation headroom, and dedup ratio. Returns a composite 0–100 score graded A–F with per-metric breakdown and actionable recommendations.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"content": map[string]interface{}{
-						"type":        "string",
-						"description": "The context string to evaluate (what you would send to the LLM)",
-					},
-					"model": map[string]interface{}{
-						"type":        "string",
-						"default":     "claude",
-						"description": "Target model family for window-size reference: claude (200K), gpt4 (128K), llama (128K), gpt35 (16K)",
-						"enum":        []string{"claude", "gpt4", "llama", "gpt35"},
-					},
-					"signatureCount": map[string]interface{}{
-						"type":        "integer",
-						"description": "Number of symbol signatures in the content (improves signal density scoring)",
-					},
-				},
-				"required": []string{"content"},
 			},
 		},
 		// v8.0 Secret Detection
@@ -3023,13 +2900,8 @@ func (s *MCPServer) RegisterTools() {
 	s.tools["scanPerformance"] = s.toolScanPerformance
 	// v8.5 Structural performance scan (loop call sites)
 	s.tools["analyzeStructuralPerf"] = s.toolAnalyzeStructuralPerf
-	// v8.6 cartographer context tools
-	s.tools["queryContext"] = s.toolQueryContext
-	s.tools["contextHealth"] = s.toolContextHealth
+	// v8.6 co-change dispersion
 	s.tools["detectShotgunSurgery"] = s.toolDetectShotgunSurgery
-	s.tools["getArchitecturalEvolution"] = s.toolGetArchitecturalEvolution
-	s.tools["getBlastRadius"] = s.toolGetBlastRadius
-	s.tools["renderArchitecture"] = s.toolRenderArchitecture
 	// v9.0 LIP symbol annotations
 	s.tools["annotationSet"] = s.toolAnnotationSet
 	s.tools["annotationGet"] = s.toolAnnotationGet

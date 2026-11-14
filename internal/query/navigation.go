@@ -14,7 +14,6 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/backends"
 	"github.com/SimplyLiz/CodeMCP/internal/backends/git"
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/output"
 	"github.com/SimplyLiz/CodeMCP/internal/pathclass"
 	"github.com/SimplyLiz/CodeMCP/internal/version"
@@ -220,9 +219,6 @@ type ModuleOverviewResponse struct {
 	RecentCommits    []string             `json:"recentCommits,omitempty"`
 	Annotations      *ModuleAnnotations   `json:"annotations,omitempty"`      // v6.5: Declared module metadata
 	RelatedDecisions []RelatedDecision    `json:"relatedDecisions,omitempty"` // v6.5: ADRs affecting this module
-	// Skeleton provides Cartographer's skeleton (signatures + imports + deps) for the module.
-	// Only populated when the binary is built with -tags cartographer.
-	Skeleton *cartographer.ModuleContext `json:"skeleton,omitempty"`
 }
 
 // ModuleOverviewModule contains module identity.
@@ -768,13 +764,6 @@ func (e *Engine) GetModuleOverview(ctx context.Context, opts ModuleOverviewOptio
 		RecentCommits:    recentCommits,
 		Annotations:      annotations,
 		RelatedDecisions: relatedDecisions,
-	}
-
-	// Augment with Cartographer skeleton: signatures + imports + direct dependencies.
-	if cartographer.Available() {
-		if skeleton, cerr := cartographer.GetModuleContext(e.repoRoot, modulePath, 1); cerr == nil {
-			resp.Skeleton = skeleton
-		}
 	}
 
 	return resp, nil
@@ -1989,20 +1978,16 @@ type TimeWindowSelector struct {
 // SummarizeDiffResponse provides a compressed summary of changes.
 type SummarizeDiffResponse struct {
 	AINavigationMeta
-	Selector        DiffSelector         `json:"selector"`
-	ChangedFiles    []DiffFileChange     `json:"changedFiles"`
-	SymbolsAffected []DiffSymbolAffected `json:"symbolsAffected"`
-	RiskSignals     []DiffRiskSignal     `json:"riskSignals"`
-	SuggestedTests  []SuggestedTest      `json:"suggestedTests,omitempty"`
-	Summary         DiffSummaryText      `json:"summary"`
-	Commits         []DiffCommitInfo     `json:"commits,omitempty"`
-	// FunctionChanges provides function-level diff from Cartographer semidiff
-	// (added/removed function signatures per file). Only populated for commitRange
-	// selectors when the binary is built with -tags cartographer.
-	FunctionChanges []cartographer.SemidiffFile `json:"functionChanges,omitempty"`
-	Confidence      float64                     `json:"confidence"`
-	ConfidenceBasis []ConfidenceBasisItem       `json:"confidenceBasis"`
-	Limitations     []string                    `json:"limitations,omitempty"`
+	Selector        DiffSelector          `json:"selector"`
+	ChangedFiles    []DiffFileChange      `json:"changedFiles"`
+	SymbolsAffected []DiffSymbolAffected  `json:"symbolsAffected"`
+	RiskSignals     []DiffRiskSignal      `json:"riskSignals"`
+	SuggestedTests  []SuggestedTest       `json:"suggestedTests,omitempty"`
+	Summary         DiffSummaryText       `json:"summary"`
+	Commits         []DiffCommitInfo      `json:"commits,omitempty"`
+	Confidence      float64               `json:"confidence"`
+	ConfidenceBasis []ConfidenceBasisItem `json:"confidenceBasis"`
+	Limitations     []string              `json:"limitations,omitempty"`
 }
 
 // DiffSelector records which selector was used.
@@ -2365,13 +2350,6 @@ func (e *Engine) SummarizeDiff(ctx context.Context, opts SummarizeDiffOptions) (
 		RepoStateId:     repoState.RepoStateId,
 		RepoStateDirty:  repoState.Dirty,
 		QueryDurationMs: time.Since(startTime).Milliseconds(),
-	}
-
-	// Augment with Cartographer function-level diff for commit range selectors.
-	if cartographer.Available() && base != "" {
-		if files, cerr := cartographer.Semidiff(e.repoRoot, base, head); cerr == nil && len(files) > 0 {
-			response.FunctionChanges = files
-		}
 	}
 
 	// Add drilldowns

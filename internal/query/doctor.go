@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/config"
 	"github.com/SimplyLiz/CodeMCP/internal/lip"
 	"github.com/SimplyLiz/CodeMCP/internal/project"
@@ -52,7 +51,6 @@ func (e *Engine) Doctor(ctx context.Context, checkName string) (*DoctorResponse,
 	// Run all checks or specific one
 	if checkName == "" || checkName == "all" {
 		checks = append(checks, e.checkGit(ctx))
-		checks = append(checks, e.checkCartographer(ctx))
 		checks = append(checks, e.checkScip(ctx))
 		checks = append(checks, e.checkLsp(ctx))
 		checks = append(checks, e.checkLIP(ctx))
@@ -64,8 +62,6 @@ func (e *Engine) Doctor(ctx context.Context, checkName string) (*DoctorResponse,
 		switch checkName {
 		case "git":
 			checks = append(checks, e.checkGit(ctx))
-		case "cartographer":
-			checks = append(checks, e.checkCartographer(ctx))
 		case "scip":
 			checks = append(checks, e.checkScip(ctx))
 		case "lsp":
@@ -169,40 +165,6 @@ func (e *Engine) checkGit(ctx context.Context) DoctorCheck {
 const scipLargeRepoThreshold = 50_000
 
 // checkScip verifies SCIP index availability.
-// checkCartographer reports whether the vendored Cartographer engine — the fast,
-// SCIP-free structural tier (dependents, blast-radius, rollup) — is linked into
-// this binary. npm/Homebrew builds are CGO-free and omit it; a source build via
-// `make build` includes it. This lets a user confirm the fast tier is actually
-// active rather than silently running without it.
-func (e *Engine) checkCartographer(_ context.Context) DoctorCheck {
-	check := DoctorCheck{Name: "cartographer"}
-
-	if !cartographer.Available() {
-		check.Status = "warn"
-		check.Message = "Cartographer engine not linked — fast structural tier unavailable " +
-			"(this build is CGO-free). Structural navigation falls back to SCIP/LSP. " +
-			"Build from source with 'make build' for dependents/blast-radius/rollup " +
-			"without waiting on a SCIP index."
-		check.SuggestedFixes = []FixAction{
-			{
-				Type:        "run-command",
-				Command:     "make build",
-				Safe:        true,
-				Description: "Build CKB with the Cartographer fast tier (needs Rust + Go + a C compiler)",
-			},
-		}
-		return check
-	}
-
-	check.Status = "pass"
-	if ver, err := cartographer.Version(); err == nil && ver != "" {
-		check.Message = fmt.Sprintf("Cartographer engine linked (v%s) — fast structural tier active", ver)
-	} else {
-		check.Message = "Cartographer engine linked — fast structural tier active"
-	}
-	return check
-}
-
 func (e *Engine) checkScip(ctx context.Context) DoctorCheck {
 	check := DoctorCheck{
 		Name: "scip",
