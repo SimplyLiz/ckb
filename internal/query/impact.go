@@ -35,6 +35,11 @@ type AnalyzeImpactOptions struct {
 	// AllItems skips the item budget, for a caller aggregating several symbols that
 	// applies its own. ConsumerFiles is complete either way.
 	AllItems bool
+	// skipArchImpact leaves out Cartographer's SimulateChange, which rebuilds the
+	// whole import graph per call. Callers inside the engine that loop over
+	// symbols never read ArchImpact; prepareChange alone ran it once per
+	// declared symbol of a file.
+	skipArchImpact bool
 }
 
 // AnalyzeImpactResponse is the response for analyzeImpact.
@@ -890,11 +895,9 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 	// Augment with Cartographer architectural simulation for the symbol's file.
 	// Uses the file path as the module ID — gives predicted affected modules, cycle
 	// risk, layer violations, and health delta. Gracefully skipped when unavailable.
-	if cartographer.Available() && symbolInfo.Location != nil {
+	if cartographer.Available() && symbolInfo.Location != nil && !opts.skipArchImpact {
 		filePath := symbolInfo.Location.FileId
-		if archImpact, cerr := cartographer.SimulateChange(e.repoRoot, filePath, symbolInfo.Signature, ""); cerr == nil {
-			resp.ArchImpact = archImpact
-		}
+		resp.ArchImpact = usableArchImpact(cartographer.SimulateChange(e.repoRoot, filePath, symbolInfo.Signature, ""))
 	}
 
 	return resp, nil
@@ -1678,6 +1681,8 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			Depth:        opts.TransitiveDepth,
 			IncludeTests: opts.IncludeTests,
 			AllItems:     true, // This aggregate is budgeted below, once
+
+			skipArchImpact: true,
 		})
 		if err != nil {
 			done.failed++
@@ -3127,6 +3132,8 @@ func (e *Engine) hasReachingTest(ctx context.Context, consumer ImpactItem) bool 
 		Depth:        2,
 		IncludeTests: true,
 		AllItems:     true, // A budget cuts transitive items first, and a test can be one
+
+		skipArchImpact: true,
 	})
 	if err != nil {
 		return false

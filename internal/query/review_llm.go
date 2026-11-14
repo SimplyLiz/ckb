@@ -320,6 +320,8 @@ func (e *Engine) enrichBlastRadius(ctx context.Context, f ReviewFinding) string 
 	impact, err := e.AnalyzeImpact(ctx, AnalyzeImpactOptions{
 		SymbolId: sym.StableId,
 		Depth:    1,
+
+		skipArchImpact: true,
 	})
 	if err != nil || impact == nil || impact.BlastRadius == nil {
 		return ""
