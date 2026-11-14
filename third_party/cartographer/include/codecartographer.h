@@ -213,7 +213,7 @@ char *codecartographer_git_churn(const char *path, uint32_t limit);
  * Inputs:
  *   `path`      — project root (C string)
  *   `limit`     — number of commits to analyse (0 → 500)
- *   `min_count` — minimum co-change count to include (0 → 2)
+ *   `min_count` — minimum co-change count to include (0 → 3)
  *
  * Response shape:
  * ```json
@@ -271,7 +271,7 @@ char *codecartographer_semidiff(const char *path, const char *commit1, const cha
  * Inputs:
  *   `path`      — project root
  *   `limit`     — commits to analyse (0 → 500)
- *   `min_count` — minimum co-change count to include (0 → 2)
+ *   `min_count` — minimum co-change count to include (0 → 3)
  *
  * Response shape: same as `codecartographer_git_cochange` (array of CoChangePair).
  * Returns an empty array when the directory is not a git repo.
@@ -290,17 +290,19 @@ char *codecartographer_hidden_coupling(const char *path, uint32_t limit, uint32_
  * ```json
  * {
  *   "ok": true,
- *   "data": [
- *     {
- *       "path": "src/api.rs",
- *       "moduleId": "src/api.rs",
- *       "rank": 0.0842,
- *       "signatureCount": 45,
- *       "estimatedTokens": 680,
- *       "role": "core",
- *       "signatures": ["pub fn rebuild_graph(...) -> ...", "..."]
- *     }
- *   ]
+ *   "data": {
+ *     "files": [
+ *       {
+ *         "path": "src/api.rs",
+ *         "moduleId": "src/api.rs",
+ *         "rank": 0.0842,
+ *         "signatureCount": 45,
+ *         "estimatedTokens": 680,
+ *         "role": "core",
+ *         "signatures": ["pub fn rebuild_graph(...) -> ...", "..."]
+ *       }
+ *     ]
+ *   }
  * }
  * ```
  */
@@ -378,7 +380,7 @@ char *codecartographer_search_content(const char *path, const char *pattern, con
  *
  * Parameters:
  * - `path`      – absolute path to repo root (UTF-8 C string)
- * - `pattern`   – glob pattern, e.g. `"*.rs"` or `"src/subdir/*.go"` (C string)
+ * - `pattern`   – glob pattern, e.g. `"*.rs"` or `"src/{a,b}.go"` (C string)
  * - `limit`     – max files to return; 0 = unlimited
  * - `opts_json` – optional JSON `FindOptions` or null for defaults:
  *   `{ modifiedSinceSecs, newerThan, minSizeBytes, maxSizeBytes, maxDepth, noIgnore }`
@@ -671,10 +673,10 @@ char *codecartographer_shotgun_surgery(const char *path, uint32_t limit, uint32_
  *   "data": [
  *     {
  *       "path": "docs/architecture.md",
- *       "module_id": "docs/architecture.md",
+ *       "moduleId": "docs/architecture.md",
  *       "signatures": ["# Architecture", "## Overview"],
  *       "imports": ["src/api.rs"],
- *       "edge_count": 3
+ *       "edgeCount": 3
  *     }
  *   ]
  * }
