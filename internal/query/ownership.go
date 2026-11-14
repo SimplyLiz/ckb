@@ -246,8 +246,8 @@ func (e *Engine) GetOwnership(ctx context.Context, opts GetOwnershipOptions) (*G
 	// together with this path. These are implicit co-owners even if not in CODEOWNERS.
 	var coChangePartners []string
 	if cartographer.Available() {
-		if pairs, err := cartographer.GitCochange(e.repoRoot, 0, 3); err == nil {
-			for _, p := range pairs {
+		if pairs, err := cartographer.GitCochange(e.repoRoot, 0, minHiddenCoChanges); err == nil {
+			for _, p := range strongCochangePairs(pairs, prepareMinCorrelation) {
 				partner := ""
 				if p.FileA == normalizedPath {
 					partner = p.FileB
