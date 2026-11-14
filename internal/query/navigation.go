@@ -2839,12 +2839,13 @@ func (e *Engine) GetHotspots(ctx context.Context, opts GetHotspotsOptions) (*Get
 	// Augment hotspots with Cartographer co-change partners (temporal coupling).
 	// Surfaces files that frequently change together — captured from git history.
 	if cartographer.Available() && len(response.Hotspots) > 0 {
-		if pairs, cerr := cartographer.GitCochange(e.repoRoot, 0, 3); cerr == nil && len(pairs) > 0 {
+		if pairs, cerr := cartographer.GitCochange(e.repoRoot, 0, minHiddenCoChanges); cerr == nil && len(pairs) > 0 {
+			pairs = strongCochangePairs(pairs, prepareMinCorrelation)
 			hotspotSet := make(map[string]struct{}, len(response.Hotspots))
 			for _, h := range response.Hotspots {
 				hotspotSet[h.FilePath] = struct{}{}
 			}
-			// Build filePath → top partners map (limit to 3 per file).
+			// Build filePath → top partners map (limit to 3 per file, strongest first).
 			partnerMap := make(map[string][]string)
 			for _, pair := range pairs {
 				if _, isHotspot := hotspotSet[pair.FileA]; isHotspot {

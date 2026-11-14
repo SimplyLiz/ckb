@@ -163,9 +163,9 @@ func (e *Engine) addCartographerEdges(files []string, adj map[string]map[string]
 	}
 
 	// Temporal coupling edges (co-change ≥ 0.5, strong signal only).
-	if pairs, err := cartographer.GitCochange(e.repoRoot, 0, 3); err == nil {
-		for _, p := range pairs {
-			if fileSet[p.FileA] && fileSet[p.FileB] && p.CouplingScore >= 0.5 {
+	if pairs, err := cartographer.GitCochange(e.repoRoot, 0, minHiddenCoChanges); err == nil {
+		for _, p := range strongCochangePairs(pairs, 0.5) {
+			if fileSet[p.FileA] && fileSet[p.FileB] {
 				adj[p.FileA][p.FileB] = true
 				adj[p.FileB][p.FileA] = true
 			}

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/audit"
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/version"
 )
 
@@ -196,7 +195,7 @@ func (e *Engine) PlanRefactor(ctx context.Context, opts PlanRefactorOptions) (*P
 			if len(prepareResult.CoChangeFiles) > 0 {
 				resp.CouplingAnalysis.HighestCoupled = prepareResult.CoChangeFiles[0].File
 			}
-			// Collect hidden-coupling files (co-change without import edge) from the
+			// Collect hidden-coupling files (co-change without a static link) from the
 			// PrepareCoChange results — these are the highest-risk implicit dependencies
 			// for a refactoring because they will cascade without any static signal.
 			for _, cc := range prepareResult.CoChangeFiles {
@@ -208,29 +207,10 @@ func (e *Engine) PlanRefactor(ctx context.Context, opts PlanRefactorOptions) (*P
 			}
 		}
 
-		// Augment with Cartographer hidden coupling when not already captured above
-		// (e.g. when Cartographer was unavailable during PrepareChange but is now).
-		if cartographer.Available() && resp.CouplingAnalysis != nil && len(resp.CouplingAnalysis.HiddenCouplingFiles) == 0 {
-			filePath := opts.Target
-			if prepareResult.Target != nil && prepareResult.Target.Path != "" {
-				filePath = prepareResult.Target.Path
-			}
-			if hidden, err := cartographer.HiddenCoupling(e.repoRoot, 0, 2); err == nil {
-				for _, p := range hidden {
-					partner := ""
-					if p.FileA == filePath {
-						partner = p.FileB
-					} else if p.FileB == filePath {
-						partner = p.FileA
-					}
-					if partner != "" {
-						resp.CouplingAnalysis.HiddenCouplingFiles = append(
-							resp.CouplingAnalysis.HiddenCouplingFiles, partner,
-						)
-					}
-				}
-			}
-		}
+		// No second Cartographer pass here: prepareChange already marked the
+		// hidden pairs, and its rules (3+ co-changes, CKB's correlation floor,
+		// no link CKB can see) are the ones that held up when measured. The
+		// fallback this replaced asked Cartographer again with a floor of 2.
 	}
 
 	// Risk assessment

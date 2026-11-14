@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -265,11 +266,20 @@ func (e *Engine) checkCouplingGaps(ctx context.Context, changedFiles []string, d
 		})
 	}
 
-	// Augment with Cartographer hidden coupling: co-change pairs with NO import edge.
-	// These represent implicit dependencies invisible in the static dependency graph.
+	// Augment with Cartographer hidden coupling: co-change pairs with no static
+	// link. newHiddenCoupling applies the 3-commit floor and the same
+	// correlation floor as above, and drops pairs CKB sees linked (same Go
+	// package, SCIP references) — "no import link" was wrong for most of
+	// Cartographer's pairs when measured.
 	if cartographer.Available() {
-		hidden, err := cartographer.HiddenCoupling(e.repoRoot, 0, 3)
-		if err == nil {
+		if hc := e.newHiddenCoupling(minCorrelation); hc != nil {
+			hidden := hc.candidates()
+			sort.Slice(hidden, func(i, j int) bool {
+				if hidden[i].CouplingScore != hidden[j].CouplingScore {
+					return hidden[i].CouplingScore > hidden[j].CouplingScore
+				}
+				return hidden[i].FileA+hidden[i].FileB < hidden[j].FileA+hidden[j].FileB
+			})
 			existing := make(map[string]bool, len(gaps)*2)
 			for _, g := range gaps {
 				existing[g.ChangedFile+"\x00"+g.MissingFile] = true
@@ -282,11 +292,6 @@ func (e *Engine) checkCouplingGaps(ctx context.Context, changedFiles []string, d
 			const maxHiddenPerFile = 3
 			perFile := make(map[string]int)
 			for _, pair := range hidden {
-				// The same floor as the regular pass: both are count / the smaller
-				// file's commits, and a 14% "coupling" was reported as a warning.
-				if pair.CouplingScore < minCorrelation {
-					continue
-				}
 				srcChanged := changedSet[pair.FileA]
 				tgtChanged := changedSet[pair.FileB]
 				if !srcChanged && !tgtChanged {
@@ -314,6 +319,9 @@ func (e *Engine) checkCouplingGaps(ctx context.Context, changedFiles []string, d
 				if perFile[changedFile] >= maxHiddenPerFile {
 					continue
 				}
+				if !hc.isHidden(changedFile, missingFile) {
+					continue
+				}
 				existing[key] = true
 				perFile[changedFile]++
 				gaps = append(gaps, CouplingGap{
@@ -325,7 +333,7 @@ func (e *Engine) checkCouplingGaps(ctx context.Context, changedFiles []string, d
 					Check:      "coupling",
 					Severity:   "warning",
 					File:       changedFile,
-					Message:    fmt.Sprintf("Hidden coupling: %s co-changes with %s (%.0f%% score, no import link)", changedFile, missingFile, pair.CouplingScore*100),
+					Message:    fmt.Sprintf("Hidden coupling: %s co-changes with %s (%.0f%% score, %d commits, no import or reference link)", changedFile, missingFile, pair.CouplingScore*100, pair.Count),
 					Suggestion: fmt.Sprintf("Consider also changing %s — it co-changes with %s but has no direct import relationship", missingFile, changedFile),
 					Category:   "coupling",
 					RuleID:     "ckb/coupling/hidden",

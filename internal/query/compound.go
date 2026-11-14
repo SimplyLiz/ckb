@@ -2137,56 +2137,19 @@ func (e *Engine) languageSupportsTestDiscovery(target *PrepareChangeTarget) bool
 	return false
 }
 
-// getPrepareCoChanges finds files that historically change together.
-// When Cartographer is available, uses a single git-log pass (bot-filtered) and
-// marks pairs that have no import edge as IsHidden. Falls back to the per-file
-// coupling analyzer otherwise.
+// prepareMinCorrelation is the co-change rate prepareChange lists from.
+const prepareMinCorrelation = 0.3
+
+// getPrepareCoChanges finds files that historically change together, from
+// CKB's coupling analyzer. With Cartographer, a listed pair is marked IsHidden
+// when it also passes the hidden-coupling rules (see cochange_hidden.go);
+// Cartographer's own pair list replaced the analyzer's before and swapped
+// strong pairs for two-commit ones scored 1.0.
 func (e *Engine) getPrepareCoChanges(ctx context.Context, path string) ([]PrepareCoChange, error) {
-	if cartographer.Available() {
-		// Single pass over git history — much faster than O(n) subprocess approach.
-		pairs, err := cartographer.GitCochange(e.repoRoot, 0, 2)
-		if err == nil {
-			// Build hidden-coupling set for annotation (pairs with no import edge).
-			hiddenPairs, _ := cartographer.HiddenCoupling(e.repoRoot, 0, 2)
-			hiddenSet := make(map[string]bool, len(hiddenPairs)*2)
-			for _, h := range hiddenPairs {
-				hiddenSet[h.FileA+"\x00"+h.FileB] = true
-				hiddenSet[h.FileB+"\x00"+h.FileA] = true
-			}
-
-			var coChanges []PrepareCoChange
-			for _, p := range pairs {
-				partner := ""
-				if p.FileA == path {
-					partner = p.FileB
-				} else if p.FileB == path {
-					partner = p.FileA
-				}
-				if partner == "" {
-					continue
-				}
-				coChanges = append(coChanges, PrepareCoChange{
-					File:        partner,
-					Correlation: p.CouplingScore,
-					CoChanges:   p.Count,
-					IsHidden:    hiddenSet[path+"\x00"+partner],
-				})
-			}
-			sort.Slice(coChanges, func(i, j int) bool {
-				return coChanges[i].Correlation > coChanges[j].Correlation
-			})
-			if len(coChanges) > 10 {
-				coChanges = coChanges[:10]
-			}
-			return coChanges, nil
-		}
-	}
-
-	// Fallback: per-file coupling analyzer (O(1) git subprocess, regex-based).
 	analyzer := coupling.NewAnalyzer(e.repoRoot, e.logger)
 	result, err := analyzer.Analyze(ctx, coupling.AnalyzeOptions{
 		Target:         path,
-		MinCorrelation: 0.3,
+		MinCorrelation: prepareMinCorrelation,
 		WindowDays:     365,
 		Limit:          10,
 		RepoRoot:       e.repoRoot,
@@ -2196,12 +2159,25 @@ func (e *Engine) getPrepareCoChanges(ctx context.Context, path string) ([]Prepar
 	}
 
 	coChanges := make([]PrepareCoChange, 0, len(result.Correlations))
+	candidates := false
 	for _, cf := range result.Correlations {
 		coChanges = append(coChanges, PrepareCoChange{
 			File:        cf.FilePath,
 			Correlation: cf.Correlation,
 			CoChanges:   cf.CoChangeCount,
 		})
+		if cf.CoChangeCount >= minHiddenCoChanges {
+			candidates = true
+		}
+	}
+	if candidates && cartographer.Available() && ctx.Err() == nil {
+		if hidden := e.newHiddenCoupling(prepareMinCorrelation); hidden != nil {
+			for i := range coChanges {
+				if coChanges[i].CoChanges >= minHiddenCoChanges {
+					coChanges[i].IsHidden = hidden.isHidden(path, coChanges[i].File)
+				}
+			}
+		}
 	}
 	return coChanges, nil
 }
