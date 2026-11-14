@@ -2028,6 +2028,15 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 						"type":        "integer",
 						"description": "Limit total symbols",
 					},
+					"tokenBudget": map[string]interface{}{
+						"type":        "integer",
+						"description": "Add a signature skeleton ranked by relevance and cut to this many tokens (Cartographer builds only). Omitted: no skeleton",
+					},
+					"focusFiles": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "Repo-relative files the ranked skeleton centers on (with tokenBudget)",
+					},
 				},
 			},
 		},
