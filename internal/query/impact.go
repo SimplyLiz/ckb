@@ -15,7 +15,6 @@ import (
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends"
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/compression"
 	"github.com/SimplyLiz/CodeMCP/internal/diff"
 	"github.com/SimplyLiz/CodeMCP/internal/errors"
@@ -36,30 +35,21 @@ type AnalyzeImpactOptions struct {
 	// AllItems skips the item budget, for a caller aggregating several symbols that
 	// applies its own. ConsumerFiles is complete either way.
 	AllItems bool
-	// skipArchImpact leaves out Cartographer's SimulateChange, which rebuilds the
-	// whole import graph per call. Callers inside the engine that loop over
-	// symbols never read ArchImpact; prepareChange alone ran it once per
-	// declared symbol of a file.
-	skipArchImpact bool
 }
 
 // AnalyzeImpactResponse is the response for analyzeImpact.
 type AnalyzeImpactResponse struct {
-	Symbol           *SymbolInfo           `json:"symbol"`
-	Visibility       *VisibilityInfo       `json:"visibility"`
-	RiskScore        *RiskScore            `json:"riskScore"`
-	BlastRadius      *BlastRadiusSummary   `json:"blastRadius,omitempty"`
-	DirectImpact     []ImpactItem          `json:"directImpact"`
-	TransitiveImpact []ImpactItem          `json:"transitiveImpact,omitempty"`
-	ModulesAffected  []ModuleImpact        `json:"modulesAffected"`
-	ObservedUsage    *ObservedUsageSummary `json:"observedUsage,omitempty"`
-	RelatedDecisions []RelatedDecision     `json:"relatedDecisions,omitempty"` // v6.5: ADRs affecting impacted modules
-	DocsToUpdate     []DocToUpdate         `json:"docsToUpdate,omitempty"`     // v7.3: Docs that mention this symbol
-	// ArchImpact is Cartographer's architectural simulation for the symbol's file:
-	// predicted affected modules, cycle risk, layer violations, and health delta.
-	// Only populated when the binary is built with -tags cartographer.
-	ArchImpact        *cartographer.ImpactAnalysis `json:"archImpact,omitempty"`
-	BlendedConfidence float64                      `json:"blendedConfidence,omitempty"`
+	Symbol            *SymbolInfo           `json:"symbol"`
+	Visibility        *VisibilityInfo       `json:"visibility"`
+	RiskScore         *RiskScore            `json:"riskScore"`
+	BlastRadius       *BlastRadiusSummary   `json:"blastRadius,omitempty"`
+	DirectImpact      []ImpactItem          `json:"directImpact"`
+	TransitiveImpact  []ImpactItem          `json:"transitiveImpact,omitempty"`
+	ModulesAffected   []ModuleImpact        `json:"modulesAffected"`
+	ObservedUsage     *ObservedUsageSummary `json:"observedUsage,omitempty"`
+	RelatedDecisions  []RelatedDecision     `json:"relatedDecisions,omitempty"` // v6.5: ADRs affecting impacted modules
+	DocsToUpdate      []DocToUpdate         `json:"docsToUpdate,omitempty"`     // v7.3: Docs that mention this symbol
+	BlendedConfidence float64               `json:"blendedConfidence,omitempty"`
 	// TestImpact holds the test code using the symbol when IncludeTests is off. It
 	// is kept out of DirectImpact, TransitiveImpact and everything counted from
 	// them, so a well-tested symbol doesn't look like a widely used one.
@@ -893,14 +883,6 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 		Drilldowns:               drilldowns,
 	}
 
-	// Augment with Cartographer architectural simulation for the symbol's file.
-	// Uses the file path as the module ID — gives predicted affected modules, cycle
-	// risk, layer violations, and health delta. Gracefully skipped when unavailable.
-	if cartographer.Available() && symbolInfo.Location != nil && !opts.skipArchImpact {
-		filePath := symbolInfo.Location.FileId
-		resp.ArchImpact = usableArchImpact(cartographer.SimulateChange(e.repoRoot, filePath, symbolInfo.Signature, ""))
-	}
-
 	return resp, nil
 }
 
@@ -1682,8 +1664,6 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			Depth:        opts.TransitiveDepth,
 			IncludeTests: opts.IncludeTests,
 			AllItems:     true, // This aggregate is budgeted below, once
-
-			skipArchImpact: true,
 		})
 		if err != nil {
 			done.failed++
@@ -3086,8 +3066,6 @@ func (e *Engine) hasReachingTest(ctx context.Context, consumer ImpactItem) bool 
 		Depth:        2,
 		IncludeTests: true,
 		AllItems:     true, // A budget cuts transitive items first, and a test can be one
-
-		skipArchImpact: true,
 	})
 	if err != nil {
 		return false

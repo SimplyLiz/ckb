@@ -986,10 +986,9 @@ func (s *MCPServer) toolGetArchitecture(params map[string]interface{}) (*envelop
 		data["limitations"] = archResp.Limitations
 	}
 
-	// Cartographer's graph findings (cartographer builds). This map is built
-	// field by field and these four were never copied into it, so the engine
-	// computed them for nothing. (The HTTP API and CLI convert to their own
-	// types and drop them as well.)
+	// Structural findings (cycles, god modules, bridges) from the SCIP index.
+	// This map is built field by field; the HTTP API and CLI convert to their
+	// own types and drop them.
 	if archResp.ArchHealth != nil {
 		data["archHealth"] = archResp.ArchHealth
 	}

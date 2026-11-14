@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/complexity"
 	"github.com/SimplyLiz/CodeMCP/internal/coupling"
 	"github.com/SimplyLiz/CodeMCP/internal/errors"
@@ -1466,10 +1465,6 @@ type PrepareChangeResponse struct {
 	RenameDetail     *RenameDetail        `json:"renameDetail,omitempty"`
 	ExtractDetail    *ExtractDetail       `json:"extractDetail,omitempty"`
 	MoveDetail       *MoveDetail          `json:"moveDetail,omitempty"`
-	// ArchImpact is Cartographer's module-level impact simulation: predicted affected
-	// modules, cycle risk, layer violations, and health delta. Only populated when the
-	// binary is built with -tags cartographer.
-	ArchImpact *cartographer.ImpactAnalysis `json:"archImpact,omitempty"`
 }
 
 // PrepareChangeTarget describes what will be changed.
@@ -1577,7 +1572,6 @@ func (e *Engine) PrepareChange(ctx context.Context, opts PrepareChangeOptions) (
 	var moveDetail *MoveDetail
 	var riskFactors []string
 	var warnings []string
-	var archImpact *cartographer.ImpactAnalysis
 
 	// Get impact analysis. A file target is the sum of what it declares: its
 	// types, their fields and methods, its functions.
@@ -1675,27 +1669,10 @@ func (e *Engine) PrepareChange(ctx context.Context, opts PrepareChangeOptions) (
 		}()
 	}
 
-	// Architectural impact simulation via Cartographer (module-level cascade,
-	// cycle risk, layer violations). Falls through silently if not compiled in.
-	if cartographer.Available() && target.Path != "" {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if ai := usableArchImpact(cartographer.SimulateChange(e.repoRoot, target.Path, "", "")); ai != nil {
-				mu.Lock()
-				archImpact = ai
-				if ai.PredictedImpact.WillCreateCycle {
-					riskFactors = append(riskFactors, "Change may introduce a dependency cycle")
-				}
-				if len(ai.PredictedImpact.LayerViolations) > 0 {
-					riskFactors = append(riskFactors, fmt.Sprintf("Change may create %d layer violation(s)", len(ai.PredictedImpact.LayerViolations)))
-				}
-				mu.Unlock()
-			}
-		}()
-	}
-
 	wg.Wait()
+
+	// Cycle, bridge and god-module status of the target's file.
+	riskFactors = append(riskFactors, e.structuralRiskFactors(target.Path)...)
 
 	// Tests come from the references the impact analysis found, so they wait for it.
 	relatedTests = e.getPrepareTests(target, testConsumers)
@@ -1745,7 +1722,6 @@ func (e *Engine) PrepareChange(ctx context.Context, opts PrepareChangeOptions) (
 		RenameDetail:     renameDetail,
 		ExtractDetail:    extractDetail,
 		MoveDetail:       moveDetail,
-		ArchImpact:       archImpact,
 	}, nil
 }
 
@@ -1843,8 +1819,6 @@ func (e *Engine) getPrepareImpact(ctx context.Context, symbolId string) (*prepar
 		SymbolId: symbolId,
 		Depth:    2,
 		AllItems: true,
-
-		skipArchImpact: true, // prepareChange runs SimulateChange once itself
 	})
 	if err != nil {
 		return nil, err
@@ -1896,7 +1870,7 @@ func (e *Engine) getPrepareFileImpact(ctx context.Context, path string) (*prepar
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		resp, err := e.AnalyzeImpact(ctx, AnalyzeImpactOptions{SymbolId: sym, Depth: 2, AllItems: true, skipArchImpact: true})
+		resp, err := e.AnalyzeImpact(ctx, AnalyzeImpactOptions{SymbolId: sym, Depth: 2, AllItems: true})
 		if err != nil {
 			continue // A symbol the index can't resolve has no consumers to add
 		}

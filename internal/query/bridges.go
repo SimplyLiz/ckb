@@ -47,9 +47,7 @@ func codeBridges(idx *scip.SCIPIndex, repoRoot string, classes *pathclass.Classi
 	}
 	bridgeCache.Unlock()
 
-	ids, adj := codeFileGraph(idx, fileImportGraph(idx, repoRoot), func(p string) bool {
-		return isTestFilePath(p) || coupling.IsNoisePath(p) || classes.Excluded(p)
-	})
+	ids, adj := codeFileGraph(idx, fileImportGraph(idx, repoRoot), structuralNoise(classes))
 	bridges := map[string]int{}
 	for id, cut := range bridgeCuts(ids, adj) {
 		if cut >= bridgeMinCut {
@@ -65,6 +63,15 @@ func codeBridges(idx *scip.SCIPIndex, repoRoot string, classes *pathclass.Classi
 	}
 	bridgeCache.byIndex[idx] = bridges
 	return bridges
+}
+
+// structuralNoise reports files that take no part in structural analyses
+// (bridges, god modules): tests, vendored code, build output, and what the
+// repo's config classes as generated or data.
+func structuralNoise(classes *pathclass.Classifier) func(string) bool {
+	return func(p string) bool {
+		return isTestFilePath(p) || coupling.IsNoisePath(p) || classes.Excluded(p)
+	}
 }
 
 // codeFileGraph is the undirected file graph of idx: sorted file ids and their
