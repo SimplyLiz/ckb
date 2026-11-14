@@ -302,9 +302,13 @@ func RankedSkeleton(path string, focus []string, budget uint32) (*RankedSkeleton
 		return nil, err
 	}
 
+	// The FFI returns a bare array (lib.rs codecartographer_ranked_skeleton);
+	// accept a {"files": [...]} object too in case the envelope ever grows.
 	var result RankedSkeletonResult
-	if err := json.Unmarshal(resp.Data, &result); err != nil {
-		return nil, &CartographerError{err.Error()}
+	if err := json.Unmarshal(resp.Data, &result.Files); err != nil {
+		if err2 := json.Unmarshal(resp.Data, &result); err2 != nil {
+			return nil, &CartographerError{err.Error()}
+		}
 	}
 	return &result, nil
 }
