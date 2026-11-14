@@ -55,3 +55,22 @@ func TestPlausiblyUnreferenced(t *testing.T) {
 		}
 	}
 }
+
+// Cartographer's unreferenced exports carry the declaration line, so HoldTheLine
+// can drop the ones on unchanged lines and the SCIP finding for the same
+// declaration is not repeated.
+func TestDeclarationLine(t *testing.T) {
+	root := t.TempDir()
+	body := "package x\n\n// An old helper.\nfunc lonelyHelper() {}\n\nfunc lonely() {}\n"
+	if err := os.WriteFile(filepath.Join(root, "x.go"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]int{"lonelyHelper": 4, "lonely": 6, "missing": 0} {
+		if got := declarationLine(root, "x.go", name); got != want {
+			t.Errorf("declarationLine(%s) = %d, want %d", name, got, want)
+		}
+	}
+	if got := declarationLine(root, "nope.go", "lonely"); got != 0 {
+		t.Errorf("missing file: %d", got)
+	}
+}

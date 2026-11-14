@@ -121,14 +121,23 @@ func (e *Engine) checkDeadCode(ctx context.Context, changedFiles []string, opts 
 					if !plausiblyUnreferenced(e.repoRoot, f.Path, sym) {
 						continue
 					}
+					// The declaration line lets HoldTheLine drop exports the change
+					// did not touch (without one the finding counted as file-level and
+					// every old public function of a changed file was reported) and
+					// dedups against the SCIP finding for the same declaration.
+					line := declarationLine(e.repoRoot, f.Path, sym)
+					if line > 0 && reported[fmt.Sprintf("%s:%d", f.Path, line)] {
+						continue
+					}
 					reported[key] = true
 					findings = append(findings, ReviewFinding{
-						Check:    "dead-code",
-						Severity: "warning",
-						File:     f.Path,
-						Message:  fmt.Sprintf("Unreferenced export: %s — no callers found project-wide", sym),
-						Category: "dead-code",
-						RuleID:   "ckb/dead-code/unreferenced-export",
+						Check:     "dead-code",
+						Severity:  "warning",
+						File:      f.Path,
+						StartLine: line,
+						Message:   fmt.Sprintf("Unreferenced export: %s — no callers found project-wide", sym),
+						Category:  "dead-code",
+						RuleID:    "ckb/dead-code/unreferenced-export",
 					})
 				}
 			}
@@ -406,6 +415,26 @@ func plausiblyUnreferenced(repoRoot, file, name string) bool {
 		total += n
 	}
 	return total <= 1
+}
+
+// declarationLine is the 1-based line of the first whole-word occurrence of
+// name in file, or 0. Called after plausiblyUnreferenced, which allows at most
+// one occurrence in the language, so that line is the declaration.
+func declarationLine(repoRoot, file, name string) int {
+	f, err := os.Open(filepath.Join(repoRoot, file))
+	if err != nil {
+		return 0
+	}
+	defer func() { _ = f.Close() }()
+	word := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`)
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for n := 1; sc.Scan(); n++ {
+		if word.MatchString(sc.Text()) {
+			return n
+		}
+	}
+	return 0
 }
 
 // languagePathspecs are the git pathspecs of the files that can use a name declared
