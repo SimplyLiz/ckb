@@ -2303,66 +2303,66 @@ func (e *Engine) getGitDiff(staged bool, baseBranch string) (string, error) {
 }
 
 // bridgeMultiplierFromGraph computes a risk multiplier from Cartographer's
-// betweenness-centrality scores for the changed files. Files on critical
-// architectural paths (high BridgeScore) yield a larger multiplier so that
-// the same textual change is reported as riskier when it lands in a bridge.
+// bridges among the changed files. A bridge (IsBridge) is an articulation
+// point of the code graph: removing the file cuts off at least BridgeCut
+// files from the rest (Cartographer flags it from 3 on). A change there
+// reaches two parts of the code that meet nowhere else, so the same textual
+// change is reported as riskier.
 //
-// The multiplier is 1.0 + max(BridgeScore)/1000, capped at 2.0. BridgeScore
-// is betweenness_centrality * 1000 (range 0-1000) per api.rs, so this maps
-// a "perfect bridge" to a 2x risk amplification and a non-bridge to 1x.
+// The multiplier is 1.0 + min(max BridgeCut, 50)/50, so a file cutting off 50
+// or more files doubles the score and the smallest bridge (3) adds 6%. Only
+// IsBridge nodes count. The betweenness in BridgeScore is not used: it
+// multiplied nearly every central file (96 of 618 in a Next.js app were
+// "bridges" by it).
 //
 // Matches files by both Path (exact) and ModuleID, to cover the cases where
 // ChangedSymbol.File is either a repo-relative path or a module identifier.
-// Returns (1.0, nil) when no nodes match — callers should treat a nil factor
-// as "no adjustment, skip the factor append".
+// Returns (1.0, nil) when no changed file is a bridge — callers should treat
+// a nil factor as "no adjustment, skip the factor append".
 func bridgeMultiplierFromGraph(nodes []cartographer.GraphNode, files []string) (float64, *RiskFactor) {
 	if len(nodes) == 0 || len(files) == 0 {
 		return 1.0, nil
 	}
-	byPath := make(map[string]float64, len(nodes))
-	byModule := make(map[string]float64, len(nodes))
+	byPath := make(map[string]int, len(nodes))
+	byModule := make(map[string]int, len(nodes))
 	for _, n := range nodes {
-		if n.BridgeScore == nil {
+		if n.IsBridge == nil || !*n.IsBridge || n.BridgeCut == nil {
 			continue
 		}
 		if n.Path != "" {
-			byPath[n.Path] = *n.BridgeScore
+			byPath[n.Path] = *n.BridgeCut
 		}
 		if n.ModuleID != "" {
-			byModule[n.ModuleID] = *n.BridgeScore
+			byModule[n.ModuleID] = *n.BridgeCut
 		}
 	}
 	if len(byPath) == 0 && len(byModule) == 0 {
 		return 1.0, nil
 	}
 
-	var maxScore float64
+	maxCut := 0
 	matched := false
 	for _, f := range files {
-		if s, ok := byPath[f]; ok {
-			if s > maxScore {
-				maxScore = s
-			}
-			matched = true
-			continue
+		cut, ok := byPath[f]
+		if !ok {
+			cut, ok = byModule[f]
 		}
-		if s, ok := byModule[f]; ok {
-			if s > maxScore {
-				maxScore = s
-			}
+		if ok {
 			matched = true
+			maxCut = max(maxCut, cut)
 		}
 	}
 	if !matched {
 		return 1.0, nil
 	}
 
-	multiplier := math.Min(1.0+maxScore/1000.0, 2.0)
-	return multiplier, &RiskFactor{
-		Name:     "bridge_centrality",
-		Value:    maxScore / 1000.0, // 0.0-1.0 informational
-		Weight:   0,                 // applied as multiplier, not weighted mean
-		Evidence: fmt.Sprintf("on a critical architectural path (bridge score %.2f)", maxScore/1000.0),
+	const fullCut = 50
+	share := float64(min(maxCut, fullCut)) / fullCut
+	return math.Min(1.0+share, 2.0), &RiskFactor{
+		Name:     "bridge_cut",
+		Value:    share, // 0.0-1.0 informational
+		Weight:   0,     // applied as multiplier, not weighted mean
+		Evidence: fmt.Sprintf("bridge: cuts off %d files from the rest of the code graph", maxCut),
 	}
 }
 
@@ -2674,8 +2674,8 @@ func (e *Engine) calculateAggregatedRisk(
 		score = weightedSum / totalWeight
 	}
 
-	// Bridge-centrality adjustment: if any changed file sits on a critical
-	// architectural path, amplify the score. See bridgeMultiplierFromGraph
+	// Bridge adjustment: if any changed file is the only link between two
+	// parts of the code graph, amplify the score. See bridgeMultiplierFromGraph
 	// for the multiplier shape. The graph is only fetched when the
 	// cartographer build tag is on; under the stub build this is a no-op.
 	bridgeAmplified := false
@@ -2707,7 +2707,7 @@ func (e *Engine) calculateAggregatedRisk(
 	explanation := fmt.Sprintf("Change affects %d symbols across %d modules with %d direct and %d transitive impacts.",
 		len(changedSymbols), len(modules), len(directImpact), len(transitiveImpact))
 	if bridgeAmplified {
-		explanation += " Risk amplified by bridge centrality (change lands on a critical architectural path)."
+		explanation += " Risk amplified: a changed file is a bridge, the only link between two parts of the code graph."
 	}
 
 	return &RiskScore{

@@ -31,6 +31,7 @@ type GraphNode struct {
 	SignatureCount int      `json:"signatureCount"`
 	IsBridge       *bool    `json:"isBridge,omitempty"`
 	BridgeScore    *float64 `json:"bridgeScore,omitempty"`
+	BridgeCut      *int     `json:"bridgeCut,omitempty"` // files cut off without this one; IsBridge is >= 3 (Cartographer after 4.1.0)
 	Degree         *int     `json:"degree,omitempty"`
 	RiskLevel      *string  `json:"riskLevel,omitempty"`
 }

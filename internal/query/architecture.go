@@ -63,7 +63,7 @@ type GetArchitectureResponse struct {
 	ArchHealth      *CartographerHealthSummary   `json:"archHealth,omitempty"`
 	ArchCycles      []cartographer.CycleInfo     `json:"archCycles,omitempty"`
 	ArchGodModules  []cartographer.GodModuleInfo `json:"archGodModules,omitempty"`
-	ArchBridgeNodes []string                     `json:"archBridgeNodes,omitempty"` // high-centrality bottleneck modules
+	ArchBridgeNodes []string                     `json:"archBridgeNodes,omitempty"` // files whose removal cuts off >= 3 files
 
 	// Standard envelope fields
 	Truncated       bool                  `json:"truncated,omitempty"`
@@ -253,10 +253,15 @@ func (e *Engine) GetArchitecture(ctx context.Context, opts GetArchitectureOption
 			// Surface individual structural findings
 			resp.ArchCycles = graph.Cycles
 			resp.ArchGodModules = graph.GodModules
-			// Collect bridge nodes (high-centrality bottleneck modules)
+			// Bridge files: removing one cuts off at least 3 files. ModuleID is
+			// repo-relative; Path comes back absolute from MapProject.
 			for _, node := range graph.Nodes {
 				if node.IsBridge != nil && *node.IsBridge {
-					resp.ArchBridgeNodes = append(resp.ArchBridgeNodes, node.Path)
+					id := node.ModuleID
+					if id == "" {
+						id = node.Path
+					}
+					resp.ArchBridgeNodes = append(resp.ArchBridgeNodes, id)
 				}
 			}
 		}
