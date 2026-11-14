@@ -986,6 +986,23 @@ func (s *MCPServer) toolGetArchitecture(params map[string]interface{}) (*envelop
 		data["limitations"] = archResp.Limitations
 	}
 
+	// Cartographer's graph findings (cartographer builds). This map is built
+	// field by field and these four were never copied into it, so the engine
+	// computed them for nothing. (The HTTP API and CLI convert to their own
+	// types and drop them as well.)
+	if archResp.ArchHealth != nil {
+		data["archHealth"] = archResp.ArchHealth
+	}
+	if len(archResp.ArchCycles) > 0 {
+		data["archCycles"] = archResp.ArchCycles
+	}
+	if len(archResp.ArchGodModules) > 0 {
+		data["archGodModules"] = archResp.ArchGodModules
+	}
+	if len(archResp.ArchBridgeNodes) > 0 {
+		data["archBridgeNodes"] = archResp.ArchBridgeNodes
+	}
+
 	// Augment with LIP semantic coupling (best-effort). Collect one representative
 	// file URI per module, compute pairwise similarity, and surface the matrix so
 	// callers can see which modules are semantically related regardless of structural
