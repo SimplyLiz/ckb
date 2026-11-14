@@ -234,6 +234,20 @@ func isSourceFile(name string) bool {
 	return sourceExtensions[ext]
 }
 
+// isConceptSourceFile reports whether a path is source code worth naming
+// concepts after: the languages isSourceFile knows plus the other ones CKB
+// indexes. Data, docs and config files are not.
+func isConceptSourceFile(path string) bool {
+	if isSourceFile(path) {
+		return true
+	}
+	switch filepath.Ext(path) {
+	case ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".cs", ".rb", ".swift", ".php", ".scala", ".mjs", ".cjs", ".vue", ".svelte":
+		return true
+	}
+	return false
+}
+
 // buildModuleResponsibility creates a ModuleResponsibility, preferring declared annotations over inferred.
 // v6.5: Declared annotations take priority with higher confidence.
 // Returns (result, ok) where ok=false means both extraction failed and no annotations exist,
