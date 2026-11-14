@@ -85,6 +85,9 @@ func (s *MCPServer) toolDetectShotgunSurgery(params map[string]interface{}) (*en
 
 	repoRoot := s.engine().GetRepoRoot()
 	entries, err := cartographer.ShotgunSurgery(repoRoot, limit, minPartners)
+	if err == nil && !cartographer.ShotgunDecoded(entries) {
+		err = cartographer.ErrUndecodable
+	}
 	if err != nil {
 		return nil, errors.NewOperationError("detect shotgun surgery", err)
 	}
@@ -105,6 +108,9 @@ func (s *MCPServer) toolGetArchitecturalEvolution(params map[string]interface{})
 
 	repoRoot := s.engine().GetRepoRoot()
 	result, err := cartographer.Evolution(repoRoot, days)
+	if err == nil && !cartographer.EvolutionDecoded(result) {
+		err = cartographer.ErrUndecodable
+	}
 	if err != nil {
 		return nil, errors.NewOperationError("get architectural evolution", err)
 	}

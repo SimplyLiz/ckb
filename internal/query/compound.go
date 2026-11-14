@@ -1698,7 +1698,7 @@ func (e *Engine) PrepareChange(ctx context.Context, opts PrepareChangeOptions) (
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if ai, cerr := cartographer.SimulateChange(e.repoRoot, target.Path, "", ""); cerr == nil {
+			if ai := usableArchImpact(cartographer.SimulateChange(e.repoRoot, target.Path, "", "")); ai != nil {
 				mu.Lock()
 				archImpact = ai
 				if ai.PredictedImpact.WillCreateCycle {
@@ -1860,6 +1860,8 @@ func (e *Engine) getPrepareImpact(ctx context.Context, symbolId string) (*prepar
 		SymbolId: symbolId,
 		Depth:    2,
 		AllItems: true,
+
+		skipArchImpact: true, // prepareChange runs SimulateChange once itself
 	})
 	if err != nil {
 		return nil, err
@@ -1911,7 +1913,7 @@ func (e *Engine) getPrepareFileImpact(ctx context.Context, path string) (*prepar
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		resp, err := e.AnalyzeImpact(ctx, AnalyzeImpactOptions{SymbolId: sym, Depth: 2, AllItems: true})
+		resp, err := e.AnalyzeImpact(ctx, AnalyzeImpactOptions{SymbolId: sym, Depth: 2, AllItems: true, skipArchImpact: true})
 		if err != nil {
 			continue // A symbol the index can't resolve has no consumers to add
 		}

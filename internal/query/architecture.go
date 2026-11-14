@@ -237,14 +237,12 @@ func (e *Engine) GetArchitecture(ctx context.Context, opts GetArchitectureOption
 	// MapProject returns the fast regex-based dependency graph with bridge detection,
 	// individual cycle paths, and god-module details not available from SCIP.
 	if cartographer.Available() {
-		if graph, cerr := cartographer.MapProject(e.repoRoot); cerr == nil {
+		if graph := usableGraph(cartographer.MapProject(e.repoRoot)); graph != nil {
 			health := CartographerHealthSummary{
 				CycleCount:     len(graph.Cycles),
 				GodModuleCount: len(graph.GodModules),
 			}
-			if graph.Metadata.HealthScore != nil {
-				health.HealthScore = *graph.Metadata.HealthScore
-			}
+			health.HealthScore = *graph.Metadata.HealthScore // usableGraph checked it
 			if graph.Metadata.BridgeCount != nil {
 				health.BridgeCount = *graph.Metadata.BridgeCount
 			}
