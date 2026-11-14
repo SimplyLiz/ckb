@@ -376,47 +376,30 @@ func (e *Engine) buildExploreOverview(ctx context.Context, targetType, absPath, 
 		overview.LineCount = countFileLines(absPath)
 		overview.SymbolCount = 0 // Will be updated by symbol search
 	} else {
-		// Directory overview.
-		// Try Cartographer first — it has a pre-built, ignore-aware file list with
-		// language metadata. Fall back to an OS walk when it's not available.
-		cartographerUsed := false
-		if cartographer.Available() {
-			if graph, cerr := cartographer.MapProject(e.repoRoot); cerr == nil {
-				cartographerUsed = true
-				langs := make(map[string]int)
-				fileCount := 0
-				prefix := relTarget + "/"
-				for _, node := range graph.Nodes {
-					if strings.HasPrefix(node.Path, prefix) || node.Path == relTarget {
-						fileCount++
-						if node.Language != "" {
-							langs[node.Language]++
-						}
-					}
-				}
-				overview.FileCount = fileCount
-				if len(langs) > 0 {
-					overview.Languages = langs
-				}
+		// Directory overview: files and languages from a walk that skips
+		// dependency and build directories.
+		fileCount := 0
+		langs := make(map[string]int)
+		//nolint:errcheck // intentionally ignore walk errors to count accessible files
+		_ = filepath.Walk(absPath, func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil {
+				return nil //nolint:nilerr // skip inaccessible files, continue walk
 			}
-		}
-		if !cartographerUsed {
-			fileCount := 0
-			//nolint:errcheck // intentionally ignore walk errors to count accessible files
-			_ = filepath.Walk(absPath, func(path string, info os.FileInfo, walkErr error) error {
-				if walkErr != nil {
-					return nil //nolint:nilerr // skip inaccessible files, continue walk
+			if info.IsDir() {
+				if skipExploreDirectory(info.Name()) {
+					return filepath.SkipDir
 				}
-				if info.IsDir() {
-					if skipExploreDirectory(info.Name()) {
-						return filepath.SkipDir
-					}
-					return nil
-				}
-				fileCount++
 				return nil
-			})
-			overview.FileCount = fileCount
+			}
+			fileCount++
+			if lang := detectLanguage(path); lang != "" && lang != "unknown" {
+				langs[lang]++
+			}
+			return nil
+		})
+		overview.FileCount = fileCount
+		if len(langs) > 0 {
+			overview.Languages = langs
 		}
 
 		// Get module overview if available

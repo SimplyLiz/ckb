@@ -3366,48 +3366,8 @@ func (e *Engine) ListKeyConcepts(ctx context.Context, opts ListKeyConceptsOption
 		})
 		limitations = append(limitations, "SCIP index unavailable; concept extraction limited")
 
-		usedCartographer := false
-		if cartographer.Available() {
-			// Cartographer has a pre-built, ignore-aware file index — faster than
-			// walking the FS and adds module-level grouping for richer concepts.
-			if graph, cerr := cartographer.MapProject(e.repoRoot); cerr == nil {
-				usedCartographer = true
-				for _, node := range graph.Nodes {
-					// Cartographer maps data and docs too; on Morphon its
-					// benchmark result JSON files became the top "concepts".
-					if !isConceptSourceFile(node.Path) {
-						continue
-					}
-					ext := filepath.Ext(node.Path)
-					name := strings.TrimSuffix(filepath.Base(node.Path), ext)
-					name = strings.TrimSuffix(name, "_test")
-					name = strings.TrimSuffix(name, ".test")
-
-					if conceptName := extractConcept(name); conceptName != "" {
-						if _, exists := conceptCounts[conceptName]; !exists {
-							conceptCounts[conceptName] = &conceptData{files: make(map[string]bool)}
-						}
-						conceptCounts[conceptName].count++
-						conceptCounts[conceptName].files[node.Path] = true
-					}
-
-					// Module ID (directory) carries semantic grouping — contributes
-					// an extra signal toward concepts that span multiple files.
-					if node.ModuleID != "" {
-						if modConcept := extractConcept(filepath.Base(node.ModuleID)); modConcept != "" {
-							if _, exists := conceptCounts[modConcept]; !exists {
-								conceptCounts[modConcept] = &conceptData{files: make(map[string]bool)}
-							}
-							conceptCounts[modConcept].count++
-							conceptCounts[modConcept].files[node.Path] = true
-						}
-					}
-				}
-			}
-		}
-
-		if !usedCartographer {
-			// Last resort: extract from file/directory names via OS walk.
+		{
+			// Extract from file names via an OS walk.
 			_ = filepath.WalkDir(e.repoRoot, func(path string, d os.DirEntry, err error) error {
 				if err != nil {
 					return err
@@ -3419,11 +3379,12 @@ func (e *Engine) ListKeyConcepts(ctx context.Context, opts ListKeyConceptsOption
 					return nil
 				}
 
-				ext := filepath.Ext(path)
-				if ext != ".go" && ext != ".ts" && ext != ".js" && ext != ".py" {
+				relPath, _ := filepath.Rel(e.repoRoot, path)
+				if !isConceptSourceFile(relPath) {
 					return nil
 				}
 
+				ext := filepath.Ext(path)
 				name := strings.TrimSuffix(filepath.Base(path), ext)
 				name = strings.TrimSuffix(name, "_test")
 				name = strings.TrimSuffix(name, ".test")
@@ -3432,8 +3393,6 @@ func (e *Engine) ListKeyConcepts(ctx context.Context, opts ListKeyConceptsOption
 				if conceptName == "" {
 					return nil
 				}
-
-				relPath, _ := filepath.Rel(e.repoRoot, path)
 
 				if _, exists := conceptCounts[conceptName]; !exists {
 					conceptCounts[conceptName] = &conceptData{

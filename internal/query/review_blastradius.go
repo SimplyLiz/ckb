@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
 	"github.com/SimplyLiz/CodeMCP/internal/lip"
 )
@@ -22,14 +21,10 @@ func (e *Engine) checkBlastRadius(ctx context.Context, changedFiles []string, op
 	maxFanOut := opts.Policy.MaxFanOut
 	informationalMode := maxFanOut <= 0
 
-	// Fetch git churn map from Cartographer to identify hotspot files.
-	// Used to escalate blast-radius findings for high-churn files from info → warning.
-	var churnMap map[string]int
-	if cartographer.Available() {
-		if churn, err := cartographer.GitChurn(e.repoRoot, 0); err == nil {
-			churnMap = churn
-		}
-	}
+	// Commits per file in the co-change history (bots, formatting-only commits
+	// and noise paths left out), to escalate blast-radius findings for
+	// high-churn files from info → warning. Nil-safe: no git, no escalation.
+	history := e.cochangeHistory(ctx)
 
 	// Prefetch LIP blast radius for all changed files in a single round-trip.
 	// Returns nil when LIP is unavailable or doesn't support the message — the
@@ -152,7 +147,7 @@ func (e *Engine) checkBlastRadius(ctx context.Context, changedFiles []string, op
 				// Escalate from info → warning for hotspot files (high git churn).
 				// A frequently-changing file with many callers is higher risk.
 				severity := "info"
-				if churnMap[sym.file] >= 15 {
+				if history.Churn(sym.file) >= 15 {
 					severity = "warning"
 				}
 				findings = append(findings, ReviewFinding{
