@@ -3393,6 +3393,11 @@ func (e *Engine) ListKeyConcepts(ctx context.Context, opts ListKeyConceptsOption
 			if graph, cerr := cartographer.MapProject(e.repoRoot); cerr == nil {
 				usedCartographer = true
 				for _, node := range graph.Nodes {
+					// Cartographer maps data and docs too; on Morphon its
+					// benchmark result JSON files became the top "concepts".
+					if !isConceptSourceFile(node.Path) {
+						continue
+					}
 					ext := filepath.Ext(node.Path)
 					name := strings.TrimSuffix(filepath.Base(node.Path), ext)
 					name = strings.TrimSuffix(name, "_test")
