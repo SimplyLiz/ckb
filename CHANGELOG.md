@@ -78,8 +78,12 @@ answers were worse than without it.
   dropped as unchanged), and a declaration SCIP had already reported came out twice.
 - `internal/cartographer` has an integration test (`go test -tags cartographer
   ./internal/cartographer/`) that runs every bridge function CKB calls against a small Go +
-  TS git repo. It fails against the pinned v4.0.3 until Cartographer serializes camelCase;
-  it passes against Cartographer develop (a15e5da).
+  TS git repo. It failed against v4.0.3, whose structs reached the C ABI in snake_case.
+- **The build pins Cartographer v4.1.0** (`scripts/fetch-cartographer-lib.sh`, `Makefile`,
+  header): camelCase at the C ABI, a cache across FFI calls (all calls on CKB 122 s → 19 s,
+  prepareChange 54 s → 0.9 s), and import resolution for Go packages, tsconfig aliases,
+  Python and Rust `crate::` paths. archImpact, the arch-health and shotgun checks and
+  getArchitecturalEvolution return values instead of zeros.
 
 ### Fixed — saying what CKB couldn't look at
 

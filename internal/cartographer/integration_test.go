@@ -6,14 +6,14 @@ package cartographer
 // library: every bridge function CKB calls runs against a small git repository
 // and the decoded structs must carry the fields CKB reads.
 //
-// EXPECTED TO FAIL against the pinned lib v4.0.3. That build serializes several
+// Passes against the pinned lib v4.1.0. v4.0.3 and older serialized several
 // Rust structs without `#[serde(rename_all = "camelCase")]` (ProjectGraph nodes
 // and metadata, SimulatedChange, LayerViolation, shotgun and evolution entries),
 // so `module_id`, `is_bridge`, `health_score`, `god_modules`, `predicted_impact`,
-// `source_path`, `partner_count` and friends decode as zero values into the
-// camelCase tags in types.go. Before this test existed nothing noticed: CKB just
-// shipped zeros (measured 2026-11-14). The fix belongs in Cartographer, not in
-// types.go — do not switch the tags to snake_case to make this pass.
+// `source_path`, `partner_count` and friends decoded as zero values into the
+// camelCase tags in types.go. Nothing noticed: CKB just shipped zeros (measured
+// 2026-11-14). If this fails again, fix Cartographer, not types.go: do not
+// switch the tags to snake_case to make it pass.
 //
 // Run: go test -tags cartographer ./internal/cartographer/ -run TestFFIContract -v
 
