@@ -85,16 +85,20 @@ answers were worse than without it.
   prepareChange 54 s → 0.9 s), and import resolution for Go packages, tsconfig aliases,
   Python and Rust `crate::` paths. archImpact, the arch-health and shotgun checks and
   getArchitecturalEvolution return values instead of zeros.
-- **The bridge risk factor counts only real bridges.** analyzeImpact multiplied the risk by
-  1 + Cartographer's betweenness/1000, which fired on nearly every central file (96 of 618
-  files in a Next.js app were "bridges"). Cartographer's develop branch now flags a file as
-  a bridge when removing it cuts off at least 3 files (articulation points; new node field
-  `bridgeCut`). The multiplier is 1 + min(bridgeCut, 50)/50, capped at 2.0, and applies only
-  to such files; the factor is named `bridge_cut` (was `bridge_centrality`). With the pinned
-  v4.1.0, which has no `bridgeCut`, the factor stays off. Tested against a local
-  Cartographer develop build (aebfbd4); the pin moves with the next Cartographer release.
-- **getArchitecture's `archBridgeNodes` are repo-relative paths**, not the absolute paths
-  MapProject puts in `path`.
+- **The bridge risk factor counts only real bridges, computed by CKB.** analyzeImpact
+  multiplied the risk by 1 + Cartographer's betweenness/1000, which fired on nearly every
+  central file (96 of 618 files in a Next.js app were "bridges"). A bridge is now an
+  articulation point of the file graph that cuts off at least 3 files, computed from the
+  SCIP index (`internal/query/bridges.go`, ported from Cartographer aebfbd4): files are
+  joined by cross-file references in any indexed language and by TS/Python imports, lazy
+  ones included; tests, generated files and build output (`.next/`, `dist/`, vendored code)
+  stay out, and Go package files hang together through a weightless package node. The
+  multiplier is 1 + min(cut, 50)/50, capped at 2.0; the factor is named `bridge_cut` (was
+  `bridge_centrality`). On the same Next.js app CKB finds Cartographer's one bridge
+  (`src/lib/utils.ts`, cuts off 4) plus two behind a `lazy(() => import(...))` that
+  Cartographer does not resolve; on CKB itself none. getArchitecture's `archBridgeNodes`
+  and `archHealth.bridgeCount` come from the same computation, as repo-relative paths, and
+  no longer need the cartographer build.
 
 ### Changed — cycles and co-change no longer need Cartographer
 

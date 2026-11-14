@@ -304,6 +304,11 @@ var historyIgnoredDirs = map[string]bool{
 	".idea": true, ".vscode": true, "coverage": true, ".nuxt": true,
 }
 
+// IsNoisePath reports vendored code, build output and tool state, plus the
+// lockfiles, binaries and bundles isHistoryNoise drops: paths whose links to
+// other files say nothing about the code's own structure.
+func IsNoisePath(p string) bool { return isHistoryNoise(p) }
+
 // isHistoryNoise reports paths that only add noise to co-change: lockfiles,
 // binaries and assets, logs, source maps, minified bundles, vendored code.
 func isHistoryNoise(p string) bool {

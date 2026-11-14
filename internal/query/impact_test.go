@@ -5,137 +5,42 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
 	"github.com/SimplyLiz/CodeMCP/internal/telemetry"
 )
 
-func ptrF64(v float64) *float64 { return &v }
-
-func ptrInt(v int) *int { return &v }
-
-func TestBridgeMultiplierFromGraph(t *testing.T) {
-	yes, no := true, false
-	bridge := func(path string, cut int) cartographer.GraphNode {
-		return cartographer.GraphNode{Path: path, IsBridge: &yes, BridgeCut: ptrInt(cut)}
-	}
+func TestBridgeMultiplier(t *testing.T) {
 	tests := []struct {
-		name       string
-		nodes      []cartographer.GraphNode
-		files      []string
-		wantMul    float64
-		wantFactor bool
-		wantValue  float64 // only checked when wantFactor=true
+		name      string
+		bridges   map[string]int
+		files     []string
+		wantMul   float64
+		wantValue float64 // 0: no factor expected
 	}{
-		{
-			name:       "no nodes",
-			nodes:      nil,
-			files:      []string{"a.go"},
-			wantMul:    1.0,
-			wantFactor: false,
-		},
-		{
-			name:       "no files",
-			nodes:      []cartographer.GraphNode{bridge("a.go", 10)},
-			files:      nil,
-			wantMul:    1.0,
-			wantFactor: false,
-		},
-		{
-			name: "central file that is no bridge is not amplified",
-			nodes: []cartographer.GraphNode{
-				{Path: "a.go", IsBridge: &no, BridgeScore: ptrF64(800), BridgeCut: ptrInt(2)},
-			},
-			files:      []string{"a.go"},
-			wantMul:    1.0,
-			wantFactor: false,
-		},
-		{
-			name: "bridge flag without a cut (older Cartographer) is ignored",
-			nodes: []cartographer.GraphNode{
-				{Path: "a.go", IsBridge: &yes, BridgeScore: ptrF64(800)},
-			},
-			files:      []string{"a.go"},
-			wantMul:    1.0,
-			wantFactor: false,
-		},
-		{
-			name:       "file does not match any node",
-			nodes:      []cartographer.GraphNode{bridge("b.go", 10)},
-			files:      []string{"a.go"},
-			wantMul:    1.0,
-			wantFactor: false,
-		},
-		{
-			name:       "match by path yields 1 + cut/50",
-			nodes:      []cartographer.GraphNode{bridge("a.go", 10)},
-			files:      []string{"a.go"},
-			wantMul:    1.2,
-			wantFactor: true,
-			wantValue:  0.2,
-		},
-		{
-			name: "match by module id",
-			nodes: []cartographer.GraphNode{
-				{ModuleID: "pkg/foo", IsBridge: &yes, BridgeCut: ptrInt(25)},
-			},
-			files:      []string{"pkg/foo"},
-			wantMul:    1.5,
-			wantFactor: true,
-			wantValue:  0.5,
-		},
-		{
-			name: "multiple files takes the largest cut",
-			nodes: []cartographer.GraphNode{
-				bridge("low.go", 3), bridge("high.go", 40), bridge("mid.go", 20),
-			},
-			files:      []string{"low.go", "high.go", "mid.go"},
-			wantMul:    1.8,
-			wantFactor: true,
-			wantValue:  0.8,
-		},
-		{
-			name:       "cap at 2.0 from 50 files cut off",
-			nodes:      []cartographer.GraphNode{bridge("a.go", 300)},
-			files:      []string{"a.go"},
-			wantMul:    2.0,
-			wantFactor: true,
-			wantValue:  1.0,
-		},
-		{
-			name: "path match wins over module match for same file",
-			nodes: []cartographer.GraphNode{
-				{Path: "a.go", ModuleID: "a.go", IsBridge: &yes, BridgeCut: ptrInt(5)},
-				{Path: "", ModuleID: "a.go", IsBridge: &yes, BridgeCut: ptrInt(45)},
-			},
-			files:      []string{"a.go"},
-			wantMul:    1.1,
-			wantFactor: true,
-			wantValue:  0.1,
-		},
+		{"no bridges", nil, []string{"a.go"}, 1.0, 0},
+		{"no files", map[string]int{"a.go": 10}, nil, 1.0, 0},
+		{"file is no bridge", map[string]int{"b.go": 10}, []string{"a.go"}, 1.0, 0},
+		{"1 + cut/50", map[string]int{"a.go": 10}, []string{"a.go"}, 1.2, 0.2},
+		{"largest cut wins", map[string]int{"low.go": 3, "high.go": 40, "mid.go": 20}, []string{"low.go", "high.go", "mid.go"}, 1.8, 0.8},
+		{"cap at 2.0 from 50 files cut off", map[string]int{"a.go": 300}, []string{"a.go"}, 2.0, 1.0},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mul, factor := bridgeMultiplierFromGraph(tt.nodes, tt.files)
+			mul, factor := bridgeMultiplier(tt.bridges, tt.files)
 			if math.Abs(mul-tt.wantMul) > 1e-9 {
 				t.Errorf("multiplier = %v, want %v", mul, tt.wantMul)
 			}
-			if tt.wantFactor {
-				if factor == nil {
-					t.Fatalf("expected factor, got nil")
+			if tt.wantValue == 0 {
+				if factor != nil {
+					t.Errorf("expected nil factor, got %+v", factor)
 				}
-				if factor.Name != "bridge_cut" {
-					t.Errorf("factor.Name = %q, want %q", factor.Name, "bridge_cut")
-				}
-				if factor.Weight != 0 {
-					t.Errorf("factor.Weight = %v, want 0 (informational)", factor.Weight)
-				}
-				if math.Abs(factor.Value-tt.wantValue) > 1e-9 {
-					t.Errorf("factor.Value = %v, want %v", factor.Value, tt.wantValue)
-				}
-			} else if factor != nil {
-				t.Errorf("expected nil factor, got %+v", factor)
+				return
+			}
+			if factor == nil {
+				t.Fatalf("expected factor, got nil")
+			}
+			if factor.Name != "bridge_cut" || factor.Weight != 0 || math.Abs(factor.Value-tt.wantValue) > 1e-9 {
+				t.Errorf("factor = %+v, want bridge_cut, weight 0, value %v", factor, tt.wantValue)
 			}
 		})
 	}
