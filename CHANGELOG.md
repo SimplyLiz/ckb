@@ -84,6 +84,16 @@ answers were worse than without it.
   prepareChange 54 s → 0.9 s), and import resolution for Go packages, tsconfig aliases,
   Python and Rust `crate::` paths. archImpact, the arch-health and shotgun checks and
   getArchitecturalEvolution return values instead of zeros.
+- **The bridge risk factor counts only real bridges.** analyzeImpact multiplied the risk by
+  1 + Cartographer's betweenness/1000, which fired on nearly every central file (96 of 618
+  files in a Next.js app were "bridges"). Cartographer's develop branch now flags a file as
+  a bridge when removing it cuts off at least 3 files (articulation points; new node field
+  `bridgeCut`). The multiplier is 1 + min(bridgeCut, 50)/50, capped at 2.0, and applies only
+  to such files; the factor is named `bridge_cut` (was `bridge_centrality`). With the pinned
+  v4.1.0, which has no `bridgeCut`, the factor stays off. Tested against a local
+  Cartographer develop build (aebfbd4); the pin moves with the next Cartographer release.
+- **getArchitecture's `archBridgeNodes` are repo-relative paths**, not the absolute paths
+  MapProject puts in `path`.
 
 ### Fixed — saying what CKB couldn't look at
 

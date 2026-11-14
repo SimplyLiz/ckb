@@ -1185,7 +1185,7 @@ var changesRiskFactorLabels = map[string]string{
 	"direct_impact":     "downstream paths",
 	"transitive_impact": "transitive reach",
 	"module_spread":     "module spread",
-	"bridge_centrality": "architectural bridge",
+	"bridge_cut":        "architectural bridge",
 
 	"deleted_with_consumers":           "deleted, still used",
 	"signature_changed_with_consumers": "signature changed, still used",
