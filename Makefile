@@ -1,7 +1,7 @@
 CARTOGRAPHER_DIR := third_party/cartographer
 CARTOGRAPHER_LIB := $(CARTOGRAPHER_DIR)/target/release/libcode_cartographer.a
 # Pinned CodeCartographer release whose prebuilt static library CKB links.
-CARTOGRAPHER_VERSION ?= v4.0.2
+CARTOGRAPHER_VERSION ?= v4.0.3
 BIN_DIR := bin
 
 .PHONY: build fetch-cartographer-lib build-cartographer-source build-fast test test-cartographer lint clean check-cartographer
