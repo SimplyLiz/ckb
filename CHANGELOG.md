@@ -158,6 +158,21 @@ data, in every build.
   shared commits score 0.71, and `level` is high from 0.7. `windowDays` (MCP) is gone and
   `--window` is deprecated and ignored; `summary.analysisFrom`/`analysisTo` are replaced by
   `commitsRead`. `scope` keeps pairs whose files both lie under it.
+- **Hidden coupling links Go files through their package.** The link check asked whether one
+  file uses a symbol defined in exactly the other file, which holds for TypeScript and Python
+  but not for Go, where a file imports a package: `internal/query/donecheck.go` imports
+  `internal/diff` and was hidden-coupled to `internal/diff/tsderived_test.go`, whose symbols
+  it never uses. Between two Go files, one using a symbol defined anywhere in the other's
+  directory is now a link (`_test.go` files belong to their directory's package; an external
+  `package foo_test` shares the directory and was already linked). On CKB the scan goes from
+  42 pairs to 14: all 25 an import-line check flags as a direct import are gone, plus 3 it
+  misses (an aliased import, result types used through `query` without an import). The 14
+  left have no file-level reference either way; 12 are linked one package up (another file of
+  one side's package imports the other's), 2 not at all (`cmd/ckb` and `internal/impact`).
+  prepareChange on `internal/diff/usesite_test.go` lists 0 hidden partners instead of 3.
+  Lebenslauf (TypeScript, 50 pairs) and Ingestible (Python, 42) report the same pairs as
+  before. Rust stays file-exact: on Morphon the directory rule would link all 50 pairs,
+  examples that are separate crates and modules of one `src/`.
 
 ### Fixed — saying what CKB couldn't look at
 

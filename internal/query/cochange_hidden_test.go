@@ -88,3 +88,61 @@ func TestHiddenCouplingIsHidden(t *testing.T) {
 		t.Error("nil hiddenCoupling must report nothing")
 	}
 }
+
+func TestFilesLinkedGoPackage(t *testing.T) {
+	doc := func(p string, occs ...*scip.Occurrence) *scip.Document {
+		return &scip.Document{RelativePath: p, Occurrences: occs}
+	}
+	def := func(sym string) *scip.Occurrence {
+		return &scip.Occurrence{Symbol: sym, SymbolRoles: scip.SymbolRoleDefinition}
+	}
+	use := func(sym string) *scip.Occurrence { return &scip.Occurrence{Symbol: sym} }
+	const (
+		mapSym  = "scip-go gomod example.com/m . `example.com/m/internal/diff`/MapSymbols()."
+		siteSym = "scip-go gomod example.com/m . `example.com/m/internal/diff`/UseSite#"
+		viewSym = "npm pkg web/ui/view.ts/render()."
+		otherTS = "npm pkg web/ui/other.ts/helper()."
+	)
+	symbolmap := doc("internal/diff/symbolmap.go", def(mapSym))
+	usesite := doc("internal/diff/usesite.go", def(siteSym))
+	// A test of package diff that defines nothing anyone uses.
+	usesiteTest := doc("internal/diff/usesite_test.go", use(siteSym), def("scip-go gomod example.com/m . `example.com/m/internal/diff`/TestUseSite()."))
+	// donecheck.go imports diff and uses MapSymbols, nothing of usesite_test.go.
+	donecheck := doc("internal/query/donecheck.go", use(mapSym))
+	// A test in query that uses diff.
+	donecheckTest := doc("internal/query/donecheck_test.go", use(siteSym))
+	// A Go package that never touches diff.
+	unrelated := doc("internal/mcp/tools.go", use("local 1"))
+	view := doc("web/ui/view.ts", def(viewSym))
+	other := doc("web/ui/other.ts", def(otherTS))
+	// model.ts uses view.ts, nothing of other.ts in the same directory.
+	model := doc("web/db/model.ts", use(viewSym))
+
+	idx := &scip.SCIPIndex{DocumentsByPath: map[string]*scip.Document{}, DefinitionIndex: map[string]*scip.OccurrenceRef{}}
+	for _, d := range []*scip.Document{symbolmap, usesite, usesiteTest, donecheck, donecheckTest, unrelated, view, other, model} {
+		idx.DocumentsByPath[d.RelativePath] = d
+		for _, o := range d.Occurrences {
+			if o.SymbolRoles&scip.SymbolRoleDefinition != 0 {
+				idx.DefinitionIndex[o.Symbol] = &scip.OccurrenceRef{Doc: d, Occ: o}
+			}
+		}
+	}
+
+	cases := []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{"Go file uses the package, not the file", "internal/query/donecheck.go", "internal/diff/usesite.go", true},
+		{"_test.go in the used package", "internal/diff/usesite_test.go", "internal/query/donecheck.go", true},
+		{"_test.go on the using side", "internal/query/donecheck_test.go", "internal/diff/symbolmap.go", true},
+		{"Go package without a reference", "internal/mcp/tools.go", "internal/diff/symbolmap.go", false},
+		{"TypeScript stays file-exact", "web/db/model.ts", "web/ui/other.ts", false},
+		{"TypeScript reference", "web/db/model.ts", "web/ui/view.ts", true},
+	}
+	for _, c := range cases {
+		if got := filesLinked(idx, c.a, c.b); got != c.want {
+			t.Errorf("%s: filesLinked(%s, %s) = %v, want %v", c.name, c.a, c.b, got, c.want)
+		}
+	}
+}
