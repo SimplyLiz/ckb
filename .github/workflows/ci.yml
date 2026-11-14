@@ -144,6 +144,11 @@ jobs:
       - name: Check version sites are in sync
         run: go run scripts/sync-version.go --check
 
+      # LICENSE §4 points at THIRD-PARTY-LICENSES; a dependency bump that adds or
+      # changes a linked module has to regenerate it.
+      - name: Check THIRD-PARTY-LICENSES is current
+        run: go run scripts/third-party-licenses.go --check
+
   security:
     name: Security Scan
     runs-on: ubuntu-latest
