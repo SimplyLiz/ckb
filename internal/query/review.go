@@ -163,7 +163,7 @@ func findingTier(check string) int {
 	switch check {
 	case "breaking", "secrets", "critical":
 		return 1
-	case "coupling", "complexity", "risk", "health", "dead-code", "blast-radius", "bug-patterns", "layers", "arch-health":
+	case "coupling", "complexity", "risk", "health", "dead-code", "blast-radius", "bug-patterns", "arch-health":
 		return 2
 	case "test-gaps", "comment-drift", "format-consistency":
 		return 3
@@ -584,18 +584,7 @@ func (e *Engine) ReviewPR(ctx context.Context, opts ReviewPROptions) (*ReviewPRR
 		}()
 	}
 
-	// Check: Layer violations (cartographer — skip gracefully if not compiled in)
-	if checkEnabled("layers") {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			c, ff := e.checkLayerViolations(ctx, reviewableFiles, opts)
-			addCheck(c)
-			addFindings(ff)
-		}()
-	}
-
-	// Check: Architectural health (cartographer — skip gracefully if not compiled in)
+	// Check: Architectural health (cycles, god modules, bridges among changed files)
 	if checkEnabled("arch-health") {
 		wg.Add(1)
 		go func() {

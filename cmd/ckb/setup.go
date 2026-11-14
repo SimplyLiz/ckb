@@ -489,7 +489,7 @@ var presets = []presetInfo{
 	{id: "docs", name: "Docs", description: "Documentation focused: doc coverage, staleness checks (35 tools)"},
 	{id: "ops", name: "Ops", description: "Operations: jobs, webhooks, scheduling, metrics (44 tools)"},
 	{id: "federation", name: "Federation", description: "Multi-repo analysis and cross-repo search (47 tools)"},
-	{id: "full", name: "Full", description: "All available tools (111 tools)"},
+	{id: "full", name: "Full", description: "All available tools (106 tools)"},
 }
 
 func selectPreset() (string, error) {

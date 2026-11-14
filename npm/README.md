@@ -559,7 +559,7 @@ args = ["/c", "npx", "-y", "@tastehub/ckb", "mcp", "--watch"]
 <details>
 <summary><strong>Presets (Token Optimization)</strong></summary>
 
-CKB exposes 111 tools, but most sessions only need a subset. Use presets to reduce token overhead by up to 83%:
+CKB exposes 106 tools, but most sessions only need a subset. Use presets to reduce token overhead by up to 83%:
 
 ```bash
 # List all available presets with tool counts and token estimates
@@ -575,7 +575,7 @@ ckb mcp --preset=refactor    # 44 tools - core + coupling, dead code
 ckb mcp --preset=federation  # 47 tools - core + cross-repo
 ckb mcp --preset=docs        # 35 tools - core + doc-symbol linking
 ckb mcp --preset=ops         # 44 tools - core + jobs, webhooks, metrics
-ckb mcp --preset=full        # 111 tools - all tools (legacy)
+ckb mcp --preset=full        # 106 tools - all tools (legacy)
 ```
 
 In MCP config:
@@ -649,7 +649,7 @@ See the **[Full Documentation Wiki](https://github.com/SimplyLiz/CodeMCP/wiki)**
 - [Incremental Indexing](https://github.com/SimplyLiz/CodeMCP/wiki/Incremental-Indexing) — Fast index updates for Go projects
 - [Doc-Symbol Linking](https://github.com/SimplyLiz/CodeMCP/wiki/Doc-Symbol-Linking) — Symbol detection in docs, staleness checking
 - [Authentication](https://github.com/SimplyLiz/CodeMCP/wiki/Authentication) — API tokens, scopes, rate limiting
-- [MCP Integration](https://github.com/SimplyLiz/CodeMCP/wiki/MCP-Integration) — Claude Code setup, 111 tools
+- [MCP Integration](https://github.com/SimplyLiz/CodeMCP/wiki/MCP-Integration) — Claude Code setup, 106 tools
 - [API Reference](https://github.com/SimplyLiz/CodeMCP/wiki/API-Reference) — HTTP API documentation
 - [Daemon Mode](https://github.com/SimplyLiz/CodeMCP/wiki/Daemon-Mode) — Always-on service with scheduler, webhooks
 - [Configuration](https://github.com/SimplyLiz/CodeMCP/wiki/Configuration) — All options including MODULES.toml

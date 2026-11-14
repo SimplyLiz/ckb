@@ -4,8 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 )
 
 // Without a SCIP index the dead-code check used to pass with "No dead code in
@@ -24,12 +22,6 @@ func TestCheckDeadCodeWithoutIndexIsNotAPass(t *testing.T) {
 	}
 
 	check, _ := engine.checkDeadCode(context.Background(), []string{"pkg/a.go"}, ReviewPROptions{Policy: DefaultReviewPolicy()})
-	if cartographer.Available() {
-		if !strings.Contains(check.Summary, "unreferenced exports only") {
-			t.Errorf("summary %q doesn't say the check was partial", check.Summary)
-		}
-		return
-	}
 	if check.Status != "skip" || !strings.Contains(check.Summary, "Not analyzed") {
 		t.Errorf("status %q summary %q, want skip / Not analyzed", check.Status, check.Summary)
 	}
