@@ -22,6 +22,7 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
 	"github.com/SimplyLiz/CodeMCP/internal/lip"
 	"github.com/SimplyLiz/CodeMCP/internal/output"
+	"github.com/SimplyLiz/CodeMCP/internal/pathclass"
 	"github.com/SimplyLiz/CodeMCP/internal/telemetry"
 )
 
@@ -2302,60 +2303,23 @@ func (e *Engine) getGitDiff(staged bool, baseBranch string) (string, error) {
 	return out, nil
 }
 
-// bridgeMultiplierFromGraph computes a risk multiplier from Cartographer's
-// bridges among the changed files. A bridge (IsBridge) is an articulation
-// point of the code graph: removing the file cuts off at least BridgeCut
-// files from the rest (Cartographer flags it from 3 on). A change there
-// reaches two parts of the code that meet nowhere else, so the same textual
-// change is reported as riskier.
+// bridgeMultiplier computes a risk multiplier from the bridges among the
+// changed files (codeBridges: file → files cut off, from bridgeMinCut on). A
+// change in a bridge reaches two parts of the code that meet nowhere else, so
+// the same textual change is reported as riskier.
 //
-// The multiplier is 1.0 + min(max BridgeCut, 50)/50, so a file cutting off 50
-// or more files doubles the score and the smallest bridge (3) adds 6%. Only
-// IsBridge nodes count. The betweenness in BridgeScore is not used: it
-// multiplied nearly every central file (96 of 618 in a Next.js app were
-// "bridges" by it).
-//
-// Matches files by both Path (exact) and ModuleID, to cover the cases where
-// ChangedSymbol.File is either a repo-relative path or a module identifier.
+// The multiplier is 1.0 + min(max cut, 50)/50, so a file cutting off 50 or
+// more files doubles the score and the smallest bridge (3) adds 6%.
 // Returns (1.0, nil) when no changed file is a bridge — callers should treat
 // a nil factor as "no adjustment, skip the factor append".
-func bridgeMultiplierFromGraph(nodes []cartographer.GraphNode, files []string) (float64, *RiskFactor) {
-	if len(nodes) == 0 || len(files) == 0 {
-		return 1.0, nil
-	}
-	byPath := make(map[string]int, len(nodes))
-	byModule := make(map[string]int, len(nodes))
-	for _, n := range nodes {
-		if n.IsBridge == nil || !*n.IsBridge || n.BridgeCut == nil {
-			continue
-		}
-		if n.Path != "" {
-			byPath[n.Path] = *n.BridgeCut
-		}
-		if n.ModuleID != "" {
-			byModule[n.ModuleID] = *n.BridgeCut
-		}
-	}
-	if len(byPath) == 0 && len(byModule) == 0 {
-		return 1.0, nil
-	}
-
+func bridgeMultiplier(bridges map[string]int, files []string) (float64, *RiskFactor) {
 	maxCut := 0
-	matched := false
 	for _, f := range files {
-		cut, ok := byPath[f]
-		if !ok {
-			cut, ok = byModule[f]
-		}
-		if ok {
-			matched = true
-			maxCut = max(maxCut, cut)
-		}
+		maxCut = max(maxCut, bridges[f])
 	}
-	if !matched {
+	if maxCut == 0 {
 		return 1.0, nil
 	}
-
 	const fullCut = 50
 	share := float64(min(maxCut, fullCut)) / fullCut
 	return math.Min(1.0+share, 2.0), &RiskFactor{
@@ -2675,29 +2639,19 @@ func (e *Engine) calculateAggregatedRisk(
 	}
 
 	// Bridge adjustment: if any changed file is the only link between two
-	// parts of the code graph, amplify the score. See bridgeMultiplierFromGraph
-	// for the multiplier shape. The graph is only fetched when the
-	// cartographer build tag is on; under the stub build this is a no-op.
+	// parts of the code graph, amplify the score. See bridgeMultiplier.
 	bridgeAmplified := false
-	if cartographer.Available() && e.repoRoot != "" {
-		if graph, err := cartographer.MapProject(e.repoRoot); err == nil && graph != nil {
-			files := make([]string, 0, len(changedSymbols))
-			seen := make(map[string]struct{}, len(changedSymbols))
-			for _, s := range changedSymbols {
-				if s.File == "" {
-					continue
-				}
-				if _, dup := seen[s.File]; dup {
-					continue
-				}
-				seen[s.File] = struct{}{}
+	if e.hasConsumerGraph() {
+		files := make([]string, 0, len(changedSymbols))
+		for _, s := range changedSymbols {
+			if s.File != "" {
 				files = append(files, s.File)
 			}
-			if mul, factor := bridgeMultiplierFromGraph(graph.Nodes, files); factor != nil {
-				score = math.Min(score*mul, 1.0)
-				factors = append(factors, *factor)
-				bridgeAmplified = true
-			}
+		}
+		if mul, factor := bridgeMultiplier(codeBridges(e.scipAdapter.GetIndex(), e.repoRoot, pathclass.FromConfig(e.repoRoot, e.config)), files); factor != nil {
+			score = math.Min(score*mul, 1.0)
+			factors = append(factors, *factor)
+			bridgeAmplified = true
 		}
 	}
 

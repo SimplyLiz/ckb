@@ -14,6 +14,7 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/modules"
 	"github.com/SimplyLiz/CodeMCP/internal/output"
 	"github.com/SimplyLiz/CodeMCP/internal/ownership"
+	"github.com/SimplyLiz/CodeMCP/internal/pathclass"
 	"github.com/SimplyLiz/CodeMCP/internal/responsibilities"
 )
 
@@ -243,9 +244,6 @@ func (e *Engine) GetArchitecture(ctx context.Context, opts GetArchitectureOption
 				GodModuleCount: len(graph.GodModules),
 			}
 			health.HealthScore = *graph.Metadata.HealthScore // usableGraph checked it
-			if graph.Metadata.BridgeCount != nil {
-				health.BridgeCount = *graph.Metadata.BridgeCount
-			}
 			if graph.Metadata.LayerViolationCount != nil {
 				health.LayerViolationCount = *graph.Metadata.LayerViolationCount
 			}
@@ -253,17 +251,17 @@ func (e *Engine) GetArchitecture(ctx context.Context, opts GetArchitectureOption
 			// Surface individual structural findings
 			resp.ArchCycles = graph.Cycles
 			resp.ArchGodModules = graph.GodModules
-			// Bridge files: removing one cuts off at least 3 files. ModuleID is
-			// repo-relative; Path comes back absolute from MapProject.
-			for _, node := range graph.Nodes {
-				if node.IsBridge != nil && *node.IsBridge {
-					id := node.ModuleID
-					if id == "" {
-						id = node.Path
-					}
-					resp.ArchBridgeNodes = append(resp.ArchBridgeNodes, id)
-				}
-			}
+		}
+	}
+	// Bridge files: removing one cuts off at least bridgeMinCut files.
+	if e.hasConsumerGraph() {
+		bridges := codeBridges(e.scipAdapter.GetIndex(), e.repoRoot, pathclass.FromConfig(e.repoRoot, e.config))
+		for f := range bridges {
+			resp.ArchBridgeNodes = append(resp.ArchBridgeNodes, f)
+		}
+		sort.Strings(resp.ArchBridgeNodes)
+		if resp.ArchHealth != nil {
+			resp.ArchHealth.BridgeCount = len(bridges)
 		}
 	}
 	return resp, nil
