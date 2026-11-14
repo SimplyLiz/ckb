@@ -17,6 +17,7 @@ import (
 // scored 1.0 and pushed out strong pairs, and "no import link" was wrong in most
 // samples — Go files of one package, TypeScript @/ aliases and inline Rust paths
 // are links its import graph does not see. So a pair counts as hidden only when
+//   - both files are source code,
 //   - it co-changed at least minHiddenCoChanges times,
 //   - its score passes the caller's correlation floor,
 //   - Cartographer finds no import edge, and
@@ -128,6 +129,11 @@ func (h *hiddenCoupling) isHidden(a, b string) bool {
 		return false
 	}
 	if _, ok := h.scores[a+"\x00"+b]; !ok {
+		return false
+	}
+	// "No import link" says nothing about a changelog, a config or a fixture:
+	// they never import anything. Hidden coupling is a claim about code.
+	if !isConceptSourceFile(a) || !isConceptSourceFile(b) {
 		return false
 	}
 	return !filesLinked(h.idx, a, b)
