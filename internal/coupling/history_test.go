@@ -95,3 +95,30 @@ func TestStrongPartnersOrderAndFloors(t *testing.T) {
 		t.Errorf("score should be symmetric: %+v", a)
 	}
 }
+
+func TestHistoryAllPairs(t *testing.T) {
+	h := HistoryFromCommits([][]string{
+		{"b.go", "a.go", "c.go"},
+		{"a.go", "b.go"},
+		{"a.go", "b.go"},
+		{"c.go"},
+	})
+	got := h.AllPairs(2)
+	if len(got) != 1 {
+		t.Fatalf("AllPairs(2) = %+v, want only a.go/b.go", got)
+	}
+	p := got[0]
+	if p.FileA != "a.go" || p.FileB != "b.go" || p.Count != 3 || math.Abs(p.Score-3.0/5) > 1e-9 {
+		t.Errorf("pair = %+v, want a.go/b.go, 3 commits, score 0.6", p)
+	}
+	if all := h.AllPairs(1); len(all) != 3 || all[0].FileB != "b.go" {
+		t.Errorf("AllPairs(1) = %+v, want 3 pairs, a.go/b.go first", all)
+	}
+	if h.Commits() != 4 || h.Files() != 3 {
+		t.Errorf("Commits, Files = %d, %d, want 4, 3", h.Commits(), h.Files())
+	}
+	var nilH *History
+	if nilH.AllPairs(1) != nil || nilH.Commits() != 0 || nilH.Files() != 0 {
+		t.Error("nil History must be empty")
+	}
+}

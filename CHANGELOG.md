@@ -133,6 +133,19 @@ data, in every build.
   imports for an unlinked pair. A module reference CKB finds no definition for now matches the
   one module of the same package whose name ends in it (none if two do). Ingestible's Python
   file graph goes from 212 to 465 edges, all of the new ones from `tests/`.
+- **`scanPerformance` and `ckb perf coupling` use the same history and link check as review's
+  hidden coupling.** They had their own: a year of `git log` and an import check that matched
+  raw import strings against path suffixes, so `@/` aliases, `./paint`-style relative imports
+  and files of one Go package all counted as unlinked. Of the 50 pairs the old scan reported,
+  21 on CKB were files of one Go package, and on Lebenslauf every one of 4 sampled pairs it
+  dropped now is a direct import. Pairs now come from `coupling.History` (last 500 commits,
+  scored against the less-changed file), and a pair is hidden only when both files are source
+  code in the SCIP index and neither references a symbol the other defines. Without an index
+  nothing is reported, and `summary.notAssessed` says why; `summary.pairsNotIndexed` counts
+  pairs left out because a file is not indexed code. `correlation` is now that score: 5 of 5
+  shared commits score 0.71, and `level` is high from 0.7. `windowDays` (MCP) is gone and
+  `--window` is deprecated and ignored; `summary.analysisFrom`/`analysisTo` are replaced by
+  `commitsRead`. `scope` keeps pairs whose files both lie under it.
 
 ### Fixed — saying what CKB couldn't look at
 

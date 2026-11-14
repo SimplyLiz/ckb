@@ -177,6 +177,66 @@ func (h *History) Partners(file string) []Pair {
 	return out
 }
 
+// AllPairs returns every pair of files that changed together in at least
+// minCount commits, FileA sorting before FileB, strongest first (score, then
+// count, then paths).
+func (h *History) AllPairs(minCount int) []Pair {
+	if h == nil {
+		return nil
+	}
+	counts := map[[2]string]int{}
+	for _, files := range h.commits {
+		for i := 0; i < len(files); i++ {
+			for j := i + 1; j < len(files); j++ {
+				a, b := files[i], files[j]
+				if a == b {
+					continue
+				}
+				if a > b {
+					a, b = b, a
+				}
+				counts[[2]string{a, b}]++
+			}
+		}
+	}
+	var out []Pair
+	for k, n := range counts {
+		if n < minCount {
+			continue
+		}
+		out = append(out, Pair{FileA: k[0], FileB: k[1], Count: n, Score: Score(n, h.churn[k[0]], h.churn[k[1]])})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		if out[i].FileA != out[j].FileA {
+			return out[i].FileA < out[j].FileA
+		}
+		return out[i].FileB < out[j].FileB
+	})
+	return out
+}
+
+// Commits is the number of commits the history counts.
+func (h *History) Commits() int {
+	if h == nil {
+		return 0
+	}
+	return len(h.commits)
+}
+
+// Files is the number of distinct files in the counted commits.
+func (h *History) Files() int {
+	if h == nil {
+		return 0
+	}
+	return len(h.churn)
+}
+
 // StrongPartners returns the partners of file with at least minCount shared
 // commits and a score of at least minScore, strongest first, at most limit
 // (all when limit <= 0).

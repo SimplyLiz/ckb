@@ -1,18 +1,19 @@
-// Package perf detects performance and structural health issues in a codebase.
-// Currently focuses on hidden coupling: file pairs that co-change frequently
-// in git but have no static import edge between them, indicating implicit
-// shared state or behavioral coupling that the static graph cannot see.
+// Package perf detects performance and structural health issues in a codebase:
+// loop call sites in hot files (AnalyzeStructural), and the types of the
+// hidden-coupling scan, which runs in the query engine because it needs the
+// SCIP index (query.Engine.ScanHiddenCoupling).
 package perf
 
-import "time"
-
-// ScanOptions configures a performance scan.
+// ScanOptions configures a hidden-coupling scan (query.Engine.ScanHiddenCoupling).
+// The history is coupling.History: the last 500 commits, bot, formatting and
+// oversized commits dropped.
 type ScanOptions struct {
-	// Scope limits analysis to these paths (relative to repo root).
-	// Empty means whole repo.
+	// Scope limits analysis to pairs whose files both lie under one of these
+	// paths (relative to repo root). Empty means whole repo.
 	Scope []string
 
-	// MinCorrelation is the minimum co-change correlation to report (0–1).
+	// MinCorrelation is the minimum co-change score to report (0–1): shared
+	// commits / (churn of the less-changed file + 2), see coupling.Score.
 	// Default: 0.3
 	MinCorrelation float64
 
@@ -20,34 +21,25 @@ type ScanOptions struct {
 	// Filters out spurious pairs from low-activity files. Default: 3
 	MinCoChanges int
 
-	// WindowDays is the git history window to consider. Default: 365
-	WindowDays int
-
 	// Limit caps the number of hidden-coupling pairs returned. Default: 50
 	Limit int
-
-	// MaxCommitFiles skips commits that touch more than this many files.
-	// Mass renames and formatting sweeps produce O(files²) pairs that dominate
-	// the pairCounts map without contributing useful coupling signal.
-	// 0 means unlimited (no commits are skipped).
-	MaxCommitFiles int
 }
 
-// HiddenCouplingPair represents two files that co-change without any static
-// import edge between them. This is the primary signal: implicit coupling that
-// the dependency graph cannot explain.
+// HiddenCouplingPair represents two source files that co-change without any
+// static link CKB sees in the SCIP index: neither references a symbol the
+// other defines, and they are not files of one Go package.
 type HiddenCouplingPair struct {
 	// FileA and FileB are repo-relative paths of the coupled files.
 	FileA string `json:"fileA"`
 	FileB string `json:"fileB"`
 
-	// Correlation is the co-change ratio: sharedCommits / min(totalA, totalB).
+	// Correlation is the co-change score, coupling.Score.
 	Correlation float64 `json:"correlation"`
 
 	// CoChangeCount is the raw number of commits that touched both files.
 	CoChangeCount int `json:"coChangeCount"`
 
-	// Level is "high" (≥0.8), "medium" (≥0.5), or "low".
+	// Level is "high" (≥0.7), "medium" (≥0.5), or "low".
 	Level string `json:"level"`
 
 	// Explanation is a human-readable description of why this is notable.
@@ -56,17 +48,37 @@ type HiddenCouplingPair struct {
 
 // PerfScanSummary aggregates the scan results.
 type PerfScanSummary struct {
-	FilesObserved    int       `json:"filesObserved"`
-	PairsChecked     int       `json:"pairsChecked"`
-	HiddenPairsFound int       `json:"hiddenPairsFound"`
-	AnalysisFrom     time.Time `json:"analysisFrom"`
-	AnalysisTo       time.Time `json:"analysisTo"`
+	// CommitsRead is the number of commits the co-change history counts.
+	CommitsRead   int `json:"commitsRead"`
+	FilesObserved int `json:"filesObserved"`
+	// PairsChecked is the number of pairs that passed the thresholds and went
+	// through the link check.
+	PairsChecked int `json:"pairsChecked"`
+	// PairsNotIndexed is how many of those were skipped because a file is not
+	// source code in the index: its links are unknown, not absent.
+	PairsNotIndexed  int `json:"pairsNotIndexed"`
+	HiddenPairsFound int `json:"hiddenPairsFound"`
+	// NotAssessed says why no pair was checked (no SCIP index); empty otherwise.
+	NotAssessed string `json:"notAssessed,omitempty"`
 }
 
 // PerfScanResult is the output of a perf scan.
 type PerfScanResult struct {
 	HiddenCoupling []HiddenCouplingPair `json:"hiddenCoupling"`
 	Summary        PerfScanSummary      `json:"summary"`
+}
+
+// CorrelationLevel names a co-change score: "high" from 0.7 (5 of 5 shared
+// commits), "medium" from 0.5, "low" below.
+func CorrelationLevel(c float64) string {
+	switch {
+	case c >= 0.7:
+		return "high"
+	case c >= 0.5:
+		return "medium"
+	default:
+		return "low"
+	}
 }
 
 // StructuralPerfOptions configures a structural performance scan.
