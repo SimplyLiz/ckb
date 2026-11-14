@@ -72,9 +72,14 @@ answers were worse than without it.
   library returns an array) and is fixed.
 - **listKeyConcepts without SCIP names concepts after source files only**, not benchmark
   result JSON (Morphon).
+- **review's Cartographer dead-code findings carry their line.** "Unreferenced export"
+  findings had no line, so the changed-lines filter kept them all: every old public
+  function of a changed file was reported (11 on Morphon, whose SCIP findings were all
+  dropped as unchanged), and a declaration SCIP had already reported came out twice.
 - `internal/cartographer` has an integration test (`go test -tags cartographer
   ./internal/cartographer/`) that runs every bridge function CKB calls against a small Go +
-  TS git repo. It fails against the pinned v4.0.3 until Cartographer serializes camelCase.
+  TS git repo. It fails against the pinned v4.0.3 until Cartographer serializes camelCase;
+  it passes against Cartographer develop (a15e5da).
 
 ### Fixed — saying what CKB couldn't look at
 
