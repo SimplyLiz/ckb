@@ -105,7 +105,7 @@ const (
 	maxCallGraphBytes      = 20000 // ~5000 tokens
 	maxFindReferencesBytes = 30000 // ~7500 tokens: the test asks for 100 references at ~250 bytes each
 	maxAnalyzeImpactBytes  = 16000 // ~4000 tokens
-	maxGetHotspotsBytes    = 13000 // ~3250 tokens — accommodates cartographer-tagged builds where each hotspot is enriched with up to 3 co-change partners
+	maxGetHotspotsBytes    = 13000 // ~3250 tokens — accommodates hotspots enriched with up to 3 co-change partners
 )
 
 // testResponseMetrics captures token-related metrics for a tool response (test-local).

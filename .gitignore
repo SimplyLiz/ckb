@@ -48,15 +48,7 @@ testdata/fixtures/typescript/node_modules/
 testdata/**/.dart_tool/
 testdata/**/pubspec.lock
 
-# Fetched/built cartographer static library + fetch stamp (not vendored)
-third_party/cartographer/target/
-third_party/cartographer/.fetched-lib
-
-# MCP runtime caches (pinned to commit hash, regenerated on startup)
-internal/mcp/.cartographer_cache.json
-internal/mcp/.codecartographer_cache.json
-
-# Cartographer-emitted artifacts (regenerated)
+# Artifacts the Cartographer integration (removed in 9.4.0) left in checkouts
 cartographer_map.xml
 codecartographer_map.xml
 **/.cartographer_cache.json

@@ -70,7 +70,7 @@ type ExploreOverview struct {
 	SymbolCount    int            `json:"symbolCount,omitempty"`
 	LineCount      int            `json:"lineCount,omitempty"`
 	Language       string         `json:"language,omitempty"`
-	Languages      map[string]int `json:"languages,omitempty"` // file count per language; populated by Cartographer
+	Languages      map[string]int `json:"languages,omitempty"` // file count per language, for a directory target
 	Role           string         `json:"role,omitempty"`      // core, glue, test, config
 	Responsibility string         `json:"responsibility,omitempty"`
 }

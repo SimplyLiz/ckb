@@ -659,8 +659,7 @@ The AI can dynamically expand the toolset mid-session using the `expandToolset` 
 
 CKB orchestrates multiple code intelligence backends, using whatever is available and stacking their strengths — more backends running means richer answers:
 
-- **Cartographer** — Fast structural analysis (architecture, dependencies, blast-radius, coupling, directory rollup) that needs **no index** and works the moment CKB is installed. Compiled into the binary, so it ships in the npm and Homebrew builds by default.
-- **SCIP** — Precise, pre-indexed symbol data for exact definitions, references, and call graphs (run `ckb index`)
+- **SCIP** — Precise, pre-indexed symbol data for exact definitions, references, and call graphs (run `ckb index`); import cycles, bridges and god modules are computed from it too
 - **LSP** — Real-time language server queries
 - **Git** — Blame, history, churn analysis, ownership
 - **LIP** — Semantic embedding daemon for nearest-neighbour search and re-ranking. Runs as a **separate, optional daemon** — install and start it alongside CKB.

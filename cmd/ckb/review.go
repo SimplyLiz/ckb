@@ -129,7 +129,7 @@ func init() {
 	// internal/query/review.go. It omitted "unwired" for several releases,
 	// which is where the recurring "20 checks vs 21 checks" doc discrepancy
 	// came from — the help string was the only enumeration users could see.
-	reviewCmd.Flags().StringSliceVar(&reviewChecks, "checks", nil, "Comma-separated list of checks to run (breaking,secrets,tests,complexity,coupling,hotspots,risk,critical,generated,classify,split,health,traceability,independence,dead-code,unwired,test-gaps,blast-radius,comment-drift,format-consistency,bug-patterns). Three more run only when their backend is available: arch-health and layers (Cartographer), semantic-novelty (LIP)")
+	reviewCmd.Flags().StringSliceVar(&reviewChecks, "checks", nil, "Comma-separated list of checks to run (breaking,secrets,tests,complexity,coupling,hotspots,risk,critical,generated,classify,split,health,traceability,independence,dead-code,unwired,test-gaps,blast-radius,comment-drift,format-consistency,bug-patterns). Two more run only when their backend is available: arch-health (SCIP index), semantic-novelty (LIP)")
 	reviewCmd.Flags().StringSliceVar(&reviewSkipChecks, "skip", nil, "Comma-separated list of checks to skip (complement of --checks; useful to exclude SCIP-heavy checks on large repos)")
 	reviewCmd.Flags().BoolVar(&reviewCI, "ci", false, "CI mode: exit 1 on fail, exit 2 on warn")
 	reviewCmd.Flags().StringVar(&reviewFailOn, "fail-on", "", "Override fail level (error, warning, none)")
