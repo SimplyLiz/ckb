@@ -100,14 +100,12 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingA
 	// the total, as Cartographer's co-change analysis does.
 	coChangeCounts := make(map[string]int)
 	counted := 0
+	commitFiles, err := a.getFilesInCommits(ctx, targetCommits)
+	if err != nil {
+		return nil, err
+	}
 	for _, commitHash := range targetCommits {
-		filesInCommit, err := a.getFilesInCommit(ctx, commitHash)
-		if err != nil {
-			a.logger.Warn("Failed to get files in commit",
-				"commit", commitHash,
-				"error", err.Error())
-			continue
-		}
+		filesInCommit := commitFiles[commitHash]
 		if len(filesInCommit) > maxFilesPerCommit {
 			continue
 		}
@@ -211,32 +209,44 @@ func (a *Analyzer) getFileCommits(ctx context.Context, filePath string, since ti
 	return commits, nil
 }
 
-// getFilesInCommit returns all files changed in a commit
-func (a *Analyzer) getFilesInCommit(ctx context.Context, commitHash string) ([]string, error) {
-	args := []string{
-		"show",
-		"--name-only",
-		"--format=",
-		commitHash,
-	}
+// commitsPerShow is how many commits one `git show` call lists.
+const commitsPerShow = 200
 
-	output, err := a.executeGit(ctx, args...)
-	if err != nil {
-		return nil, err
-	}
-
-	if output == "" {
-		return []string{}, nil
-	}
-
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	files := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if trimmed := strings.TrimSpace(line); trimmed != "" {
-			files = append(files, trimmed)
+// getFilesInCommits returns the files each commit changed, from one `git show`
+// per commitsPerShow commits rather than one per commit: a file with a few
+// hundred commits in the window spent most of planRefactor's and auditRisk's
+// time spawning git. Same output as `git show --name-only` per commit,
+// merges included.
+func (a *Analyzer) getFilesInCommits(ctx context.Context, commits []string) (map[string][]string, error) {
+	files := make(map[string][]string, len(commits))
+	for start := 0; start < len(commits); start += commitsPerShow {
+		end := start + commitsPerShow
+		if end > len(commits) {
+			end = len(commits)
+		}
+		args := append([]string{"show", "--name-only", "--format=%x01%H"}, commits[start:end]...)
+		output, err := a.executeGit(ctx, args...)
+		if err != nil {
+			return nil, err
+		}
+		current := ""
+		for _, line := range strings.Split(output, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "\x01") {
+				current = strings.TrimPrefix(line, "\x01")
+				if _, ok := files[current]; !ok {
+					files[current] = []string{}
+				}
+				continue
+			}
+			if current != "" {
+				files[current] = append(files[current], line)
+			}
 		}
 	}
-
 	return files, nil
 }
 
