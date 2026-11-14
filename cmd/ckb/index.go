@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,9 +17,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/SimplyLiz/CodeMCP/internal/config"
 	"github.com/SimplyLiz/CodeMCP/internal/incremental"
 	"github.com/SimplyLiz/CodeMCP/internal/index"
+	"github.com/SimplyLiz/CodeMCP/internal/indexplan"
 	"github.com/SimplyLiz/CodeMCP/internal/project"
 	"github.com/SimplyLiz/CodeMCP/internal/repostate"
 	"github.com/SimplyLiz/CodeMCP/internal/storage"
@@ -99,29 +100,200 @@ func init() {
 	rootCmd.AddCommand(indexCmd)
 }
 
+// indexOutcome classifies how performIndex finished, so callers (the `ckb
+// index` CLI command and `ckb setup`'s auto-index step) can decide whether
+// to treat it as fatal.
+type indexOutcome int
+
+const (
+	// indexOutcomeIndexed means a fresh (or incremental) SCIP index was generated.
+	indexOutcomeIndexed indexOutcome = iota
+	// indexOutcomeUpToDate means an existing index was already fresh; nothing to do.
+	indexOutcomeUpToDate
+	// indexOutcomeSkippedLargeRepo means the repo exceeded scipLargeRepoThreshold
+	// and SCIP generation was skipped in favor of FTS + LSP + LIP.
+	indexOutcomeSkippedLargeRepo
+	// indexOutcomeNoLanguageDetected means no supported manifest was found.
+	indexOutcomeNoLanguageDetected
+	// indexOutcomeMultipleLanguages means more than one language was detected
+	// and the caller must disambiguate with --lang.
+	indexOutcomeMultipleLanguages
+	// indexOutcomeIndexerMissing means the language is supported but its SCIP
+	// indexer binary isn't installed (or no indexer exists for the language
+	// at all). This is recoverable: Git-based features still work.
+	indexOutcomeIndexerMissing
+	// indexOutcomeIndexerRequirementMissing means the indexer is installed but
+	// a prerequisite is missing (compile_commands.json, bundler, composer, ...).
+	indexOutcomeIndexerRequirementMissing
+	// indexOutcomeIndexingFailed means the indexer ran but exited non-zero or
+	// didn't produce an index file.
+	indexOutcomeIndexingFailed
+	// indexOutcomeError means something unrelated to indexer availability
+	// failed (e.g. .ckb missing, filesystem error, lock contention).
+	indexOutcomeError
+)
+
+// indexResult is the outcome of performIndex. Message is a short, already
+// human-readable summary suitable for a caller (like `ckb setup`) that wants
+// to report the situation in one line without needing to know the internals.
+// performIndex itself always prints full detail to stdout/stderr as it goes.
+type indexResult struct {
+	Outcome indexOutcome
+	Message string
+	Err     error
+	Lang    project.Language
+	// Warning is a non-fatal, cosmetic note (currently only PHP's missing
+	// composer.lock notice) that a caller may want to print regardless of
+	// whether plan-building succeeded or failed.
+	Warning string
+}
+
+// indexPlan is the recipe all index paths share; see internal/indexplan.
+type indexPlan = indexplan.Plan
+
+// resolveIndexPath resolves the SCIP index output path for repoRoot.
+func resolveIndexPath(repoRoot string) string {
+	return indexplan.ResolveIndexPath(repoRoot)
+}
+
+// finalizeIndexOutput makes an indexer's output look like a repo-root index.
+func finalizeIndexOutput(repoRoot string, plan *indexPlan) error {
+	return indexplan.Finalize(repoRoot, plan)
+}
+
+// resolveIndexLanguage resolves which language to index for repoRoot: either
+// langOverride (from --lang, when not project.LangUnknown) or auto-detection
+// via project.DetectAllLanguages. ok is false when detection failed — either
+// no language was found (allLangs is nil) or more than one was found without
+// an explicit override (allLangs lists them, for the caller to print).
+func resolveIndexLanguage(repoRoot string, langOverride project.Language) (lang project.Language, manifest string, allLangs []project.Language, ok bool) {
+	if langOverride != project.LangUnknown {
+		lang = langOverride
+		manifest = project.FindManifestForLanguage(repoRoot, lang)
+		if manifest == "" {
+			manifest = "(specified via --lang)"
+		}
+		return lang, manifest, nil, true
+	}
+
+	lang, manifest, allLangs = project.DetectAllLanguages(repoRoot)
+	if lang == project.LangUnknown {
+		return project.LangUnknown, "", nil, false
+	}
+	if len(allLangs) > 1 {
+		return lang, manifest, allLangs, false
+	}
+	return lang, manifest, nil, true
+}
+
+// buildIndexPlan builds the indexer command for lang/manifest (see
+// indexplan.Build), in terms of this command's outcomes. Returns a nil plan and a
+// failure indexResult (indexOutcomeIndexerMissing,
+// indexOutcomeIndexerRequirementMissing, or indexOutcomeError) when the plan can't
+// be built — the caller must not proceed to execution in that case. The returned
+// indexResult's Warning field may be set even when plan is non-nil, so callers
+// should check it independently of success/failure.
+func buildIndexPlan(repoRoot string, lang project.Language, manifest, compdbOverride, indexPath string) (*indexPlan, indexResult) {
+	plan, warning, failure := indexplan.Build(repoRoot, lang, manifest, compdbOverride, indexPath)
+	if failure == nil {
+		return plan, indexResult{Warning: warning}
+	}
+	outcome := indexOutcomeError
+	switch failure.Kind {
+	case indexplan.FailureIndexerMissing:
+		outcome = indexOutcomeIndexerMissing
+	case indexplan.FailureRequirementMissing:
+		outcome = indexOutcomeIndexerRequirementMissing
+	}
+	return nil, indexResult{Outcome: outcome, Message: failure.Message, Err: failure.Err, Lang: lang, Warning: warning}
+}
+
+// printIndexPlanFailure prints the same stderr diagnostics performIndex has
+// always printed for each buildIndexPlan failure outcome, now driven off the
+// returned indexResult instead of being inlined at each return site.
+func printIndexPlanFailure(lang project.Language, result indexResult) {
+	switch result.Outcome {
+	case indexOutcomeIndexerMissing:
+		indexer := project.GetIndexerInfo(lang)
+		if indexer == nil {
+			fmt.Fprintf(os.Stderr, "No SCIP indexer available for %s\n", project.LanguageDisplayName(lang))
+			return
+		}
+		fmt.Println()
+		fmt.Printf("Indexer not found: %s\n", indexer.CheckCommand)
+		fmt.Println()
+		fmt.Println("Install with:")
+		fmt.Printf("  %s\n", indexer.InstallCommand)
+
+	case indexOutcomeIndexerRequirementMissing:
+		switch lang {
+		case project.LangCpp:
+			fmt.Fprintln(os.Stderr, "compile_commands.json not found.")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "Generate it with CMake:")
+			fmt.Fprintln(os.Stderr, "  cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -B build")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "Or specify path:")
+			fmt.Fprintln(os.Stderr, "  ckb index --lang cpp --compdb build/compile_commands.json")
+		case project.LangRuby:
+			fmt.Fprintln(os.Stderr, "bundle not found. Install Bundler:")
+			fmt.Fprintln(os.Stderr, "  gem install bundler")
+		case project.LangPHP:
+			fmt.Fprintln(os.Stderr, "scip-php not installed.")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "Install with:")
+			fmt.Fprintln(os.Stderr, "  composer require --dev davidrjenni/scip-php")
+			fmt.Fprintln(os.Stderr, "  composer install")
+		}
+
+	case indexOutcomeError:
+		fmt.Fprintf(os.Stderr, "Error creating index directory: %v\n", result.Err)
+	}
+}
+
 func runIndex(cmd *cobra.Command, args []string) {
 	repoRoot := mustGetRepoRoot()
 
+	result := performIndex(repoRoot)
+
+	switch result.Outcome {
+	case indexOutcomeIndexed, indexOutcomeUpToDate, indexOutcomeSkippedLargeRepo:
+		// Success or benign no-op.
+	default:
+		os.Exit(1)
+	}
+
+	// Start watch mode if enabled (CLI-only; ckb setup never sets this).
+	if indexWatch && result.Outcome == indexOutcomeIndexed {
+		fmt.Println()
+		ckbDir := filepath.Join(repoRoot, ".ckb")
+		runIndexWatchLoop(repoRoot, ckbDir, result.Lang)
+	}
+}
+
+// performIndex contains the actual indexing logic shared by `ckb index` and
+// `ckb setup`'s auto-index step. Unlike the old runIndex, it never calls
+// os.Exit — every outcome (success, benign skip, or failure) is returned so
+// callers can decide how to react. `ckb setup` in particular must not die
+// just because an indexer isn't installed; it prints one line and moves on.
+func performIndex(repoRoot string) indexResult {
 	// Check if this is an initialized CKB project
 	ckbDir := filepath.Join(repoRoot, ".ckb")
 	if _, err := os.Stat(ckbDir); os.IsNotExist(err) {
 		fmt.Fprintln(os.Stderr, "Error: Not a CKB project.")
 		fmt.Fprintln(os.Stderr, "Run 'ckb init' first to initialize this directory.")
-		os.Exit(1)
+		return indexResult{Outcome: indexOutcomeError, Message: "not a CKB project (run 'ckb init' first)"}
 	}
 
-	// Get SCIP index path from config (default: index.scip in root)
-	indexPath := "index.scip"
-	if cfg, loadErr := config.LoadConfig(repoRoot); loadErr == nil && cfg.Backends.Scip.IndexPath != "" {
-		indexPath = cfg.Backends.Scip.IndexPath
-	}
-	// Make absolute if relative
-	if !filepath.IsAbs(indexPath) {
-		indexPath = filepath.Join(repoRoot, indexPath)
-	}
+	// Resolve SCIP index output path (shared with buildIndexPlan/triggerReindex
+	// so a custom scip.indexPath is never silently ignored by one caller).
+	indexPath := resolveIndexPath(repoRoot)
 
 	// Migration: move legacy .scip/index.scip to root if needed
 	migrateIndexPath(repoRoot, indexPath)
+	// Before any early return (current, incremental): a repo initialized before
+	// init wrote .git/info/exclude is caught up whichever way this run ends.
+	printIndexExcluded(excludeIndexFromGit(repoRoot, indexPath))
 
 	// Check index freshness (unless --force)
 	if !indexForce {
@@ -142,7 +314,7 @@ func runIndex(cmd *cobra.Command, args []string) {
 					fmt.Printf("Index is current%s\n", commitInfo)
 					fmt.Printf("  %d files, %.2f MB\n", meta.FileCount, float64(info.Size())/1024/1024)
 					fmt.Println("Nothing to do. Use --force to re-index.")
-					os.Exit(0)
+					return indexResult{Outcome: indexOutcomeUpToDate, Message: "index is current"}
 				}
 			} else {
 				// Show why index is stale
@@ -157,179 +329,135 @@ func runIndex(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	// Detect or use specified language
-	var lang project.Language
-	var manifest string
-
+	// Detect or use specified language. --lang indexes that one language;
+	// otherwise every detected language with an installed indexer goes into
+	// one index (indexplan.DetectTargets, indexplan.RunAll). Background builds
+	// resolve theirs through indexedTargets and plan through the same
+	// planLanguages.
+	var targets []indexplan.Target
 	if indexLang != "" {
-		lang = parseLanguageFlag(indexLang)
-		if lang == project.LangUnknown {
+		langOverride := parseLanguageFlag(indexLang)
+		if langOverride == project.LangUnknown {
 			fmt.Fprintf(os.Stderr, "Unsupported language: %s\n", indexLang)
 			fmt.Fprintln(os.Stderr, "Supported: go, ts, py, rs, java, cpp, dart, rb, cs, php")
-			os.Exit(1)
+			return indexResult{Outcome: indexOutcomeError, Message: fmt.Sprintf("unsupported language: %s", indexLang)}
 		}
-		// Detect manifest path for the specified language (monorepo subdir support)
-		manifest = project.FindManifestForLanguage(repoRoot, lang)
-		if manifest == "" {
-			manifest = "(specified via --lang)"
-		}
+		lang, manifest, _, _ := resolveIndexLanguage(repoRoot, langOverride)
+		targets = []indexplan.Target{{Lang: lang, Manifest: manifest}}
 	} else {
-		var allLangs []project.Language
-		lang, manifest, allLangs = project.DetectAllLanguages(repoRoot)
+		targets = indexplan.DetectTargets(repoRoot)
+	}
 
-		if lang == project.LangUnknown {
-			fmt.Fprintln(os.Stderr, "Could not detect project language.")
-			fmt.Fprintln(os.Stderr, "")
-			fmt.Fprintln(os.Stderr, "Supported manifest files:")
-			fmt.Fprintln(os.Stderr, "  Go:         go.mod")
-			fmt.Fprintln(os.Stderr, "  TypeScript: package.json + tsconfig.json")
-			fmt.Fprintln(os.Stderr, "  Python:     pyproject.toml, requirements.txt, setup.py")
-			fmt.Fprintln(os.Stderr, "  Rust:       Cargo.toml")
-			fmt.Fprintln(os.Stderr, "  Java:       pom.xml, build.gradle")
-			fmt.Fprintln(os.Stderr, "  Kotlin:     build.gradle.kts")
-			fmt.Fprintln(os.Stderr, "  C/C++:      compile_commands.json")
-			fmt.Fprintln(os.Stderr, "  Dart:       pubspec.yaml")
-			fmt.Fprintln(os.Stderr, "  Ruby:       Gemfile, *.gemspec")
-			fmt.Fprintln(os.Stderr, "  C#:         *.csproj, *.sln")
-			fmt.Fprintln(os.Stderr, "  PHP:        composer.json")
-			fmt.Fprintln(os.Stderr, "")
-			fmt.Fprintln(os.Stderr, "Or specify manually: ckb index --lang go")
-			os.Exit(1)
-		}
+	if len(targets) == 0 {
+		fmt.Fprintln(os.Stderr, "Could not detect project language.")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Supported manifest files:")
+		fmt.Fprintln(os.Stderr, "  Go:         go.mod")
+		fmt.Fprintln(os.Stderr, "  TypeScript: package.json + tsconfig.json")
+		fmt.Fprintln(os.Stderr, "  Python:     pyproject.toml, requirements.txt, setup.py")
+		fmt.Fprintln(os.Stderr, "  Rust:       Cargo.toml")
+		fmt.Fprintln(os.Stderr, "  Java:       pom.xml, build.gradle")
+		fmt.Fprintln(os.Stderr, "  Kotlin:     build.gradle.kts")
+		fmt.Fprintln(os.Stderr, "  C/C++:      compile_commands.json")
+		fmt.Fprintln(os.Stderr, "  Dart:       pubspec.yaml")
+		fmt.Fprintln(os.Stderr, "  Ruby:       Gemfile, *.gemspec")
+		fmt.Fprintln(os.Stderr, "  C#:         *.csproj, *.sln")
+		fmt.Fprintln(os.Stderr, "  PHP:        composer.json")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "  Without a manifest: the language of most tracked .py, .ts or .js files")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Or specify manually: ckb index --lang go")
+		return indexResult{Outcome: indexOutcomeNoLanguageDetected, Message: "could not detect project language"}
+	}
 
-		// Error if multiple languages detected - don't silently default
-		if len(allLangs) > 1 {
-			fmt.Fprintln(os.Stderr, "Multiple languages detected:")
-			for _, l := range allLangs {
-				fmt.Fprintf(os.Stderr, "  - %s\n", project.LanguageDisplayName(l))
+	for _, t := range targets {
+		fmt.Printf("Detected %s project (from %s)\n", project.LanguageDisplayName(t.Lang), t.Manifest)
+	}
+	lang := targets[0].Lang
+
+	// Large-repo gate, per language: SCIP indexers take 30–90 min on large
+	// monorepos; CKB falls back to FTS + LSP + LIP for a language over it.
+	allowLarge := indexSCIP || indexForce
+	lp := planLanguages(repoRoot, targets, indexCompdb, indexPath, allowLarge)
+	for _, w := range lp.Warnings {
+		fmt.Printf("Warning: %s\n", w)
+	}
+	if allowLarge {
+		for l, n := range lp.Files {
+			if n >= scipLargeRepoThreshold {
+				fmt.Printf("Warning: %d %s files — SCIP generation may take 30–90 min.\n", n, project.LanguageDisplayName(l))
+				fmt.Println("         Proceeding because --scip / --force was specified.")
+				fmt.Println()
 			}
-			fmt.Fprintln(os.Stderr, "")
-			fmt.Fprintln(os.Stderr, "Use --lang to specify which language to index:")
-			fmt.Fprintf(os.Stderr, "  ckb index --lang %s\n", allLangs[0])
-			os.Exit(1)
 		}
 	}
-
-	fmt.Printf("Detected %s project (from %s)\n", project.LanguageDisplayName(lang), manifest)
-
-	// Large-repo gate: count source files and skip SCIP if above threshold.
-	// SCIP indexers take 30–90 min on large monorepos; CKB falls back to
-	// FTS + LSP + LIP which handles most queries without the index.
-	fileCount := countSourceFiles(repoRoot, lang)
-	if fileCount >= scipLargeRepoThreshold {
-		if indexSCIP || indexForce {
-			fmt.Printf("Warning: %d source files detected — SCIP generation may take 30–90 min.\n", fileCount)
-			fmt.Println("         Proceeding because --scip / --force was specified.")
+	if len(lp.Plans) == 0 {
+		if lp.LargeOnly && len(targets) == 1 {
+			n := lp.Skipped[0].Files
+			printLargeRepoNotice(lang, n, indexPath)
+			return indexResult{Outcome: indexOutcomeSkippedLargeRepo, Message: fmt.Sprintf("repo too large for automatic SCIP indexing (%d files)", n), Lang: lang}
+		}
+		if lp.LargeOnly {
 			fmt.Println()
-		} else {
-			printLargeRepoNotice(lang, fileCount, indexPath)
-			os.Exit(0)
+			fmt.Println("No language indexed automatically:")
+			for _, s := range lp.Skipped {
+				fmt.Printf("  %s: %s\n", project.LanguageDisplayName(project.Language(s.Language)), s.Reason)
+			}
+			fmt.Println()
+			fmt.Println("Run 'ckb index --scip' to index anyway (may take a long time).")
+			return indexResult{Outcome: indexOutcomeSkippedLargeRepo, Message: "repo too large for automatic SCIP indexing", Lang: lang}
 		}
+		// Nothing can run: the same diagnostics a single language always
+		// printed, for each language.
+		var first indexResult
+		for i, res := range lp.Failures {
+			if res.Outcome == indexOutcomeSkippedLargeRepo {
+				continue
+			}
+			if len(targets) > 1 {
+				fmt.Fprintf(os.Stderr, "\n%s:\n", project.LanguageDisplayName(res.Lang))
+			}
+			printIndexPlanFailure(res.Lang, res)
+			if first.Message == "" {
+				first = lp.Failures[i]
+			}
+		}
+		return first
 	}
 
-	// Get indexer info (for install/check commands)
-	indexer := project.GetIndexerInfo(lang)
-	if indexer == nil {
-		fmt.Fprintf(os.Stderr, "No SCIP indexer available for %s\n", project.LanguageDisplayName(lang))
-		os.Exit(1)
+	for _, plan := range lp.Plans {
+		prefix := ""
+		if len(lp.Plans) > 1 {
+			prefix = project.LanguageDisplayName(plan.Lang) + " "
+		}
+		fmt.Printf("%sIndexer: %s\n", prefix, plan.Indexer.CheckCommand)
+		fmt.Printf("%sCommand: %s\n", prefix, plan.Command)
 	}
-
-	// Check if using non-default index path (requires --output flag)
-	defaultIndexPath := filepath.Join(repoRoot, "index.scip")
-	needsOutputFlag := indexPath != defaultIndexPath
-
-	// Ensure output directory exists (for custom paths)
-	if needsOutputFlag {
-		outputDir := filepath.Dir(indexPath)
-		if err := os.MkdirAll(outputDir, 0755); err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating index directory %s: %v\n", outputDir, err)
-			os.Exit(1)
-		}
-	}
-
-	// Build command - some languages need special handling
-	var command string
-	switch lang {
-	case project.LangCpp:
-		cppCmd, err := project.BuildCppCommand(repoRoot, indexCompdb)
-		if err != nil || cppCmd == "" {
-			fmt.Fprintln(os.Stderr, "compile_commands.json not found.")
-			fmt.Fprintln(os.Stderr, "")
-			fmt.Fprintln(os.Stderr, "Generate it with CMake:")
-			fmt.Fprintln(os.Stderr, "  cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -B build")
-			fmt.Fprintln(os.Stderr, "")
-			fmt.Fprintln(os.Stderr, "Or specify path:")
-			fmt.Fprintln(os.Stderr, "  ckb index --lang cpp --compdb build/compile_commands.json")
-			os.Exit(1)
-		}
-		command = cppCmd
-		if needsOutputFlag {
-			command = fmt.Sprintf("%s --output %s", command, indexPath)
-		}
-
-	case project.LangRuby:
-		rubyCmd, err := project.BuildRubyCommand(repoRoot)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "bundle not found. Install Bundler:")
-			fmt.Fprintln(os.Stderr, "  gem install bundler")
-			os.Exit(1)
-		}
-		command = rubyCmd
-		if needsOutputFlag {
-			command = fmt.Sprintf("%s --output %s", command, indexPath)
-		}
-
-	case project.LangPHP:
-		warning, err := project.ValidatePHPSetup(repoRoot)
-		if warning != "" {
-			fmt.Printf("Warning: %s\n", warning)
-		}
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "scip-php not installed.")
-			fmt.Fprintln(os.Stderr, "")
-			fmt.Fprintln(os.Stderr, "Install with:")
-			fmt.Fprintln(os.Stderr, "  composer require --dev davidrjenni/scip-php")
-			fmt.Fprintln(os.Stderr, "  composer install")
-			os.Exit(1)
-		}
-		command = indexer.Command
-		if needsOutputFlag {
-			command = fmt.Sprintf("%s --output %s", command, indexPath)
-		}
-
-	default:
-		// Standard languages: use base command, add --output only if needed
-		command = indexer.Command
-		if needsOutputFlag {
-			command = fmt.Sprintf("%s --output %s", command, indexPath)
-		}
-	}
-
-	// Check if indexer is installed
-	if !isIndexerInstalled(indexer.CheckCommand) {
+	if len(lp.Skipped) > 0 {
 		fmt.Println()
-		fmt.Printf("Indexer not found: %s\n", indexer.CheckCommand)
-		fmt.Println()
-		fmt.Println("Install with:")
-		fmt.Printf("  %s\n", indexer.InstallCommand)
-		os.Exit(1)
+		fmt.Println("Not indexed, these stay on text search:")
+		for i, s := range lp.Skipped {
+			fmt.Printf("  %s: %s\n", project.LanguageDisplayName(project.Language(s.Language)), s.Reason)
+			if res := lp.Failures[i]; res.Outcome == indexOutcomeIndexerRequirementMissing {
+				printIndexPlanFailure(res.Lang, res)
+			}
+		}
 	}
-
-	fmt.Printf("Indexer: %s\n", indexer.CheckCommand)
-	fmt.Printf("Command: %s\n", command)
 
 	// Dry run - show command without executing
 	if indexDryRun {
 		fmt.Println()
 		fmt.Println("[dry-run] Would execute the above command")
-		os.Exit(0)
+		return indexResult{Outcome: indexOutcomeUpToDate, Message: "dry run", Lang: lang}
 	}
 
-	// Try incremental indexing for supported languages (unless --force)
-	if !indexForce && project.SupportsIncrementalIndexing(lang) {
-		if tryIncrementalIndex(repoRoot, ckbDir, lang) {
+	// Try incremental indexing for supported languages (unless --force). It
+	// reruns one indexer over the whole index file, so only for one language;
+	// tryIncrementalIndex also refuses an index that holds several.
+	if !indexForce && len(lp.Plans) == 1 && project.SupportsIncrementalIndexing(lp.Plans[0].Lang) {
+		if tryIncrementalIndex(repoRoot, ckbDir, lp.Plans[0].Lang) {
 			// Incremental succeeded, we're done
-			return
+			return indexResult{Outcome: indexOutcomeIndexed, Lang: lp.Plans[0].Lang}
 		}
 		// Fall through to full index
 	}
@@ -338,86 +466,79 @@ func runIndex(cmd *cobra.Command, args []string) {
 	lock, err := index.AcquireLock(ckbDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return indexResult{Outcome: indexOutcomeError, Message: fmt.Sprintf("could not acquire index lock: %v", err), Err: err, Lang: lang}
 	}
 	defer lock.Release()
-
-	// Run the indexer from the manifest's directory.
-	// For monorepos, the manifest may be in a subdirectory (e.g., src/cli/go.mod).
-	indexerDir := repoRoot
-	if manifest != "" && manifest != "(specified via --lang)" {
-		manifestDir := filepath.Dir(filepath.Join(repoRoot, manifest))
-		if manifestDir != repoRoot {
-			indexerDir = manifestDir
-			fmt.Printf("Module root: %s\n", manifest)
-		}
-	}
 
 	fmt.Println()
 	fmt.Println("Generating SCIP index...")
 	fmt.Println()
 
 	start := time.Now()
-	err = runIndexerCommand(indexerDir, command)
+	results, runErr := indexplan.RunAll(repoRoot, lp.Plans, func(plan *indexPlan) error {
+		if len(lp.Plans) > 1 {
+			fmt.Printf("Indexing %s...\n", project.LanguageDisplayName(plan.Lang))
+		}
+		// Run the indexer from the manifest's directory.
+		// For monorepos, the manifest may be in a subdirectory (e.g., src/cli/go.mod).
+		if plan.IndexerDir != repoRoot {
+			fmt.Printf("Module root: %s\n", plan.Manifest)
+		}
+		return runIndexerCommand(plan.IndexerDir, plan.Command)
+	})
 	duration := time.Since(start)
 
-	if err != nil {
+	for _, r := range results {
+		if r.Err == nil {
+			continue
+		}
 		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Indexing failed.")
+		if errors.Is(r.Err, indexplan.ErrNoOutput) {
+			fmt.Fprintf(os.Stderr, "Warning: %s completed but index.scip was not created.\n", r.Plan.Indexer.CheckCommand)
+			fmt.Fprintln(os.Stderr, "Check the indexer output above for errors.")
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "Indexing %s failed: %v\n", project.LanguageDisplayName(r.Plan.Lang), r.Err)
 		fmt.Fprintln(os.Stderr, "")
-		showTroubleshooting(lang)
-		os.Exit(1)
+		showTroubleshooting(r.Plan.Lang)
+	}
+	if runErr != nil {
+		msg := "indexer failed"
+		if errors.Is(runErr, indexplan.ErrNoOutput) {
+			msg = "indexer completed but produced no index.scip"
+		}
+		return indexResult{Outcome: indexOutcomeIndexingFailed, Message: msg, Err: runErr, Lang: lang}
 	}
 
-	// Verify index was created
 	info, err := os.Stat(indexPath)
-	if os.IsNotExist(err) {
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Warning: Indexer completed but index.scip was not created.")
-		fmt.Fprintln(os.Stderr, "Check the indexer output above for errors.")
-		os.Exit(1)
+	if err != nil {
+		return indexResult{Outcome: indexOutcomeIndexingFailed, Message: "indexer completed but produced no index.scip", Err: err, Lang: lang}
 	}
 
-	// Save project config
-	config := &project.ProjectConfig{
-		Language:     lang,
-		Indexer:      indexer.CheckCommand,
-		ManifestPath: manifest,
-		DetectedAt:   time.Now(),
-	}
-	if saveErr := project.SaveConfig(repoRoot, config); saveErr != nil {
+	// Save project config and index metadata (languages, skipped, git state).
+	meta, saveErrs := recordIndexBuild(repoRoot, ckbDir, lp, results, duration, indexLang != "", nil)
+	for _, e := range saveErrs {
 		// Non-fatal, just warn
-		fmt.Fprintf(os.Stderr, "Warning: Could not save project config: %v\n", saveErr)
-	}
-
-	// Save index metadata for freshness tracking
-	meta := &index.IndexMeta{
-		CreatedAt:   time.Now(),
-		FileCount:   countSourceFiles(repoRoot, lang),
-		Duration:    duration.Round(time.Millisecond * 100).String(),
-		Indexer:     indexer.CheckCommand,
-		IndexerArgs: strings.Fields(command),
-	}
-
-	// Capture git state if available
-	if rs, rsErr := repostate.ComputeRepoState(repoRoot); rsErr == nil {
-		meta.CommitHash = rs.HeadCommit
-		meta.RepoStateID = rs.RepoStateID
-	}
-
-	if saveErr := meta.Save(ckbDir); saveErr != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Could not save index metadata: %v\n", saveErr)
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", e)
 	}
 
 	// Populate incremental tracking tables for supported languages
-	if project.SupportsIncrementalIndexing(lang) {
-		populateIncrementalTracking(repoRoot, lang)
+	if meta != nil && tracksIncrementally(meta) {
+		populateIncrementalTracking(repoRoot, lang, os.Stdout)
 	}
 
 	// Success message
 	fmt.Println()
 	fmt.Printf("Done! Indexed in %.1fs\n", duration.Seconds())
 	fmt.Printf("Index: %s (%.2f MB)\n", indexPath, float64(info.Size())/1024/1024)
+	if meta != nil && len(lp.Targets) > 1 {
+		for _, l := range meta.Languages {
+			fmt.Printf("  %s: %d files (%s)\n", project.LanguageDisplayName(project.Language(l.Language)), l.Files, l.Indexer)
+		}
+		for _, s := range meta.Skipped {
+			fmt.Printf("  %s: not indexed — %s\n", project.LanguageDisplayName(project.Language(s.Language)), s.Reason)
+		}
+	}
 	fmt.Println()
 	fmt.Println("Full code intelligence now available:")
 	fmt.Println("  findReferences - Find all usages of a symbol")
@@ -427,16 +548,16 @@ func runIndex(cmd *cobra.Command, args []string) {
 
 	// Show tier summary if enabled
 	if indexShowTier {
-		showTierSummary(repoRoot, lang)
+		for _, r := range results {
+			if r.Err == nil {
+				showTierSummary(repoRoot, r.Plan.Lang)
+			}
+		}
 	}
 
 	fmt.Println("Run 'ckb status' to verify.")
 
-	// Start watch mode if enabled
-	if indexWatch {
-		fmt.Println()
-		runIndexWatchLoop(repoRoot, ckbDir, lang)
-	}
+	return indexResult{Outcome: indexOutcomeIndexed, Lang: lang}
 }
 
 // showTierSummary displays the current tier status after indexing.
@@ -552,20 +673,6 @@ func migrateIndexPath(repoRoot, targetPath string) {
 	if entries, err := os.ReadDir(filepath.Join(repoRoot, ".scip")); err == nil && len(entries) == 0 {
 		os.Remove(filepath.Join(repoRoot, ".scip"))
 	}
-}
-
-// isIndexerInstalled checks if the indexer command is available.
-func isIndexerInstalled(command string) bool {
-	// Extract just the binary name (first word)
-	parts := strings.Fields(command)
-	if len(parts) == 0 {
-		return false
-	}
-	binary := parts[0]
-
-	// Try to find in PATH
-	_, err := exec.LookPath(binary)
-	return err == nil
 }
 
 // runIndexerCommand runs the indexer and streams output.
@@ -722,7 +829,9 @@ func printLargeRepoNotice(lang project.Language, fileCount int, indexPath string
 	fmt.Println("Run 'ckb doctor' to confirm the active tier.")
 }
 
-// countSourceFiles counts source files in the repository for the given language.
+// countSourceFiles counts source files in the repository for the given language:
+// the git-tracked ones in a git repo, which is what ends up in the index (ignored
+// scratch and vendored type stubs on disk don't), and every file outside one.
 func countSourceFiles(root string, lang project.Language) int {
 	extensions := getSourceExtensions(lang)
 	if len(extensions) == 0 {
@@ -732,6 +841,16 @@ func countSourceFiles(root string, lang project.Language) int {
 	extSet := make(map[string]bool)
 	for _, ext := range extensions {
 		extSet[ext] = true
+	}
+
+	if out, err := exec.Command("git", "-C", root, "ls-files", "-z").Output(); err == nil { // #nosec G204 //nolint:gosec // fixed git subcommand
+		count := 0
+		for _, path := range strings.Split(string(out), "\x00") {
+			if extSet[filepath.Ext(path)] && !strings.Contains("/"+path, "/node_modules/") {
+				count++
+			}
+		}
+		return count
 	}
 
 	count := 0
@@ -792,6 +911,24 @@ func getSourceExtensions(lang project.Language) []string {
 // Returns true if incremental succeeded (caller should return early).
 // Returns false if full reindex is needed.
 func tryIncrementalIndex(repoRoot, ckbDir string, lang project.Language) bool {
+	return tryIncrementalIndexTo(repoRoot, ckbDir, lang, os.Stdout)
+}
+
+// tryIncrementalIndexTo is tryIncrementalIndex with progress written to out
+// instead of stdout, for callers whose stdout is a protocol transport
+// (the MCP reindex tool).
+func tryIncrementalIndexTo(repoRoot, ckbDir string, lang project.Language, out io.Writer) bool {
+	if indexplan.IsNested(repoRoot, lang) {
+		_, _ = fmt.Fprintln(out, "Nested project: incremental indexing not supported, running a full index")
+		return false
+	}
+	// The incremental update reruns this language's indexer over the index
+	// file; on a merged index that would drop every other language.
+	if meta, err := index.LoadMeta(ckbDir); err == nil && meta.MultiLanguage() {
+		_, _ = fmt.Fprintln(out, "Index holds several languages: incremental indexing not supported, running a full index")
+		return false
+	}
+
 	dbPath := filepath.Join(ckbDir, "ckb.db")
 
 	// Check if database exists
@@ -811,26 +948,13 @@ func tryIncrementalIndex(repoRoot, ckbDir string, lang project.Language) bool {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Get SCIP index path from config (default: index.scip in root)
-	indexPath := "index.scip"
-	if cfg, loadErr := config.LoadConfig(repoRoot); loadErr == nil && cfg.Backends.Scip.IndexPath != "" {
-		indexPath = cfg.Backends.Scip.IndexPath
-	}
-
-	// Create incremental config with the configured index path
-	incConfig := &incremental.Config{
-		IndexPath:            indexPath,
-		IncrementalThreshold: 50,
-		IndexTests:           false,
-	}
-
 	// Create incremental indexer
-	indexer := incremental.NewIncrementalIndexer(repoRoot, db, incConfig, logger)
+	indexer := incremental.NewIncrementalIndexer(repoRoot, db, indexplan.IncrementalConfig(repoRoot), logger)
 
 	// Check if we need full reindex
 	needsFull, reason := indexer.NeedsFullReindex()
 	if needsFull {
-		fmt.Printf("Full reindex required: %s\n", reason)
+		fmt.Fprintf(out, "Full reindex required: %s\n", reason)
 		return false
 	}
 
@@ -845,7 +969,7 @@ func tryIncrementalIndex(repoRoot, ckbDir string, lang project.Language) bool {
 	// Check if incremental is available for this language
 	canUse, reason := indexer.CanUseIncremental(lang)
 	if !canUse {
-		fmt.Printf("Incremental not available: %s\n", reason)
+		fmt.Fprintf(out, "Incremental not available: %s\n", reason)
 		return false
 	}
 
@@ -856,11 +980,11 @@ func tryIncrementalIndex(repoRoot, ckbDir string, lang project.Language) bool {
 		// Check for specific errors that should fall back to full reindex
 		if strings.Contains(err.Error(), "not supported") ||
 			strings.Contains(err.Error(), "not installed") {
-			fmt.Printf("Incremental not available: %v\n", err)
+			fmt.Fprintf(out, "Incremental not available: %v\n", err)
 			return false
 		}
-		fmt.Printf("Incremental failed: %v\n", err)
-		fmt.Println("Falling back to full reindex...")
+		fmt.Fprintf(out, "Incremental failed: %v\n", err)
+		fmt.Fprintln(out, "Falling back to full reindex...")
 		return false
 	}
 
@@ -868,7 +992,7 @@ func tryIncrementalIndex(repoRoot, ckbDir string, lang project.Language) bool {
 	state := indexer.GetIndexState()
 
 	// Format and display results
-	fmt.Println(incremental.FormatStats(stats, state))
+	fmt.Fprintln(out, incremental.FormatStats(stats, state))
 
 	// Update metadata so freshness check stays in sync with incremental state
 	if rs, rsErr := repostate.ComputeRepoState(repoRoot); rsErr == nil {
@@ -886,8 +1010,9 @@ func tryIncrementalIndex(repoRoot, ckbDir string, lang project.Language) bool {
 }
 
 // populateIncrementalTracking sets up tracking tables after a full index.
-// This enables subsequent incremental updates.
-func populateIncrementalTracking(repoRoot string, lang project.Language) {
+// This enables subsequent incremental updates. The one-line confirmation goes
+// to out; 'ckb mcp' passes io.Discard.
+func populateIncrementalTracking(repoRoot string, lang project.Language, out io.Writer) {
 	// Create logger (silent for CLI)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -899,21 +1024,8 @@ func populateIncrementalTracking(repoRoot string, lang project.Language) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Get SCIP index path from config (default: index.scip in root)
-	indexPath := "index.scip"
-	if cfg, loadErr := config.LoadConfig(repoRoot); loadErr == nil && cfg.Backends.Scip.IndexPath != "" {
-		indexPath = cfg.Backends.Scip.IndexPath
-	}
-
-	// Create incremental config with the configured index path
-	incConfig := &incremental.Config{
-		IndexPath:            indexPath,
-		IncrementalThreshold: 50,
-		IndexTests:           false,
-	}
-
 	// Create incremental indexer
-	indexer := incremental.NewIncrementalIndexer(repoRoot, db, incConfig, logger)
+	indexer := incremental.NewIncrementalIndexer(repoRoot, db, indexplan.IncrementalConfig(repoRoot), logger)
 
 	// Populate tracking tables from the full index
 	if popErr := indexer.PopulateAfterFullIndex(); popErr != nil {
@@ -921,7 +1033,7 @@ func populateIncrementalTracking(repoRoot string, lang project.Language) {
 		return
 	}
 
-	fmt.Println("  Incremental tracking enabled for future updates")
+	fmt.Fprintln(out, "  Incremental tracking enabled for future updates")
 }
 
 // runIndexWatchLoop watches for changes and runs incremental updates.

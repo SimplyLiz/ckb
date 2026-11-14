@@ -2,6 +2,1468 @@
 
 All notable changes to CKB will be documented in this file.
 
+## [9.4.0] - 2026-11-08
+
+### Added — mixed repos, scripts and data
+
+- **`ckb index` builds one index for all of a repo's languages.** In a Go + Python or Go +
+  TypeScript repo it stopped at "multiple languages detected", and watch mode, the first index
+  and `reindex` refused, so one half stayed on text search. Every detected language with an
+  installed indexer now goes into one merged index. A missing indexer, or a language over the
+  size limit (now per language), leaves only that language out, named with its fix in `ckb
+  index`, `ckb status`, getStatus and an `index_partial` warning; installing the indexer makes
+  the next reindex bring it in. Python scripts without a manifest count from 5 tracked files.
+  `--lang` still indexes one language; incremental updates are skipped on a merged index.
+  The previous index stays at the index path until the merged one replaces it, so a session
+  starting mid-build reads the old index. Only scip-php, which has no output option, still
+  runs with the old index moved aside.
+  A repo without any manifest gets every source language with 3 or more tracked files, so
+  Python scripts beside a few TypeScript hooks are both indexed, not only the more common one.
+  The tsconfig.json that scip-typescript's `--infer-tsconfig` writes where none was is removed
+  after the run instead of showing up in `git status`, and the per-language file count is the
+  tracked files the index holds, not every file on disk.
+- **Bash scripts are no longer a blind spot for the tree-sitter tier.** `.sh`, `.bash` and
+  extensionless files with a bash/sh shebang get function symbols in searchSymbols and
+  listSymbols, and getFileComplexity reports cyclomatic and cognitive complexity per function
+  plus a `<toplevel>` unit for commands outside functions.
+- **Script calls are architecture edges.** What a shell script sources or runs (`source`/`.`,
+  `./x.sh`, `bash x.sh`, `python3 y.py`, `python3 -m pkg.mod`) is an import edge in
+  getArchitecture and explore, counted only when the target file exists in the repo.
+- **Generated and data paths stay out of hotspots, coupling and risk.** Declare them in
+  `.ckb/config.json` as `paths.generated` / `paths.data` (globs; a plain directory name
+  covers its subtree). Built-in generated patterns, `review.generatedPatterns` and
+  .json/.jsonl/.csv/.tsv files of 256 KiB or more count too. `getHotspots`, `analyzeCoupling`,
+  `auditRisk` and `assessChange`'s co-change check leave them out and say how many in `leftOut`.
+
+### Fixed — saying what CKB couldn't look at
+
+- **A missing indexer is waited for, not given up on.** When no indexer was installed, the first
+  index and watch mode switched off until the MCP server restarted. They now build as soon as the
+  indexer is on PATH (next watch tick, or within 30 s for the first index). The missing-index
+  warning also says when the install tool itself (npm, pip, go, cargo, …) is missing, and names
+  where each language was detected from. Streamed answers carry the warning too.
+- **`getStatus` reports `index.fresh` only while the SCIP backend serves the index**, and
+  `loaded` is always present. With the backend off it reported fresh from the metadata alone.
+- **`index.scip` stays out of `git status` on every path that writes it**: `ckb index` (also
+  when the index is current or updated incrementally), `ckb setup`, and the MCP server's watch,
+  first-index and reindex builds, through `.git/info/exclude`.
+- **A nested git repository or gitignored directory no longer decides the repo's language.** A
+  separate ignored checkout's `pyproject.toml` inside the repo made it a Python project.
+- **`getStatus` names the repo it serves.** Its note named the global registry default, which
+  other sessions' `ckb init` or `ckb repo use` rewrite, so it changed between calls in one session.
+- **The repo registry honors `CKB_HOME`.** It read `~/.ckb/repos.json` regardless, so a test or
+  sandboxed run with a temp `CKB_HOME` registered its repos in the real registry, and its
+  `ckb init` could make one the global default.
+- **`explainFile` lists a file's symbols without an index.** It took them only from SCIP, so every
+  file of an unindexed repo, or of a language the index leaves out, had 0 symbols; it now falls
+  back to the parser. `ckb dead-code` without an index prints "Not analyzed" instead of "No dead
+  code found. Analyzed 0 symbols."
+- **A password in a URL no longer runs to the next `@` on the line.** `password_in_url` matched
+  from `http://127.0.0.1:8081` to the `"$@"` ending a shell command. A URL's user, password and
+  host can't contain whitespace, quotes or delimiters, and now the patterns can't either; the
+  same fix applies to the MongoDB, PostgreSQL, MySQL and Redis URI patterns.
+- **`scanSecrets` says when it ran and how much it read.** `filesScanned` was 0 in every result,
+  and staged or history scans reported `scannedAt: 0001-01-01` and skipped the allowlist and
+  severity filter. All scopes now go through one scan path; `ckb scan-secrets --scope history`,
+  which scanned the working tree, now reads history.
+- **Allow a secret finding on its line or per rule.** A `ckb:allow-secret` or `gitleaks:allow`
+  comment suppresses findings on its line (suppressId `inline`). Path, path-regex and pattern
+  entries in `.ckb/secrets-allowlist.json` can carry `rules` or `secretTypes` and hide only those
+  findings. `**` in path entries now matches across directories.
+- **`findDeadCode` without an index says it didn't look.** An empty `deadCode` read as "no dead
+  code". The result now carries `analyzed: false` with `notAnalyzedReason`. The review's dead-code
+  check skips instead of passing when neither SCIP nor Cartographer could check.
+- **auditRisk stops flagging LLM code as security-sensitive.** Keywords match identifier parts
+  instead of substrings, and the defaults name credentials (`access_token`, `api_key`,
+  `hf_token`, `private_key`) instead of bare `token`, `key`, `hash`, `private` and `session`.
+  `.ckb/config.json` `audit.securityKeywords` replaces the list and `audit.disabledFactors` turns
+  a factor off. In a single-author repo bus factor 1 is no longer scored ("Assign backup owner").
+
+### Added — the done check
+
+- **`doneCheck` in `assessChange` and `ckb changes`, and `ckb changes --check`.**
+  It lists each use of a changed declaration that the diff left as it was, with
+  file, line and code, under the status `open`, `clear` or `not_assessed`.
+  `--check` sets the exit code: 0 clear, 2 open, 3 not assessed, 1 still an error.
+  It compares text and compiles nothing, and `clear` has to be earned: an index
+  behind HEAD, a cut reference list, a failed lookup or a changed file outside the
+  index all make it `not_assessed`. See `docs/features/done-check.md`.
+- **Measured, including where it falls short.** On 30 SWE-Bench ProMax instances, the
+  open uses found 25/28 of what the compiler says broke on Go, 23/23 on TS (nearly all
+  one repo) and 8/17 on Rust. With the whole commit applied, 12 of 30 still report open
+  uses, and none the compiler could judge had broken, so `open` doesn't mean broken.
+  `docs/eval/change-prediction.md` has the numbers and the limits.
+- **Rust: uses the changed symbol's references don't reach.** A struct whose fields
+  changed lists its literals, its patterns without `..` and calls of a macro-generated
+  `new`. A retargeted type alias lists the uses of functions whose signature names it.
+  A removed `pub use` lists the imports still going through it. Such a site has `via`,
+  saying why it is listed. Written from the Rust misses above and not yet measured: the
+  8/17 is from before it. Since measured on a holdout of 12 axum, helix and ripgrep
+  commits: no new file found (8/9 of what the compiler says broke, before and after, all
+  from 3 axum commits, so recall is barely tested), and false alarms went up, from 343 to
+  358 open uses, with one commit losing `clear`. All 17 sites it added were `-> &mut Foo {`
+  read as a struct literal. That bug is fixed. A second holdout of 20 commits whose parents
+  compile finds the same files with both binaries (13/13), with 38 fewer open uses: 43 fewer
+  on one commit, 5 more from these rules, all false alarms. So they stay unproven outside the
+  commits they came from.
+- **Go and TypeScript: a type whose members changed lists the places that build it.**
+  scip-go and scip-typescript give a type no enclosing range, so a field added to a
+  struct or an interface reached no symbol: the change was a file-level entry at low
+  confidence, risk stayed low, and the done check said `clear`. Adding a field to
+  `impact.ChangedSymbol`, built by literals in seven files, said exactly that. Now each
+  Go struct and TypeScript interface, class or object type alias declared in a changed
+  file is read on both sides, and when its members differ (a tag alone doesn't count) the
+  sites that build it are listed with `via: fields of Foo changed`: Go composite literals
+  (`Foo{`, `&Foo{`, `[]Foo{{`, `map[K]Foo{"a": {`, not `Foo{}` or `[]Foo{existing}`),
+  and TypeScript constructions (`: Foo = {`, `: Foo[] = [`, `): Foo {` and `): Foo => ({`
+  as a function's return, `<Foo>{`, `} as Foo`, `} satisfies Foo`). An edit to an
+  existing member no longer makes the check `not_assessed` for "a declaration that can't
+  be compared": the type's body was compared, and the check says so. Text, not types,
+  like the Rust rules, and like them not yet measured on a holdout.
+- **`coChangeCheck` in `assessChange` and `ckb changes`: the files that usually change
+  with the touched files, and were left alone.** The done check follows references,
+  so it can't see an importer that moves with an editor by habit rather than by type,
+  and outside Rust it doesn't see an added field at all. This check reads git history
+  instead: the last 400 commits of the changed files, skipping commits of more than 50
+  files, and lists every file that was in at least half of a changed file's commits
+  (3 at least) and isn't in the diff, with `file`, `with`, `together`, `of` and
+  `lastTogether`. Status `open`, `clear`, or `not_assessed` when no changed file has
+  3 commits yet. It is history, not code: a listed file may need nothing. Works for
+  every language and for files that aren't code.
+- **`assessChange` is in the default preset,** and in every preset built on core,
+  so core goes from 25 tools to 26. The first 512 bytes of the MCP instructions now
+  end on it.
+
+### Added — TypeScript types that take their shape from a value
+
+Replayed on a real data-model change in a Next.js app with zod schemas: only the three
+model files applied, `tsc` as truth (23 broken lines in 10 files). Before, 9 of them had
+an open site on the line, 14 within three lines, 9 none, and two broken files weren't
+named. Four of the nine were `Property 'custom' is missing` at literals typed `Profile`,
+which is `z.infer<typeof profileSchema>`: the change was one line inside
+`z.object({…})`. `scripts/eval-change/replay.py` repeats the measurement; the app is
+private, so only aggregates are here.
+
+- **A changed line inside a TypeScript `const` belongs to the const.** scip-typescript
+  gives a const a range only when its value is a function; for `export const schema =
+  z.object({…})` the index has the line of the name. The initializer is now read to its
+  end, as for Go vars. In the replay the edited schemas are changed symbols and no longer
+  one file-level entry. This alone opens nothing.
+- **`typeof` carries a changed value to the type read off it.** `z.infer<typeof X>`,
+  `ReturnType<typeof f>`, `(typeof KEYS)[number]`, `typeof table.$inferSelect`: the alias
+  or interface that names a changed value counts as changed, and so do the values whose
+  initializer holds it, four levels deep. A literal of a type that holds the changed one
+  under a key is listed at that key, and `Record<T, …>` is a literal of T. Replay: all
+  four `custom` lines are open sites; broken lines with a site 9 → 13, within three
+  lines 14 → 18, without 9 → 5. It cost 38 sites, 34 of them on lines `tsc` accepts.
+- **zod: the done check says what changed in a schema.** The keys of `z.object` are read
+  on both sides, through `extend`, `merge`, `pick`, `omit`, `partial`, `required` and a
+  base or helper in the same file; `z.enum`, `z.union` and `z.discriminatedUnion` by
+  their members. A contract line states it: `shape-changed Profile: + custom (required
+  in output, default [])`. `.optional()` is optional in the output type and `.default()`
+  is not, which is why those literals broke. A key the output now requires opens only
+  the literals that lack it and have no spread; an optional key or a changed validator
+  opens nothing; a removed, retyped or now-optional key opens the places that name it,
+  for a wider type only the reads. A chain the reader can't follow (`.transform`, a base
+  from another file) falls back to every literal, and the site says what stopped it.
+  Second replay, a commit that adds one optional key and breaks nothing: the `typeof`
+  rule alone listed 33 false sites, with this it is `clear`. First replay: 99 → 208
+  sites, 128 of them reads of one key whose type got wider.
+- **TypeScript sites are ordered by how likely they break.** Keyed by the type or
+  indexing with the key first, then object literals, then a `switch` over the key, and
+  plain annotations and reads last. Replay, sites on a line `tsc` reports: 7 of the first
+  20 (5 at the start), 12 of the first 50 (8).
+- **Sites that rarely break are counted, not listed.** A plain annotation with a changed
+  type and a read of a key whose type got wider are one line per symbol: how many, in
+  how many files, and focus `rarely` (`ckb changes --format=compact --focus=rarely`,
+  paged with offset) lists them. `--format=json` and `format: "full"` carry them as
+  `rarelySites`, uncut, beside the counts in `rarely`. The cut at 100 is for the listed
+  sites only, and the status doesn't move: a symbol with nothing but rare uses keeps the
+  check open. A literal used to be dropped when another use of the same file sat inside
+  its braces, on the grounds that the other one was listed; a rare one no longer counts
+  for that, because it isn't (`Record<Changed, Other> = {` names `Other` on its line).
+- **Where this leaves the replay.** 61 open sites became 212, of which 47 are listed and
+  165 counted in 6 lines. On the 47: 13 broken lines have a site (9 before), 18 within
+  three lines (14), 5 none (9), one broken file isn't named (2), and 34 sites are on lines
+  `tsc` accepts (52). 13 of the first 50. With the 165 included it is 13, 19 and 4 with
+  every file named: the line and the file they add hold an annotation three lines from a
+  break it has nothing to do with. Before the split the list was cut at 100, with 12
+  exact hits. The four lines still without a site index a value with a variable of a
+  changed type, or sit in a callback whose parameter type is inferred from one; no line
+  there names anything that changed. One app, two commits: not a holdout. The Go recall
+  sample is unchanged at 9/9 compiler-broken files.
+- **The compact answer is text.** `assessChange` with `format: "compact"` and `ckb
+  changes --format=compact` print open sites under the symbol and why it counts, then
+  the file, then `line: code`; contracts as one line with before and after; the tests
+  that use a changed symbol by name and the rest as a number. Replay, the same 50 of 99
+  sites: 16.5 KB as JSON, 9.3 KB as text.
+- **`ckb refs` and `findReferences` print `file:line: [use] code`,** one per reference,
+  with use read off the line: def, call, literal, write, type or read. Imports are
+  counted, not listed; `--by-symbol` (`bySymbol`) groups by the enclosing definition; a
+  line that no longer names the symbol is marked stale. Five symbols of this repo: 5.4
+  KB of bare positions before, 5.7 KB with the code, `git grep -n -w` 10.4 KB. It is no
+  faster: 0.31 s against grep's 0.016 s, of which 0.26 s is starting the engine, 0.04 s
+  resolving the name and 0.3 ms the lookup.
+
+### Fixed — small things found in review
+
+- **auditRisk audits the repo's own files and doesn't ask a one-off script for tests.** It
+  walked the disk, so a gitignored `.venv` filled 47 of 50 items in a repo of scripts with
+  pip and pydantic; in a git repo it now reads the files git lists. A script that runs
+  directly (a shebang, a `__main__` guard, or work at module level outside a Python package)
+  and that nothing imports has its missing test file shown but not scored, so no "Add tests"
+  quick win; a helper the scripts share still gets one (Python, JS and TS, whose imports CKB
+  resolves). Every repo-root file also counted as tested: the `pkg/test/x` pattern turned
+  `x.py` into itself.
+- **listEntrypoints finds `main`.** It took a `main` only under a path containing `/cmd/`,
+  which a repo-relative path like `main.go` or `cmd/ckb/main.go` never has, and it searched
+  for "main" with a cap that `domain`, `remaining` and the like filled first. CKB's own
+  index listed no CLI entrypoint at all. Every function named `main` outside test files now
+  counts, in Go only in a `package main`; traceUsage reaches it as a `cli` path.
+- **A custom `scip.indexPath` works for C++, Ruby and PHP.** Every indexer was given
+  `--output`; scip-clang calls it `--index-output-path` and scip-ruby `--index-file`, and
+  scip-php has none and writes `index.scip` into the repo root, where it stayed while the
+  configured path got nothing. Each indexer now gets the flag its own source names, and a
+  scip-php index moves to the configured path.
+- **MCP answers no longer write `<`, `>` and `&` as `\u003c`.** Every tool's JSON went
+  through Go's HTML escaping; code now arrives as written.
+- **A file-level entry is named once in a note,** not as `schema.ts:schema.ts`.
+- **`return "x"` is code.** The pattern for a named Go import matched it. Nothing was
+  found that reached it; it no longer can.
+- **A Rust impl moved to a new file needs its `mod` line.** Without one, in the diff or
+  in the parent module, the method stays removed and the note says why. Where no parent
+  can be read whole it counts as moved, as before.
+- **A go.mod change that swaps the code behind an import is a doubt.** A require whose
+  major version changes (v0 to v1, or the `/vN` of the path), a require that goes, and a
+  replace that comes, goes or changes make the check `not_assessed` and are named. Minor
+  and patch bumps, indirect requires and new requires stay silent.
+
+### Fixed — found replaying other repos and CKB's own history
+
+- **A Go function moved into a test file of its package is gone for the package's code
+  only.** It counted as removed, and every caller in the tests beside it was open: 13
+  sites on a commit that builds. The tests of its directory are now compared with where
+  it went; callers in the package's code stay open. A test helper moved into the
+  package's code is a plain move.
+- **A constructor is found in text by what spells it.** The indexer names it
+  `<constructor>` or `<init>`, which no line contains, so a reference to one had no
+  context line, and a TypeScript constructor rewritten line by line counted as deleted.
+  Both now look for the type and `constructor`.
+- **`ckb refs` names the files the index doesn't cover.** A file that spells the name, is
+  of the symbol's language and isn't in the index (a test a tsconfig's `include` leaves
+  out, say) is listed as `path: [not in index]`, and as `outsideIndex` in JSON. The same
+  search the done check uses for its doubt.
+- **A call whose bound result is fixed where it's read counts as updated.** With
+  `x := f()` and the fix in `g(&x)` below it, the call stayed open after a change of
+  `f`'s result type, which the compiler accepted. A changed line later in the same block
+  that reads a variable the call's line binds (`:=`, `=`, `var`, `let`, `const`, a blank
+  `_` aside) now updates the use. Found changing `NewTruncationInfo` to return a value.
+- **`prepareChange` on a file or directory says it sums every symbol in it.** Asked
+  about `truncation.go`, it gave 49 affected uses and high risk; asked about the one
+  function changed, 4 and low. The compact answer now has a `hint` pointing at a symbol
+  target, and its summary names a symbol target instead of repeating the full SCIP ID.
+- **A Go literal's key isn't the field's new declaration.** Renaming
+  `query.TruncationInfo.OriginalCount` reported `signature-changed` with an "after" of
+  `OriginalCount: truncationInfo.TotalCount,`, the key of a `compression.TruncationInfo`
+  literal in the same file. Any Go line starting with the name passed as a declaration;
+  now only what can follow a field, method or grouped entry does, so the rename is
+  `definition-removed`. The done check had it right.
+- **A Go file behind a build tag is only a doubt if it can reach the changed name.**
+  Changing `compliance.Framework.Version()` and all 20 implementations ended
+  `not_assessed`: `internal/cartographer/bridge.go` (`//go:build cartographer`, so not
+  indexed) declares its own `func Version()`. Indexing with the tag only swaps in its
+  `!cartographer` stub. Outside its package a Go name is reached as a selector, a
+  receiver's method or a literal key, so a file that spells it only otherwise, and
+  doesn't dot-import, no longer stops a clear check.
+- **A Go field's serialized key is named when it changes.** Renaming `OriginalCount
+  int \`json:"originalCount"\`` broke every client reading `originalCount` from MCP and
+  the HTTP API, which neither the compiler nor the contract said. A tagged field's
+  `json`, `yaml`, `xml` and `toml` keys are compared, and a key gone, changed or left to
+  the format's default is the contract's `detail`. The compact text now shows a
+  declaration and its detail together.
+- **Rust: a field added to a struct-like enum variant lists what builds or destructures
+  it.** `Cmd::Import { dir, project, id } =>` stopped compiling when `Import { .. }`
+  gained a field (E0027), and the check said `clear`: only added variants were compared,
+  not a variant's fields. They are now read like a struct's, and the variant's literals
+  and patterns without `..` are listed. Written on one line, `Filed { reason: String },`,
+  the variant and its other fields counted as removed instead, and every use was open,
+  `matches!(k, Kind::Filed { .. })` included. A field declared on its braces' line, of
+  a variant or of a one-line `struct P { x: i32 }`, is now compared on its own.
+- **Rust: `(R::T, ..) =>` no longer covers the place beside it.** A match over
+  `(r, e, n)` whose first arm was `(R::T, ..)` counted as taking every `E`, so a
+  new `E` variant left it off the list although the compiler said E0004.
+  An arm covers a nested place only if everything beside it on the way there takes any
+  value. Arms that cover a place together, `(R::T, _)` and `(R::U, _)`, aren't seen, and
+  the match is listed. Both found on probes, not natural commits: 19 artificial changes
+  in six local Rust repos (`pub(crate)`, `pub(super)`, attribute strings, nested
+  patterns), 49 sites the compiler reports, before 47 listed and 2 open that weren't,
+  after 49 and none. On the 44 replayed Rust commits nothing exact moves (50/50), and a
+  commit that builds goes from 19 open uses, fields of one-line structs read as removed,
+  to `clear`. A field moved between its braces' line and a line of its own is the same
+  field.
+
+### Fixed — one-method interfaces
+
+- **A changed one-method interface no longer lists every type with that method.** A
+  `Label() string` interface matched each type with a `Label() string`, wherever it was.
+  Implementations whose package neither is nor imports the interface's are now counted
+  with the uses that rarely break (`name-match`), not listed; the check stays `open`.
+
+### Added — config files that still write a renamed key
+
+- **A renamed or removed serialized key lists the config files that write it.** When a
+  Go field's `json:`, `yaml:` or `toml:` key changes, the done check searches the repo's
+  tracked files of that format and lists each line still writing the old key, as
+  `port = 8080 (toml key "port" -> "listen_port")`; the files count as the contract's
+  consumers. The key is matched where its struct puts it: the fields holding the struct are
+  read from the Go source (tags, format defaults, embedded and inline structs, maps), and
+  TOML tables, YAML indentation and JSON nesting give each line its path, so `[server]
+  port` is open for `ServerConfig.Port` and `[client] port` isn't listed. A match by name
+  alone is counted with the uses that rarely break (`leaf-key`). A field whose tag is all
+  that changed doesn't list its Go uses: `c.Port` compiles as before, only the config
+  lines still writing the old key are open.
+
+### Added — Python in the done check
+
+- **Python declarations are compared.** `def` and `class` signatures, module and class
+  values: a Python change was `not_assessed` in the done check, `skip` in the review's
+  breaking check and `notCompared` in `compareAPI`. A parameter's name counts, since any
+  call may pass it by keyword; a rename alone leaves open only the calls that pass the old
+  name or unpack a mapping. Decorators count (`@property` changes every call), and a
+  changed `__init__` lists the calls of its class and of every subclass without its own
+  `__init__` (`class Bar(Foo): pass`), naming the subclass. `compareAPI` leaves names with a
+  leading underscore out, and Go's lowercase ones, as `ignorePrivate` always said. On a
+  repo of Python scripts, 7 changes checked against mypy and the tests: 50 of 50 broken
+  uses found, 8 open uses that weren't broken. `docs/features/done-check.md` has the table.
+
+### Fixed — consumers that were missed or counted twice
+
+- **A Python `__init__`'s consumers are the calls constructing its class.** scip-python
+  records `Foo(x)` as a use of the class, so analyzeImpact, prepareChange and the
+  changeset risk found only `super().__init__` calls. The functions constructing the class
+  (or a subclass without its own `__init__`) are now direct consumers and their callers
+  transitive ones. On a fixture: 1 consumer before, 6 after; the done check's 4 open
+  sites are the 4 lines mypy reports.
+- **A Go interface method's implementations count as its dependents.** analyzeImpact and
+  prepareChange saw only callers, so `Backend.Priority` (implemented 4 times, called
+  nowhere) read 0 dependents and low risk. They are now listed as `implements-interface`,
+  found by the done check's own lookup and read as of the indexed commit; test mocks go
+  to the related tests. Renaming the method gets the 0.6 floor; deleting it or renaming
+  the interface type breaks no implementation and doesn't. For a one-method interface,
+  types whose package doesn't import the interface's go to `nameMatchImplementations`,
+  not into the count.
+- **prepareChange counts each consumer once, from all of them.** The symbol path scored on
+  the 20 items the response budget kept, one row per reference: `SearchOptions.MaxResults`
+  read 15 direct callers, 5 modules and 20 in all; the real numbers are 10, 8 and 39, the
+  same as assessChange's. `transitiveImpact.directCallers` holds the uncapped count. The
+  bare `visibility`/`direct-callers`/`module-spread`/`impact-kind` factor names, which
+  never fed the score, are gone. A modify risk says what it assumes in
+  `riskAssessment.basis` (`risk_basis` in compact): the declaration stays, and a changed
+  one whose callers are left as they are is at least high in assessChange. prepareChange
+  now uses assessChange's level bands (0.4/0.6/0.8, was 0.3/0.5/0.7), so renaming
+  `MaxResults` is no longer critical before the edit and high after it; scores are
+  unchanged. analyzeImpact keeps 0.4/0.7, its score is another formula.
+- **A change inside a Go type's body names the type.** scip-go gives types no enclosing
+  range, so a field or interface method inserted mid-body fell between definitions and
+  became a file-level entry at 0.3; changedSymbols, review's breaking, blast-radius and
+  affected-tests checks didn't name the type and impact found none of its users. The
+  type's extent now runs to its closing brace (0.8), unless the same hunk changes a
+  member of that type: renaming a field together with its doc comment is the field's
+  change, not its struct's (`SearchOptions.MaxResults`: 10 direct consumers, not 13). TS
+  and Rust indexers send ranges; the same fallback covers older ones. Adding a field to
+  `SymbolDefInfo` on CKB: 0 consumers before, 15 direct after.
+- **A slice or map of pointers to a struct is not its literal.** `[]*T{x}` and
+  `map[K]*T{k: v}` were open sites whenever T's fields changed (3 false ones on CKB for
+  the field above, now clear). An elided element (`[]*T{{…}}`) still counts, read per
+  element, so a keyed one isn't listed after a field is added.
+- **unwired: files a bundler builds are entrypoints.** esbuild `entryPoints`, tsup/webpack
+  `entry` and rollup/vite `input` are read from the scripts package.json runs and from
+  root bundler configs, along with esbuild/tsup command-line entries and webpack's
+  `--entry`; `join(root, "src/…")` counts. On a Next.js app with an esbuild-built PDF
+  worker, unwired drops from 20 to 10. Only esbuild is checked on a real repo.
+- **One analyzeImpact row per consumer and line.** `lc.Win(p), lc.SubWin(p)` constructs
+  two classes that both run `Win.__init__`, and the line was listed twice: 6 rows for 5
+  consumers. Counts and the risk score were already per consumer. The done check listed
+  the same line twice too, once plain and once via `SubWin`; it is listed once now.
+- **prepareChange scores a symbol edit the way assessChange does.** The two tools had
+  different formulas, prepareChange adding weights for caller count, spread, visibility
+  and tests, assessChange averaging changed symbols, direct and transitive consumers and
+  modules, so one body edit got two scores whatever the bands: on a fixture 0.15 before,
+  0.26 after. A symbol target is now scored with assessChange's formula on the same
+  consumers, as an edit that keeps the declaration; visibility, test files and co-change
+  are still listed but no longer weighted. Rubik's `price`: 9 direct, 7 transitive, 2
+  modules, low in both. File and module targets keep the old formula.
+- **unwired: `Unwrap`, `Is`, `As`, `Format`, `GoString` and the YAML marshalers are
+  called by the standard library** through interfaces nobody declares in the repo, like
+  `String` and `Error` already were. Measured on CKB against Go's own `deadcode` (RTA from
+  the three `main` packages): of 616 listed, 437 are unreachable for it too; the other 179
+  have no production caller, or one in code that is itself unreachable (146 and 33), except
+  `errUnknownTool.Unwrap`, now dropped. unwired misses 104 functions `deadcode` finds,
+  because a symbol a reached file mentions counts as reached.
+- **Changed symbols carry a qualified name.** `qualifiedName` in changedSymbols, open
+  sites and rarely groups (`Backend.Priority`, `Win.__init__`), shown by the compact text
+  and `ckb changes`. Renaming an interface method and its implementations gave three
+  entries named `Priority`. `name` stays the bare name the checks match by.
+
+### Fixed — a repo of Python scripts
+
+Found running the usual workflow on a repo of 28 Python scripts and two TypeScript
+Claude Code mods, with no manifest anywhere.
+
+- **`ckb index` picks a language without a manifest.** It used to refuse. With no
+  manifest found, the language of most git-tracked `.py`, `.ts` or `.js` files is
+  indexed (their indexers need none), and the line says so: `from 28 tracked .py
+  files, no manifest`. Ignored files don't count.
+- **The scip-python install hint was wrong.** It said `pip install scip-python`; there
+  is no such package on PyPI. It's `npm install -g @sourcegraph/scip-python`.
+- **Python imports through `sys.path` are in the index.** Five scripts in one
+  directory import `lc1_account` from a sibling through `sys.path.insert(...)`.
+  scip-python resolves imports like pyright, so it writes no occurrence for any of
+  that: `findReferences(price)` gave 13 of 23 at confidence 1.00, `assessChange` said
+  2 consumers after a signature change, and listed two test files that passed, but not
+  the one that failed 12 of 12. After scip-python runs (full and incremental), the
+  index is repaired: an import of a module that is one of the index's own files, by
+  name, in a file with no occurrence of that module, gets its occurrences from the
+  text: `alias.name` after `import m as alias`, each use after `from m import name`
+  (and `*`), and one hop such as `r2.lc.price` where `r2` imported it. Comments,
+  strings and names the file declares itself are skipped; an import the indexer
+  resolved is never touched. On that repo: 34 occurrences added, all checked against
+  the source, 23 of 23 references, 7 consumer files, the failing test among the
+  affected.
+- **The review's breaking check compared nothing.** `breaking.Analyzer.Compare` read
+  the target's symbols and returned no changes, so `breaking ✓` was a constant, in
+  every language; `compareAPI` and `ckb breaking-changes` were empty the same way. All
+  three now use the change set's declaration comparison: a public declaration whose
+  signature changed or that is gone is a change, an error when the repo still uses
+  the old form and a warning when every use was updated. Where a public declaration
+  changed in a language that isn't compared (Java, C#, ...), the check is `skip`
+  naming the files, and `compareAPI` lists them as `notCompared`. `compareAPI` only
+  compares against the working tree now and says so for another `targetRef`; its
+  `totalBaseSymbols` and `totalTargetSymbols`, always 0 and the count of every
+  exported symbol, are gone.
+- **An import isn't a caller.** scip-python gives the names in an import statement
+  the read role, and a read outside any function counted as a direct caller:
+  `analyzeImpact` listed `from lc1_account import (... price ...)` as a caller with
+  no name and no ID. The index repair gives those occurrences the import role, and
+  `analyzeImpact` leaves imports out of its items; the uses after them are the
+  callers. `findReferences` counted the line's name as a `[read]`: a Python list line
+  with several names, a closing `)` or a `# noqa` wasn't recognized as part of the
+  import.
+- **Callers are counted once.** `uniqueCallerCount` counted every call site, direct
+  and transitive, so a function calling twice was two, and the explanation's "5
+  direct caller(s)" sat next to a count of 7. Callers are now distinct (by symbol,
+  else file and line) in the count, the risk factor and the explanation, which also
+  names the transitive count: "9 direct caller(s), 16 with transitive ones".
+- **Python and TypeScript names aren't "internal" for being lowercase.** The search
+  and tree-sitter paths read visibility by Go's rule, so `price`, imported by six
+  files, was `internal`, and in `explore` every function of a Python directory
+  ranked below its UPPERCASE constants. In `.py`, `.ts` and `.js` files a leading
+  underscore is private and everything else public. `explore` breaks ties by body
+  size, and halves the rank of a test file's symbols unless tests are explored: the
+  top ten for a directory of scripts were two test fixture classes and eight
+  constants, now its ten largest functions.
+- **`explore` and the architecture see a repo's own imports.** An import was
+  internal only if it started with `.` or `/`, so a Python script's sibling module
+  and a Go repo's own packages were `externalDeps`. Python imports now resolve beside
+  the file, from the repo root and, in a file that touches `sys.path`, by module name
+  to the repo's file of that name; Go imports by the module path in `go.mod` (that
+  resolver was a stub). The directory architecture of the scripts repo gets its
+  `roi → living-context` edge (8 imports), which it had as 0.
+- **Git-ignored files stay out.** scip-python indexes the whole directory, so a
+  git-ignored scratch directory (or a virtualenv not starting with `.`) ended up in
+  the index; the repair drops those documents. The directory architecture skipped
+  hidden directories only and listed it too.
+- **The review estimate adds up.** Two minutes per changed file were always counted
+  but only listed from six files on: "~13min" came with "4 min from 26 LOC" as its
+  only factor. The file switches are listed whenever they count.
+- **Review reviewers say what their number is.** It's the share of changed files a
+  person has lines in, so `alice (100%) · bob (100%)` looked like a broken split. The
+  label says so now, and the change's own author shows as `(author)`.
+- **An empty lookup in a language the index doesn't cover says so.** An index is
+  built for one language: with Python indexed, `searchSymbols("register", scope
+  mods/)` over two TypeScript mods answered `no-results`, which reads as "doesn't
+  exist". When `searchSymbols` finds nothing or `symbolExists` says `false`, and the
+  scope has tracked files of a language with no document in the index, the response
+  carries `notIndexed` (`typescript (5 files)`) and a warning to read those files.
+- **`ckb review` shows skipped checks.** They were left out of the text output, so a
+  check that didn't look read like one that passed.
+- **The review's dead code no longer reports functions called in their own file.**
+  Cartographer's unreferenced exports only count uses from other files: on a change
+  to four Python scripts, all 44 dead-code findings were such functions, plus
+  scip-python's `__init__` module symbol, and they alone made the review WARN. Each
+  must now survive a word search (no use in its own file beyond the declaration, none
+  in another file of its language); dunder names and test files are left out.
+- **`ckb index` keeps `.ckb/` and the index out of `git status` in repos initialized
+  before `ckb init` started writing `.git/info/exclude`.** A tracked or already
+  ignored index is left alone.
+
+### Added — MCP tool annotations
+
+- **Every MCP tool says whether it changes anything.** `tools/list` now carries
+  `annotations`: `readOnlyHint: true` on the 93 tools that only read the index, git and
+  the cache, so Claude Code runs them in parallel with other read-only calls instead of
+  one after another. The 18 that change something say so, with `destructiveHint`,
+  `idempotentHint` and `openWorldHint`: the index and `.ckb` database (`reindex`,
+  `annotateModule`, contract edges…), an ADR file (`recordDecision`), session state
+  (`expandToolset`, `switchRepo`, `switchProject`, kept out of parallel runs because
+  every later call depends on them), federation config, and the daemon's schedules and
+  webhooks. The three read-only federation tools that ask a remote server carry
+  `openWorldHint: true`. Costs about 1 KB on the default preset's `tools/list`.
+- **Large whole-result tools stay inline in Claude Code.** Claude Code moves a text
+  result over 50,000 characters to a file and shows the model a preview. `assessChange`
+  ran to 101k characters on a five-commit diff of CKB, `reviewPR` to 60k. Those two,
+  `analyzeChange`, `findUnwiredModules`, `findDeadCode` and `summarizeDiff` now set
+  `_meta["anthropic/maxResultSizeChars"]` to 150,000. `exportForLLM` (408k) keeps the
+  default: an export that size belongs in a file.
+- **`prepareChange` and `assessChange` load upfront** (`_meta["anthropic/alwaysLoad"]`).
+  The server instructions tell the agent to call them around every edit; deferred
+  behind tool search, they cost a search first.
+- **`doneCheck` and `coChangeCheck` come right after `summary`** in `assessChange` and
+  `analyzeChange`. They sat behind 63k characters of `changedSymbols` and
+  `affectedTests`, so a preview of a large result never reached them. Now they start
+  at character 156.
+
+### Added — MCP 2026-07-28
+
+- **CKB speaks the stateless MCP revision next to the old handshake.** A request whose
+  `_meta` names `2026-07-28`, and `server/discover`, take the new path; everything else
+  works as before. `server/discover` answers with the supported version, capabilities,
+  instructions and caching hints; results carry `resultType` and `serverInfo`;
+  `tools/list` and `resources/list` carry `ttlMs` and `cacheScope`; other versions get
+  `-32022` with the supported list; a request without `clientCapabilities` is invalid
+  params; `subscriptions/listen` is acknowledged and closed at once, since nothing a
+  modern client sees changes while CKB runs.
+- **The revision forbids state across requests, so two things work differently for
+  it.** `tools/list` is the preset CKB was started with, and `expandToolset` is not
+  offered: a wider set means `--preset=review` or `--preset=full`. `switchProject` and
+  `switchRepo` are replaced by an optional `repo` argument on every repo-bound tool (a
+  path, relative to the start repo, or a registered name), and every call starts from
+  the start repo, so a file path from another repo in one call no longer redirects the
+  next.
+
+### Fixed — MCP protocol
+
+- **Switching repositories switches the index and git with them.** `ckb init` writes
+  `"repoRoot": "."`, and the SCIP, git and LSP backends read it as the process's working
+  directory, not the repository. An engine for another repo (`switchProject`,
+  `switchRepo`, a file path from another repo) looked for that repo's `index.scip` in
+  the start directory and ran git there: after "Successfully switched to Lebenslauf",
+  `getStatus` said "Index not found" and `getHotspots` listed CKB's own `CHANGELOG.md`
+  and `internal/query/impact.go`. The same made `ckb status` from a subdirectory report
+  no SCIP index in an indexed repo. The engine now resolves a relative `repoRoot`
+  against its repository.
+- **CKB answers the MCP revision the client asks for.** `initialize` always said
+  `2024-11-05`, whatever the client sent. It now agrees on 2025-11-25, 2025-06-18 or
+  2024-11-05, and answers 2025-11-25 to anything else. 2025-03-26 is not offered: it
+  requires JSON-RPC batching, which CKB does not read, and 2025-06-18 dropped batching
+  again.
+- **`ping` gets an answer.** It returned "Method not found"; every revision since
+  2024-11-05 requires an empty result.
+- **A failing tool says so.** The error envelope came back as an ordinary result;
+  it now carries `isError: true`. Calling a tool that does not exist is reported as
+  invalid params instead of an internal server error.
+- **`resources/read` returns JSON.** The text was a Go struct dump (`&{...}`) labelled
+  `application/json`, so every `ckb://` resource was unreadable.
+
+### Added — a notice after updating
+
+- **The first run of a new release says what's new, once.** It also states the
+  license and asks for feedback. Stderr only, only on a terminal, never in `ckb mcp`,
+  `ckb serve` or shell completion, and off with `CKB_NO_NOTICE=1`. The news belong
+  to the minor release, so going straight from 9.3 to 9.4.1 still shows them and a
+  patch update doesn't repeat them. A fresh install records its version silently;
+  `~/.ckb/update-check.json` or `~/.ckb/ckb.db` from an older version marks an
+  upgrade. An upgrade first run from a script stays pending for the first run a
+  person reads, and two runs started together show it once.
+- **Homebrew shows the same text as caveats** after install and upgrade, which also
+  reaches people who only run CKB through an MCP client. Interactive `ckb setup`
+  prints one line about the license for them.
+- The update box tells Homebrew installs to run `brew upgrade ckb`, no longer takes
+  `2>/dev/null` for a terminal, and a flag in front of the command (`ckb -v mcp`) no
+  longer gets past the protocol-server check.
+
+### Fixed — first contact with a repo
+
+- **A repo without an index says so, and says what to do.** When the indexer
+  wasn't installed, the first index `ckb mcp` builds failed into its log, and
+  every answer after that came from text search with nothing in it to show why.
+  Now each MCP response served without a loaded SCIP index carries a warning
+  (`index_missing`, or `index_building` while a build runs) naming the next step,
+  checked against the machine: the install command for a missing indexer, then
+  `reindex`; `ckb index --lang` for a repo with several languages; `ckb index
+  --scip` above the size limit. `reindex` joins the core preset (27 tools), so an
+  agent can build the index without a terminal. `ckb setup` checks the same
+  thing and prints it, instead of promising a background build that won't happen.
+  Verified on a fresh Python repo: warning with `npm install -g
+  @sourcegraph/scip-python`, install, `reindex` → `reindexed`, warning gone.
+- **`ckb changes` and `assessChange` no longer call a change low risk when they
+  could not look.** Without a SCIP index there is no consumer graph, so "0
+  consumers" meant nobody checked, and the headline still read `Risk: LOW`. The
+  risk level is now `not_assessed` (`Risk: NOT ASSESSED`, "downstream consumers
+  unknown") unless another backend did find consumers. **`riskScore.level`,
+  `summary.estimatedRisk` and `blastRadius.riskLevel` can now hold this value**;
+  anything switching on them has to handle it.
+- **Nested projects index.** With a manifest in a subdirectory
+  (`engine/Cargo.toml`, `svc/go.mod`) the indexer wrote `engine/index.scip` while
+  CKB checked the repo root, so `ckb index` failed with "index.scip was not
+  created". The index now lands at the configured path and its document paths
+  are rewritten to be repo-relative, so references resolve. This goes through
+  `ckb index`, `--watch` and MCP `reindex`.
+- **Nested projects always get a full index.** Incremental indexers run from the
+  repo root, found no project there and reported an empty success over a stale
+  index.
+- **Incremental indexing sees changes outside Go.** Change detection only looked
+  at `.go` files, so in a TypeScript, JavaScript, Python, Dart or Rust repo with a
+  `.ckb/ckb.db`, `ckb index` after a commit said "Index is up to date", skipped the
+  indexer and still stamped the index with HEAD: stale, and counted as fresh. On a
+  TS repo, a function added in a new commit was in neither `index.scip` nor
+  `ckb.db`; it now is, through an incremental update of the one changed file. This
+  goes through `ckb index`, `--watch`, the daemon and MCP `reindex`. Tracking after
+  a full index also kept only documents whose language was `go` or unset, so a
+  rust-analyzer index (`rust`) tracked no file at all.
+- **The update box only goes to a terminal.** Agents and scripts capture stderr
+  with the result and were filtering the box out of every call by hand.
+- **An index that fell behind HEAD catches up when `ckb mcp` starts.** The first
+  index was built once and then left alone without `--watch`, which the plugin
+  doesn't pass: two weeks of commits later prepareChange answered from code the
+  index had never seen. Now a session start refreshes it once in the background,
+  incremental where the language allows, under the same machine-wide lock as the
+  first index. Only new commits, another branch or a newly installed indexer
+  trigger it; uncommitted edits alone don't, and neither does an index without
+  metadata. The size limit and missing indexers end it the way they end watch mode.
+  Verified on a Go repo: commit after indexing, start `ckb mcp`, index metadata
+  moves to HEAD.
+
+### Added — the plugin works without being asked
+
+- **`/ckb:review` runs `ckb review` before the model reads the skill.** The skill
+  injects the review JSON with Claude Code's `` !`…` `` lines, so the structural
+  pass no longer depends on the model choosing to run it first. Its argument goes
+  to the new `ckb review --target`: `staged`, a PR number (base, and the PR's branch
+  when it is checked out, from `gh`), or a base branch. An error lands in the
+  skill as text instead of aborting it, and the skill says how to go on.
+  `when_to_use` keeps it to whole branches, staged changes and PRs. Measured on a
+  staged two-line change with Haiku: two turns, the model read only the diff.
+- **`ckb review --compact`.** The review skill asked for `--compact`, which `ckb
+  review` never had; `2>/dev/null` hid the error, so the model got nothing back and
+  ran the review a second time on its own. The flag now exists: one line of JSON
+  with verdict, score, the checks that did not pass, the 30 most important
+  findings and counts per severity for the rest, plus effort, reviewers and health.
+  It is the MCP `reviewPR` compact form (same function, which there keeps 10
+  findings and gains the per-severity counts, effort and reviewers). On 4 commits
+  of CKB: 38 KB of `--format=json`, past the ~30,000 characters Claude Code
+  inlines from an injected command, against 5.4 KB; on 25 commits 7.6 KB. The
+  skill injects `--compact`.
+- **The plugin brings its own `ckb`, pinned to its release.** MCP server, skills
+  and SessionStart hook all start `claude-plugin/scripts/ckb`, so one rule decides
+  which ckb runs: a `ckb` on PATH with the plugin's major version and at least its
+  minor (the skills use flags of that release, like `--target`), else
+  `npx -y @tastehub/ckb@9.4.0`. `scripts/sync-version.go` keeps that pin with
+  `plugin.json`. Before, the MCP server ran an unpinned npx and a brew 9.3.0 next
+  to a 9.4.0 skill failed on the new flag. The shim sits in `scripts/`, not `bin/`:
+  claude.ai and org-wide plugin distribution reject a plugin with a top-level
+  `bin/`. The skills call it through `${CLAUDE_PLUGIN_ROOT}`, which also covers the
+  `allowed-tools` rule of the injected review line (tested with and without a
+  matching rule). The skills lost their "if ckb is not on PATH" paragraph.
+  `ckb setup --tool=claude-code`, which installs the same texts as commands without
+  the plugin, writes `ckb` into them, or `npx -y @tastehub/ckb@<its version>` when
+  `ckb` is not on PATH or `--npx` is given.
+- **No npx on every call.** An async SessionStart hook (`scripts/ckb-install`)
+  installs the pinned `@tastehub/ckb` into the plugin's data directory the first
+  time no compatible `ckb` is on PATH; the data directory survives plugin updates,
+  a new pin replaces the old copy, and a failed or interrupted install is retried
+  at the next session start. The shim then runs that copy directly (Go binary, no
+  Node), also from skills, where Claude Code does not export `CLAUDE_PLUGIN_DATA`:
+  the shim derives it from the plugin's cache path. First install 3.7 s in the
+  background, 30 ms on later sessions. ckb's own update check is off for the
+  copy and the npx fallback, since the plugin updates them.
+- **A SessionStart hook tells the model what state the index is in.** The plugin
+  runs `ckb hook session-start` on startup, resume, `/clear` and compaction: one
+  to three lines saying the index is current, N commits behind HEAD and being
+  refreshed by the starting MCP server, missing uncommitted edits, being built,
+  or missing with the diagnosed next step, plus the languages it leaves out. The
+  texts are the ones the MCP warnings use. Nothing outside a git repo or without
+  `.ckb`, exit 0 always, no indexing, no engine. 13 ms outside a repo, 53 ms in a
+  repo without an index, 90 ms on CKB's own repo. An older `ckb` without the
+  command prints nothing, and so does a session where only npx could run it: the
+  hook never waits for a download (timeout 5 s), the MCP warnings cover that case.
+
+### Fixed — found by running CKB on its own repo
+
+Three changes with known breakage, checked against the compiler: a new parameter on
+`query.NewEngine` (20 call sites), a renamed field `backends.SearchOptions.MaxResults`
+(17) and a renamed method on the `backends.Backend` interface (4 implementations).
+
+- **The done check lists the implementations a changed Go interface leaves behind.**
+  Renaming, re-typing or adding an interface method said `clear` before, because an
+  implementation isn't a reference. It now finds them through the index's
+  implementation relations and, since scip-go only records those within a package,
+  through types whose methods match the interface's as it was before the diff. The
+  sites carry `via: "implements Backend"`. Interface rename: 4/4, added method: 2/2
+  (the two types without it). If the lookup can't run, the status is `not_assessed`.
+- **A struct literal is listed once.** When a field changed, a literal that names it
+  was listed for the field and again as "fields of X changed". The literal's own entry
+  now only stays when no field use inside its braces is open, for instance a literal
+  that leaves the field out. The field rename went from 30 sites back to 17.
+- **A symbol ID from before the last commit still resolves.** scip-go puts the commit
+  hash into every ID, so each commit invalidated the IDs an agent held. MCP and A2A
+  calls now retry without the version field, take only a unique match, and say so in a
+  `SYMBOL_ID_VERSION_REMAPPED` warning. The HTTP API does the same and names both IDs
+  in an `X-CKB-Symbol-Id-Remapped` header; the CLI (`symbol`, `refs`, `impact`,
+  `impact prepare`, `impact outgoing`, `callgraph`, `justify`, `trace`) prints a note on
+  stderr.
+- **`prepareChange` lists the tests that use the target.** Before, it listed the first
+  20 test files of the module, alphabetically; for `NewEngine` none of the 14 that call
+  it. It now uses the same derivation as `assessChange`: direct, then transitive, then
+  same-module files as filler, each labelled by its real reason.
+- **`prepareChange` on a file counts what the file declares.** `internal/backends/backend.go`
+  gave 0 affected files; with its types, fields and methods it is 134 callers in 9 modules.
+- **Co-changed files carry their path.** `coChangeFiles` said `symbols.go`; it says
+  `internal/query/symbols.go`. That also fixes review's split graph, which compared the
+  basename against full paths and never matched, and `explainOrigin`'s co-changes.
+- **`assessChange` answers in `format: "compact"` by default** (`ckb changes
+  --format=compact`): no symbol IDs, open sites as `file:line`. 7.5 KB instead of 25.8 KB
+  for the `NewEngine` change. `format: "full"` returns the previous answer.
+- **`assessChange` takes a `focus`**: `done` (open sites, co-change files left alone),
+  `tests` (affected test files and `runTests`, a command that runs them) or `risk`
+  (score, `riskFactors`, contract changes, consumer files). The summary still covers
+  everything. `offset` and `limit` page the open sites or test files, and `more` names
+  the next offset. Same flags on `ckb changes --format=compact`. `riskScore` is
+  rounded to two places (it read `0.6599999999999999`).
+- **`ckb activity --followups <tool>`** counts which CKB call came next in the same
+  session after each call of the tool, labelled by `focus`, `format`, `changeType` and
+  `offset`. It shows what callers had to fetch after an answer; `--all` reads every
+  registered repo. Only CKB calls are in the ledger, not the file reads in between.
+- **A Go constant moved into a `const (...)` block is not removed.** Inside the block the
+  line has no keyword, so the declaration wasn't found on the other side and its uses
+  were listed as open sites under `definition-removed`. A `const`, `var` or `type`
+  block the diff shows now lends its keyword. Found by running `assessChange` on the
+  change that added `focus`. Test names and affected symbols carry short names, not SCIP IDs, and
+  `affectedBy` names the changed symbol that selected the test.
+- **Done-check false alarms, measured.** The last 80 commits of `develop`, each indexed
+  at its parent with the whole commit applied: every one builds and vets, so every open
+  site is a false alarm. Before the fixes below: 279 open sites in 22 commits, 273 of
+  them struct literals and 6 from one type rename; 14 commits `not_assessed`. After: 0
+  open sites, 71 commits `clear`, 9 `not_assessed`, each for a file the Go index can't
+  have (Python, TypeScript testdata, a `_windows.go` file). A literal is now read to
+  its end: the 2,799-line `[]Tool{...}` ran past the 300 lines it was followed and
+  counted as open. `scripts/eval-change/sweep.py` repeats the measurement.
+- **A declaration is read from the whole file, not only the hunks.** A constant moved
+  out of a long `const (` block whose opening line the hunk doesn't reach was still
+  `removed`: the block's keyword was invisible. Both sides of each changed file are
+  read now (`git show` at the diff's base or merge base, the index with `--staged`, the
+  working tree), and only if they agree with every line the hunks show; a diff passed
+  in from outside whose files don't match falls back to the hunks. Multi-line
+  signatures that ran past the diff's context are compared in full as well.
+- **A Go declaration moved to another file of its package is not removed.** Callers
+  name the package, so moving a function, method, type or constant between files
+  changed nothing for them, yet the old file's side listed every use as an open site.
+  The declaration is now looked up in the diff's other files of the same directory and
+  compared there: unchanged, or `changed` if its signature changed on the way. Into
+  another directory, or between a package and its external `_test` package, it stays
+  `removed`.
+- **A Go struct's literals are open where the compiler rejects them.** A field added to a
+  struct listed every composite literal of it, though a keyed literal still compiles. Now
+  a positional literal is open on any field change, and a keyed one only if it sets a
+  field that went away or changed type; the elements of `[]T{...}` and `map[K]T{...}`
+  are read one by one. TypeScript keeps the old rule.
+- **A Go type's rename carries its methods and the signatures naming it.** Exporting a
+  type and moving it to another package (`exportRules` → `deadcode.ExportRules`) listed
+  each unchanged `r.line(...)` as a use of a removed method, and `parseSymbolInfo(...,
+  rules)` as a changed signature. A method found again on a type the diff declares, and
+  a signature whose only difference is the new name, now follow the rename; the type
+  itself stays `removed`, so code still naming it is still listed.
+- **A parameter isn't a declaration of its name.** `func (r *T) line(...) (text string,
+  file *sourceFile, ok bool)` counted as declaring `file`, so a declaration looked for on
+  the other side of the diff could be paired with the wrong one. The name now has to
+  follow its keyword (Go, TypeScript and Rust).
+- **A TypeScript declaration in its file's `export { ... }` list is exported.** Moving
+  `export` from `export function f` into a list at the end of the file read as
+  narrowed visibility, `changed`, with every caller open. A list re-exporting from
+  another module, or exporting the name as another, still doesn't count.
+- **With `--base`, the done check reads the old side at the merge base.** The diff has
+  compared against the merge base since `ckb review` learned it, but the check read each
+  file's old text at the base branch's tip. Once that branch moved on, the lines were
+  elsewhere and an updated use wasn't recognized as one.
+- **A line inside a Go var's initializer belongs to the var.** scip-go gives vars and
+  constants only the line of their name, so a changed line further into `var cmd =
+  &cobra.Command{...}`, a preset table or a multi-line string belonged to no definition
+  and counted as a declaration that can't be compared: `not_assessed` for 7 of the 80
+  commits. The initializer is now read to its end on the index's side of the file. The
+  declaration compared is still `var cmd`: a changed initializer whose inferred type
+  changes reads as unchanged, as before.
+- **The index's side of a file is found when lines were inserted.** With 12 lines of
+  context, a hunk that gained lines reaches further on its new side, often onto the
+  index's next definition. That name isn't on the new line there, and the file was put
+  down as matching neither side, with every change in it unattributed and the check
+  `not_assessed`. A definition now only counts against the side that shows its line.
+- **What holds no code is no doubt.** `LICENSE`, `.gitignore`, `go.mod`, `go.sum` and the
+  like were "changed files that aren't in the index"; an aliased Go import (`f "fmt"`)
+  and a Rust `impl Point {` header were code no definition explained. A `go.mod` whose
+  `module` line changes is a doubt of its own, since every import of the module changed.
+  The declarations that can't be compared are named in the note.
+- **A Rust impl moved to another module of its crate is not removed.** rust-analyzer
+  names a method by the module of its impl, so moving `impl Point` from `a.rs` to `c.rs`
+  listed every `p.sum()` as a use of a removed method. The method is now looked for in an
+  impl of the same type and trait in the diff's other files of the crate, and compared
+  there. One visible only by module (private, `pub(super)`, `pub(in ...)`) stays
+  `removed`: moving it is a change of its own.
+- **A server older than its binary says so in every answer.** `meta.staleServer`, checked
+  at most every 30 s, instead of only in `getStatus`. Both now say to reconnect the
+  server (`/mcp` in Claude Code); `getStatus` said `/clear`, which doesn't restart it.
+- **`prepareChange` with `rename` or `delete` gets the floor `assessChange` applies.**
+  With production callers the risk is at least high (0.6), as `assessChange` scores the
+  same change once it is in a diff. The `NewEngine` case read low 0.15 before the edit
+  and high 0.6 after it. `modify` keeps the count-based score, since it can't tell a
+  body edit from a signature change.
+- **`affected_count` no longer counts direct callers twice.** The compact `prepareChange`
+  and `ckb impact prepare` added the direct callers to a total that already held them.
+- **`understand "Backend.Priority"` means Backend's `Priority`**, not the first method of
+  that name, and the symbol has its module again (it read "in module  –").
+
+### Fixed — what CKB says about a change
+
+These change what `assessChange`, `prepareChange`, `analyzeImpact` and
+`searchSymbols` report, so expect different numbers than in 9.3.
+
+- **`analyzeImpact` counted no callers for indexers without access roles.**
+  scip-dart and scip-typescript mark an occurrence with no read or write role,
+  so every call was `unknown`: the report said "0 direct caller(s)" and scored
+  the risk on that. A reference inside a function is now a caller; one outside
+  any function stays `unknown`, since it is as likely an import.
+- **Blast radius inflated by SCIP locals.** A local function's `local N` ID is
+  unique per document only, and was treated as global: on a Flutter app, 41 of
+  108 impacts landed in generated localization code. Locals no longer enter the
+  call graph; what a local function calls is attributed to the function around it.
+- **Callers for indexers without `EnclosingRange`.** References in scip-dart
+  output had no enclosing symbol. Function extents are now inferred, as the
+  caller index already did.
+- **One risk level per `analyzeImpact` answer.** `blastRadius.riskLevel` was a
+  size class from module and caller counts, while `riskScore.level` weighed
+  visibility, callers, spread and kind, so the same response said `medium` next
+  to `high`. It now carries the score's level, as `prepareChange` already did;
+  the counts are unchanged.
+- **`contractChanged` checks the use, not the file.** A file counted as handled as
+  soon as the diff touched it, so a comment edit hid a call the compiler still
+  rejects, and took the risk floor with it. A consumer inside the diff now counts
+  only if its use was changed. The wording said "outside this diff"; it now says
+  "left as it was".
+- **`findReferences` returns the source line.** Every `context` read
+  `// Context at file:line:col`, from a stub that was never filled in. A line that
+  no longer holds the symbol's name comes back empty, because the index can be older
+  than the file.
+- **The preset counts in the READMEs and in `ckb setup` are right again.** Some were
+  off by sixty tools.
+- **Changed symbols are the definitions you changed.** Every symbol merely
+  referenced on a changed line used to count as changed, so editing a line that
+  called `logger.Info` charged the change with `logger.Info`'s blast radius.
+  Locals and packages counted too. A changed symbol is now the innermost
+  definition around the changed line.
+- **Deletions are reported.** Only added lines were mapped, so a pure deletion
+  produced nothing. It now maps to its function, a deleted definition appears as
+  `deleted` with its callers, a deleted symbol still used elsewhere is at least
+  high risk (`deleted_with_consumers`), and a deletion the index can't resolve
+  is flagged instead of dropped.
+- **Callers count as callers.** SCIP has no "call" role, so every call arrived
+  as a read and was classified as a type dependency. `analyzeImpact` said "0
+  direct callers", low risk, for a function with real callers.
+- **SCIP symbol kinds use the protocol's enum.** Two hand-written tables had the
+  wrong numbers (a real `Function`, 17, mapped to `interface`).
+- **`not_assessed` everywhere it applies.** `prepareChange`, `analyzeImpact` and
+  `planRefactor` said low risk without a consumer graph too. The `ckb impact
+  diff` output no longer prints a checkmark over it.
+- **Comment and whitespace changes** get confidence 0.3 with a note.
+- **Module spread** counts direct and transitive callers; the more-than-5-modules
+  factor could never fire before.
+- **Members of unexported Go types** are no longer public API, in the SCIP and
+  the search path.
+- **A caller is no longer lost to a local variable in it, or to another blank
+  consumer.** rust-analyzer gives `let id = save(x)` an enclosing range, so the
+  local counted as the reference's container and the caller came back blank.
+  Consumers were then deduped on that blank ID, across the whole change: the first
+  one survived and every other file-level consumer (imports, top-level uses, and
+  those lost callers) vanished without a trace. Locals and parameters are no longer
+  containers, blank consumers dedupe per file, and a consumer that is direct for one
+  changed symbol stays direct when another changed symbol reaches it first.
+- **Tests that use a changed symbol are in `affectedTests`, always.** `ckb changes`
+  and `assessChange` dropped test references unless asked, and only saw a test file
+  when it sat in the first 20 consumers. `includeTests` now only decides whether test
+  code also counts as a consumer: by default it no longer inflates `affectedSymbols`,
+  the consumer counts or the risk, including transitive callers in test files, which
+  were counted before. `ckb impact` keeps tests out of its consumer lists the same
+  way. `reason` is `direct` only for a test seen using the symbol; a test merely named
+  after the changed file now says `naming-convention`. Entries list `testNames`, and
+  test detection covers `.spec.*`, `__tests__/`, root `tests/`, `e2e/` and Rust's
+  `tests.rs`.
+- **A cut consumer list no longer looks complete, and no consumer file is lost to
+  it.** `budget.maxImpactItems` (20) was applied per symbol and again per change, and
+  the CLI JSON had no field saying so. `consumerFiles` (`direct`, `transitive`,
+  `tests`, `total`) now lists every file using a changed symbol in `ckb changes`,
+  `ckb impact`, `assessChange` and `analyzeImpact`, up to 300 paths, with `truncated`
+  and a `note` if even that was cut or the lookup itself stopped short. The detailed
+  items stay budgeted, once per change, and `truncated` and `truncationInfo` are in
+  the CLI JSON and the human output. `summary` counts are now the real ones rather
+  than counts of the per-symbol samples, so a wide change reports more consumers,
+  and can score higher, than before.
+- **Risk now looks at what the change did to the declaration.** It scored counts of
+  symbols, consumers and modules, so a changed signature with one caller came out
+  `low` next to a broken build, while the "possible contract change" flag fired on
+  any edit of an exported symbol, including a body edit, and never on an unexported
+  one whose callers break all the same. The diff is now read for each changed
+  symbol's old and new declaration, in Go, TypeScript/JavaScript and Rust:
+  `declaration` on `changedSymbols` says `unchanged`, `compatible` (a new optional
+  parameter, wider visibility), `changed` or `removed`. A changed or removed
+  declaration with production consumers outside the diff is at least `high`
+  (`signature_changed_with_consumers`, alongside the existing
+  `deleted_with_consumers`), an exported one without any is at least `medium`
+  (`public_contract_changed`), and a body edit gets no floor and no contract flag.
+  `contracts` entries now say which (`signature-changed`, `definition-removed`,
+  `compatible-signature-change`, with `before` and `after`) and only fall back on
+  visibility for code that can't be read. `consumerFiles.contractChanged` and
+  `contractChangedTests` name the files using such a symbol: the ones to look at
+  first. This compares text and compiles nothing, so it stays labelled a heuristic.
+- **`ckb changes` and `ckb impact diff` see staged edits.** Both promise the
+  uncommitted working tree but ran a bare `git diff`, which compares against the
+  index, so anything `git add`ed looked unchanged.
+- **A comment-only change has no blast radius.** It was listed with its note, then
+  analyzed like any other change anyway, consumers and all.
+- **`ckb changes` with nothing changed says so** instead of `Risk: LOW`, as does
+  `ckb impact diff`. In JSON the risk is `not_assessed`.
+- **`ckb impact` with a tree-sitter ID says an index is needed.** Search without a
+  SCIP index hands out `ts-` IDs. Impact then said "not found, use `ckb search`",
+  which returns the same ID. It can't analyze those without an index, so it now
+  says that and how to get one.
+- **A widely used consumer no longer looks untested.** `testGaps` read a budgeted
+  consumer list, which cuts transitive items first, so past 20 direct callers a test
+  reaching it through one of them was gone.
+- **The affected-tests command uses vitest where the repo does.** It suggested
+  `npx jest` in every JavaScript repo without a jest config, vitest projects included.
+  A vitest config or a vitest dependency now gives `npx vitest run`.
+- **The review's blast-radius check looks at what changed.** It took every symbol
+  of each changed file, in diff order, until 30 were taken, so on a 40-file Next.js
+  branch the first component file filled all 30 slots and `listOf` in
+  `src/lib/cv/entries.ts`, changed and called from eight places, was never looked at.
+  The summary didn't say so. It now counts callers for the changed functions and
+  methods, spreads the 30 slots over the files (each file's best-referenced first),
+  and says "30 of 52 changed functions checked" when it had to cut. Types no longer
+  take slots; they have references, not callers, and always reported 0. Without a
+  SCIP index the check says it skipped instead of passing. It shares one change-set
+  analysis with the tests check instead of computing it twice.
+- **The review's tests check missed two thirds of the tests.** On the same branch it
+  found 24 test files; 63 import a changed module directly. A change inside an object
+  literal, such as a new action in a zustand store, is attributed to the literal's
+  members, so a test reaching the store through `useEditor` used no changed symbol.
+  A test that uses something defined in a changed file now counts as well, with
+  `reason: uses-changed-file`, confidence 0.5 and `summary.fileLevelFiles`, and the
+  summary says how many tests rest on which: 70 on that branch, 23 through a changed
+  symbol. A test helper under `tests/` (`tests/render/fixtures.ts`) is test code but
+  no test, and is no longer listed as one in JavaScript and TypeScript, where
+  vitest and jest only run `*.test.*`, `*.spec.*` and `__tests__/`.
+- **A review whose checks all pass is not a pass at 20/100.** The score is 100 minus
+  a deduction per finding, the verdict looked only at check statuses, and the two
+  never met: warning findings in a passing check, or enough of them to sit on the
+  score's floor of 20, still said `pass`. A pass now also needs no warning or error
+  finding and a score of at least 50; otherwise the review is `warn`. Findings never
+  make it `fail` on their own. `verdictReason` says which checks decided it, or why
+  passing checks weren't enough. The `split` check was added after the verdict was
+  set and never counted; it does now.
+- **The review says what the index can't see.** A member reached by a computed key
+  (`profile[kind]`, `WORDS[kind]`) has no SCIP reference, so callers, tests and
+  blast radius leave it out, and on the branch above that is where the real problem
+  sat. When the diff adds such lines in JavaScript, TypeScript, Python or Ruby,
+  `limitations` names them, up to five, and the human and markdown output print them
+  under "Not seen".
+- **Coupling no longer reports docs and sweeping commits.** On that branch 9.3
+  reported 59 co-change gaps, 56 of them from the hidden-coupling pass, which had no
+  floor and warned about a 14% "coupling", and nine involving Markdown
+  (`docs/roadmap.md` with `HeroCards.tsx`). Docs (`docs/`, `.md`, `.mdx`, `.rst`,
+  `.adoc`, `.txt`) and test helpers under a root `tests/` are now noise on both
+  sides, the hidden pass uses the same 70% floor as the regular one, and
+  `ckb coupling` / `analyzeCoupling` leave out commits touching more than 50 files,
+  which made every file in them 100% coupled to every other (Cartographer already
+  did). On that branch two findings are left, both code files.
+- **A review diffs from where the branch forked.** `ckb review`, `summarizePr` and
+  `ckb changes --base` ran `git diff main HEAD`, which compares the two tips: once
+  `main` moved on, every file it changed since the fork was in the review, its
+  changes reversed, as if the branch had undone them. They now diff from
+  `git merge-base`, and so do the "before" sides of complexity, health, bug
+  patterns and the API comparison. Without a merge base (a shallow clone, unrelated
+  histories) they fall back to the tip and log a warning.
+- **Coupling says the same thing twice in a row.** A file's partners came out of a
+  map, were sorted by rate alone and cut at five, and only then were the files the
+  change already touched dropped. With more than five partners at the same rate,
+  each run kept a different five: on that branch four runs gave 0, 1, 1 and 0
+  findings. Ties are now ordered by count and path, and the cut comes after the
+  changed files are gone, so both missing partners are found on every run.
+- **`ckb unwired` finds unwired code outside Go.** It only counted names starting
+  with a capital letter as exported, so lowercase TypeScript, Python and Rust
+  functions were never candidates. Neither scip-typescript nor rust-analyzer
+  records `export` or `pub`, so for those the definition line decides: `export`
+  (or a local `export { … }`, `export default` or CommonJS export) in TS/JS, a
+  bare `pub` in Rust, no leading underscore in Python. A member counts if its
+  class does. Not counted: module-private functions, `pub(crate)` and private
+  `fn`, which the compiler's own unused-code checks already cover. Go keeps the
+  capital-letter rule. Two more fixes were needed for this to report anything.
+  The import walk counted every definition in a reachable file as reachable, so
+  an unused export sitting next to a used one never showed. And every Go and
+  Rust item had an empty `filePath`, because neither indexer puts the file in
+  the symbol ID. So `ckb review`'s unwired check, which keeps only items in
+  changed files, could never fire on those repos, `_test.go` symbols got past
+  the test filter, and everything landed in module `.`. File and line now come
+  from the definition. Limit: a Rust `pub fn` that shares its line with `impl …
+  {` is not seen.
+
+### Fixed — `ckb unwired` and `findUnwiredModules`
+
+- **A Go `init` runs whether or not anything references its file.** The walk from
+  `main.go` followed references only, and a cobra subcommand registers itself from
+  an `init` in a file nothing references, so every subcommand and everything under
+  it read as unwired: the HTTP API, the A2A server, the compliance frameworks. When
+  a Go file is reached, the files of its package that define an `init` are reached
+  too. On CKB the headline went from 1,938 unwired symbols to 620.
+- **A method called through an interface counts as reached.** `c.Run()` references
+  `Check#Run`, not `piiInLogsCheck#Run`, so 704 of the 1,530 listed methods were the
+  `ID`, `Name`, `Run`, `Severity` and `Article` of compliance checks that run on every
+  audit. A method is reached through an interface when the interface or that method
+  of it is reachable and so is the type: by the implementation relationship where the
+  indexer wrote one (scip-typescript; scip-go for a fraction), and for Go by method
+  set, as the language does it. `summary.viaInterface` says how many were left out
+  this way (782 on CKB). A type nobody builds is still unwired, popular interface or
+  not. The list of common interface methods (`String`, `Error`, `Close`, …) was
+  never consulted: it asked for kind `method` and was handed `function`.
+- **A Go reference never led into the file that defines it.** The guess from the
+  symbol ID read scip-go's `` `example.com/m/pkg` `` as a TypeScript file name, so
+  the import walk stopped at the first file on Go and only the callee walk went
+  on. The definition index decides now. That exposed a scan of the whole index per
+  callee in `FindCallees` and `findSymbolLocation`, three minutes on CKB, now half a
+  second; `getCallGraph`, `findImplementations` and `getSymbol` go through the same
+  lookup.
+- **`--limit` cut modules, not items.** The default of 100 showed `internal/api` alone,
+  156 items, and dropped the other 73 modules. The cut now takes one item per module
+  in turn, so every module keeps its top items, each module says `… and N more`, and
+  the result says `truncated` with the full counts in `summary`. `maxNodes` was read
+  and never passed on; it is now, and its default is 100,000 instead of 10,000, since
+  a cut walk makes everything not yet reached look unwired (CKB has 20,000 symbols
+  and the fixed walk reaches 15,000). `local N` symbols no longer count.
+- **A manifest in a hidden directory is not a module.** `.claude/worktrees/*/go.mod`
+  made agent worktrees entrypoints of this repo and `.github/actions/*/package.json`
+  a module. Module and language detection skip hidden directories and `third_party/`.
+  On CKB `ckb index` still asks for `--lang`: `npm/package.json` is a real second
+  manifest.
+
+- **A Next.js app had no entrypoints, so nothing was unwired.** The walk started from
+  the architecture's entrypoint list, which knows `main`, `cmd/` and manifest
+  mains, and a Next.js app has none of those: 16,500 symbols, 105 entrypoints in
+  `ckb entrypoints`, and `ckb unwired` said 0 reachable, 0 exported, 0 unwired, which
+  the review read as a pass. The files a framework calls by convention (pages,
+  layouts, route handlers, `proxy.ts`) seed the walk now. On a 375-file Next.js app
+  that is 82 entrypoints, 9,555 reachable symbols and 21 unwired. With no
+  entrypoint at all the CLI says so and what it looks for, and the review check is
+  `skip`, not `pass`. `tests/support/*.ts` is test code: a `tests/` directory at the
+  repo root counted only with a leading slash, as did `test/`, `testdata/` and
+  `__tests__/`, so vitest helpers were the biggest unwired module. Nothing under a
+  hidden directory (`.next/dev/types`) is a module.
+
+### Fixed — `ckb dead-code` and `findDeadCode`
+
+The analysis read everything about a symbol from its ID, which told it the wrong
+things in every language. Checked on this repo and on a Next.js app.
+
+- **The file was a guess from the symbol ID, and wrong.** A scip-go ID carries the
+  package path (`` `github.com/SimplyLiz/CodeMCP/internal/query` ``), not a file, and a
+  scip-typescript ID quotes the file in backticks. Every Go finding was filed under
+  `github.com/SimplyLiz`, every TypeScript one under the quoted descriptor, so
+  `IsTestFile` never matched a test, the scope filter matched nothing, and the
+  review's dead-code check, which looks up findings by changed file, never found one
+  in any repo: it was `pass` on a Next.js branch with 2,296 changed lines. File and
+  line come from the definition now, the same source `ckb unwired` moved to, and
+  each finding has its `symbolId` (it was always `""`).
+- **Every kind was `unknown`.** The kind table mapped SCIP's descriptor numbers
+  (1 package, 2 type, 3 term …) where the field holds `SymbolInformation.Kind`
+  (a constant is 8, a method 26), so a Go constant was `attr` and nothing else was
+  anything. The real enum is read now, and when the indexer wrote no kind
+  (scip-typescript never does) the descriptor decides: `name().` is a function,
+  `Type#name().` a method, `Type#` a type, `Type#name.` a field, an ALL_CAPS term a
+  constant. `const f = () => …` is a function, as it already was for unwired.
+- **Exported meant a capital letter, in every language.** TypeScript's `startSync`
+  was never analyzed, `Home` was. `export`, `pub` and the Python underscore rule
+  decide now; the rules are shared with `ckb unwired` and live in one place.
+- **A use elsewhere in the same file counted as a self-reference.** "Only
+  referenced by itself (recursive but never called)" at 95% went to every type used
+  in its own file: `FindCyclesResponse`, `ComplianceConfig`, 361 of 440 findings on
+  the Next.js app. A self-reference is a use inside the symbol's own body now; a use
+  elsewhere in the file is a use.
+- **What a framework calls is not dead.** A Next.js page's default export, a
+  layout, a route handler's `GET`, `proxy`, `onRequestError` in `instrumentation.ts`,
+  and what Next.js reads rather than calls (`metadata`, `viewport`, `dynamic`,
+  `revalidate`, `runtime`, …) have no reference in the index and were the top of
+  every list: 51 of the first 100 findings. The entrypoint detection from `ckb
+  entrypoints` marks them.
+- **Members and literals are not declarations.** scip-typescript writes a symbol
+  for every object literal member (`{ ArrowDown: … }` is `ArrowDown0:`), every type
+  literal member (`Attachment#typeLiteral0:name`), every parameter; a struct field
+  is set in a literal or read through JSON, which the index does not record as a
+  reference; an interface's method specification is a contract, not code. None of
+  these are listed any more. Methods are matched against interfaces the way
+  `ckb unwired` does it: `Severity`, `Article` and `ID` of 770 compliance checks
+  were "dead" because `c.Severity()` references the interface's method.
+- **Numbers.** CKB: 1,723 findings all filed under one wrong path, now 339 with
+  files and lines (`AcquireAdaptive`, `GetFileStatus`, `NewFileCursor`: exported,
+  zero references). The Next.js app: 117 findings of which 51 were pages and route
+  handlers and the rest object literal keys, now 18, six of them the app's own
+  `export const instant`, which a loader of its own reads. The review's dead-code
+  check on that branch finds 2, both on unchanged lines.
+- **`ckb review` printed "Usually changed with: " and nothing after it** for a file
+  with exactly one missing co-change: the first message of a group was dropped on
+  the way in. The golden file had enshrined it.
+- **`ckb entrypoints` says when it cut.** "Total Entrypoints: 105" over a list of 30
+  looked like a count of 30 with `page (1)` under it; it now says `showing 30, raise
+  --limit for more`, and the groups come in a fixed order.
+
+### Fixed — search and navigation
+
+- **`ckb refs` no longer cuts the tests off.** References were sorted by path and
+  cut at `--limit`, after the backend had already cut at twice that in its own
+  order, so `tests/` came last and went first: a store with 334 references came
+  back with 100 from `src/` and none of the 13 test files using it. The cut now
+  takes every file's first reference before any file's second (51 files, all 13
+  tests), and the CLI JSON says `truncated`. `--include-tests` never did anything,
+  tests are always included; its help now says so. The help also says that
+  `totalReferences` is what MCP calls `totalCount`.
+- **A symbol ID with the wrong suffix says which one exists.** SCIP ends a type or
+  type alias in `#`, a value in `.` and a function in `().`, and a hand-copied
+  `ListKind.` was plainly "not found". `refs`, `impact` and the tools behind them
+  now add "did you mean …ListKind#?".
+- **`ckb entrypoints` knows Next.js.** Entrypoints came from names alone (`main` under
+  `cmd/`, `Handle*`, `Run*`), so a Next.js app had none of its pages or route
+  handlers: on a 16.x app with 21 pages and 49 route handlers it listed three
+  functions that happened to be called `handle`. Files Next.js calls by convention
+  are now entrypoints, as `detectionBasis: framework-convention`: `page`, `layout`,
+  `template`, `loading`, `error`, `not-found`, `global-error` and `default` under
+  `app/` (type `page`), `route` handlers and `pages/api/` (type `api`), the pages
+  router, and `middleware`, `proxy` and `instrumentation` at the root, each by the
+  export Next.js calls (default, `GET`/`POST`/..., `export { handler as GET }`).
+  That app now has 105.
+- **`ckb trace` finds paths through components.** A node's callees were cut at 30
+  before anything else, and a React component calls `String#trim` and `Array#map`
+  as often as anything, so the project's own callees fell off and the path with
+  them. External declarations no longer take those places, and trace starts from up
+  to 200 entrypoints instead of 50. With no path it said "Entrypoint set
+  unavailable" even when there were entrypoints; it now says which.
+- **`const f = () => …` is a function.** SCIP names it like any constant (`f.`), and
+  only IDs ending in `().` counted, so its calls had no caller: on a TypeScript app
+  with 589 such functions, `setList` had 0 callers though `removeEntry` calls it,
+  and `callgraph removeEntry` listed 30 callees, read from everything between its
+  name and the next `function` (`Math#random`, `fixLevels`, …), where it has 3. A constant counts as a
+  function when the indexer gives no Kind and its EnclosingRange starts after the
+  name, which is how scip-typescript marks an arrow or function initializer; a plain
+  constant has none, and rust-analyzer's `const` range starts before the name.
+  Callers, callees, `impact`, `trace`, blast radius (52 changed functions on that
+  branch became 79, and `isCustomKey` with 18 callers is among the findings now) and
+  `unwired` all see them. Not covered: a store built by a call, such as zustand's
+  `create(...)`, is still a constant, and its actions' calls belong to its members.
+- **The stored call graph has callers.** The `callgraph` table that `ckb index`
+  fills for incremental updates, and that the index server and `ckb diff` read, had
+  a caller on no edge at all: 0 of 48,326 on CKB itself, 0 of 11,441 on a
+  TypeScript app. Its kind mapping used LSP's numbers, where 6 is a method and 12 a
+  function; in SCIP they are Boolean and EnumMember. A symbol without a Kind came
+  out `unknown` and was never a caller, and a Rust function (Kind 17) was never a
+  callee, while enum members were. The ID check also took `run().(x)`, a
+  parameter, for a call. The table and the index server's upload now use the SCIP
+  backend's own rule, function-valued constants included, with each function's end
+  taken from its EnclosingRange: 45,369 of 45,643 edges on CKB have a caller, 6,769
+  of 10,248 on that app (the rest are mostly anonymous test callbacks). A call to a
+  function-valued constant from
+  another file is still missed there, since telling it from a plain constant needs
+  its definition. The PageRank graph behind result ranking uses `IsCallable` too.
+- **`switchProject` into a linked worktree stays there.** The next call with a
+  relative `filePath` resolved it against the client's root first, found the same file
+  in the main checkout and switched back to the main checkout's index, without saying so.
+  The active repo now goes first.
+- **Symbol kinds in search.** The FTS table read SCIP kinds against the wrong
+  enum, so a Dart class was reported as a `variable`. Existing databases rebuild
+  on first use.
+- **`findReferences` on a class includes calls of its unnamed constructor**
+  (`` `<constructor>` ``, `` `<init>` ``). They resolve to the constructor symbol
+  and left the class's reference list short.
+- **Search results have real locations.** The FTS path only set the file, so
+  `searchSymbols` returned `startLine: 0` for everything.
+- **Locals and files outside the repo are gone from results.** `ckb search y`
+  found a local variable, and scip-go's generated test mains showed up with paths
+  into the Go build cache.
+- **Name matches survive a result cap.** `Serve` could lose `ServeHTTP` behind
+  container-qualified aliases, `newserver` lost `NewServer` behind its members,
+  and exact-case matches now beat case-folded ones of the same kind.
+- **Rust is first class.** rust-analyzer `impl#[Foo]bar()` members are methods of
+  `Foo`, and raw symbol IDs work in `impact` and `callgraph` for every indexer,
+  not only those starting with `scip-`.
+- **Handler detection** no longer matches `serverConfig`. Python module symbols
+  (`__init__:`) and file-level pseudo-symbols are no longer callers.
+
+### Fixed — what the tool descriptions promise
+
+- `analyzeImpact`, `prepareChange` and `compareAPI` no longer send agents to
+  `analyzeChange`, which is deprecated and missing from the `core` preset. They
+  name `assessChange`.
+- `assessChange` now sits right after `prepareChange` in the tool list, instead
+  of behind `expandToolset`.
+- `reviewPR` and `summarizePr` no longer state a check count; the number had
+  gone stale.
+- `searchSymbols` describes what it does, full-text search with a SCIP fallback,
+  instead of "semantic code search". `scanPerformance` says that it detects
+  hidden coupling.
+
+### Fixed — upgrades and setup
+
+- **Upgrading needs no fresh `.ckb`.** The derived symbol cache, FTS content and
+  cached answers are versioned and rebuilt automatically.
+- **`ckb init` keeps `.ckb/` and `index.scip` out of `git status`**, through
+  `.git/info/exclude`.
+- **The daemon handles nested projects** and uses the repo's language for
+  incremental refresh.
+- **`ckb federation add` no longer loops on `ckb init`.** A repository with `.ckb`
+  but no database was told to run `ckb init` again, which doesn't create one. It
+  now says `ckb index`.
+
+### Changed
+
+- **`findReferences` over MCP no longer answers one JSON entry per reference.**
+  First it went to `files` with each file's lines: on six symbols of a Flutter app
+  8 KB instead of 46 KB. That form sends the reader to the file for every line, so
+  the default is now the text described above; `detail: "files"` and `ckb refs
+  --compact` keep the per-file form, `detail: "full"` the original list.
+- **`getCallGraph` has a response budget.** A widely used symbol returned 250
+  nodes and about 46k tokens. It now returns the 20 nodes closest to the symbol,
+  says in `truncation` how many were cut, and takes a `limit`. `ckb callgraph`
+  allows 200.
+
+### Added
+
+- **MCP `instructions`** tell agents when to reach for CKB
+  ([#246](https://github.com/SimplyLiz/ckb/pull/246)).
+- **Change prediction is measured.** `scripts/eval-change` hides a commit's callers and
+  scores `ckb changes` and `git grep` against the compiler, on Go, TypeScript and Rust.
+  `docs/eval/change-prediction.md` has the method, before and after, and where CKB is
+  still worse than grep.
+
+### Output changes consumers will notice
+
+- `findReferences` over MCP returns text by default, one `file:line: [use] code` per
+  reference; `detail: "files"` gives line numbers per file as JSON and `detail: "full"`
+  one entry per reference. `ckb refs` prints the same text; `--format=json` is as it
+  was, with a new `from`. `blastRadius.riskLevel` in `analyzeImpact` equals
+  `riskScore.level`.
+- `assessChange` with `format: "compact"` and `ckb changes --format=compact` return
+  text, not JSON. `format: "full"` and `--format=json` are JSON as before, with new
+  fields: `use` on an open site, `rarelyCount`, `rarely` and `rarelySites` on
+  `doneCheck`, `detail` on a contract, and the contract kind `shape-changed`. Open sites
+  are no longer in file order, and `openSites` leaves out the TypeScript annotations and
+  reads that rarely break: they are in `rarelySites`, and `openCount` still counts them.
+  `focus` takes `rarely`.
+- `changedSymbols`: new `note`, fewer entries, `file:` entries for lines no
+  definition could be found for; deleted symbols list old-file lines.
+- `riskFactors` may include `deleted_with_consumers`.
+- Risk level `not_assessed` can appear in `prepareChange`, `analyzeImpact`,
+  `planRefactor`, `assessChange`.
+- `kind` values for symbols resolved through SCIP change where the old tables
+  were wrong; `startColumn` is 1-based on search results.
+- TypeScript call graphs change: parameters no longer count as functions.
+- `findUnwiredModules` / `ckb unwired`: items have `filePath`, `lineNumber` and
+  a real `module` for every language; TS, Python and Rust repos report more
+  items, and `ckb review` can now raise unwired findings on Go and Rust.
+
+### Changed — the automatic first index stays cheap
+
+`ckb mcp` builds a first index in the background in a repo that has none. The
+index lock is per repo, so every session opened in a different repo would have
+started an indexer at the same time. Now only one first index runs per machine
+(`~/.ckb/first-index/`); a session that finds it taken skips its build and the
+next session in that repo tries again. Linked git worktrees are neither
+initialized nor indexed automatically; `ckb index` there still works.
+
+### Security — command injection in the review coupling check
+
+`ckb review` looked up when co-changed files were last modified by writing
+their paths into a `sh -c` script. Go's `%q` quoting is not shell quoting, so a
+path containing `$(…)`, backticks or a `"` ran as a command. Those paths come
+from git history, which on a PR branch is whatever the PR author committed —
+so running `ckb review` (or `reviewPR`) on an untrusted PR, e.g. in CI, could
+execute code on the runner. The lookup now runs one `git log` with the paths as
+argv and literal pathspecs; no shell is involved. Tab characters and pathspec
+magic like `:(glob)` in file names no longer produce wrong dates either.
+
+### Added — change intelligence and an activity ledger, no UI
+
+Decided 2026-09-16 (see `docs/plans/change-intelligence-and-activity-ledger.md`):
+CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
+
+- **`assessChange`** (MCP) and **`ckb changes`** (CLI): the post-change
+  counterpart to `prepareChange`. Works on the uncommitted working tree by
+  default (`--staged`, `--base <ref>` for the index or a range) and answers
+  "what did I actually change and what should I verify before finishing":
+  changed symbols, structured risk factors with evidence, blast radius,
+  affected tests, downstream consumers with no reaching test, *possible*
+  contract changes (a labeled heuristic: exported symbol lines changed, never
+  called a breaking change), related ADRs, likely reviewers, and a confidence
+  tier that names its reasons (no SCIP index, commits behind). This is
+  `analyzeChange` grown up, not a third diff analysis: `analyzeChange` stays
+  registered as a deprecated alias for two minor versions, and `ckb impact
+  diff` stays as an alias of `ckb changes`. Tool count is now 111.
+- **Activity ledger**: every MCP tool call is recorded in a `tool_calls`
+  table in `.ckb/ckb.db` (schema v12) — session (from `CLAUDE_CODE_SESSION_ID`
+  when run under Claude Code), consumer (from the MCP `clientInfo` handshake),
+  tool, hashed and truncated params, primary target, duration, response
+  bytes, truncation, error, and per-tool structured facts for `prepareChange`,
+  `assessChange`, `analyzeImpact`, `findReferences`, `searchSymbols`. Written
+  off the request path by a buffered single-writer goroutine; never adds
+  latency, never surfaces an error to the client. Configurable via
+  `activity.{enabled,retentionDays,storeParams}` (defaults true / 30 / true),
+  pruned on server start. Read it with **`ckb activity`** (`--last`,
+  `--session`, `--consumer`, `--tool`, `--since`, `--summary`, `--all`,
+  `--json`). The feed reports calls and what they returned; it never narrates
+  why the agent called something.
+- **`ckb bench session <id>` / `ckb bench compare <a> <b>`**: joins a Claude
+  Code transcript (tokens by class, turns, tool calls, files read) with the
+  ledger rows of the same session into one record, and compares two. Produces
+  neutral deltas; nothing is labeled "tokens saved".
+- `backends.treesitter.exclude` in `.ckb/config.json`: a list of globs the
+  tree-sitter symbol fallback (used by `searchSymbols` when no SCIP index is
+  loaded) must not index. Globs are matched against the repo-relative path with
+  `/` separators. Two forms are supported: `dir/**` (the directory and
+  everything below it, compared on whole path segments, so `build/**` does not
+  match `builder/`) and anything else is a Go `path.Match` pattern against the
+  full path (`*` does not cross `/`, so use `src/*.min.js`, not `*.min.js`, for
+  nested files). No leading `**`, no negation. Invalid patterns are rejected at
+  config load.
+- **Per-result index freshness in SCIP-backed responses.** `findReferences`,
+  `analyzeImpact`, `prepareChange`, `getCallGraph` and `findDeadCode` now say
+  whether the loaded SCIP index is stale *for this query*, so you no longer have
+  to call `getStatus` first. `meta.indexFreshness`:
+  ```json
+  "indexFreshness": {
+    "indexedCommit": "75d7ab3",
+    "commitsBehind": 3,
+    "changedSinceIndex": ["src/lib/cv/store.ts"],
+    "affectsResult": true,
+    "hint": "1 result file(s) changed since indexing — call reindex for exact results"
+  }
+  ```
+  `changedSinceIndex` is every file changed (committed, uncommitted or
+  untracked) since the indexed commit, capped at 50 (`changedSinceIndexTruncated`
+  when cut). `affectsResult` is true only when one of those files appears in the
+  result; then `meta.confidence.score` is multiplied by 0.7. An old index over
+  code that has not changed keeps its confidence. If the index records no
+  commit, `indexedCommit` is empty and the hint says freshness cannot be
+  determined. The block is omitted when SCIP did not answer.
+  When the indexer records no commit in the SCIP metadata (scip-typescript
+  does not), the commit `ckb index` wrote to `.ckb/index-meta.json` is used,
+  so `indexedCommit` is not empty for TypeScript repos.
+- **MCP `reindex` builds and loads the index.** It used to answer with
+  guidance ("run `ckb index` in your terminal") and `skipped` whenever the
+  file on disk looked fresh — even when the running server had nothing loaded.
+  It now runs the `ckb index` code path in-process (incremental where the
+  language supports it, else full; same plan builder, lock and metadata as the
+  CLI) with a timeout (`timeoutSeconds`, default 300), then reloads the index
+  into the running engine. Returns `status` `reindexed` | `reloaded` (file was
+  fresh, server had not loaded it) | `skipped` (fresh and loaded; pass
+  `scope: "full"` to rebuild anyway) | `busy` (another run in progress for
+  this repo, or the index lock is held) | `failed` | `action_required` (no
+  indexer, or repo above the automatic size threshold), plus `mode`,
+  `durationMs`, `symbols`, `documents`, `commitsBehindBefore`. The tool is
+  now in the `review` and `refactor` presets as well as `ops`, since that is
+  where the impact tools that need a current index live. `getStatus.index`
+  gains `loaded` and reports `fresh: false` when the file on disk is not what
+  the server serves.
+
+### Fixed
+
+- Config keys absent from an older `.ckb/config.json` now keep their default
+  instead of the Go zero value. Every default-true flag (`backends.scip.enabled`,
+  `review.blockBreakingChanges`, the new `activity.enabled`, …) silently flipped
+  to false for configs written before the key existed.
+- `SummarizePR`'s comment claimed it compared against the working tree; it runs
+  `git diff base HEAD`. Comment fixed. `ckb review` still does not see unstaged
+  changes; `ckb changes` does.
+- `ckb impact diff` promised "who needs to review this" and never delivered.
+  It does now.
+- Working-tree reviewer suggestions no longer list git's "not committed yet"
+  pseudo-author.
+- A running `ckb mcp` / `ckb serve` now picks up an index that `ckb index`
+  built or rebuilt after it started ([#134](https://github.com/SimplyLiz/ckb/issues/134)).
+  The engine compares the index file's size and mtime with what it loaded
+  (one `os.Stat` before each tool call and in `getStatus`) and reloads on a
+  change, clearing caches and refreshing FTS; concurrent requests share one
+  reload. Before, a plain `ckb mcp` served whatever it loaded at startup — for
+  a fresh project no index at all — until the client reconnected, while
+  `getStatus` reported the index as fresh.
+- `findReferences` reported `totalCount` capped at twice the requested limit
+  (10 for `limit: 5` on a 17-reference symbol), so agents sized blast radius
+  from a number that was really the fetch cap. The SCIP adapter now counts
+  references without the cap and the engine reports the real total;
+  `searchSymbols` sets `totalIsLowerBound` when a backend stopped at its cap.
+- `getStatus` reported a configured but idle LSP server as "No servers
+  running" with a remediation to edit a config that was already right, and
+  `overallHealth` went `degraded`. LSP servers start on first use; status now
+  lists configured servers per language ("typescript: configured, starts on
+  demand", "running", or "gopls not found on PATH") and only reports the
+  backend unavailable when no configured binary is on PATH.
+- `searchSymbols` without a SCIP index no longer returns symbols from
+  git-ignored directories such as `dist/` or `build/` (minified bundles ranked
+  ahead of real `src/` symbols in Next.js repos). The tree-sitter fallback now
+  lists files with `git ls-files -co --exclude-standard` when the repo is a git
+  work tree, so nested `.gitignore` files are honoured and untracked files that
+  are not ignored are still searched. Outside git (or if git fails) it falls
+  back to the old directory walk, which does not read `.gitignore`; use
+  `backends.treesitter.exclude` there. Dot-directories, `node_modules`,
+  `vendor` and `__pycache__` are still skipped in both modes.
+- `ckb index` (and the MCP `reindex` tool) reported "Index is up to date.
+  Nothing to do." when the incremental tracking tables were intact but
+  `index.scip` itself had been deleted — leaving metadata that claimed a
+  current index while no index existed. A missing index file now forces a
+  full rebuild.
+
+### Added — Claude Code plugin
+
+CKB installs into Claude Code as a plugin: `claude plugin marketplace add SimplyLiz/ckb`
+then `claude plugin install ckb@lisa`. One install covers every repo and brings the
+MCP server (`npx -y @tastehub/ckb mcp`) plus `/ckb:review` and `/ckb:audit`; the
+plugin version follows CKB releases, so the skills update with them. `ckb setup`
+is unchanged and remains the way in when `ckb` is installed; using both starts
+the server twice.
+
+The two skill texts now live in `claude-plugin/skills/` and are embedded into
+`ckb setup`, so the plugin and the slash commands cannot drift. Both gained an
+npx fallback: they shell out to `ckb`, which users who set up via
+`npx @tastehub/ckb setup` never had on PATH, so the commands failed silently.
+
+### Changed
+
+- Go toolchain 1.26.6 → 1.26.10 (`go.mod`; CI and release builds read it via
+  `go-version-file`). Picks up the stdlib fixes in `net/http`, `net/textproto`,
+  `crypto/tls` and `crypto/x509` that govulncheck flagged as reachable. The
+  glibc floor (2.34, [#243](https://github.com/SimplyLiz/ckb/issues/243)) is
+  unaffected: it comes from the pinned `ubuntu-22.04` runners, and
+  `scripts/check-glibc-floor.go` still verifies every linux binary.
+- Dependencies with open HIGH advisories bumped: `github.com/klauspost/compress`
+  1.18.2 → 1.18.7, `golang.org/x/net` 0.58.0 → 0.60.0 (both DoS), and
+  `undici` 6.27.0 → 6.29.1 in the PR-analysis GitHub Action (bundle rebuilt).
+
+### Changed — unresolved dependent names/symbolIds now serialize as `""`, not `"unknown"`
+
+`directDependents[].name` / `.symbolId` (and other fields that report an
+enclosing/caller symbol CKB couldn't resolve — e.g. a package-level
+reference outside any function, or a module/namespace-level SCIP
+"enclosing symbol" with no short name) previously fell back to the string
+`"unknown"` when resolution failed, while `symbolId` was left `""` — an
+inconsistent pair that also collided with the real symbol kind value
+`"unknown"` (`KindUnknown`) elsewhere in responses. Both fields now use the
+same empty-string sentinel (`""`) for "not resolved."
+
+**If your integration checks for the literal string `"unknown"` to detect
+an unresolved name, update it to check for `""` instead** — this is a
+compatibility-affecting behavior change, even though the JSON key itself
+is still always present (schemaVersion 1 fields are not `omitempty`).
+
 ## [9.3.1] - 2026-09-13
 
 ### Fixed — linux binaries would not start on glibc < 2.39 ([#243](https://github.com/SimplyLiz/ckb/issues/243))

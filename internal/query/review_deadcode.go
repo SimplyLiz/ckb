@@ -3,11 +3,13 @@ package query
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,16 +100,25 @@ func (e *Engine) checkDeadCode(ctx context.Context, changedFiles []string, opts 
 	// Phase 3: Cartographer cross-project unreferenced exports.
 	// Catches public symbols with no callers anywhere in the project —
 	// stronger signal than SCIP's per-package analysis.
+	cartographerRan := false
 	if cartographer.Available() {
 		unref, err := cartographer.UnreferencedSymbols(e.repoRoot)
 		if err == nil {
+			cartographerRan = true
 			for _, f := range unref.Files {
-				if !changedSet[f.Path] {
+				// A test file's functions are called by its runner, not by code.
+				if !changedSet[f.Path] || isTestFilePath(f.Path) {
 					continue
 				}
 				for _, sym := range f.Symbols {
 					key := fmt.Sprintf("%s:sym:%s", f.Path, sym)
 					if reported[key] {
+						continue
+					}
+					// Cartographer counts uses from other files only, so a function
+					// called in its own file came out "no callers project-wide". It has
+					// to survive a word search before it's reported.
+					if !plausiblyUnreferenced(e.repoRoot, f.Path, sym) {
 						continue
 					}
 					reported[key] = true
@@ -124,11 +135,26 @@ func (e *Engine) checkDeadCode(ctx context.Context, changedFiles []string, opts 
 		}
 	}
 
+	// Without the SCIP index the reference analysis didn't run: with nothing
+	// else checked that's a skip, not a pass, and a partial check says so.
+	if !resp.Analyzed && !cartographerRan {
+		return ReviewCheck{
+			Name:     "dead-code",
+			Status:   "skip",
+			Severity: "warning",
+			Summary:  "Not analyzed: " + resp.NotAnalyzedReason,
+			Duration: time.Since(start).Milliseconds(),
+		}, nil
+	}
+
 	status := "pass"
 	summary := "No dead code in changed files"
 	if len(findings) > 0 {
 		status = "warn"
 		summary = fmt.Sprintf("%d dead code item(s) found in changed files", len(findings))
+	}
+	if !resp.Analyzed {
+		summary += " (unreferenced exports only; reference analysis needs the SCIP index)"
 	}
 
 	return ReviewCheck{
@@ -156,7 +182,7 @@ func (e *Engine) findDeadConstants(ctx context.Context, changedFiles []string, a
 		if ctx.Err() != nil {
 			break
 		}
-		if !strings.HasSuffix(file, ".go") || isTestFilePathEnhanced(file) {
+		if !strings.HasSuffix(file, ".go") || isTestFilePath(file) {
 			continue
 		}
 
@@ -320,7 +346,7 @@ func symbolReferencedInPackage(repoRoot, filePath, symbolName string) bool {
 
 	// Use grep to search for the symbol name in sibling .go files, excluding
 	// the declaring file itself and test files.
-	cmd := exec.Command("grep", "-rl", "--include=*.go", symbolName, absDir)
+	cmd := exec.Command("grep", "-rl", "--include=*.go", "-e", symbolName, "--", absDir) // #nosec G204 -- fixed binary, no shell; -e and -- keep the symbol name from being read as an option
 	out, err := cmd.Output()
 	if err != nil {
 		return false // grep found nothing or errored
@@ -344,4 +370,55 @@ func symbolReferencedInPackage(repoRoot, filePath, symbolName string) bool {
 		return true
 	}
 	return false
+}
+
+// plausiblyUnreferenced says whether a name a declaring file exports is used nowhere
+// a word search can see: once in its own file (the declaration) and in no other
+// tracked file of its language. Dunder names (`__init__`, scip-python's module
+// symbol among them) are never a finding. A failed search keeps the finding out:
+// a warning nobody can check is worse than a missed one.
+func plausiblyUnreferenced(repoRoot, file, name string) bool {
+	if name == "" || (strings.HasPrefix(name, "__") && strings.HasSuffix(name, "__")) {
+		return false
+	}
+	args := []string{"grep", "-c", "-w", "-F", "-e", name, "--"}
+	args = append(args, languagePathspecs(file)...)
+	cmd := exec.Command("git", args...) // #nosec G204 -- fixed git subcommand; name and pathspecs are passed as arguments
+	cmd.Dir = repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		var exit *exec.ExitError
+		return errors.As(err, &exit) && exit.ExitCode() == 1 // 1: no match at all
+	}
+	total := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		at := strings.LastIndex(line, ":")
+		if at < 0 {
+			continue
+		}
+		n, convErr := strconv.Atoi(line[at+1:])
+		if convErr != nil {
+			return false
+		}
+		if line[:at] != filepath.ToSlash(file) {
+			return false // Named in another file of its language
+		}
+		total += n
+	}
+	return total <= 1
+}
+
+// languagePathspecs are the git pathspecs of the files that can use a name declared
+// in file: its extension, and for JavaScript and TypeScript the whole family.
+func languagePathspecs(file string) []string {
+	ext := strings.ToLower(filepath.Ext(file))
+	switch ext {
+	case ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs":
+		return []string{"*.ts", "*.tsx", "*.mts", "*.cts", "*.js", "*.jsx", "*.mjs", "*.cjs"}
+	case ".py", ".pyi":
+		return []string{"*.py", "*.pyi"}
+	case "":
+		return []string{filepath.ToSlash(file)}
+	}
+	return []string{"*" + ext}
 }

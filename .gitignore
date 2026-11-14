@@ -2,6 +2,7 @@
 .ckb/
 .scip/
 bin/
+# the Claude Code plugin's ckb shim, which Claude Code puts on PATH
 !npm/bin/
 
 # Binaries
@@ -31,6 +32,7 @@ docs/marketing/*.zip
 .idea/
 .vscode/
 .cursor/
+.codex/
 *.swp
 *.swo
 
@@ -61,3 +63,6 @@ codecartographer_map.xml
 **/.cartographer_cache.json
 **/.codecartographer_cache.json
 **/.codecartographer_history.json
+
+# Python
+__pycache__/

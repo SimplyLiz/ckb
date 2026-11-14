@@ -1,20 +1,48 @@
 package mcp
 
-import "github.com/SimplyLiz/CodeMCP/internal/envelope"
+import (
+	"fmt"
+
+	"github.com/SimplyLiz/CodeMCP/internal/envelope"
+)
 
 // Tool represents a CKB tool exposed via MCP
 type Tool struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
 	InputSchema map[string]interface{} `json:"inputSchema"`
+	Annotations *ToolAnnotations       `json:"annotations,omitempty"`
+	Meta        map[string]interface{} `json:"_meta,omitempty"`
 }
 
 // ToolHandler is a function that handles a tool call and returns an envelope response.
 type ToolHandler func(params map[string]interface{}) (*envelope.Response, error)
 
+// expandToolsetDescFmt is the expandToolset tool description, minus the
+// per-preset tool counts. It is formatted with fmt.Sprintf against
+// len(GetPresetTools(...)) for each named preset (and the total tool count
+// for "full") in GetToolDefinitions below, so the counts can never drift
+// from presets.go the way the old hardcoded numbers did.
+//
+// "Replaces your current preset" (not "pick the smallest preset that has
+// the tools you need") matches the one-expansion-per-session rule enforced
+// in toolExpandToolset: a second call is rejected outright, so there is no
+// "start small, expand again later" path — the only real choice is "full"
+// vs. the one preset that covers the whole task.
+const expandToolsetDescFmt = "Switch to a larger toolset for a specific workflow. This replaces your " +
+	"current preset — one expansion per session, a second call is rejected — so pick " +
+	"\"full\" if the task spans multiple presets (e.g. review + refactor) rather than " +
+	"the smallest one that fits right now. Presets (each includes all core tools plus):\n" +
+	"• review (%d tools): reviewPR, auditCompliance, scanSecrets, analyzeTestGaps, getAffectedTests, compareAPI, findDeadCode, findUnwiredModules, auditRisk, getOwnership — use for PR reviews, test coverage analysis, compliance audits, security\n" +
+	"• refactor (%d tools): analyzeCoupling, findCycles, suggestRefactorings, findDeadCode, findUnwiredModules, compareAPI, explainOrigin — use for refactoring, dependency analysis, dead code removal\n" +
+	"• federation (%d tools): federationSearch*, listContracts, analyzeContractImpact — use for multi-repo queries, cross-repo analysis\n" +
+	"• docs (%d tools): indexDocs, getDocsForSymbol, checkDocStaleness, getDecisions, recordDecision — use for documentation, ADRs\n" +
+	"• ops (%d tools): doctor, reindex, daemonStatus, listJobs, webhooks, telemetry — use for diagnostics, daemon management\n" +
+	"• full (%d tools): everything — use when the task spans multiple presets"
+
 // GetToolDefinitions returns all tool definitions
 func (s *MCPServer) GetToolDefinitions() []Tool {
-	return []Tool{
+	tools := []Tool{
 		{
 			Name:        "getStatus",
 			Description: "Get CKB system status including backend health, cache stats, repository state, and usage hints for available capabilities.",
@@ -41,41 +69,38 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		},
 		{
 			Name:        "reindex",
-			Description: "Trigger a refresh of the SCIP index without restarting CKB. Returns actionable guidance on how to refresh the index based on current staleness.",
+			Description: "Build the SCIP index and load it into the running server — same as 'ckb index' (incremental where the language supports it) without a shell or restart. Returns status reindexed | reloaded (file was fresh, server had not loaded it) | skipped (fresh and loaded) | busy | failed | action_required, with durationMs, symbols, documents and commitsBehindBefore. Call before findReferences/analyzeImpact/prepareChange when a response's meta.indexFreshness says the result is affected.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"scope": map[string]interface{}{
 						"type":        "string",
-						"enum":        []string{"full", "incremental"},
-						"default":     "full",
-						"description": "Reindex scope: 'full' for complete reindex, 'incremental' for changed files only (Go only)",
+						"enum":        []string{"auto", "full", "incremental"},
+						"default":     "auto",
+						"description": "auto: incremental if supported, else full; also skips when the index is fresh. full: always rebuild.",
 					},
-					"async": map[string]interface{}{
-						"type":        "boolean",
-						"default":     false,
-						"description": "Return immediately and poll status (not yet implemented)",
+					"timeoutSeconds": map[string]interface{}{
+						"type":        "integer",
+						"default":     300,
+						"description": "Give up after this many seconds (10–1800).",
 					},
 				},
 			},
 		},
-		// Meta-tool for dynamic preset expansion
+		// Meta-tool for dynamic preset expansion. Description is filled in
+		// below (after the full tool list is built) via expandToolsetDescFmt,
+		// so the per-preset tool counts are computed from presets.go instead
+		// of hardcoded here.
 		{
-			Name: "expandToolset",
-			Description: "Switch to a larger toolset for a specific workflow. Call this when you need tools not in the current set. Presets (each includes all core tools plus):\n" +
-				"• review (40 tools): reviewPR, auditCompliance, scanSecrets, analyzeTestGaps, getAffectedTests, compareAPI, findDeadCode, findUnwiredModules, auditRisk, getOwnership — use for PR reviews, test coverage analysis, compliance audits, security\n" +
-				"• refactor (33 tools): analyzeCoupling, findCycles, suggestRefactorings, findDeadCode, findUnwiredModules, compareAPI, explainOrigin — use for refactoring, dependency analysis, dead code removal\n" +
-				"• federation (36 tools): federationSearch*, listContracts, analyzeContractImpact — use for multi-repo queries, cross-repo analysis\n" +
-				"• docs (27 tools): indexDocs, getDocsForSymbol, checkDocStaleness, getDecisions, recordDecision — use for documentation, ADRs\n" +
-				"• ops (33 tools): doctor, reindex, daemonStatus, listJobs, webhooks, telemetry — use for diagnostics, daemon management\n" +
-				"• full (94 tools): everything — use when you need tools from multiple presets",
+			Name:        "expandToolset",
+			Description: expandToolsetDescFmt,
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"preset": map[string]interface{}{
 						"type":        "string",
 						"enum":        []string{"review", "refactor", "federation", "docs", "ops", "full"},
-						"description": "The preset to expand to. Pick the smallest preset that has the tools you need.",
+						"description": "The preset to expand to. This replaces your current preset — one expansion per session — so pick \"full\" if your task spans multiple presets.",
 					},
 					"reason": map[string]interface{}{
 						"type":        "string",
@@ -107,7 +132,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		},
 		{
 			Name:        "searchSymbols",
-			Description: "Semantic code search returning symbol types, locations, and relationships—more accurate than text-based grep/find. Note: may not match class methods or record properties by bare name — use symbolExists for authoritative boolean lookups.",
+			Description: "Search symbols by name in the index: full-text search over symbol names and signatures first, then SCIP if that finds nothing. Returns symbol IDs, kinds and locations. Note: may not match class methods or record properties by bare name — use symbolExists for authoritative boolean lookups.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -243,7 +268,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		},
 		{
 			Name:        "findReferences",
-			Description: "Find all references to a symbol with completeness information",
+			Description: "Find all references to a symbol. Returns text like grep's, one `file:line: [use] code` per reference, so the line itself says whether it is a call, a type, a literal, a write or a read",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -265,6 +290,17 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 						"type":        "number",
 						"default":     100,
 						"description": "Maximum number of references to return",
+					},
+					"detail": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"lines", "files", "full"},
+						"default":     "lines",
+						"description": "lines: text like grep's, `file:line: [use] code` per reference, where use is def, call, literal, write, type or read; imports are counted, not listed. files: JSON, line numbers grouped per file. full: JSON, one entry per reference with columns and reference kind",
+					},
+					"bySymbol": map[string]interface{}{
+						"type":        "boolean",
+						"default":     false,
+						"description": "With detail lines: put each reference under the definition it sits in",
 					},
 				},
 				"required": []string{"symbolId"},
@@ -316,7 +352,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		},
 		{
 			Name:        "analyzeImpact",
-			Description: "Use this to check 'what breaks if I change X?' — returns callers, affected modules, and risk score for a single symbol. For full pre-change analysis with tests and coupling, use prepareChange instead. For analyzing a git diff of changes already made, use analyzeChange.",
+			Description: "Use this to check 'what breaks if I change X?' — returns callers, affected modules, and risk score for a single symbol. For full pre-change analysis with tests and coupling, use prepareChange instead. For analyzing a git diff of changes already made, use assessChange.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -364,8 +400,8 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 			},
 		},
 		{
-			Name:        "analyzeChange",
-			Description: "Use this AFTER changes are made to analyze a git diff — answers: what might break? which tests should run? who needs to review? For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
+			Name:        "assessChange",
+			Description: "The post-change counterpart to prepareChange: use this AFTER changes are made to assess what you actually changed and what to verify before finishing. Defaults to the uncommitted working tree; also supports staged changes or a base-branch range. Answers: what might break? which tests should run? are there possible contract changes? `doneCheck` lists each use of a changed declaration that the diff left as it was (`openSites`: under the symbol and why it counts, then the file, then `line: code`); uses that rarely break (a TypeScript annotation, a read of a widened key) are one line per symbol with a count, and focus \"rarely\" lists them. Status is open, clear or not_assessed. It compares text and compiles nothing, so clear is not proof. `coChangeOpen` lists the files that usually change with the touched files (git history, any language) and were left alone. The default format \"compact\" returns text with just what to act on (risk, open sites, the tests that use a changed symbol, contracts with before and after, consumer files), no symbol ids; pass focus \"done\", \"rarely\", \"tests\" or \"risk\" for only that part, paged with offset; pass format \"full\" for every detail, including symbol ids, affected modules, recommendations and the per-check structure (`coChangeCheck.openFiles`). For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -391,7 +427,65 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 					"includeTests": map[string]interface{}{
 						"type":        "boolean",
 						"default":     false,
-						"description": "Include test files in the analysis",
+						"description": "Count test code as consumers and as changed symbols. Tests using a changed symbol are in affectedTests either way",
+					},
+					"strict": map[string]interface{}{
+						"type":        "boolean",
+						"default":     false,
+						"description": "Fail if SCIP index is stale",
+					},
+					"format": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"full", "compact"},
+						"default":     "compact",
+						"description": "Response format: 'compact' (default) returns text with what to act on (risk, doneCheck open sites by symbol and file as line: code, the test files that use a changed symbol with test names, contracts with before and after, direct consumer files), a fraction of the size; 'full' returns JSON with all details including symbol ids",
+					},
+					"focus": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"done", "rarely", "tests", "risk"},
+						"description": "Compact only: return just the part you need. 'done': open sites and co-change files left alone (is the change finished?). 'rarely': the open sites that rarely break, which the other views count per symbol. 'tests': affected test files with test names and runTests, a command that runs them. 'risk': score, riskFactors, contract changes, consumer files. Omit for all sections. The summary always covers everything",
+					},
+					"offset": map[string]interface{}{
+						"type":        "integer",
+						"default":     0,
+						"description": "With focus 'done', 'rarely' or 'tests': skip this many open sites or test files. The response's 'more' says the next offset",
+					},
+					"limit": map[string]interface{}{
+						"type":        "integer",
+						"description": "With focus 'done', 'rarely' or 'tests': at most this many open sites (default 50) or test files (default 20)",
+					},
+				},
+			},
+		},
+		{
+			Name:        "analyzeChange",
+			Description: "Deprecated alias of assessChange (removed in two minor versions). Use this AFTER changes are made to analyze a git diff — answers: what might break? which tests should run? who needs to review? For pre-change planning (before writing code), use prepareChange instead. For full PR review with quality gates, use reviewPR.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"diffContent": map[string]interface{}{
+						"type":        "string",
+						"description": "Raw git diff content. If empty, uses current working tree diff",
+					},
+					"staged": map[string]interface{}{
+						"type":        "boolean",
+						"default":     false,
+						"description": "If true and no diffContent provided, analyze only staged changes (--cached)",
+					},
+					"baseBranch": map[string]interface{}{
+						"type":        "string",
+						"default":     "HEAD",
+						"description": "Base branch for comparison when using git diff",
+					},
+					"depth": map[string]interface{}{
+						"type":        "number",
+						"default":     2,
+						"description": "Maximum depth for transitive impact analysis (1-4)",
+					},
+					"includeTests": map[string]interface{}{
+						"type":        "boolean",
+						"default":     false,
+						"description": "Count test code as consumers and as changed symbols. Tests using a changed symbol are in affectedTests either way",
 					},
 					"strict": map[string]interface{}{
 						"type":        "boolean",
@@ -449,6 +543,11 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 						"type":        "number",
 						"default":     1,
 						"description": "Maximum depth to traverse (1-4)",
+					},
+					"limit": map[string]interface{}{
+						"type":        "number",
+						"default":     20,
+						"description": "Maximum nodes returned; the closest to the symbol are kept and truncation says how many were cut",
 					},
 				},
 				"required": []string{"symbolId"},
@@ -930,7 +1029,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		// v6.1 CI/CD tools
 		{
 			Name:        "summarizePr",
-			Description: "Use this for a PR summary with risk assessment — compares branches and returns affected modules, hotspots, and suggested reviewers. Lighter than reviewPR (no quality gates or scoring). For full review with 15 checks, use reviewPR. For commit-level diffs, use summarizeDiff.",
+			Description: "Use this for a PR summary with risk assessment — compares branches and returns affected modules, hotspots, and suggested reviewers. Lighter than reviewPR (no quality gates or scoring). For a full review with quality checks, use reviewPR. For commit-level diffs, use summarizeDiff.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1725,7 +1824,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		// Unwired Module Detection
 		{
 			Name:        "findUnwiredModules",
-			Description: "Find exported symbols that are never transitively reachable from application entrypoints (main, server, CLI). Detects the 'built but never plugged in' pattern where modules exist and are tested but aren't wired into the execution pipeline. Complements findDeadCode which only checks reference counts.",
+			Description: "Find exported symbols that are never transitively reachable from application entrypoints (main, server, CLI). Detects the 'built but never plugged in' pattern where modules exist and are tested but aren't wired into the execution pipeline. Complements findDeadCode which only checks reference counts. Go `init` files of a reached package count as reached; a method implementing a reachable interface on a reachable type is not listed (`summary.viaInterface` counts them). `limit` takes one item per module in turn; `truncated` says when it cut.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1755,7 +1854,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 					},
 					"maxNodes": map[string]interface{}{
 						"type":        "integer",
-						"default":     10000,
+						"default":     100000,
 						"description": "Max symbols in reachable set (budget for BFS traversal)",
 					},
 					"limit": map[string]interface{}{
@@ -1799,7 +1898,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		// v7.6 Breaking Change Detection Tool
 		{
 			Name:        "compareAPI",
-			Description: "Use this to detect breaking API changes between git refs — finds removed symbols, signature changes, visibility changes, and renames. Essential for release planning and backwards compatibility. For general change impact (not API-specific), use analyzeChange.",
+			Description: "Use this to detect breaking API changes since a base ref — public declarations whose signature changed or that were removed or renamed, compared from the diff against the working tree (Go, TypeScript/JavaScript, Rust, Python). Files of other languages where public declarations changed come back as notCompared, not as safe. For general change impact (not API-specific), use assessChange.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1811,7 +1910,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 					"targetRef": map[string]interface{}{
 						"type":        "string",
 						"default":     "HEAD",
-						"description": "Target git ref for comparison (e.g., 'HEAD', 'v2.0.0')",
+						"description": "Must be HEAD: the working tree is what gets compared. Check out another ref to compare it",
 					},
 					"scope": map[string]interface{}{
 						"type": "array",
@@ -2149,7 +2248,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 					"applyAllowlist": map[string]interface{}{
 						"type":        "boolean",
 						"default":     true,
-						"description": "Apply configured allowlist to filter false positives",
+						"description": "Apply the allowlist: .ckb/secrets-allowlist.json (path, path-regex, pattern, hash or rule entries; rules/secretTypes limit an entry), .gitleaks.toml, and a ckb:allow-secret or gitleaks:allow comment on the line",
 					},
 				},
 			},
@@ -2198,7 +2297,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		// v8.2 Unified PR Review
 		{
 			Name:        "reviewPR",
-			Description: "Run a comprehensive PR review with 15 quality checks. Use this FIRST when reviewing a PR — it gives you structural context so you can focus on what matters. Checks: breaking changes, secrets, test coverage, complexity, health, coupling, hotspots, risk, dead code, test gaps, blast radius, comment drift, format consistency, bug patterns, split suggestions. Returns verdict (pass/warn/fail), score (0-100), findings with file:line, health report, review effort estimate, PR tier, and suggested reviewers. Follow up with findReferences, analyzeImpact, or explainSymbol to drill into specific findings — the SCIP index stays loaded between calls.",
+			Description: "Run a comprehensive PR review with structural quality checks. Use this FIRST when reviewing a PR — it gives you structural context so you can focus on what matters. Checks include breaking changes, secrets, test coverage, complexity, health, coupling, hotspots, risk, dead code, unwired code, test gaps, blast radius, comment drift, format consistency, bug patterns, split suggestions. Returns verdict (pass/warn/fail), score (0-100), findings with file:line, health report, review effort estimate, PR tier, and suggested reviewers. Follow up with findReferences, analyzeImpact, or explainSymbol to drill into specific findings — the SCIP index stays loaded between calls.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -2449,7 +2548,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		},
 		{
 			Name:        "prepareChange",
-			Description: "Use this BEFORE making a code change — returns blast radius, affected tests, coupled files, and risk score. Essential before modifying, renaming, deleting, or moving code. More comprehensive than analyzeImpact (includes tests + coupling). For analyzing changes already made, use analyzeChange instead.",
+			Description: "Use this BEFORE making a code change — returns blast radius, affected tests, coupled files, and risk score. Essential before modifying, renaming, deleting, or moving code. More comprehensive than analyzeImpact (includes tests + coupling). For analyzing changes already made, use assessChange instead.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -2622,7 +2721,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		// v8.4 Performance scan
 		{
 			Name:        "scanPerformance",
-			Description: "Scan for structural performance problems. Detects hidden coupling: file pairs that co-change frequently in git history but have no static import edge between them. Hidden coupling indicates implicit shared state or behavioral coupling that the dependency graph cannot see, and is the highest-signal structural risk for refactoring and maintenance cost.",
+			Description: "Detect hidden coupling (despite the name, this does not measure performance): file pairs that co-change frequently in git history but have no static import edge between them. Hidden coupling indicates implicit shared state or behavioral coupling that the dependency graph cannot see, and is the highest-signal structural risk for refactoring and maintenance cost.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -2767,6 +2866,27 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 			},
 		},
 	}
+
+	// Fill in the real per-preset tool counts now that the full tool list
+	// exists (see expandToolsetDescFmt doc comment: this is what keeps the
+	// counts from drifting the way the old hardcoded numbers did).
+	for i := range tools {
+		if tools[i].Name != "expandToolset" {
+			continue
+		}
+		tools[i].Description = fmt.Sprintf(expandToolsetDescFmt,
+			len(GetPresetTools(PresetReview)),
+			len(GetPresetTools(PresetRefactor)),
+			len(GetPresetTools(PresetFederation)),
+			len(GetPresetTools(PresetDocs)),
+			len(GetPresetTools(PresetOps)),
+			len(tools),
+		)
+		break
+	}
+
+	annotateTools(tools)
+	return tools
 }
 
 // RegisterTools registers all tool handlers
@@ -2785,7 +2905,8 @@ func (s *MCPServer) RegisterTools() {
 	s.tools["getArchitecture"] = s.toolGetArchitecture
 	s.tools["analyzeImpact"] = s.toolAnalyzeImpact
 	s.tools["analyzeOutgoingImpact"] = s.toolAnalyzeOutgoingImpact
-	s.tools["analyzeChange"] = s.toolAnalyzeChange
+	s.tools["assessChange"] = s.toolAssessChange
+	s.tools["analyzeChange"] = s.toolAnalyzeChange // deprecated alias, same underlying handler
 	s.tools["explainSymbol"] = s.toolExplainSymbol
 	s.tools["justifySymbol"] = s.toolJustifySymbol
 	s.tools["getCallGraph"] = s.toolGetCallGraph

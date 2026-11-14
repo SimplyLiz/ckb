@@ -38,6 +38,129 @@ func TestParseScope(t *testing.T) {
 	}
 }
 
+// TestRankSearchResults_CaseExactOutranksFold locks down the fix for the
+// evidence-output-bugs ranking regression: a query like "Model" must
+// deterministically outrank a case-insensitive-only match like a field
+// named "model" — a class/interface/struct/type match wins outright when
+// the case matches, and even when it only matches case-insensitively it
+// still beats a property/parameter of the same name.
+func TestRankSearchResults_CaseExactOutranksFold(t *testing.T) {
+	t.Run("case-sensitive exact match beats case-fold-only match regardless of kind", func(t *testing.T) {
+		results := []SearchResultItem{
+			{Name: "model", Kind: "property", Visibility: &VisibilityInfo{Visibility: "public"}},
+			{Name: "Model", Kind: "class", Visibility: &VisibilityInfo{Visibility: "public"}},
+		}
+		rankSearchResults(results, "Model")
+
+		var classScore, propertyScore float64
+		for _, r := range results {
+			switch r.Kind {
+			case "class":
+				classScore = r.Score
+				if got := r.Ranking.Signals["matchType"]; got != "exact" {
+					t.Errorf("class matchType = %v, want %q", got, "exact")
+				}
+			case "property":
+				propertyScore = r.Score
+				if got := r.Ranking.Signals["matchType"]; got != "exact-fold" {
+					t.Errorf("property matchType = %v, want %q", got, "exact-fold")
+				}
+			}
+		}
+		if classScore <= propertyScore {
+			t.Errorf("case-sensitive exact match (class, score=%v) did not outrank case-fold-only match (property, score=%v)", classScore, propertyScore)
+		}
+	})
+
+	t.Run("type-like kind tie-breaks over property/parameter among case-fold-only matches", func(t *testing.T) {
+		results := []SearchResultItem{
+			{Name: "model", Kind: "parameter", Visibility: &VisibilityInfo{Visibility: "public"}},
+			{Name: "MODEL", Kind: "interface", Visibility: &VisibilityInfo{Visibility: "public"}},
+		}
+		rankSearchResults(results, "Model")
+
+		var interfaceScore, paramScore float64
+		for _, r := range results {
+			switch r.Kind {
+			case "interface":
+				interfaceScore = r.Score
+			case "parameter":
+				paramScore = r.Score
+			}
+		}
+		if interfaceScore <= paramScore {
+			t.Errorf("type-like kind (interface, score=%v) did not tie-break over parameter (score=%v) among case-fold-only matches", interfaceScore, paramScore)
+		}
+	})
+
+	t.Run("case-sensitive exact match wins even against a different type-like kind", func(t *testing.T) {
+		// Mirrors the fixture disambiguation case: a free function named
+		// exactly "Handler" and a struct/class also named exactly "Handler" —
+		// both are case-sensitive exact matches, so the type-like kind bonus
+		// (not the match-type tier) should decide it.
+		results := []SearchResultItem{
+			{Name: "Handler", Kind: "function", Visibility: &VisibilityInfo{Visibility: "public"}},
+			{Name: "Handler", Kind: "class", Visibility: &VisibilityInfo{Visibility: "public"}},
+		}
+		rankSearchResults(results, "Handler")
+
+		var classScore, funcScore float64
+		for _, r := range results {
+			switch r.Kind {
+			case "class":
+				classScore = r.Score
+			case "function":
+				funcScore = r.Score
+			}
+		}
+		if classScore <= funcScore {
+			t.Errorf("class (score=%v) did not outrank function (score=%v) for an identical case-sensitive exact match", classScore, funcScore)
+		}
+	})
+}
+
+func TestIsTypeLikeKind(t *testing.T) {
+	typeLike := []string{"class", "interface", "struct", "type", "enum"}
+	for _, k := range typeLike {
+		if !isTypeLikeKind(k) {
+			t.Errorf("isTypeLikeKind(%q) = false, want true", k)
+		}
+	}
+	memberLike := []string{"property", "field", "parameter", "method", "function", "variable", ""}
+	for _, k := range memberLike {
+		if isTypeLikeKind(k) {
+			t.Errorf("isTypeLikeKind(%q) = true, want false", k)
+		}
+	}
+}
+
+// TestRankSearchResults_EnumOutranksPropertyOnCaseFold is a regression test
+// for a bug where isTypeLikeKind omitted "enum" — a real SCIP-emitted kind
+// (SymbolInformation_Enum, through MapSCIPKind in inferKindString) — so a
+// case-fold-only query like "STATUS" ranked an enum `Status` no higher than
+// a property `status`, contrary to the type-like tie-break policy exercised
+// by TestRankSearchResults_CaseExactOutranksFold.
+func TestRankSearchResults_EnumOutranksPropertyOnCaseFold(t *testing.T) {
+	results := []SearchResultItem{
+		{Name: "status", Kind: "property", Visibility: &VisibilityInfo{Visibility: "public"}},
+		{Name: "Status", Kind: "enum", Visibility: &VisibilityInfo{Visibility: "public"}},
+	}
+	rankSearchResults(results, "STATUS")
+
+	var enumScore, propertyScore float64
+	for _, r := range results {
+		switch r.Kind {
+		case "enum":
+			enumScore = r.Score
+		case "property":
+			propertyScore = r.Score
+		}
+	}
+	if enumScore <= propertyScore {
+		t.Errorf("enum (score=%v) did not outrank property (score=%v) for case-fold-only query %q", enumScore, propertyScore, "STATUS")
+	}
+}
+
 func TestGenerateSearchCacheKey(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -259,7 +382,7 @@ func TestInferVisibility(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name+"/"+tt.kind, func(t *testing.T) {
-			result := inferVisibility(tt.name, tt.kind)
+			result := inferVisibility(tt.name, tt.kind, "")
 			if result != tt.expected {
 				t.Errorf("inferVisibility(%q, %q) = %q, want %q", tt.name, tt.kind, result, tt.expected)
 			}
@@ -694,5 +817,63 @@ func TestFindReferences_IncludeTests(t *testing.T) {
 				t.Fatal("expected non-nil response")
 			}
 		})
+	}
+}
+
+// An exact-case match must outrank a case-fold match of the same kind, and
+// the three-way ranking for "model" must not contain a tie.
+func TestRankSearchResults_ExactCaseBeatsFoldNoTies(t *testing.T) {
+	pub := &VisibilityInfo{Visibility: "public"}
+	results := []SearchResultItem{
+		{Name: "Model", Kind: "class", Visibility: pub},
+		{Name: "model", Kind: "property", Visibility: pub},
+		{Name: "model", Kind: "function", Visibility: pub},
+		{Name: "Model", Kind: "function", Visibility: pub},
+		{Name: "Model", Kind: "property", Visibility: pub},
+	}
+	rankSearchResults(results, "model")
+	score := func(name, kind string) float64 {
+		for _, r := range results {
+			if r.Name == name && r.Kind == kind {
+				return r.Score
+			}
+		}
+		t.Fatalf("missing %s/%s", name, kind)
+		return 0
+	}
+	if score("model", "function") <= score("Model", "function") {
+		t.Errorf("exact function must beat fold function")
+	}
+	if score("model", "property") <= score("Model", "property") {
+		t.Errorf("exact property must beat fold property")
+	}
+	seen := map[float64]string{}
+	for _, r := range results[:3] {
+		if prev, dup := seen[r.Score]; dup {
+			t.Errorf("tie at %v between %s and %s/%s", r.Score, prev, r.Name, r.Kind)
+		}
+		seen[r.Score] = r.Name + "/" + r.Kind
+	}
+	// Kind ranking still counts: fold-matched type beats an exact-case member.
+	if score("Model", "class") <= score("model", "property") {
+		t.Errorf("fold class should still beat exact property")
+	}
+}
+
+// A module-level Python or TypeScript name is public unless an underscore says
+// otherwise; case means nothing there.
+func TestInferFTSVisibility_PythonAndTS(t *testing.T) {
+	py := "scip-python python . 0123 `exp.lc1_account`/"
+	cases := []struct{ id, name, want string }{
+		{py + "price().", "price", "public"},
+		{py + "_bill().", "_bill", "private"},
+		{py + "__init__:", "__init__", "public"},
+		{"scip-typescript npm mods 1.0 hooks/`register.ts`/register.", "register", "public"},
+		{"scip-go gomod x v1 `x/q`/engine#build().", "build", "private"},
+	}
+	for _, c := range cases {
+		if got := inferFTSVisibility(c.id, c.name, "function"); got != c.want {
+			t.Errorf("inferFTSVisibility(%q) = %q, want %q", c.name, got, c.want)
+		}
 	}
 }

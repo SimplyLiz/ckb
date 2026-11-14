@@ -168,6 +168,22 @@ func (g *GitAdapter) VerifyRef(ref string) error {
 //
 // Returns the input ref if it already resolves; otherwise returns
 // "origin/<branch>" after fetching. Never writes to local branches.
+// MergeBase returns the commit a branch at head forked from base, the base a
+// pull request is reviewed against. `git diff base head` compares the two tips
+// instead, so whatever base gained since the fork shows up as the change,
+// reversed.
+func (g *GitAdapter) MergeBase(base, head string) (string, error) {
+	out, err := g.executeGitCommand("merge-base", base, head)
+	if err != nil {
+		return "", err
+	}
+	mb := strings.TrimSpace(out)
+	if mb == "" {
+		return "", fmt.Errorf("no merge base between %s and %s", base, head)
+	}
+	return mb, nil
+}
+
 func (g *GitAdapter) EnsureRef(ref string) (string, error) {
 	if ref == "" {
 		return "", fmt.Errorf("empty ref")

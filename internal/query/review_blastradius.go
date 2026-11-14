@@ -3,9 +3,11 @@ package query
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
 	"github.com/SimplyLiz/CodeMCP/internal/lip"
@@ -14,7 +16,7 @@ import (
 // checkBlastRadius checks if changed symbols have high fan-out (many callers).
 // Only reports functions and methods — variable/constant references are typically
 // framework registrations (cobra commands, Qt signals, etc.), not real fan-out.
-func (e *Engine) checkBlastRadius(ctx context.Context, changedFiles []string, opts ReviewPROptions) (ReviewCheck, []ReviewFinding) {
+func (e *Engine) checkBlastRadius(ctx context.Context, changedFiles []string, opts ReviewPROptions, changeSet func() (*AnalyzeChangeSetResponse, error)) (ReviewCheck, []ReviewFinding) {
 	start := time.Now()
 
 	maxFanOut := opts.Policy.MaxFanOut
@@ -47,48 +49,34 @@ func (e *Engine) checkBlastRadius(ctx context.Context, changedFiles []string, op
 		}
 	}
 
-	// Collect symbols from changed files, cap at 30 total.
-	// Only include functions and methods — variable references are typically
-	// framework wiring (cobra commands, Spring beans, Qt signals) not real callers.
-	type symbolRef struct {
-		stableId string
-		name     string
-		kind     string
-		file     string
+	// The symbols the diff changed, not every symbol of a changed file: a large
+	// file listed first used to take every slot, and the changes after it went
+	// unchecked without a word.
+	skipSeverity := "info"
+	if !informationalMode {
+		skipSeverity = "warning"
 	}
-	var symbols []symbolRef
-
-	for _, file := range changedFiles {
-		if ctx.Err() != nil {
-			break
-		}
-		if len(symbols) >= 30 {
-			break
-		}
-		resp, err := e.SearchSymbols(ctx, SearchSymbolsOptions{
-			Scope: file,
-			Limit: 30 - len(symbols),
-		})
-		if err != nil || resp == nil {
-			continue
-		}
-		for _, sym := range resp.Symbols {
-			// Skip variables and constants — their "callers" are references
-			// (reads, assignments, framework registrations), not real fan-out.
-			if isFrameworkSymbol(sym.Kind, sym.Name, file) {
-				continue
-			}
-			symbols = append(symbols, symbolRef{
-				stableId: sym.StableId,
-				name:     sym.Name,
-				kind:     sym.Kind,
-				file:     file,
-			})
-			if len(symbols) >= 30 {
-				break
-			}
-		}
+	if !e.hasConsumerGraph() {
+		return ReviewCheck{
+			Name:     "blast-radius",
+			Status:   "skip",
+			Severity: skipSeverity,
+			Summary:  "No SCIP index, so no callers to count; run 'ckb index'",
+			Duration: time.Since(start).Milliseconds(),
+		}, nil
 	}
+	cs, err := changeSet()
+	if err != nil || cs == nil {
+		return ReviewCheck{
+			Name:     "blast-radius",
+			Status:   "skip",
+			Severity: skipSeverity,
+			Summary:  fmt.Sprintf("Could not map the diff to symbols: %v", err),
+			Duration: time.Since(start).Milliseconds(),
+		}, nil
+	}
+	candidates := blastRadiusCandidates(cs.ChangedSymbols, changedFiles, e.scipAdapter.GetReferenceCount, e.scipAdapter.IsCallable)
+	symbols := selectBlastRadiusSymbols(candidates, maxBlastRadiusSymbols)
 
 	var findings []ReviewFinding
 	for _, sym := range symbols {
@@ -196,11 +184,12 @@ func (e *Engine) checkBlastRadius(ctx context.Context, changedFiles []string, op
 		}
 	}
 
+	checked := blastRadiusCoverage(len(symbols), len(candidates))
 	if informationalMode {
 		status := "info"
-		summary := "No symbols with callers in changes"
+		summary := "No changed function has 3+ callers" + checked
 		if len(findings) > 0 {
-			summary = fmt.Sprintf("%d symbol(s) have callers in changed files", len(findings))
+			summary = fmt.Sprintf("%d changed function(s) have 3+ callers", len(findings)) + checked
 		}
 		return ReviewCheck{
 			Name:     "blast-radius",
@@ -212,10 +201,10 @@ func (e *Engine) checkBlastRadius(ctx context.Context, changedFiles []string, op
 	}
 
 	status := "pass"
-	summary := "No high fan-out symbols in changes"
+	summary := "No high fan-out symbols in changes" + checked
 	if len(findings) > 0 {
 		status = "warn"
-		summary = fmt.Sprintf("%d symbol(s) exceed fan-out threshold of %d", len(findings), maxFanOut)
+		summary = fmt.Sprintf("%d symbol(s) exceed fan-out threshold of %d", len(findings), maxFanOut) + checked
 	}
 
 	return ReviewCheck{
@@ -225,6 +214,106 @@ func (e *Engine) checkBlastRadius(ctx context.Context, changedFiles []string, op
 		Summary:  summary,
 		Duration: time.Since(start).Milliseconds(),
 	}, findings
+}
+
+// maxBlastRadiusSymbols caps the AnalyzeImpact calls the check makes.
+const maxBlastRadiusSymbols = 30
+
+// blastRadiusSymbol is a changed symbol the check counts callers for.
+type blastRadiusSymbol struct {
+	stableId string
+	name     string
+	kind     string
+	file     string
+	refs     int // References in the index, to rank before the expensive count
+}
+
+// blastRadiusCandidates returns the changed symbols worth counting callers for, in
+// the order of the review's files: no file-level entries, nothing in a test file
+// or outside the reviewed files, nothing deleted (the done check covers its
+// uses), nothing only reworded, nothing but functions and methods, and no
+// framework wiring.
+func blastRadiusCandidates(changed []ChangedSymbolInfo, files []string, refCount func(string) int, isCallable func(string) bool) []blastRadiusSymbol {
+	order := make(map[string]int, len(files))
+	for i, f := range files {
+		order[f] = i
+	}
+	seen := make(map[string]bool)
+	var out []blastRadiusSymbol
+	for _, sym := range changed {
+		if _, reviewed := order[sym.File]; !reviewed || seen[sym.SymbolID] {
+			continue
+		}
+		if strings.HasPrefix(sym.SymbolID, "file:") || sym.Trivial || sym.ChangeType == string(impact.ChangeDeleted) || isTestFilePath(sym.File) {
+			continue
+		}
+		id, err := scip.ParseSCIPIdentifier(sym.SymbolID)
+		if err != nil {
+			continue
+		}
+		kind := string(id.ExtractSymbolKind())
+		// Callers are what the check counts, and only something callable has them:
+		// a changed type with dozens of references would take a slot and report 0.
+		// `const f = () => …` has a constant's ID but is called like a function.
+		if kind != string(scip.KindFunction) && kind != string(scip.KindMethod) && isCallable(sym.SymbolID) {
+			kind = string(scip.KindFunction)
+		}
+		if (kind != string(scip.KindFunction) && kind != string(scip.KindMethod)) || isFrameworkSymbol(kind, sym.Name, sym.File) {
+			continue
+		}
+		seen[sym.SymbolID] = true
+		out = append(out, blastRadiusSymbol{stableId: sym.SymbolID, name: sym.Name, kind: kind, file: sym.File, refs: refCount(sym.SymbolID)})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return order[out[i].file] < order[out[j].file] })
+	return out
+}
+
+// selectBlastRadiusSymbols picks at most limit candidates, spread over their files:
+// every file's best-referenced symbol first, then every file's second, and so on.
+// Within a round the better-referenced go first, so a cut keeps them.
+func selectBlastRadiusSymbols(candidates []blastRadiusSymbol, limit int) []blastRadiusSymbol {
+	if len(candidates) <= limit {
+		return candidates
+	}
+	var files []string
+	byFile := make(map[string][]blastRadiusSymbol)
+	for _, c := range candidates {
+		if _, ok := byFile[c.file]; !ok {
+			files = append(files, c.file)
+		}
+		byFile[c.file] = append(byFile[c.file], c)
+	}
+	for _, f := range files {
+		syms := byFile[f]
+		sort.SliceStable(syms, func(i, j int) bool { return syms[i].refs > syms[j].refs })
+	}
+	selected := make([]blastRadiusSymbol, 0, limit)
+	for round := 0; len(selected) < limit; round++ {
+		var this []blastRadiusSymbol
+		for _, f := range files {
+			if round < len(byFile[f]) {
+				this = append(this, byFile[f][round])
+			}
+		}
+		if len(this) == 0 {
+			break
+		}
+		sort.SliceStable(this, func(i, j int) bool { return this[i].refs > this[j].refs })
+		if room := limit - len(selected); len(this) > room {
+			this = this[:room]
+		}
+		selected = append(selected, this...)
+	}
+	return selected
+}
+
+// blastRadiusCoverage says how much of the change the check looked at, when it
+// could not look at all of it.
+func blastRadiusCoverage(checked, total int) string {
+	if checked >= total {
+		return fmt.Sprintf(" (%d changed function(s) checked)", total)
+	}
+	return fmt.Sprintf(" (%d of %d changed functions checked)", checked, total)
 }
 
 // isFrameworkSymbol returns true if this symbol is likely framework wiring

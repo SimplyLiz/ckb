@@ -1,0 +1,249 @@
+{
+ "lang": "go",
+ "name": "ckb",
+ "repo": ".",
+ "head": "b550825d4404bb4218b1101932a3bcf1fa233f4a",
+ "seed": "ckb-eval-change-v1",
+ "commits_in_pool": 539,
+ "candidates": 8,
+ "index_lang": "go",
+ "prep": null,
+ "target": 12,
+ "sample": [
+  {
+   "sha": "c87117060f87496aec373c4dcb40910bfdaeffaf",
+   "parent": "21bf09841cff8a8b52c76eee5658dd558283354c",
+   "symbol": "SuppressEdge",
+   "kind": "signature",
+   "definers": [
+    "internal/federation/contracts.go"
+   ],
+   "decl_before": [
+    "func(*Index)SuppressEdge(edgeIDint64,suppressedBystring)error"
+   ],
+   "decl_after": [
+    "func(*Index)SuppressEdge(edgeIDint64,suppressedBy,reasonstring)error"
+   ],
+   "truth_all": [
+    "internal/federation/contract_impact.go",
+    "internal/federation/index.go",
+    "internal/federation/sync.go"
+   ],
+   "truth_ref": [
+    "internal/federation/contract_impact.go"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 4,
+   "rank": "5121ace96b071b052ab070b30397dedfc1337b7037a5af177100e8a0d06a4f6b"
+  },
+  {
+   "sha": "42ee4755521b2b2b43bdf5e87c7bbb14727bb5e4",
+   "parent": "7b3dde855be444500bee2c6ba55a8f93ae0a49e3",
+   "symbol": "NewServer",
+   "kind": "signature",
+   "definers": [
+    "internal/api/server.go"
+   ],
+   "decl_before": [
+    "funcNewServer(addrstring,engine*query.Engine,logger*logging.Logger,configServerConfig)*Server"
+   ],
+   "decl_after": [
+    "funcNewServer(addrstring,engine*query.Engine,logger*logging.Logger,configServerConfig)(*Server,error)"
+   ],
+   "truth_all": [
+    "cmd/ckb/serve.go",
+    "internal/api/routes.go"
+   ],
+   "truth_ref": [
+    "cmd/ckb/serve.go"
+   ],
+   "truth_tests": [
+    "internal/api/api_test.go"
+   ],
+   "truth_tests_ref": [
+    "internal/api/api_test.go"
+   ],
+   "files_in_commit": 14,
+   "rank": "5f019978c3a511fcf2fc3b5eea23bc7c5dd766a9f7156e6a87c0c3afe74eb45d"
+  },
+  {
+   "sha": "73fe60256fcb10006a3fa82f351c7e10fb3c307b",
+   "parent": "e56f3c5a0ad2436658bdec09e033d786f29031f6",
+   "symbol": "getPrepareExtractDetail",
+   "kind": "signature",
+   "definers": [
+    "internal/query/prepare_extract.go"
+   ],
+   "decl_before": [
+    "func(*Engine)getPrepareExtractDetail(target*PrepareChangeTarget)*ExtractDetail"
+   ],
+   "decl_after": [
+    "func(*Engine)getPrepareExtractDetail(target*PrepareChangeTarget,reqStartLine,reqEndLineint)*ExtractDetail"
+   ],
+   "truth_all": [
+    "internal/mcp/tool_impls_compound.go",
+    "internal/mcp/tools.go",
+    "internal/query/compound.go",
+    "internal/query/compound_refactor.go"
+   ],
+   "truth_ref": [
+    "internal/query/compound.go"
+   ],
+   "truth_tests": [
+    "internal/query/prepare_extract_test.go"
+   ],
+   "truth_tests_ref": [
+    "internal/query/prepare_extract_test.go"
+   ],
+   "files_in_commit": 6,
+   "rank": "8bcf544e819fa10cf1967bef67353c874f0229aaa0abab69d721f9a30845fa57"
+  },
+  {
+   "sha": "9bf57e14db8ef4a9328fece167ab6c3f8e160402",
+   "parent": "d5ec8fe7ee5a6d37df5d94e05d113eadcba41264",
+   "symbol": "NewSCIPExtractor",
+   "kind": "signature",
+   "definers": [
+    "internal/incremental/extractor.go"
+   ],
+   "decl_before": [
+    "funcNewSCIPExtractor(repoRootstring,logger*logging.Logger)*SCIPExtractor"
+   ],
+   "decl_after": [
+    "funcNewSCIPExtractor(repoRootstring,indexPathstring,logger*logging.Logger)*SCIPExtractor"
+   ],
+   "truth_all": [
+    "cmd/ckb/index.go",
+    "internal/incremental/indexer.go",
+    "internal/incremental/types.go"
+   ],
+   "truth_ref": [
+    "internal/incremental/indexer.go"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 4,
+   "rank": "ae0e268344dc08ba5745e892ab5b8307c49e0d12ac6d46c84b152011eb3503e2"
+  },
+  {
+   "sha": "e90ac683a1c2bd7788022c0a9a6bec312dc5e363",
+   "parent": "45772469257f408bfc92f5c2f589402a91c115be",
+   "symbol": "populateIncrementalTracking",
+   "kind": "signature",
+   "definers": [
+    "cmd/ckb/index.go"
+   ],
+   "decl_before": [
+    "funcpopulateIncrementalTracking(repoRootstring,langproject.Language)"
+   ],
+   "decl_after": [
+    "funcpopulateIncrementalTracking(repoRootstring,langproject.Language,outio.Writer)"
+   ],
+   "truth_all": [
+    "cmd/ckb/mcp.go"
+   ],
+   "truth_ref": [
+    "cmd/ckb/mcp.go"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 2,
+   "rank": "bbec27e4d01ede50fe2359ebf4526f020da721b008d582506afa9525801bcf36"
+  },
+  {
+   "sha": "22b3a8e80257f26c409b02fb93b6f64c94945de0",
+   "parent": "0e9fcde344d7d557345db1de420bb6231cc72af7",
+   "symbol": "checkCouplingGaps",
+   "kind": "signature",
+   "definers": [
+    "internal/query/review_coupling.go"
+   ],
+   "decl_before": [
+    "func(*Engine)checkCouplingGaps(ctxcontext.Context,changedFiles[]string)(ReviewCheck,[]ReviewFinding)"
+   ],
+   "decl_after": [
+    "func(*Engine)checkCouplingGaps(ctxcontext.Context,changedFiles[]string,diffStats[]git.DiffStats)(ReviewCheck,[]ReviewFinding)"
+   ],
+   "truth_all": [
+    "cmd/ckb/review.go",
+    "internal/query/review.go",
+    "internal/query/review_blastradius.go",
+    "internal/query/review_deadcode.go",
+    "internal/query/review_health.go",
+    "internal/query/review_testgaps.go"
+   ],
+   "truth_ref": [
+    "internal/query/review.go"
+   ],
+   "truth_tests": [
+    "cmd/ckb/format_review_golden_test.go",
+    "cmd/ckb/format_review_test.go",
+    "internal/query/review_new_checks_test.go",
+    "internal/query/review_test.go"
+   ],
+   "truth_tests_ref": [],
+   "files_in_commit": 19,
+   "rank": "c77c8babed2bde09f3bc5aefe6be6d072ae7b13820980993d68580cedafa4478"
+  },
+  {
+   "sha": "c3929ab7ca1c708339816668e2dfe8b36d2cb96f",
+   "parent": "10335c4a4c2ac8c4ae152c2972a17aa700d90cd7",
+   "symbol": "QueryBlastRadiusBatch",
+   "kind": "signature",
+   "definers": [
+    "internal/lip/client.go"
+   ],
+   "decl_before": [
+    "funcQueryBlastRadiusBatch(changedFileURIs[]string,minScorefloat32)(map[string]BlastRadiusEntry,error)"
+   ],
+   "decl_after": [
+    "funcQueryBlastRadiusBatch(changedFileURIs[]string,minScorefloat32)(*BlastRadiusBatchResult,error)"
+   ],
+   "truth_all": [
+    "internal/lip/blast_radius.go",
+    "internal/query/review_blastradius.go"
+   ],
+   "truth_ref": [
+    "internal/lip/blast_radius.go"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 3,
+   "rank": "ce7fb8f9907416c984364546246b292ffbd244d2ae947842100de44839bcbab0"
+  },
+  {
+   "sha": "0fec67c43c251b3aa15c3c99e84c0a1782856a23",
+   "parent": "ef81df145102140cfa166a48525ead17061bcd4f",
+   "symbol": "CORSMiddleware",
+   "kind": "signature",
+   "definers": [
+    "internal/api/middleware.go"
+   ],
+   "decl_before": [
+    "funcCORSMiddleware()func(http.Handler)http.Handler"
+   ],
+   "decl_after": [
+    "funcCORSMiddleware(configCORSConfig)func(http.Handler)http.Handler"
+   ],
+   "truth_all": [
+    "cmd/ckb/format.go",
+    "cmd/ckb/pr_summary.go",
+    "cmd/ckb/serve.go",
+    "internal/api/server.go",
+    "internal/config/config.go",
+    "internal/jobs/runner.go",
+    "internal/mcp/transport.go"
+   ],
+   "truth_ref": [
+    "internal/api/server.go"
+   ],
+   "truth_tests": [
+    "internal/api/api_test.go"
+   ],
+   "truth_tests_ref": [],
+   "files_in_commit": 10,
+   "rank": "e66bc5f7a6375dc017e39bcfbe4033e259c40b34e41bc413ac017c83b9d13578"
+  }
+ ]
+}

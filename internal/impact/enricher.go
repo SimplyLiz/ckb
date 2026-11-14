@@ -40,7 +40,7 @@ type ExternalBlastRadius struct {
 // Edge-source values for ExternalBlastRadius.EdgesSource.
 const (
 	EdgesSourceTier1              = "tier1"
-	EdgesSourceScipWithTier1Edges = "scip_with_tier1_edges"
+	EdgesSourceScipWithTier1Edges = "scip_with_tier1_edges" // #nosec G101 -- provenance label, not a credential
 	EdgesSourceScipOnly           = "scip_only"
 	EdgesSourceEmpty              = "empty"
 )

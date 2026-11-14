@@ -1,0 +1,513 @@
+[
+{
+"instance_id": "OpenListTeam__OpenList-1001",
+"repo": "OpenListTeam/OpenList",
+"lang": "go",
+"files": 48,
+"outcome": "over-30-files"
+},
+{
+"instance_id": "TecharoHQ__anubis-1308",
+"repo": "TecharoHQ/anubis",
+"lang": "go",
+"files": 22,
+"outcome": "qualifies"
+},
+{
+"instance_id": "TecharoHQ__anubis-370",
+"repo": "TecharoHQ/anubis",
+"lang": "go",
+"files": 14,
+"outcome": "qualifies"
+},
+{
+"instance_id": "TecharoHQ__anubis-619",
+"repo": "TecharoHQ/anubis",
+"lang": "go",
+"files": 5,
+"outcome": "qualifies"
+},
+{
+"instance_id": "angular__angular-64903",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 4,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_0362665",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 16,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_1d3b914",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 7,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_3a6e45f",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 12,
+"outcome": "qualifies"
+},
+{
+"instance_id": "angular__angular-c_4a3d39c",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 19,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_4f8ab4f",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 5,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_55ac384",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 6,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_5e0dcf1",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 15,
+"outcome": "qualifies"
+},
+{
+"instance_id": "angular__angular-c_6960ec0",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 6,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_7118dac",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 10,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_768a09d",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 34,
+"outcome": "over-30-files"
+},
+{
+"instance_id": "angular__angular-c_815f1b1",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 9,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_8562667",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 7,
+"outcome": "qualifies"
+},
+{
+"instance_id": "angular__angular-c_92c4123",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 7,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_9f44b41",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 19,
+"outcome": "qualifies"
+},
+{
+"instance_id": "angular__angular-c_a4001c4",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 5,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_b29e646",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 13,
+"outcome": "qualifies"
+},
+{
+"instance_id": "angular__angular-c_b8f2a50",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 20,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_b973c5b",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 4,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_bc9a067",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 12,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_c089d21",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 16,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_d47cf58",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 9,
+"outcome": "qualifies"
+},
+{
+"instance_id": "angular__angular-c_e3dcf52",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 16,
+"outcome": "qualifies"
+},
+{
+"instance_id": "angular__angular-c_eb4c22e",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 4,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "angular__angular-c_f320700",
+"repo": "angular/angular",
+"lang": "ts",
+"files": 7,
+"outcome": "qualifies"
+},
+{
+"instance_id": "ant-design__ant-design-52470",
+"repo": "ant-design/ant-design",
+"lang": "ts",
+"files": 34,
+"outcome": "over-30-files"
+},
+{
+"instance_id": "ant-design__ant-design-53739",
+"repo": "ant-design/ant-design",
+"lang": "ts",
+"files": 45,
+"outcome": "over-30-files"
+},
+{
+"instance_id": "ant-design__ant-design-54813",
+"repo": "ant-design/ant-design",
+"lang": "ts",
+"files": 10,
+"outcome": "qualifies"
+},
+{
+"instance_id": "astral-sh__ruff-19755",
+"repo": "astral-sh/ruff",
+"lang": "rust",
+"files": 3,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "astral-sh__ruff-19799",
+"repo": "astral-sh/ruff",
+"lang": "rust",
+"files": 12,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "astral-sh__ruff-19832",
+"repo": "astral-sh/ruff",
+"lang": "rust",
+"files": 8,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "astral-sh__ruff-19884",
+"repo": "astral-sh/ruff",
+"lang": "rust",
+"files": 10,
+"outcome": "qualifies"
+},
+{
+"instance_id": "astral-sh__ruff-20041",
+"repo": "astral-sh/ruff",
+"lang": "rust",
+"files": 4,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "astral-sh__ruff-20052",
+"repo": "astral-sh/ruff",
+"lang": "rust",
+"files": 5,
+"outcome": "qualifies"
+},
+{
+"instance_id": "astral-sh__ruff-20221",
+"repo": "astral-sh/ruff",
+"lang": "rust",
+"files": 13,
+"outcome": "qualifies"
+},
+{
+"instance_id": "astral-sh__ruff-20646",
+"repo": "astral-sh/ruff",
+"lang": "rust",
+"files": 4,
+"outcome": "qualifies"
+},
+{
+"instance_id": "astral-sh__ruff-20926",
+"repo": "astral-sh/ruff",
+"lang": "rust",
+"files": 51,
+"outcome": "over-30-files"
+},
+{
+"instance_id": "astral-sh__ruff-21108",
+"repo": "astral-sh/ruff",
+"lang": "rust",
+"files": 9,
+"outcome": "qualifies"
+},
+{
+"instance_id": "astral-sh__ruff-21110",
+"repo": "astral-sh/ruff",
+"lang": "rust",
+"files": 7,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "astral-sh__ruff-21445",
+"repo": "astral-sh/ruff",
+"lang": "rust",
+"files": 22,
+"outcome": "qualifies"
+},
+{
+"instance_id": "caddy__caddyserver-6930",
+"repo": "caddyserver/caddy",
+"lang": "go",
+"files": 8,
+"outcome": "qualifies"
+},
+{
+"instance_id": "cli__cli-11668",
+"repo": "cli/cli",
+"lang": "go",
+"files": 11,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "cli__cli-c_6d14840",
+"repo": "cli/cli",
+"lang": "go",
+"files": 9,
+"outcome": "qualifies"
+},
+{
+"instance_id": "cli__cli-c_d684834",
+"repo": "cli/cli",
+"lang": "go",
+"files": 4,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "codex__openai-4471",
+"repo": "openai/codex",
+"lang": "rust",
+"files": 65,
+"outcome": "over-30-files"
+},
+{
+"instance_id": "derailed__k9s-3517",
+"repo": "derailed/k9s",
+"lang": "go",
+"files": 13,
+"outcome": "qualifies"
+},
+{
+"instance_id": "gitleaks__gitleaks-1831",
+"repo": "gitleaks/gitleaks",
+"lang": "go",
+"files": 16,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "go-gitea__gitea-33861",
+"repo": "go-gitea/gitea",
+"lang": "go",
+"files": 15,
+"outcome": "qualifies"
+},
+{
+"instance_id": "go-gitea__gitea-34154",
+"repo": "go-gitea/gitea",
+"lang": "go",
+"files": 33,
+"outcome": "over-30-files"
+},
+{
+"instance_id": "go-gitea__gitea-35775",
+"repo": "go-gitea/gitea",
+"lang": "go",
+"files": 34,
+"outcome": "over-30-files"
+},
+{
+"instance_id": "grpc__grpc-go-8779",
+"repo": "grpc/grpc-go",
+"lang": "go",
+"files": 24,
+"outcome": "qualifies"
+},
+{
+"instance_id": "hugo__gohugoio-13982",
+"repo": "gohugoio/hugo",
+"lang": "go",
+"files": 7,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "istio__istio-57080",
+"repo": "istio/istio",
+"lang": "go",
+"files": 8,
+"outcome": "qualifies"
+},
+{
+"instance_id": "jesseduffield__lazygit-4318",
+"repo": "jesseduffield/lazygit",
+"lang": "go",
+"files": 4,
+"outcome": "qualifies"
+},
+{
+"instance_id": "kubernetes__kubernetes-133982",
+"repo": "kubernetes/kubernetes",
+"lang": "go",
+"files": 88,
+"outcome": "over-30-files"
+},
+{
+"instance_id": "qdrant__qdrant-c_3942071",
+"repo": "qdrant/qdrant",
+"lang": "rust",
+"files": 21,
+"outcome": "qualifies"
+},
+{
+"instance_id": "qdrant__qdrant-c_51b3a62",
+"repo": "qdrant/qdrant",
+"lang": "rust",
+"files": 40,
+"outcome": "over-30-files"
+},
+{
+"instance_id": "qdrant__qdrant-c_83bb3a3",
+"repo": "qdrant/qdrant",
+"lang": "rust",
+"files": 6,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "restic__restic-5251",
+"repo": "restic/restic",
+"lang": "go",
+"files": 18,
+"outcome": "qualifies"
+},
+{
+"instance_id": "restic__restic-5550",
+"repo": "restic/restic",
+"lang": "go",
+"files": 5,
+"outcome": "qualifies"
+},
+{
+"instance_id": "rqlite__rqlite-2057",
+"repo": "rqlite/rqlite",
+"lang": "go",
+"files": 3,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "rust-lang__cargo-16367",
+"repo": "rust-lang/cargo",
+"lang": "rust",
+"files": 4,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "rust-lang__cargo-16423",
+"repo": "rust-lang/cargo",
+"lang": "rust",
+"files": 4,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "rust-lang__cargo-c_2bab011",
+"repo": "rust-lang/cargo",
+"lang": "rust",
+"files": 23,
+"outcome": "qualifies"
+},
+{
+"instance_id": "rust-lang__cargo-c_e9dced1",
+"repo": "rust-lang/cargo",
+"lang": "rust",
+"files": 3,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "samber__lo-739",
+"repo": "samber/lo",
+"lang": "go",
+"files": 12,
+"outcome": "qualifies"
+},
+{
+"instance_id": "tracel-ai__burn-4154",
+"repo": "tracel-ai/burn",
+"lang": "rust",
+"files": 12,
+"outcome": "no-signature-change-with-caller"
+},
+{
+"instance_id": "tracel-ai__burn-4337",
+"repo": "tracel-ai/burn",
+"lang": "rust",
+"files": 51,
+"outcome": "over-30-files"
+},
+{
+"instance_id": "trufflesecurity__trufflehog-3938",
+"repo": "trufflesecurity/trufflehog",
+"lang": "go",
+"files": 6,
+"outcome": "no-signature-change-with-caller"
+}
+]

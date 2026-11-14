@@ -437,3 +437,34 @@ func computeTestRepoState(t *testing.T, repoRoot string) string {
 	}
 	return rs.RepoStateID
 }
+
+func TestCheckFreshness_IndexerInstalledSinceIsStale(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "scip-fake"), []byte("#!/bin/sh\n"), 0o755); err != nil { //nolint:gosec // test fixture, needs +x
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	m := &IndexMeta{Skipped: []SkippedLanguage{{Language: "python", Indexer: "scip-missing"}}}
+	if reason := m.indexerInstalledSince(); reason != "" {
+		t.Errorf("reason = %q for an indexer still missing", reason)
+	}
+	m.Skipped = append(m.Skipped, SkippedLanguage{Language: "python", Indexer: "scip-fake"})
+	if reason := m.indexerInstalledSince(); !strings.Contains(reason, "scip-fake is installed now") {
+		t.Errorf("reason = %q", reason)
+	}
+}
+
+func TestMultiLanguage(t *testing.T) {
+	var m *IndexMeta
+	if m.MultiLanguage() {
+		t.Error("nil meta is not multi-language")
+	}
+	m = &IndexMeta{Languages: []LanguageIndex{{Language: "go"}}}
+	if m.MultiLanguage() {
+		t.Error("one language")
+	}
+	m.Languages = append(m.Languages, LanguageIndex{Language: "python"})
+	if !m.MultiLanguage() {
+		t.Error("two languages")
+	}
+}

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +15,6 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/jobs"
 	lipClient "github.com/SimplyLiz/CodeMCP/internal/lip"
 	"github.com/SimplyLiz/CodeMCP/internal/query"
-	"github.com/SimplyLiz/CodeMCP/internal/repos"
 )
 
 // toolGetStatus implements the getStatus tool
@@ -130,35 +130,10 @@ func (s *MCPServer) toolGetStatus(params map[string]interface{}) (*envelope.Resp
 		hints = append(hints, fmt.Sprintf("Current preset: %s (%d tools)", preset, exposedCount))
 	}
 
-	// v8.0: Add repo-awareness hints based on resolution
-	resolved, _ := repos.ResolveActiveRepo("")
-	if resolved != nil {
-		switch resolved.Source {
-		case repos.ResolvedFromCWDGit:
-			// Auto-detected unregistered git repo
-			if resolved.State == repos.RepoStateUninitialized {
-				hints = append([]string{
-					fmt.Sprintf("⚠️ Auto-detected repo '%s' is not initialized. Run 'ckb init' then 'ckb repo add' to register it.", resolved.Entry.Name),
-				}, hints...)
-				suggestions = append(suggestions, fmt.Sprintf("Run 'cd %s && ckb init && ckb repo add %s .' to fully set up this repository", resolved.Entry.Path, resolved.Entry.Name))
-			} else {
-				hints = append([]string{
-					fmt.Sprintf("ℹ️ Using auto-detected repo '%s'. Run 'ckb repo add %s .' to register it permanently.", resolved.Entry.Name, resolved.Entry.Name),
-				}, hints...)
-			}
-			if resolved.SkippedDefault != "" {
-				hints = append(hints, fmt.Sprintf("Note: Default repo '%s' was skipped because you're in a different git repository.", resolved.SkippedDefault))
-			}
-		case repos.ResolvedFromDefault:
-			// Using default, but might be in a different directory
-			if resolved.DetectedGitRoot != "" && resolved.Entry != nil && resolved.DetectedGitRoot != resolved.Entry.Path {
-				hints = append([]string{
-					fmt.Sprintf("⚠️ Analyzing default repo '%s' but you appear to be in '%s'.", resolved.Entry.Name, filepath.Base(resolved.DetectedGitRoot)),
-				}, hints...)
-				suggestions = append(suggestions, fmt.Sprintf("If you want to analyze the current directory, run 'cd %s && ckb init && ckb repo add'", resolved.DetectedGitRoot))
-			}
-		}
-	}
+	// The repo this server serves, not a fresh resolution from the registry.
+	repoHints, repoSuggestions := s.servedRepoHints()
+	hints = append(repoHints, hints...)
+	suggestions = append(suggestions, repoSuggestions...)
 
 	// v8.0: Check for binary staleness
 	if warning := s.GetBinaryStaleWarning(); warning != "" {
@@ -254,13 +229,37 @@ func (s *MCPServer) getIndexStaleness() map[string]interface{} {
 	}
 
 	staleness := meta.GetStaleness(repoRoot)
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"exists":        true,
 		"fresh":         !staleness.IsStale,
 		"reason":        staleness.Reason,
 		"indexAge":      staleness.IndexAge,
 		"commitsBehind": staleness.CommitsBehind,
 	}
+	// Per-language coverage: what the index holds, and what it leaves out
+	// with the fix (an indexer to install, 'ckb index --scip').
+	if len(meta.Languages) > 0 {
+		result["languages"] = meta.Languages
+	}
+	if len(meta.Skipped) > 0 {
+		result["skippedLanguages"] = meta.Skipped
+	}
+
+	// Metadata describes the file on disk; "fresh" is only true if the
+	// running engine is actually serving it (#134). Without a SCIP backend
+	// (disabled in config) nothing serves it either.
+	sb := s.engine().GetScipBackend()
+	loaded := sb != nil && sb.IsAvailable()
+	result["loaded"] = loaded
+	if !loaded && !staleness.IsStale {
+		result["fresh"] = false
+		if sb == nil {
+			result["reason"] = "SCIP backend is disabled for this server, so the index file is not served"
+		} else {
+			result["reason"] = "index file not loaded by the running server"
+		}
+	}
+	return result
 }
 
 // toolDoctor implements the doctor tool
@@ -573,6 +572,9 @@ func (s *MCPServer) toolSearchSymbols(params map[string]interface{}) (*envelope.
 		"symbols":    symbols,
 		"totalCount": searchResp.TotalCount,
 	}
+	if searchResp.TotalIsLowerBound {
+		data["totalIsLowerBound"] = true
+	}
 
 	// Record wide-result metrics
 	responseBytes := MeasureJSONSize(data)
@@ -586,11 +588,18 @@ func (s *MCPServer) toolSearchSymbols(params map[string]interface{}) (*envelope.
 		ExecutionMs:     timer.ElapsedMs(),
 	})
 
-	return NewToolResponse().
+	resp := NewToolResponse().
 		Data(data).
 		WithProvenance(searchResp.Provenance).
-		WithTruncation(searchResp.Truncated, len(symbols), searchResp.TotalCount, "max-symbols").
-		Build(), nil
+		WithTruncation(searchResp.Truncated, len(symbols), searchResp.TotalCount, "max-symbols")
+	// No result in a language the index has no file of says nothing about the code.
+	if len(symbols) == 0 {
+		if note := s.engine().UnindexedNote(scope); note != "" {
+			data["notIndexed"] = s.engine().UnindexedLanguages(scope)
+			resp.Warning(note)
+		}
+	}
+	return resp.Build(), nil
 }
 
 // toolSymbolExists implements the symbolExists tool.
@@ -636,11 +645,15 @@ func (s *MCPServer) toolSymbolExists(params map[string]interface{}) (*envelope.R
 	if result.StaleIndex {
 		data["staleIndex"] = result.StaleIndex
 	}
-
-	return NewToolResponse().
-		Data(data).
-		WithProvenance(result.Provenance).
-		Build(), nil
+	// exists:false in a language the index has no file of is no answer at all.
+	resp := NewToolResponse().Data(data).WithProvenance(result.Provenance)
+	if !result.Exists {
+		if note := s.engine().UnindexedNote(scope); note != "" {
+			data["notIndexed"] = s.engine().UnindexedLanguages(scope)
+			resp.Warning(note)
+		}
+	}
+	return resp.Build(), nil
 }
 
 // toolFindReferences implements the findReferences tool
@@ -708,9 +721,17 @@ func (s *MCPServer) toolFindReferences(params map[string]interface{}) (*envelope
 		refs = append(refs, ref)
 	}
 
-	data := map[string]interface{}{
-		"references": refs,
-		"totalCount": refsResp.TotalCount,
+	var data interface{}
+	switch detail, _ := params["detail"].(string); detail {
+	case "full":
+		data = map[string]interface{}{"totalCount": refsResp.TotalCount, "references": refs}
+	case "files":
+		data = map[string]interface{}{"totalCount": refsResp.TotalCount, "files": query.GroupReferencesByFile(refsResp.References)}
+	case "", "lines":
+		bySymbol, _ := params["bySymbol"].(bool)
+		data = referenceText{lines: query.BuildReferenceLines(s.engine().GetRepoRoot(), symbolId, refsResp), bySymbol: bySymbol}
+	default:
+		return nil, errors.NewInvalidParameterError("detail", "must be 'lines', 'files' or 'full'")
 	}
 
 	// Record wide-result metrics
@@ -725,12 +746,31 @@ func (s *MCPServer) toolFindReferences(params map[string]interface{}) (*envelope
 		ExecutionMs:     timer.ElapsedMs(),
 	})
 
+	refFiles := make([]string, 0, len(refsResp.References))
+	for _, r := range refsResp.References {
+		if r.Location != nil {
+			refFiles = append(refFiles, r.Location.FileId)
+		}
+	}
+
 	return NewToolResponse().
 		Data(data).
 		WithProvenance(refsResp.Provenance).
 		WithTruncation(refsResp.Truncated, len(refs), refsResp.TotalCount, "max-references").
+		WithIndexFreshness(s.engine().IndexFreshnessFor(ctx, refFiles)).
 		Build(), nil
 }
+
+// referenceText is findReferences' answer as text: see query.ReferenceLines.
+type referenceText struct {
+	lines    *query.ReferenceLines
+	bySymbol bool
+}
+
+func (r referenceText) Text() string { return r.lines.Text(r.bySymbol) }
+
+// MarshalJSON keeps the answer readable where the envelope is sent as JSON.
+func (r referenceText) MarshalJSON() ([]byte, error) { return json.Marshal(r.lines) }
 
 // toolGetArchitecture implements the getArchitecture tool
 func (s *MCPServer) toolGetArchitecture(params map[string]interface{}) (*envelope.Response, error) {
@@ -1081,6 +1121,18 @@ func (s *MCPServer) toolAnalyzeImpact(params map[string]interface{}) (*envelope.
 		"transitiveImpact":  transitiveImpact,
 		"blendedConfidence": impactResp.BlendedConfidence,
 	}
+	if impactResp.ConsumerFiles != nil {
+		data["consumerFiles"] = impactResp.ConsumerFiles
+	}
+	if len(impactResp.NameMatchImplementations) > 0 {
+		// Types with a one-method interface's method in packages that don't import
+		// the interface's: not counted in directImpact.
+		data["nameMatchImplementations"] = impactResp.NameMatchImplementations
+	}
+	if impactResp.Truncated {
+		data["truncated"] = true
+		data["truncationInfo"] = impactResp.TruncationInfo
+	}
 
 	if impactResp.RiskScore != nil {
 		factors := make([]map[string]interface{}, 0, len(impactResp.RiskScore.Factors))
@@ -1170,10 +1222,22 @@ func (s *MCPServer) toolAnalyzeImpact(params map[string]interface{}) (*envelope.
 
 	eng := s.engine()
 	activeBackend := eng.ActiveBackendName()
+	var impactFiles []string
+	if impactResp.Symbol != nil && impactResp.Symbol.Location != nil {
+		impactFiles = append(impactFiles, impactResp.Symbol.Location.FileId)
+	}
+	for _, items := range [][]query.ImpactItem{impactResp.DirectImpact, impactResp.TransitiveImpact} {
+		for _, item := range items {
+			if item.Location != nil {
+				impactFiles = append(impactFiles, item.Location.FileId)
+			}
+		}
+	}
 	resp := NewToolResponse().
 		Data(data).
 		WithProvenance(impactResp.Provenance).
-		WithBackend(activeBackend, s.logger)
+		WithBackend(activeBackend, s.logger).
+		WithIndexFreshness(eng.IndexFreshnessFor(ctx, impactFiles))
 	for _, w := range lipWarnings {
 		resp.Warning(w)
 	}
@@ -1304,8 +1368,16 @@ func (s *MCPServer) toolAnalyzeOutgoingImpact(params map[string]interface{}) (*e
 		Build(), nil
 }
 
-// toolAnalyzeChange implements the analyzeChange tool
+// toolAnalyzeChange is a deprecated alias of toolAssessChange, kept for two
+// minor versions. See tools.go's "analyzeChange" registration.
 func (s *MCPServer) toolAnalyzeChange(params map[string]interface{}) (*envelope.Response, error) {
+	return s.toolAssessChange(params)
+}
+
+// toolAssessChange implements the assessChange tool: the post-change
+// counterpart to prepareChange. "analyzeChange" is a deprecated alias of
+// this same handler (see tools.go).
+func (s *MCPServer) toolAssessChange(params map[string]interface{}) (*envelope.Response, error) {
 	timer := NewWideResultTimer()
 
 	// Extract parameters with defaults
@@ -1344,7 +1416,33 @@ func (s *MCPServer) toolAnalyzeChange(params map[string]interface{}) (*envelope.
 		strict = v
 	}
 
-	s.logger.Debug("Executing analyzeChange",
+	// compact by default: agents act on the open sites, tests and risk, and
+	// almost never need the symbol ids and full listings that triple the size.
+	format := "compact"
+	if v, ok := params["format"].(string); ok && v != "" {
+		format = v
+	}
+	if format != "full" && format != "compact" {
+		return nil, errors.NewInvalidParameterError("format", "must be 'full' or 'compact'")
+	}
+	focus, _ := params["focus"].(string)
+	offset, limit := 0, 0
+	if v, ok := params["offset"].(float64); ok {
+		offset = int(v)
+	}
+	if v, ok := params["limit"].(float64); ok {
+		limit = int(v)
+	}
+	if format == "full" && (focus != "" || offset != 0 || limit != 0) {
+		return nil, errors.NewInvalidParameterError("focus", "focus, offset and limit apply to format 'compact'")
+	}
+	compactOpts := query.CompactAssessOptions{Focus: focus, Offset: offset, Limit: limit}
+	if _, err := query.CompactAssessChangeFor(nil, compactOpts); err != nil {
+		return nil, errors.NewInvalidParameterError("focus", err.Error()) // before the analysis, which is the slow part
+	}
+
+	s.logger.Debug("Executing assessChange",
+		"format", format,
 		"staged", staged,
 		"baseBranch", baseBranch,
 		"depth", depth,
@@ -1368,14 +1466,24 @@ func (s *MCPServer) toolAnalyzeChange(params map[string]interface{}) (*envelope.
 
 	// Record wide-result metrics
 	totalAffected := len(resp.AffectedSymbols)
-	data := resp
+	var data interface{} = resp
+	if format == "compact" {
+		if focus == query.AssessFocusTests {
+			compactOpts.RunCommand = s.engine().TestRunCommand(resp.AffectedTests)
+		}
+		compact, cerr := query.CompactAssessChangeFor(resp, compactOpts)
+		if cerr != nil {
+			return nil, errors.NewInvalidParameterError("focus", cerr.Error())
+		}
+		data = compact
+	}
 	responseBytes := MeasureJSONSize(data)
 	truncatedCount := 0
 	if resp.Truncated && resp.TruncationInfo != nil {
 		truncatedCount = resp.TruncationInfo.OriginalCount - resp.TruncationInfo.ReturnedCount
 	}
 	RecordWideResult(WideResultMetrics{
-		ToolName:        "analyzeChange",
+		ToolName:        "assessChange",
 		TotalResults:    totalAffected + truncatedCount,
 		ReturnedResults: totalAffected,
 		TruncatedCount:  truncatedCount,
@@ -1384,10 +1492,32 @@ func (s *MCPServer) toolAnalyzeChange(params map[string]interface{}) (*envelope.
 		ExecutionMs:     timer.ElapsedMs(),
 	})
 
-	return NewToolResponse().
+	built := NewToolResponse().
 		Data(data).
 		WithProvenance(resp.Provenance).
-		Build(), nil
+		Build()
+
+	// resp.Confidence is a richer, changeset-specific confidence (SCIP
+	// availability/freshness + symbol-mapping confidence) than the generic
+	// completeness-based one WithProvenance sets. It's a query-package-local
+	// type rather than envelope.Confidence to avoid an import cycle (see
+	// query.ChangeConfidence's doc comment) -- convert it here.
+	if resp.Confidence != nil && built.Meta != nil {
+		built.Meta.Confidence = &envelope.Confidence{
+			Score:   resp.Confidence.Score,
+			Tier:    envelope.ConfidenceTier(resp.Confidence.Tier),
+			Reasons: resp.Confidence.Reasons,
+		}
+		for _, f := range resp.Confidence.Factors {
+			built.Meta.Confidence.Factors = append(built.Meta.Confidence.Factors, envelope.ConfidenceFactor{
+				Factor: f.Factor,
+				Status: f.Status,
+				Impact: f.Impact,
+			})
+		}
+	}
+
+	return built, nil
 }
 
 // toolExplainSymbol implements the explainSymbol tool
@@ -1462,10 +1592,15 @@ func (s *MCPServer) toolGetCallGraph(params map[string]interface{}) (*envelope.R
 	)
 
 	ctx := context.Background()
+	limit := 0
+	if limitVal, ok := params["limit"].(float64); ok {
+		limit = int(limitVal)
+	}
 	resp, err := s.engine().GetCallGraph(ctx, query.CallGraphOptions{
 		SymbolId:  symbolId,
 		Direction: direction,
 		Depth:     depth,
+		Limit:     limit,
 	})
 	if err != nil {
 		return nil, errors.NewOperationError("get call graph", err)
@@ -1475,17 +1610,25 @@ func (s *MCPServer) toolGetCallGraph(params map[string]interface{}) (*envelope.R
 	responseBytes := MeasureJSONSize(resp)
 	RecordWideResult(WideResultMetrics{
 		ToolName:        "getCallGraph",
-		TotalResults:    len(resp.Nodes),
+		TotalResults:    callGraphTotal(resp),
 		ReturnedResults: len(resp.Nodes),
-		TruncatedCount:  0, // getCallGraph doesn't truncate currently
+		TruncatedCount:  callGraphTotal(resp) - len(resp.Nodes),
 		ResponseBytes:   responseBytes,
 		EstimatedTokens: EstimateTokens(responseBytes),
 		ExecutionMs:     timer.ElapsedMs(),
 	})
 
+	nodeFiles := make([]string, 0, len(resp.Nodes))
+	for _, n := range resp.Nodes {
+		if n.Location != nil {
+			nodeFiles = append(nodeFiles, n.Location.FileId)
+		}
+	}
+
 	return NewToolResponse().
 		Data(resp).
 		WithProvenance(resp.Provenance).
+		WithIndexFreshness(s.engine().IndexFreshnessFor(ctx, nodeFiles)).
 		Build(), nil
 }
 
@@ -2504,4 +2647,12 @@ func (s *MCPServer) toolGetWideResultMetrics(params map[string]interface{}) (*en
 		"tools":       tools,
 		"description": "Wide-result tool metrics for Frontier mode decision. High avgTruncationRate indicates tools that would benefit from frontierMode.",
 	}), nil
+}
+
+// callGraphTotal is how many nodes the graph had before any cap.
+func callGraphTotal(resp *query.CallGraphResponse) int {
+	if resp.Truncation != nil {
+		return resp.Truncation.OriginalCount
+	}
+	return len(resp.Nodes)
 }

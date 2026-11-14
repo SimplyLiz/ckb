@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -45,6 +46,7 @@ var (
 	reviewMinReviewers       int
 	// New analyzer flags
 	reviewStaged             bool
+	reviewTarget             string
 	reviewNoAutoFetch        bool
 	reviewScope              string
 	reviewMaxBlastRadius     int
@@ -53,6 +55,7 @@ var (
 	reviewTestGapLines       int
 	reviewLLM                bool
 	reviewPost               string
+	reviewCompact            bool
 	reviewSkipChecks         []string
 )
 
@@ -151,6 +154,7 @@ func init() {
 
 	// New analyzers
 	reviewCmd.Flags().BoolVar(&reviewStaged, "staged", false, "Review staged changes instead of branch diff")
+	reviewCmd.Flags().StringVar(&reviewTarget, "target", "", "What to review, in one value: a base branch, \"staged\", or a PR number (base and head from gh). Empty keeps --base/--staged; the /ckb:review skill passes its argument here")
 	reviewCmd.Flags().BoolVar(&reviewNoAutoFetch, "no-auto-fetch", false, "Disable automatic fetch of the base ref from origin when missing locally (for air-gapped CI)")
 	reviewCmd.Flags().StringVar(&reviewScope, "scope", "", "Filter to path prefix or symbol name")
 	reviewCmd.Flags().IntVar(&reviewMaxBlastRadius, "max-blast-radius", 0, "Maximum blast radius delta (0 = disabled)")
@@ -159,13 +163,46 @@ func init() {
 	reviewCmd.Flags().IntVar(&reviewTestGapLines, "test-gap-lines", 5, "Minimum function lines for test gap reporting")
 	reviewCmd.Flags().BoolVar(&reviewLLM, "llm", false, "Use Claude AI for narrative summary (requires ANTHROPIC_API_KEY)")
 	reviewCmd.Flags().StringVar(&reviewPost, "post", "", "Post review as PR comment (PR number or branch name, requires gh CLI)")
+	reviewCmd.Flags().BoolVar(&reviewCompact, "compact", false, fmt.Sprintf("JSON for an agent: verdict, score, checks that did not pass, the first %d findings and counts for the rest (implies --format=json)", reviewCompactFindings))
 
 	rootCmd.AddCommand(reviewCmd)
 }
 
+// reviewCompactFindings is how many findings --compact keeps. Claude Code
+// inlines an injected command's output up to ~30,000 characters; 30 findings
+// plus the rest of the compact review stay well below that.
+const reviewCompactFindings = 30
+
 func runReview(cmd *cobra.Command, args []string) {
 	start := time.Now()
+	if reviewCompact {
+		if cmd.Flags().Changed("format") && OutputFormat(reviewFormat) != FormatJSON {
+			fmt.Fprintln(os.Stderr, "Error: --compact is JSON; drop --format or pass --format=json")
+			os.Exit(1)
+		}
+		reviewFormat = string(FormatJSON)
+	}
 	logger := newLogger(reviewFormat)
+
+	if strings.TrimSpace(reviewTarget) != "" {
+		if cmd.Flags().Changed("base") || cmd.Flags().Changed("staged") || cmd.Flags().Changed("head") {
+			fmt.Fprintln(os.Stderr, "Error: --target replaces --base, --head and --staged; pass one or the other")
+			os.Exit(1)
+		}
+		t, err := resolveReviewTarget(reviewTarget, ghPullRequestRefs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if t.Base != "" {
+			reviewBaseBranch = t.Base
+		}
+		reviewHeadBranch = t.Head
+		reviewStaged = t.Staged
+		if t.Note != "" {
+			fmt.Fprintln(os.Stderr, "Note: "+t.Note)
+		}
+	}
 
 	repoRoot := mustGetRepoRoot()
 	engine := mustGetEngine(repoRoot, logger)
@@ -281,7 +318,14 @@ func runReview(cmd *cobra.Command, args []string) {
 		}
 	case FormatJSON:
 		var fmtErr error
-		output, fmtErr = formatJSON(response)
+		if reviewCompact {
+			// One line: indentation is a fifth of the size and an agent does not need it.
+			var data []byte
+			data, fmtErr = json.Marshal(query.CompactReview(response, reviewCompactFindings))
+			output = string(data)
+		} else {
+			output, fmtErr = formatJSON(response)
+		}
 		if fmtErr != nil {
 			fmt.Fprintf(os.Stderr, "Error formatting output: %v\n", fmtErr)
 			os.Exit(1)
@@ -373,11 +417,23 @@ func formatReviewHuman(resp *query.ReviewPRResponse) string {
 		b.WriteString("\n")
 	}
 
+	if strings.HasPrefix(resp.VerdictReason, "no check warned, but") {
+		b.WriteString(wrapIndent("Not a pass: "+strings.TrimPrefix(resp.VerdictReason, "no check warned, but "), "  ", 72) + "\n")
+	}
+
 	// Narrative
 	if resp.Narrative != "" {
 		b.WriteString("\n" + wrapIndent(resp.Narrative, "  ", 72) + "\n")
 	}
 	b.WriteString("\n")
+
+	for _, l := range resp.Limitations {
+		b.WriteString(wrapIndent("Not seen: "+l.Message, "  ", 72) + "\n")
+		for _, ex := range l.Examples {
+			b.WriteString("    " + truncateRunes(ex, 100) + "\n")
+		}
+		b.WriteString("\n")
+	}
 
 	// --- Checks: collapse passes into one line (#4) ---
 	b.WriteString("Checks:\n")
@@ -390,9 +446,11 @@ func formatReviewHuman(resp *query.ReviewPRResponse) string {
 			b.WriteString(fmt.Sprintf("  ⚠ %-20s %s\n", c.Name, c.Summary))
 		case "info":
 			b.WriteString(fmt.Sprintf("  ○ %-20s %s\n", c.Name, c.Summary))
+		case "skip":
+			// A skipped check didn't look: saying nothing would read as a pass.
+			b.WriteString(fmt.Sprintf("  – %-20s %s\n", c.Name, c.Summary))
 		case "pass":
 			passNames = append(passNames, c.Name)
-			// skip: omit entirely
 		}
 	}
 	if len(passNames) > 0 {
@@ -544,11 +602,10 @@ func formatReviewHuman(resp *query.ReviewPRResponse) string {
 
 	// --- Reviewers: clean email display (#6) ---
 	if len(resp.Reviewers) > 0 {
-		b.WriteString("Reviewers: ")
+		b.WriteString("Reviewers (has lines in % of changed files): ")
 		var parts []string
 		for _, r := range resp.Reviewers {
-			name := formatReviewerName(r.Owner)
-			parts = append(parts, fmt.Sprintf("%s (%.0f%%)", name, r.Coverage*100))
+			parts = append(parts, formatReviewer(r))
 		}
 		b.WriteString(strings.Join(parts, " · "))
 		b.WriteString("\n")
@@ -646,7 +703,7 @@ func groupCoChangeFindings(findings []query.ReviewFinding) []groupedFinding {
 		if _, ok := byFile[key]; ok {
 			byFile[key].messages = append(byFile[key].messages, f.Message)
 		} else {
-			g := &groupedFinding{severity: f.Severity, file: key}
+			g := &groupedFinding{severity: f.Severity, file: key, messages: []string{f.Message}}
 			byFile[key] = g
 			groupPositions[key] = len(result)
 			result = append(result, groupedFinding{}) // placeholder
@@ -702,9 +759,23 @@ func formatReviewMarkdown(resp *query.ReviewPRResponse) string {
 	}
 	b.WriteString("\n")
 
+	if strings.HasPrefix(resp.VerdictReason, "no check warned, but") {
+		b.WriteString("Not a pass: " + strings.TrimPrefix(resp.VerdictReason, "no check warned, but ") + "\n\n")
+	}
+
 	// Narrative
 	if resp.Narrative != "" {
 		b.WriteString("> " + resp.Narrative + "\n\n")
+	}
+
+	for _, l := range resp.Limitations {
+		b.WriteString("**Not seen:** " + l.Message + "\n\n")
+		for _, ex := range l.Examples {
+			b.WriteString("- `" + strings.ReplaceAll(truncateRunes(ex, 100), "`", "'") + "`\n")
+		}
+		if len(l.Examples) > 0 {
+			b.WriteString("\n")
+		}
 	}
 
 	// Checks table
@@ -923,9 +994,9 @@ func formatReviewMarkdown(resp *query.ReviewPRResponse) string {
 	if len(resp.Reviewers) > 0 {
 		var parts []string
 		for _, r := range resp.Reviewers {
-			parts = append(parts, fmt.Sprintf("%s (%.0f%%)", formatReviewerName(r.Owner), r.Coverage*100))
+			parts = append(parts, formatReviewer(r))
 		}
-		b.WriteString("**Reviewers:** " + strings.Join(parts, " · ") + "\n\n")
+		b.WriteString("**Reviewers** (has lines in % of changed files): " + strings.Join(parts, " · ") + "\n\n")
 	}
 
 	// Marker for update-in-place
@@ -1066,4 +1137,104 @@ func postReviewComment(resp *query.ReviewPRResponse, prRef string) error {
 
 	fmt.Fprintf(os.Stderr, "Review posted to PR %s\n", prRef)
 	return nil
+}
+
+// truncateRunes cuts s to at most n characters, not bytes, so a multi-byte
+// character in a quoted code line isn't split.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
+}
+
+// formatReviewer names a suggested reviewer with the share of changed files they have
+// lines in (the label says so: two can both be at 100%). The change's own author is
+// marked as such rather than given a share.
+func formatReviewer(r query.SuggestedReview) string {
+	name := formatReviewerName(r.Owner)
+	if r.IsAuthor {
+		return name + " (author)"
+	}
+	return fmt.Sprintf("%s %.0f%%", name, r.Coverage*100)
+}
+
+// reviewTargetSpec is what --target resolved to.
+type reviewTargetSpec struct {
+	Base   string // "" keeps --base's default
+	Head   string // "" reviews the current checkout
+	Staged bool
+	Note   string // said on stderr, e.g. that a PR's branch is not checked out here
+}
+
+// resolveReviewTarget reads --target: "staged", a PR number (with or without
+// '#'), or a base branch. The /ckb:review skill hands its argument over as is,
+// so one value covers the three forms the skill offers. prRefs looks up a PR's
+// base and head branch.
+func resolveReviewTarget(target string, prRefs func(pr string) (base, head string, err error)) (reviewTargetSpec, error) {
+	t := strings.TrimSpace(target)
+	switch {
+	case t == "":
+		return reviewTargetSpec{}, nil
+	case strings.ContainsAny(t, " \t\n"):
+		return reviewTargetSpec{}, fmt.Errorf("--target takes one value (a base branch, \"staged\" or a PR number), got %q", t)
+	case t == "staged":
+		return reviewTargetSpec{Staged: true}, nil
+	}
+	if pr := strings.TrimPrefix(t, "#"); isAllDigits(pr) {
+		base, head, err := prRefs(pr)
+		if err != nil {
+			return reviewTargetSpec{}, fmt.Errorf("PR %s: %w", pr, err)
+		}
+		spec := reviewTargetSpec{Base: base}
+		if head != "" && localBranchExists(head) {
+			spec.Head = head
+		} else {
+			spec.Note = fmt.Sprintf("PR %s's branch %q is not a local branch here, so this reviews the current checkout against %s; 'gh pr checkout %s' first to review the PR itself", pr, head, base, pr)
+		}
+		return spec, nil
+	}
+	return reviewTargetSpec{Base: t}, nil
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// ghPullRequestRefs asks gh for a PR's base and head branch.
+func ghPullRequestRefs(pr string) (string, string, error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return "", "", fmt.Errorf("resolving a PR number needs the gh CLI (https://cli.github.com); pass the base branch instead")
+	}
+	out, err := exec.Command("gh", "pr", "view", pr, "--json", "baseRefName,headRefName", "-q", ".baseRefName + \" \" + .headRefName").Output() // #nosec G204 //nolint:gosec // pr is all digits
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			return "", "", fmt.Errorf("gh pr view: %s", strings.TrimSpace(string(ee.Stderr)))
+		}
+		return "", "", fmt.Errorf("gh pr view: %w", err)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		return "", "", fmt.Errorf("gh pr view returned no base branch")
+	}
+	head := ""
+	if len(fields) > 1 {
+		head = fields[1]
+	}
+	return fields[0], head, nil
+}
+
+// localBranchExists reports whether name is a local branch of the repo in the
+// working directory.
+func localBranchExists(name string) bool {
+	return exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+name).Run() == nil // #nosec G204 //nolint:gosec // fixed git subcommand; name from gh
 }

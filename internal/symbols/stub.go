@@ -51,7 +51,27 @@ func (e *Extractor) ExtractDirectory(ctx context.Context, root string, filter fu
 	return nil, nil
 }
 
+// ExtractDirectoryWithOptions returns empty when CGO is not available.
+func (e *Extractor) ExtractDirectoryWithOptions(ctx context.Context, root string, opts DirOptions) ([]Symbol, error) {
+	return nil, nil
+}
+
 // IsAvailable returns whether symbol extraction is available.
 func IsAvailable() bool {
 	return false
+}
+
+// ExtractScriptCalls returns no edges when CGO is not available.
+func (e *Extractor) ExtractScriptCalls(ctx context.Context, repoRoot, path string) ([]ScriptCall, error) {
+	return nil, nil
+}
+
+// ExtractScriptCallsSource returns no edges when CGO is not available.
+func (e *Extractor) ExtractScriptCallsSource(ctx context.Context, repoRoot, path string, source []byte) ([]ScriptCall, error) {
+	return nil, nil
+}
+
+// ExtractScriptCallsDirectory returns no edges when CGO is not available.
+func (e *Extractor) ExtractScriptCallsDirectory(ctx context.Context, root string, opts DirOptions) ([]ScriptCall, error) {
+	return nil, nil
 }

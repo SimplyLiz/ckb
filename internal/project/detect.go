@@ -3,10 +3,12 @@ package project
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -46,10 +48,31 @@ type IndexerInfo struct {
 
 // ProjectConfig stores detected project information.
 type ProjectConfig struct {
+	// Language is the primary language; Indexer and ManifestPath are its.
 	Language     Language  `json:"language"`
 	Indexer      string    `json:"indexer"`
 	ManifestPath string    `json:"manifestPath"`
 	DetectedAt   time.Time `json:"detectedAt"`
+
+	// Languages are all languages the last index was built for, Language
+	// first. Empty in a project.json written before multi-language indexing,
+	// which always names one language: see IndexLanguages.
+	Languages []Language `json:"languages,omitempty"`
+	// LanguageFromFlag means 'ckb index --lang' chose the language, so a
+	// background reindex keeps to it instead of detecting all languages.
+	LanguageFromFlag bool `json:"languageFromFlag,omitempty"`
+}
+
+// IndexLanguages returns the languages the saved config says to index:
+// Languages, or Language alone for a config from before multi-language indexing.
+func (c *ProjectConfig) IndexLanguages() []Language {
+	if len(c.Languages) > 0 {
+		return c.Languages
+	}
+	if c.Language != "" && c.Language != LangUnknown {
+		return []Language{c.Language}
+	}
+	return nil
 }
 
 // manifestInfo maps marker files to languages
@@ -96,6 +119,7 @@ func DetectLanguage(root string) (Language, string, bool) {
 // Returns primary language, its manifest, and a list of all detected languages.
 func DetectAllLanguages(root string) (Language, string, []Language) {
 	detected := make(map[Language]string) // lang -> manifest path
+	filter := newDirFilter(root)
 
 	for _, m := range manifests {
 		if _, exists := detected[m.lang]; exists {
@@ -104,7 +128,7 @@ func DetectAllLanguages(root string) (Language, string, []Language) {
 
 		if strings.Contains(m.pattern, "*") {
 			// Glob pattern - search with bounded depth
-			found := findWithDepth(root, m.pattern)
+			found := findWithDepth(root, m.pattern, filter)
 			if len(found) > 0 {
 				relPath, _ := filepath.Rel(root, found[0])
 				detected[m.lang] = relPath
@@ -118,13 +142,16 @@ func DetectAllLanguages(root string) (Language, string, []Language) {
 		} else {
 			// Exact filename - search root and subdirectories up to maxScanDepth.
 			// This catches monorepo layouts like src/cli/go.mod or packages/api/package.json.
-			if found := findManifest(root, m.pattern); found != "" {
+			if found := findManifestIn(root, m.pattern, filter); found != "" {
 				detected[m.lang] = found
 			}
 		}
 	}
 
 	if len(detected) == 0 {
+		if langs, from := detectBySourceFiles(root); len(langs) > 0 {
+			return langs[0], from, langs
+		}
 		return LangUnknown, "", nil
 	}
 
@@ -160,12 +187,91 @@ func DetectAllLanguages(root string) (Language, string, []Language) {
 	return primaryLang, primaryManifest, allLangs
 }
 
+// sourceOnlyLanguages are the languages whose indexer runs without a manifest:
+// scip-python indexes a directory of scripts, scip-typescript infers a tsconfig.
+var sourceOnlyLanguages = map[string]Language{
+	".py":  LangPython,
+	".ts":  LangTypeScript,
+	".tsx": LangTypeScript,
+	".js":  LangJavaScript,
+	".jsx": LangJavaScript,
+	".mjs": LangJavaScript,
+}
+
+// minSecondarySourceFiles is how many tracked files a language needs, beside the
+// most common one, to be indexed too in a repo without a manifest. Fewer are a
+// config file or a helper script, not worth running an indexer for.
+const minSecondarySourceFiles = 3
+
+// detectBySourceFiles picks the languages of the tracked source files when the
+// repo has no manifest at all, such as a directory of Python scripts beside a few
+// TypeScript hooks. The language of most files comes first; another follows when
+// it has minSecondarySourceFiles. Only git-tracked files count, so ignored scratch,
+// installed packages and nested repos (git lists none of their files) don't decide.
+// The second result says what the first language came from, for the "Detected ...
+// (from ...)" line; it holds no slash, so nothing takes it for a nested manifest.
+func detectBySourceFiles(root string) ([]Language, string) {
+	cmd := exec.Command("git", "ls-files", "-z")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, ""
+	}
+	counts := make(map[Language]int)
+	exts := make(map[Language]string)
+	for _, path := range strings.Split(string(out), "\x00") {
+		ext := strings.ToLower(filepath.Ext(path))
+		lang, ok := sourceOnlyLanguages[ext]
+		if !ok || strings.Contains("/"+path, "/node_modules/") {
+			continue
+		}
+		counts[lang]++
+		if exts[lang] == "" {
+			exts[lang] = ext
+		}
+	}
+	// Stable order: count, then this priority on a tie.
+	order := []Language{LangPython, LangTypeScript, LangJavaScript}
+	sort.SliceStable(order, func(i, j int) bool { return counts[order[i]] > counts[order[j]] })
+	if counts[order[0]] == 0 {
+		return nil, ""
+	}
+	langs := []Language{order[0]}
+	for _, lang := range order[1:] {
+		if counts[lang] >= minSecondarySourceFiles {
+			langs = append(langs, lang)
+		}
+	}
+	return langs, fmt.Sprintf("%d tracked %s files, no manifest", counts[order[0]], exts[order[0]])
+}
+
+// skipManifestDir says whether a directory below the root can hold no manifest
+// of this project: dependencies, vendored code under vendor/ or third_party/,
+// and every hidden directory. Tools keep their own checkouts there (.claude/
+// worktrees, .github/ actions), and those used to add languages to the list.
+func skipManifestDir(name string) bool {
+	if strings.HasPrefix(name, ".") {
+		return true
+	}
+	switch name {
+	case "node_modules", "vendor", "third_party", "__pycache__", "venv":
+		return true
+	}
+	return false
+}
+
 // findManifest searches for an exact filename in root and subdirectories up to maxScanDepth.
 // Returns the relative path to the first match, or empty string.
 // Root is checked first (fast path). Among subdirectories, WalkDir visits in
 // lexical order, so at equal depth the alphabetically-first path wins.
-// Skips example, test, doc, and vendor directories to avoid false detections.
+// Skips example, test, doc, and vendor directories to avoid false detections,
+// and nested git repos and gitignored directories (see dirFilter).
 func findManifest(root, filename string) string {
+	return findManifestIn(root, filename, newDirFilter(root))
+}
+
+// findManifestIn is findManifest with a filter shared across one detection run.
+func findManifestIn(root, filename string, filter *dirFilter) string {
 	// Check root first (fast path)
 	if _, err := os.Stat(filepath.Join(root, filename)); err == nil {
 		return filename
@@ -191,9 +297,11 @@ func findManifest(root, filename string) string {
 		}
 
 		if d.IsDir() {
+			if skipManifestDir(d.Name()) || filter.skip(path, rel) {
+				return filepath.SkipDir
+			}
 			switch d.Name() {
-			case "node_modules", ".git", "vendor", ".ckb", "__pycache__",
-				".venv", "venv", "dist", "build",
+			case "dist", "build",
 				"examples", "example", "testdata", "fixtures",
 				"docs", "doc", "documentation":
 				return filepath.SkipDir
@@ -213,18 +321,19 @@ func findManifest(root, filename string) string {
 // FindManifestForLanguage searches for the manifest file of a specific language.
 // Used when --lang is specified to locate the module directory for indexing.
 func FindManifestForLanguage(root string, lang Language) string {
+	filter := newDirFilter(root)
 	for _, m := range manifests {
 		if m.lang != lang {
 			continue
 		}
 		if strings.Contains(m.pattern, "*") {
-			found := findWithDepth(root, m.pattern)
+			found := findWithDepth(root, m.pattern, filter)
 			if len(found) > 0 {
 				relPath, _ := filepath.Rel(root, found[0])
 				return relPath
 			}
 		} else {
-			if found := findManifest(root, m.pattern); found != "" {
+			if found := findManifestIn(root, m.pattern, filter); found != "" {
 				return found
 			}
 		}
@@ -232,8 +341,9 @@ func FindManifestForLanguage(root string, lang Language) string {
 	return ""
 }
 
-// findWithDepth searches for files matching a glob pattern with bounded depth.
-func findWithDepth(root, pattern string) []string {
+// findWithDepth searches for files matching a glob pattern with bounded depth,
+// outside the directories filter assigns to other projects.
+func findWithDepth(root, pattern string, filter *dirFilter) []string {
 	var results []string
 	checked := 0
 
@@ -257,12 +367,9 @@ func findWithDepth(root, pattern string) []string {
 			return nil
 		}
 
-		// Skip common non-project dirs
-		if d.IsDir() {
-			switch d.Name() {
-			case "node_modules", ".git", "vendor", ".ckb", "__pycache__", ".venv", "venv":
-				return filepath.SkipDir
-			}
+		// Skip common non-project dirs, nested repos and ignored dirs
+		if d.IsDir() && (skipManifestDir(d.Name()) || filter.skip(path, rel)) {
+			return filepath.SkipDir
 		}
 
 		if !d.IsDir() {
@@ -342,7 +449,7 @@ func GetIndexerInfo(lang Language) *IndexerInfo {
 	case LangPython:
 		return &IndexerInfo{
 			Command:        "scip-python index .",
-			InstallCommand: "pip install scip-python",
+			InstallCommand: "npm install -g @sourcegraph/scip-python",
 			CheckCommand:   "scip-python",
 			OutputFile:     "index.scip",
 		}

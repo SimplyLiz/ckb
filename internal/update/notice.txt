@@ -1,0 +1,16 @@
+What's new
+  • Done check: `ckb changes --check` lists every use of a changed
+    declaration your diff left untouched
+  • findReferences over MCP is far smaller: plain text, one line per use
+  • Upgrades no longer need a fresh .ckb
+
+CKB is built by one developer, and I want it to stay free for the people
+who make software on their own or are just getting started. It's free for
+personal use, open source projects, and organizations under $25k annual
+revenue.
+
+If your organization is above that, please get a license. It's what keeps
+CKB going, and I appreciate it: https://codeknowledge.dev/pricing?ref={{ref}}
+
+I'd love to hear from you, good or bad:
+  GitHub   https://github.com/SimplyLiz/ckb/discussions

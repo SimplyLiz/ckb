@@ -40,6 +40,7 @@ func runSymbol(cmd *cobra.Command, args []string) {
 
 	repoRoot := mustGetRepoRoot()
 	engine := mustGetEngine(repoRoot, logger)
+	symbolID = remapSymbolID(engine, symbolID)
 	ctx := newContext()
 
 	// Get symbol from Query Engine

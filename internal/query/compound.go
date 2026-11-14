@@ -5,6 +5,7 @@ package query
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,10 +13,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/complexity"
 	"github.com/SimplyLiz/CodeMCP/internal/coupling"
 	"github.com/SimplyLiz/CodeMCP/internal/errors"
+	"github.com/SimplyLiz/CodeMCP/internal/impact"
+	"github.com/SimplyLiz/CodeMCP/internal/modules"
 	"github.com/SimplyLiz/CodeMCP/internal/output"
 	"github.com/SimplyLiz/CodeMCP/internal/version"
 )
@@ -475,7 +479,7 @@ func (e *Engine) getExploreSymbols(ctx context.Context, targetType, absPath, rel
 							EndLine:   sym.EndLine,
 						},
 						Visibility: &VisibilityInfo{
-							Visibility: inferVisibility(sym.Name, sym.Kind),
+							Visibility: inferVisibility(sym.Name, sym.Kind, relFile),
 							Confidence: 0.5,
 							Source:     "treesitter",
 						},
@@ -518,6 +522,13 @@ func (e *Engine) getExploreSymbols(ctx context.Context, targetType, absPath, rel
 			lines = endLine - line + 1
 		}
 
+		// A test's fixture class isn't what the code under it is about, unless
+		// the tests are what's being explored.
+		if file != "" && isTestFilePath(file) && !isTestFilePath(relTarget+"/") {
+			importance /= 2
+			reason = "test " + reason
+		}
+
 		symbols = append(symbols, ExploreSymbol{
 			StableId:   sym.StableId,
 			Name:       sym.Name,
@@ -533,8 +544,16 @@ func (e *Engine) getExploreSymbols(ctx context.Context, targetType, absPath, rel
 	}
 
 	// Sort by importance
-	sort.Slice(symbols, func(i, j int) bool {
-		return symbols[i].Importance > symbols[j].Importance
+	// Ties (tree-sitter functions carry no ranking, so they all score alike) go to
+	// the bigger body: a 40-line run() says more about a directory than a getter.
+	sort.SliceStable(symbols, func(i, j int) bool {
+		if symbols[i].Importance != symbols[j].Importance {
+			return symbols[i].Importance > symbols[j].Importance
+		}
+		if symbols[i].Lines != symbols[j].Lines {
+			return symbols[i].Lines > symbols[j].Lines
+		}
+		return symbols[i].File+symbols[i].Name < symbols[j].File+symbols[j].Name
 	})
 
 	// Apply limit
@@ -687,12 +706,12 @@ func skipExploreDirectory(name string) bool {
 func (e *Engine) getExploreDependencies(ctx context.Context, targetType, absPath, relTarget string) *ExploreDependencies {
 	deps := &ExploreDependencies{}
 
+	internal := e.exploreImportClassifier()
 	if targetType == "file" {
 		// For single file, parse imports
 		imports := parseFileImports(absPath)
 		for _, imp := range imports {
-			// Internal = relative path (starts with . or /)
-			isInternal := strings.HasPrefix(imp, ".") || strings.HasPrefix(imp, "/")
+			isInternal := internal(imp, absPath)
 			deps.Imports = append(deps.Imports, ExploreDependency{
 				Name:     imp,
 				Internal: isInternal,
@@ -705,7 +724,7 @@ func (e *Engine) getExploreDependencies(ctx context.Context, targetType, absPath
 		}
 	} else {
 		// For directory, aggregate imports from files with limits
-		importSet := make(map[string]bool)
+		importSet := make(map[string]string) // Import -> the first file naming it
 		fileCount := 0
 		truncated := false
 
@@ -736,8 +755,11 @@ func (e *Engine) getExploreDependencies(ctx context.Context, targetType, absPath
 
 			fileCount++
 			for _, imp := range parseFileImports(path) {
+				if _, seen := importSet[imp]; seen {
+					continue
+				}
 				if len(importSet) < maxExploreImports {
-					importSet[imp] = true
+					importSet[imp] = path
 				} else {
 					truncated = true
 					break
@@ -748,9 +770,8 @@ func (e *Engine) getExploreDependencies(ctx context.Context, targetType, absPath
 
 		deps.Truncated = truncated
 
-		for imp := range importSet {
-			// Internal = relative path (starts with . or /)
-			isInternal := strings.HasPrefix(imp, ".") || strings.HasPrefix(imp, "/")
+		for imp, from := range importSet {
+			isInternal := internal(imp, from)
 			deps.Imports = append(deps.Imports, ExploreDependency{
 				Name:     imp,
 				Internal: isInternal,
@@ -771,6 +792,38 @@ func (e *Engine) getExploreDependencies(ctx context.Context, targetType, absPath
 	sort.Strings(deps.ExternalDeps)
 
 	return deps
+}
+
+// exploreImportClassifier says whether an import in a file reaches the repo's own
+// code: a relative path, a Go package of the module, a Python module of the repo
+// (beside the file, from the root, or through sys.path). One classifier per language,
+// so each reads go.mod or lists the Python files once.
+func (e *Engine) exploreImportClassifier() func(imp, absFile string) bool {
+	classifiers := make(map[string]*modules.ImportClassifier)
+	return func(imp, absFile string) bool {
+		if strings.HasPrefix(imp, ".") || strings.HasPrefix(imp, "/") {
+			return true
+		}
+		var lang string
+		switch strings.ToLower(filepath.Ext(absFile)) {
+		case ".go":
+			lang = modules.LanguageGo
+		case ".py", ".pyi":
+			lang = modules.LanguagePython
+		default:
+			return false
+		}
+		c := classifiers[lang]
+		if c == nil {
+			c = modules.NewImportClassifier(&modules.ModuleContext{RepoRoot: e.repoRoot, Language: lang})
+			classifiers[lang] = c
+		}
+		rel, err := filepath.Rel(e.repoRoot, absFile)
+		if err != nil {
+			return false
+		}
+		return c.ResolveImport(imp, filepath.ToSlash(rel)) != ""
+	}
 }
 
 // extractQuotedString extracts a string between double quotes from a line
@@ -1106,6 +1159,12 @@ func (e *Engine) Understand(ctx context.Context, opts UnderstandOptions) (*Under
 			}
 		}
 
+		// "Container.Member": prefer the member of that container
+		qualified := qualifiedMatches(searchResp.Symbols, opts.Query)
+		if targetSymbol == nil && len(qualified) == 1 {
+			targetSymbol = &searchResp.Symbols[qualified[0]]
+		}
+
 		// If no exact match, return ambiguity info
 		if targetSymbol == nil {
 			topMatches := make([]UnderstandMatch, 0, 5)
@@ -1130,7 +1189,11 @@ func (e *Engine) Understand(ctx context.Context, opts UnderstandOptions) (*Under
 				TopMatches: topMatches,
 				Hint:       "Add module scope or use full symbol ID to disambiguate",
 			}
-			targetSymbol = &searchResp.Symbols[0] // Use best match
+			best := 0
+			if len(qualified) > 0 {
+				best = qualified[0]
+			}
+			targetSymbol = &searchResp.Symbols[best] // Use best match
 		}
 	} else {
 		targetSymbol = &searchResp.Symbols[0]
@@ -1438,6 +1501,14 @@ type PrepareChangeTarget struct {
 
 // PrepareDependent describes a direct dependent.
 type PrepareDependent struct {
+	// SymbolId and Name identify the enclosing symbol (e.g. the caller
+	// function) that contains the reference. "" (not "unknown") when the
+	// backend couldn't resolve an enclosing symbol (e.g. a package-level
+	// reference outside any function). These fields are NOT omitempty:
+	// schemaVersion 1 documents them as always-present strings, so an
+	// empty value is serialized as "" rather than dropping the key —
+	// dropping it would be a breaking contract change for strict
+	// consumers without a schema version bump.
 	SymbolId string `json:"symbolId"`
 	Name     string `json:"name"`
 	Kind     string `json:"kind"`
@@ -1448,9 +1519,18 @@ type PrepareDependent struct {
 
 // PrepareTransitive summarizes transitive impact.
 type PrepareTransitive struct {
-	TotalCallers int `json:"totalCallers"`
-	ModuleSpread int `json:"moduleSpread"`
-	MaxDepth     int `json:"maxDepth"`
+	// DirectCallers counts the direct consumers, all of them: directDependents is
+	// cut to the response budget. Implementations are counted apart.
+	DirectCallers int `json:"directCallers"`
+	// Implementations counts the types implementing a Go interface or interface
+	// method target, listed in directDependents as kind implements-interface.
+	Implementations int `json:"implementations,omitempty"`
+	// NameMatchImplementations counts types that have a one-method interface's
+	// method but whose package doesn't import the interface's: not counted above.
+	NameMatchImplementations int `json:"nameMatchImplementations,omitempty"`
+	TotalCallers             int `json:"totalCallers"`
+	ModuleSpread             int `json:"moduleSpread"`
+	MaxDepth                 int `json:"maxDepth"`
 }
 
 // PrepareTest describes a test that may need updating.
@@ -1470,8 +1550,11 @@ type PrepareCoChange struct {
 
 // PrepareRisk assesses the risk of the change.
 type PrepareRisk struct {
-	Level       string   `json:"level"` // low, medium, high, critical
-	Score       float64  `json:"score"`
+	Level string  `json:"level"` // low, medium, high, critical, or RiskLevelNotAssessed
+	Score float64 `json:"score"`
+	// Basis says what the score assumes where that changes the answer: for
+	// modify, that the declaration stays as it is.
+	Basis       string   `json:"basis,omitempty"`
 	Factors     []string `json:"factors"`
 	Suggestions []string `json:"suggestions"`
 }
@@ -1513,34 +1596,38 @@ func (e *Engine) PrepareChange(ctx context.Context, opts PrepareChangeOptions) (
 	var warnings []string
 	var archImpact *cartographer.ImpactAnalysis
 
-	// Get impact analysis
+	// Get impact analysis. A file target is the sum of what it declares: its
+	// types, their fields and methods, its functions.
+	var testConsumers []ImpactItem
+	var baseRisk *RiskScore
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if target.SymbolId == "" {
+		var imp *prepareImpact
+		var err error
+		switch {
+		case target.SymbolId != "":
+			imp, err = e.getPrepareImpact(ctx, target.SymbolId)
+		case target.Kind == "file":
+			imp, err = e.getPrepareFileImpact(ctx, target.Path)
+		default:
 			return
 		}
-		deps, trans, factors, err := e.getPrepareImpact(ctx, target.SymbolId)
 		if err != nil {
 			mu.Lock()
 			warnings = append(warnings, fmt.Sprintf("impact: %s", err.Error()))
 			mu.Unlock()
 			return
 		}
+		if imp == nil {
+			return
+		}
 		mu.Lock()
-		directDependents = deps
-		transitiveImpact = trans
-		riskFactors = append(riskFactors, factors...)
-		mu.Unlock()
-	}()
-
-	// Get affected tests
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		tests := e.getPrepareTests(ctx, target)
-		mu.Lock()
-		relatedTests = tests
+		directDependents = imp.dependents
+		transitiveImpact = imp.transitive
+		testConsumers = imp.tests
+		baseRisk = imp.base
+		riskFactors = append(riskFactors, imp.factors...)
 		mu.Unlock()
 	}()
 
@@ -1627,8 +1714,14 @@ func (e *Engine) PrepareChange(ctx context.Context, opts PrepareChangeOptions) (
 
 	wg.Wait()
 
+	// Tests come from the references the impact analysis found, so they wait for it.
+	relatedTests = e.getPrepareTests(target, testConsumers)
+
 	// Calculate risk assessment
-	risk := e.calculatePrepareRisk(target, directDependents, transitiveImpact, relatedTests, coChangeFiles, riskFactors, opts.ChangeType)
+	risk := e.calculatePrepareRisk(target, directDependents, transitiveImpact, relatedTests, coChangeFiles, riskFactors, opts.ChangeType, baseRisk)
+	if !e.hasConsumerGraph() {
+		markConsumersNotAssessed(risk, len(directDependents))
+	}
 
 	// Build provenance
 	var backendContribs []BackendContribution
@@ -1721,29 +1814,199 @@ func (e *Engine) resolvePrepareTarget(ctx context.Context, target string) (*Prep
 		path = symbolResp.Symbol.Location.FileId
 	}
 
+	// The SCIP backend doesn't resolve ModuleId on symbol lookups (see
+	// backends/scip/adapter.go convertToSymbolResult: "Module ID is
+	// resolved later by the query engine" — nothing downstream of
+	// GetSymbol ever did that resolution). Left empty, getPrepareTests'
+	// same-module test-file glob never runs (it's gated on
+	// target.ModuleId != ""), so every symbol-based prepareChange call
+	// reported "no tests found" regardless of actual test files sitting
+	// right next to the target. Derive it from the file path the same
+	// way the file/directory branches above already do.
+	moduleId := symbolResp.Symbol.ModuleId
+	if moduleId == "" && path != "" {
+		moduleId = filepath.Dir(path)
+	}
+
 	return &PrepareChangeTarget{
 		SymbolId:   symbolResp.Symbol.StableId,
 		Name:       symbolResp.Symbol.Name,
 		Kind:       symbolResp.Symbol.Kind,
 		Path:       path,
-		ModuleId:   symbolResp.Symbol.ModuleId,
+		ModuleId:   moduleId,
 		Visibility: visibility,
 	}, nil
 }
 
-// getPrepareImpact retrieves impact analysis data.
-func (e *Engine) getPrepareImpact(ctx context.Context, symbolId string) ([]PrepareDependent, *PrepareTransitive, []string, error) {
+// prepareImpact is what prepareChange takes from impact analysis.
+type prepareImpact struct {
+	dependents []PrepareDependent
+	transitive *PrepareTransitive
+	// tests holds every consumer found, test code included: getPrepareTests
+	// picks the test files out of it.
+	tests   []ImpactItem
+	factors []string
+	// base, for a symbol target, is the score assessChange gives an edit of the
+	// symbol that keeps its declaration: the same formula on the same consumers.
+	base *RiskScore
+}
+
+// getPrepareImpact retrieves impact analysis data for one symbol.
+func (e *Engine) getPrepareImpact(ctx context.Context, symbolId string) (*prepareImpact, error) {
+	// All items: the counts the risk is scored on come from the whole lists, not
+	// the 20 the response budget keeps. Budgeted, a symbol with 40 callers counted
+	// 20, and its transitive callers and module spread were whatever fit after them.
 	impactResp, err := e.AnalyzeImpact(ctx, AnalyzeImpactOptions{
 		SymbolId: symbolId,
 		Depth:    2,
+		AllItems: true,
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
-	// Convert direct impacts to dependents
-	dependents := make([]PrepareDependent, 0, len(impactResp.DirectImpact))
-	for _, imp := range impactResp.DirectImpact {
+	// One entry per consumer, as assessChange counts them: a function calling the
+	// target three times is one caller, not three. (AnalyzeImpact's own risk
+	// factors are not passed on: prepareChange scores on its own, and their bare
+	// names, "visibility", "direct-callers", ..., listed every one of them on every
+	// call whatever their value.)
+	direct, transitive := mergeConsumers(impactResp.DirectImpact, impactResp.TransitiveImpact)
+	sortImpactItems(direct)
+	sortImpactItems(transitive)
+	imp := &prepareImpact{
+		transitive: summarizeTransitive(&AnalyzeImpactResponse{DirectImpact: direct, TransitiveImpact: transitive,
+			NameMatchImplementations: impactResp.NameMatchImplementations}),
+		tests: allConsumers(direct, transitive, impactResp.TestImpact),
+	}
+	// An edit of this one symbol, as assessChange scores it once it is a diff that
+	// keeps the declaration. Scored on its own formula, prepareChange called Rubik's
+	// price medium where assessChange said low for the same body edit.
+	var file string
+	if impactResp.Symbol != nil && impactResp.Symbol.Location != nil {
+		file = impactResp.Symbol.Location.FileId
+	}
+	imp.base = e.calculateAggregatedRisk([]impact.ChangedSymbol{{SymbolID: symbolId, File: file}}, direct, transitive, impactResp.ModulesAffected)
+	if limit := e.compressor.GetBudget().MaxImpactItems; limit > 0 && len(direct) > limit {
+		direct = direct[:limit]
+	}
+	imp.dependents = toPrepareDependents(direct)
+	return imp, nil
+}
+
+// maxPrepareFileSymbols bounds the impact analyses a file target runs, one per
+// symbol it declares.
+const maxPrepareFileSymbols = 300
+
+// getPrepareFileImpact is the impact of changing a file: the consumers of every
+// symbol it declares, types and their fields and methods included, outside the
+// file itself. Without a SCIP index there is no symbol list to start from.
+func (e *Engine) getPrepareFileImpact(ctx context.Context, path string) (*prepareImpact, error) {
+	if !e.hasConsumerGraph() {
+		return nil, nil
+	}
+	symbols, total := fileDeclaredSymbols(e.scipAdapter.GetIndex(), path, maxPrepareFileSymbols)
+
+	var direct, transitive, tests []ImpactItem
+	for _, sym := range symbols {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		resp, err := e.AnalyzeImpact(ctx, AnalyzeImpactOptions{SymbolId: sym, Depth: 2, AllItems: true})
+		if err != nil {
+			continue // A symbol the index can't resolve has no consumers to add
+		}
+		direct = append(direct, outsideFile(resp.DirectImpact, path)...)
+		transitive = append(transitive, outsideFile(resp.TransitiveImpact, path)...)
+		tests = append(tests, resp.TestImpact...)
+	}
+	direct, transitive = mergeConsumers(direct, transitive)
+	sortImpactItems(direct)
+	sortImpactItems(transitive)
+
+	imp := &prepareImpact{
+		transitive: summarizeTransitive(&AnalyzeImpactResponse{DirectImpact: direct, TransitiveImpact: transitive}),
+		tests:      allConsumers(direct, transitive, tests),
+	}
+	if total > len(symbols) {
+		imp.factors = append(imp.factors, fmt.Sprintf("Impact covers the first %d of %d symbols the file declares", len(symbols), total))
+	}
+	if limit := e.compressor.GetBudget().MaxImpactItems; limit > 0 && len(direct) > limit {
+		direct = direct[:limit]
+	}
+	imp.dependents = toPrepareDependents(direct)
+	return imp, nil
+}
+
+// fileDeclaredSymbols returns the symbols a file defines, top-level ones (types,
+// functions, variables) before members (fields, methods), at most limit of them,
+// and how many there were. Locals and the namespace (the package or module
+// itself, which every import names) are left out.
+func fileDeclaredSymbols(idx *scip.SCIPIndex, path string, limit int) ([]string, int) {
+	if idx == nil {
+		return nil, 0
+	}
+	doc := idx.GetDocument(path)
+	if doc == nil {
+		return nil, 0
+	}
+	var top, members []string
+	seen := make(map[string]bool)
+	for _, sym := range doc.Symbols {
+		if sym == nil || sym.Symbol == "" || seen[sym.Symbol] ||
+			strings.HasPrefix(sym.Symbol, "local ") || strings.HasSuffix(sym.Symbol, "/") {
+			continue
+		}
+		seen[sym.Symbol] = true
+		if isMemberSymbol(sym.Symbol) {
+			members = append(members, sym.Symbol)
+		} else {
+			top = append(top, sym.Symbol)
+		}
+	}
+	all := append(top, members...)
+	total := len(all)
+	if limit > 0 && len(all) > limit {
+		all = all[:limit]
+	}
+	return all, total
+}
+
+// isMemberSymbol reports whether a SCIP symbol names a member of a type (a
+// field or method: "pkg/Type#Field."), not a top-level declaration ("pkg/Type#",
+// "pkg/Func().").
+func isMemberSymbol(symbol string) bool {
+	descriptor := symbol
+	if i := strings.LastIndex(symbol, "/"); i >= 0 {
+		descriptor = symbol[i+1:]
+	}
+	i := strings.Index(descriptor, "#")
+	return i >= 0 && i < len(descriptor)-1
+}
+
+// outsideFile drops the consumers inside path: a file's own uses of what it
+// declares are not something a change to it breaks elsewhere.
+func outsideFile(items []ImpactItem, path string) []ImpactItem {
+	out := make([]ImpactItem, 0, len(items))
+	for _, item := range items {
+		if item.Location != nil && item.Location.FileId == path {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func allConsumers(lists ...[]ImpactItem) []ImpactItem {
+	var all []ImpactItem
+	for _, list := range lists {
+		all = append(all, list...)
+	}
+	return all
+}
+
+func toPrepareDependents(items []ImpactItem) []PrepareDependent {
+	dependents := make([]PrepareDependent, 0, len(items))
+	for _, imp := range items {
 		line := 0
 		file := ""
 		if imp.Location != nil {
@@ -1759,65 +2022,119 @@ func (e *Engine) getPrepareImpact(ctx context.Context, symbolId string) ([]Prepa
 			ModuleId: imp.ModuleId,
 		})
 	}
-
-	// Build transitive summary
-	moduleSet := make(map[string]bool)
-	maxDepth := 0
-	for _, imp := range impactResp.TransitiveImpact {
-		moduleSet[imp.ModuleId] = true
-		if imp.Distance > maxDepth {
-			maxDepth = imp.Distance
-		}
-	}
-
-	transitive := &PrepareTransitive{
-		TotalCallers: len(impactResp.TransitiveImpact) + len(impactResp.DirectImpact),
-		ModuleSpread: len(moduleSet),
-		MaxDepth:     maxDepth,
-	}
-
-	// Extract risk factors
-	var factors []string
-	if impactResp.RiskScore != nil {
-		for _, f := range impactResp.RiskScore.Factors {
-			factors = append(factors, f.Name)
-		}
-	}
-
-	return dependents, transitive, factors, nil
+	return dependents
 }
 
-// getPrepareTests finds tests affected by the change.
-func (e *Engine) getPrepareTests(ctx context.Context, target *PrepareChangeTarget) []PrepareTest {
-	var tests []PrepareTest
+// maxPrepareTests bounds relatedTests. Tests that reference the target are
+// listed up to maxPrepareReferencingTests; same-module test files only fill the
+// list up to maxPrepareTests.
+const (
+	maxPrepareTests            = 20
+	maxPrepareReferencingTests = 50
+)
 
-	// Look for test files in the same module
-	if target.ModuleId != "" {
-		patterns := []string{
-			filepath.Join(e.repoRoot, target.ModuleId, "*_test.go"),
-			filepath.Join(e.repoRoot, target.ModuleId, "*.test.ts"),
-			filepath.Join(e.repoRoot, target.ModuleId, "*.test.js"),
-			filepath.Join(e.repoRoot, target.ModuleId, "*.spec.ts"),
-			filepath.Join(e.repoRoot, target.ModuleId, "*.spec.js"),
+// getPrepareTests finds the tests affected by the change: first the test files
+// that reference the target ("direct") or reach it through other code
+// ("transitive"), the same derivation assessChange uses, then, if there is room,
+// the other test files in the target's module ("same-module"), which may not
+// touch it at all.
+func (e *Engine) getPrepareTests(target *PrepareChangeTarget, consumers []ImpactItem) []PrepareTest {
+	return prepareTestList(e.deriveAffectedTests(nil, consumers, nil), e.sameModuleTestFiles(target))
+}
+
+// prepareTestList orders reference-derived tests direct before transitive, then
+// by path, and fills up with same-module files not already listed.
+func prepareTestList(referencing []AffectedTest, sameModule []string) []PrepareTest {
+	rank := func(reason string) int {
+		switch reason {
+		case "direct":
+			return 0
+		case "transitive":
+			return 1
 		}
-		for _, pattern := range patterns {
-			matches, _ := filepath.Glob(pattern)
-			for _, match := range matches {
-				rel, _ := filepath.Rel(e.repoRoot, match)
-				tests = append(tests, PrepareTest{
-					File:     rel,
-					Relation: "same-module",
-				})
-			}
+		return 2
+	}
+	sort.SliceStable(referencing, func(i, j int) bool {
+		ri, rj := rank(referencing[i].Reason), rank(referencing[j].Reason)
+		if ri != rj {
+			return ri < rj
 		}
-	}
+		return referencing[i].FilePath < referencing[j].FilePath
+	})
 
-	// Limit to 20 tests
-	if len(tests) > 20 {
-		tests = tests[:20]
+	tests := make([]PrepareTest, 0, len(referencing))
+	listed := make(map[string]bool)
+	for _, t := range referencing {
+		if len(tests) >= maxPrepareReferencingTests {
+			break
+		}
+		if listed[t.FilePath] {
+			continue
+		}
+		listed[t.FilePath] = true
+		tests = append(tests, PrepareTest{File: t.FilePath, Name: strings.Join(t.TestNames, ", "), Relation: t.Reason})
 	}
-
+	for _, path := range sameModule {
+		if len(tests) >= maxPrepareTests {
+			break
+		}
+		if listed[path] {
+			continue
+		}
+		listed[path] = true
+		tests = append(tests, PrepareTest{File: path, Relation: "same-module"})
+	}
 	return tests
+}
+
+// sameModuleTestFiles lists the test files in the target's module directory.
+func (e *Engine) sameModuleTestFiles(target *PrepareChangeTarget) []string {
+	if target.ModuleId == "" {
+		return nil
+	}
+	var files []string
+	for _, glob := range []string{"*_test.go", "*.test.ts", "*.test.js", "*.spec.ts", "*.spec.js"} {
+		matches, _ := filepath.Glob(filepath.Join(e.repoRoot, target.ModuleId, glob))
+		for _, match := range matches {
+			rel, _ := filepath.Rel(e.repoRoot, match)
+			files = append(files, rel)
+		}
+	}
+	return files
+}
+
+// languageSupportsTestDiscovery reports whether getPrepareTests' glob-based
+// test discovery actually covers the target's language. Discovery only
+// recognizes Go (*_test.go) and TypeScript/JavaScript (*.test.ts/js,
+// *.spec.ts/js) test file conventions. For every other language (Python,
+// Rust, Java/Kotlin, C#, ...) an empty `tests` slice means "we never
+// looked", not "there are no tests" — so calculatePrepareRisk must not turn
+// it into a "No test files found" finding or score contribution for those
+// languages; that would be a false claim, not an honest gap.
+func (e *Engine) languageSupportsTestDiscovery(target *PrepareChangeTarget) bool {
+	if ext := filepath.Ext(target.Path); ext != "" {
+		switch ext {
+		case ".go", ".ts", ".js":
+			return true
+		default:
+			return false
+		}
+	}
+
+	// No extension on the target itself (e.g. a directory/module target) —
+	// infer from the module directory's contents rather than silently
+	// assuming Go/TS/JS.
+	if target.ModuleId == "" {
+		return false
+	}
+	dir := filepath.Join(e.repoRoot, target.ModuleId)
+	for _, ext := range []string{".go", ".ts", ".js"} {
+		matches, _ := filepath.Glob(filepath.Join(dir, "*"+ext))
+		if len(matches) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // getPrepareCoChanges finds files that historically change together.
@@ -1881,12 +2198,30 @@ func (e *Engine) getPrepareCoChanges(ctx context.Context, path string) ([]Prepar
 	coChanges := make([]PrepareCoChange, 0, len(result.Correlations))
 	for _, cf := range result.Correlations {
 		coChanges = append(coChanges, PrepareCoChange{
-			File:        cf.File,
+			File:        cf.FilePath,
 			Correlation: cf.Correlation,
 			CoChanges:   cf.CoChangeCount,
 		})
 	}
 	return coChanges, nil
+}
+
+// markConsumersNotAssessed qualifies a prepareChange risk computed without a
+// consumer graph, where "no dependents" means nobody looked. A "low" built on that
+// is a clean bill of health nobody earned, so it becomes not assessed. Whatever
+// doesn't need SCIP (co-change, visibility, change type, tests) stays in the
+// factors. If that evidence alone reaches medium or above, the level stands as
+// what it is, a lower bound.
+func markConsumersNotAssessed(risk *PrepareRisk, knownDependents int) {
+	if knownDependents > 0 {
+		return // Found some other way: a real lower bound on the graph's answer
+	}
+	risk.Factors = append([]string{"Downstream consumers not assessed: no SCIP index"}, risk.Factors...)
+	risk.Suggestions = append(risk.Suggestions, "Run 'ckb index' to see what depends on this")
+	if risk.Level == "low" {
+		risk.Level = RiskLevelNotAssessed
+		risk.Score = 0
+	}
 }
 
 // calculatePrepareRisk calculates the risk assessment.
@@ -1898,75 +2233,180 @@ func (e *Engine) calculatePrepareRisk(
 	coChanges []PrepareCoChange,
 	existingFactors []string,
 	changeType ChangeType,
+	base *RiskScore,
 ) *PrepareRisk {
 	score := 0.0
 	var factors []string
 	var suggestions []string
+	// counted adds a factor's weight to the score, unless the score is base's:
+	// then the factor is still said, but assessChange's formula has no place for it.
+	counted := func(weight float64) {
+		if base == nil {
+			score += weight
+		}
+	}
+	if base != nil {
+		score = base.Score
+		var evidence []string
+		for _, f := range base.Factors {
+			evidence = append(evidence, f.Evidence)
+		}
+		factors = append(factors, fmt.Sprintf("Scored as assessChange scores this edit: %s", strings.Join(evidence, ", ")))
+	}
 
-	// Factor: Number of direct dependents
-	if len(dependents) > 10 {
-		score += 0.25
-		factors = append(factors, fmt.Sprintf("High dependent count (%d direct callers)", len(dependents)))
-	} else if len(dependents) > 5 {
-		score += 0.15
-		factors = append(factors, fmt.Sprintf("Moderate dependent count (%d direct callers)", len(dependents)))
+	// dependents is cut to the response budget; the summary counts them all.
+	callers, impls := 0, 0
+	for _, d := range dependents {
+		if d.Kind == kindImplementation {
+			impls++
+		} else {
+			callers++
+		}
+	}
+	if transitive != nil && transitive.DirectCallers+transitive.Implementations > callers+impls {
+		callers, impls = transitive.DirectCallers, transitive.Implementations
+	}
+	described := describeDependents(callers, impls)
+
+	// Factor: Number of direct dependents (base already says how many)
+	switch {
+	case base != nil:
+	case callers+impls > 10:
+		counted(0.25)
+		factors = append(factors, fmt.Sprintf("High dependent count (%s)", described))
+	case callers+impls > 5:
+		counted(0.15)
+		factors = append(factors, fmt.Sprintf("Moderate dependent count (%s)", described))
+	}
+	if transitive != nil && transitive.NameMatchImplementations > 0 {
+		factors = append(factors, fmt.Sprintf("%d more type(s) have the method, in packages that don't import the interface's: not counted, they break only where used as it", transitive.NameMatchImplementations))
 	}
 
 	// Factor: Module spread
-	if transitive != nil && transitive.ModuleSpread > 5 {
-		score += 0.2
+	if base == nil && transitive != nil && transitive.ModuleSpread > 5 {
+		counted(0.2)
 		factors = append(factors, fmt.Sprintf("High module spread (%d modules affected)", transitive.ModuleSpread))
 		suggestions = append(suggestions, "Consider splitting into smaller changes")
 	}
 
 	// Factor: Public visibility
 	if target.Visibility == "public" {
-		score += 0.15
+		counted(0.15)
 		factors = append(factors, "Public API change")
 		suggestions = append(suggestions, "Ensure backward compatibility or bump major version")
 	}
 
-	// Factor: Test coverage
-	if len(tests) == 0 {
-		score += 0.2
-		factors = append(factors, "No tests found")
+	// Factor: Test coverage. tests comes from getPrepareTests, which only
+	// globs for *_test.go/*.test.ts/*.spec.ts files in the target's own
+	// module directory — it doesn't check whether the target symbol is
+	// itself referenced by any test, so word this as what it actually
+	// measures rather than implying broader test-coverage knowledge we
+	// don't have. Discovery itself is only implemented for Go and TS/JS
+	// (see languageSupportsTestDiscovery): for any other language an empty
+	// `tests` slice means discovery never ran, not that there are no
+	// tests, so the factor is omitted rather than asserted.
+	if len(tests) == 0 && e.languageSupportsTestDiscovery(target) {
+		counted(0.2)
+		factors = append(factors, "No test files found in target module")
 		suggestions = append(suggestions, "Add tests before modifying")
 	}
 
 	// Factor: Change type
 	if changeType == ChangeDelete {
-		score += 0.15
+		counted(0.15)
 		factors = append(factors, "Deletion change type")
 	} else if changeType == ChangeRename {
-		score += 0.1
+		counted(0.1)
 		factors = append(factors, "Rename change type")
 	}
 
 	// Factor: Co-change files
 	if len(coChanges) > 5 {
-		score += 0.1
+		counted(0.1)
 		factors = append(factors, fmt.Sprintf("High coupling (%d co-change files)", len(coChanges)))
 	}
 
 	// Add existing factors
 	factors = append(factors, existingFactors...)
 
-	// Determine level
-	level := "low"
-	if score >= 0.7 {
-		level = "critical"
-	} else if score >= 0.5 {
-		level = "high"
-	} else if score >= 0.3 {
-		level = "medium"
+	// Round at the output boundary: score is accumulated from binary
+	// floats (0.25, 0.15, 0.2, ...) whose sum isn't exactly representable,
+	// e.g. 0.15+0.2+0.15+0.2 prints as 0.7000000000000001 without this.
+	// Two decimals is all the factor weights above carry meaning to
+	// anyway. Level is derived from this same rounded value — deriving it
+	// from the raw, unrounded score let the level disagree with the
+	// displayed score at a threshold boundary (raw 0.7999999999999998
+	// prints as "0.80" but would classify as "high", not "critical").
+	roundedScore := math.Round(score*100) / 100
+
+	// A rename or delete breaks every production caller left as it is, however
+	// few there are, so it gets the floor assessChange applies to the same
+	// change once it is in a diff (applyContractChangesToRisk). Without it the
+	// two tools disagree on one change: prepareChange low, assessChange high.
+	// modify has no floor: it can't tell a body edit from a signature change.
+	// Implementations break on a rename of the interface method they implement,
+	// not on its deletion (an extra method is no error) nor on a rename or delete
+	// of the interface type (Go interfaces are satisfied structurally).
+	broken := callers
+	if changeType == ChangeRename && !strings.HasSuffix(target.SymbolId, "#") {
+		broken += impls
 	}
+	if (changeType == ChangeDelete || changeType == ChangeRename) && broken > 0 && roundedScore < highRiskFloor {
+		roundedScore = highRiskFloor
+		factors = append(factors, fmt.Sprintf("%s breaks %s unless they change too", changeType, describeBroken(callers, broken-callers)))
+	}
+
+	// assessChange's bands, so the level before the edit is the one after it.
+	level := riskLevelFor(roundedScore)
 
 	return &PrepareRisk{
 		Level:       level,
-		Score:       score,
+		Score:       roundedScore,
+		Basis:       modifyRiskBasis(changeType, callers, impls, target.Visibility == "public", roundedScore),
 		Factors:     factors,
 		Suggestions: suggestions,
 	}
+}
+
+// modifyRiskBasis says what a modify score assumes. Before the edit there is no
+// telling a body change from a signature change, so the score is the one for an
+// edit that keeps the declaration, counted from consumers. Once the edit is a
+// diff, assessChange puts the floors of applyContractChangesToRisk on a changed
+// declaration: high while production callers stay as they are, medium for an
+// exported one without any. Where the score already reaches that floor there is
+// nothing to qualify.
+func modifyRiskBasis(changeType ChangeType, callers, impls int, public bool, score float64) string {
+	if changeType != ChangeModify {
+		return ""
+	}
+	const assumed = "Scored as an edit that keeps the declaration; assessChange rescores the real diff."
+	switch {
+	case callers+impls > 0 && score < highRiskFloor:
+		return fmt.Sprintf("%s If the signature or type changes and the %s stay as they are, it is at least high (%.1f).", assumed, describeBroken(callers, impls), highRiskFloor)
+	case callers+impls == 0 && public && score < mediumRiskFloor:
+		return fmt.Sprintf("%s If the exported declaration changes, it is at least medium (%.1f): consumers in other repos can't be seen.", assumed, mediumRiskFloor)
+	}
+	return ""
+}
+
+// describeDependents names direct callers and implementations, the second only
+// when there are any.
+func describeDependents(callers, impls int) string {
+	if impls == 0 {
+		return fmt.Sprintf("%d direct callers", callers)
+	}
+	return fmt.Sprintf("%d direct callers, %d implementations", callers, impls)
+}
+
+// describeBroken names what a change breaks: production callers, implementations.
+func describeBroken(callers, impls int) string {
+	switch {
+	case impls == 0:
+		return fmt.Sprintf("%d production caller(s)", callers)
+	case callers == 0:
+		return fmt.Sprintf("%d implementation(s)", impls)
+	}
+	return fmt.Sprintf("%d production caller(s) and %d implementation(s)", callers, impls)
 }
 
 // =============================================================================
@@ -2194,4 +2634,36 @@ func (e *Engine) BatchSearch(ctx context.Context, opts BatchSearchOptions) (*Bat
 		},
 		Results: results,
 	}, nil
+}
+
+// summarizeTransitive builds the caller summary for prepareChange. Spread
+// covers the modules of direct AND transitive callers; counting only the
+// transitive list left it at 0 for the common depth-1 case.
+func summarizeTransitive(resp *AnalyzeImpactResponse) *PrepareTransitive {
+	moduleSet := make(map[string]bool)
+	maxDepth := 0
+	impls := 0
+	for _, imp := range resp.DirectImpact {
+		if imp.Kind == kindImplementation {
+			impls++
+		}
+	}
+	for _, list := range [][]ImpactItem{resp.DirectImpact, resp.TransitiveImpact} {
+		for _, imp := range list {
+			if imp.ModuleId != "" {
+				moduleSet[imp.ModuleId] = true
+			}
+			if imp.Distance > maxDepth {
+				maxDepth = imp.Distance
+			}
+		}
+	}
+	return &PrepareTransitive{
+		DirectCallers:            len(resp.DirectImpact) - impls,
+		Implementations:          impls,
+		NameMatchImplementations: len(resp.NameMatchImplementations),
+		TotalCallers:             len(resp.TransitiveImpact) + len(resp.DirectImpact),
+		ModuleSpread:             len(moduleSet),
+		MaxDepth:                 maxDepth,
+	}
 }

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -302,6 +301,7 @@ func (p *SCIPProcessor) processDeltaIndex(db *sql.DB, index *scip.SCIPIndex, met
 		fileSymbolCount := 0
 
 		// Build symbol info map for this document
+		calls := newDocCalls(doc)
 		symbolInfo := make(map[string]*scip.SymbolInformation)
 		for _, sym := range doc.Symbols {
 			symbolInfo[sym.Symbol] = sym
@@ -332,9 +332,9 @@ func (p *SCIPProcessor) processDeltaIndex(db *sql.DB, index *scip.SCIPIndex, met
 			} else {
 				result.RefCount++
 
-				if isCallableSymbol(occ.Symbol, symbolInfo) {
+				if calls.isCallee(occ.Symbol, symbolInfo) {
 					line, col, endCol := parseRange(occ.Range)
-					callerID := resolveCallerFromDoc(doc, line, symbolInfo)
+					callerID := calls.callerAt(line)
 
 					_, err := callStmt.Exec(
 						nullString(callerID),
@@ -541,6 +541,7 @@ func (p *SCIPProcessor) processIndex(db *sql.DB, index *scip.SCIPIndex, result *
 		fileSymbolCount := 0
 
 		// Build symbol info map for this document
+		calls := newDocCalls(doc)
 		symbolInfo := make(map[string]*scip.SymbolInformation)
 		for _, sym := range doc.Symbols {
 			symbolInfo[sym.Symbol] = sym
@@ -581,11 +582,11 @@ func (p *SCIPProcessor) processIndex(db *sql.DB, index *scip.SCIPIndex, result *
 				result.RefCount++
 
 				// Check if it's a callable (function/method)
-				if isCallableSymbol(occ.Symbol, symbolInfo) {
+				if calls.isCallee(occ.Symbol, symbolInfo) {
 					line, col, endCol := parseRange(occ.Range)
 
 					// Try to resolve caller
-					callerID := resolveCallerFromDoc(doc, line, symbolInfo)
+					callerID := calls.callerAt(line)
 
 					_, err := callStmt.Exec(
 						nullString(callerID),
@@ -647,14 +648,52 @@ func isLocalSymbol(symbolID string) bool {
 	return len(symbolID) > 6 && symbolID[:6] == "local "
 }
 
-func isCallableSymbol(symbolID string, info map[string]*scip.SymbolInformation) bool {
-	// Check SymbolInformation.Kind first
-	if sym, ok := info[symbolID]; ok && sym.Kind != 0 {
-		// Function (12), Method (6), Constructor (9)
-		return sym.Kind == 12 || sym.Kind == 6 || sym.Kind == 9
+// docCalls answers, for one document, which references are calls and which
+// function each call sits in. Both come from scip.FunctionBounds, the rule the
+// SCIP backend's own call graph uses: SCIP Kind values (not LSP's), the
+// descriptor, and function-valued constants, with each function's extent taken
+// from its EnclosingRange where the indexer gave one.
+type docCalls struct {
+	bounds   []scip.DefinitionBound
+	callable map[string]bool
+}
+
+func newDocCalls(doc *scip.Document) docCalls {
+	bounds := scip.FunctionBounds(doc)
+	callable := make(map[string]bool, len(bounds))
+	for _, b := range bounds {
+		callable[b.Symbol] = true
 	}
-	// Fallback: Go-specific heuristic
-	return strings.Contains(symbolID, "().")
+	return docCalls{bounds: bounds, callable: callable}
+}
+
+// isCallee reports whether a reference targets a callable. A target defined in
+// this document is known from its definition; any other from its ID and Kind.
+func (d docCalls) isCallee(symbolID string, info map[string]*scip.SymbolInformation) bool {
+	if d.callable[symbolID] {
+		return true
+	}
+	var kind int32
+	if sym, ok := info[symbolID]; ok {
+		kind = sym.Kind
+	}
+	return scip.IsCallableReference(symbolID, kind)
+}
+
+// callerAt returns the innermost function holding a 1-based line, or "" for a
+// call outside every function (a top-level initializer).
+func (d docCalls) callerAt(line int) string {
+	l := line - 1
+	best, bestSpan := "", -1
+	for _, b := range d.bounds {
+		if l < b.Start || l > b.End {
+			continue
+		}
+		if span := b.End - b.Start; bestSpan < 0 || span < bestSpan {
+			best, bestSpan = b.Symbol, span
+		}
+	}
+	return best
 }
 
 func parseRange(r []int32) (line, col, endCol int) {
@@ -710,33 +749,6 @@ func computeFileHash(doc *scip.Document) string {
 		h.Write([]byte(occ.Symbol))
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))[:16]
-}
-
-func resolveCallerFromDoc(doc *scip.Document, callLine int, info map[string]*scip.SymbolInformation) string {
-	// Find the enclosing function definition for this call
-	var bestMatch string
-	bestLine := 0
-
-	for _, occ := range doc.Occurrences {
-		// Only consider definitions
-		if occ.SymbolRoles&scip.SymbolRoleDefinition == 0 {
-			continue
-		}
-
-		// Check if it's a callable
-		if !isCallableSymbol(occ.Symbol, info) {
-			continue
-		}
-
-		line := int(occ.Range[0]) + 1 // #nosec G115 -- SCIP int32 fits in int
-		// Find the closest function definition before the call
-		if line <= callLine && line > bestLine {
-			bestMatch = occ.Symbol
-			bestLine = line
-		}
-	}
-
-	return bestMatch
 }
 
 func nullString(s string) interface{} {

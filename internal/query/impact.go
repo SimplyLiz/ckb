@@ -2,11 +2,13 @@ package query
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -30,6 +32,9 @@ type AnalyzeImpactOptions struct {
 	IncludeTests     bool
 	IncludeTelemetry bool   // Include observed telemetry data
 	TelemetryPeriod  string // Time period for telemetry ("7d", "30d", "90d")
+	// AllItems skips the item budget, for a caller aggregating several symbols that
+	// applies its own. ConsumerFiles is complete either way.
+	AllItems bool
 }
 
 // AnalyzeImpactResponse is the response for analyzeImpact.
@@ -49,10 +54,110 @@ type AnalyzeImpactResponse struct {
 	// Only populated when the binary is built with -tags cartographer.
 	ArchImpact        *cartographer.ImpactAnalysis `json:"archImpact,omitempty"`
 	BlendedConfidence float64                      `json:"blendedConfidence,omitempty"`
-	Truncated         bool                         `json:"truncated,omitempty"`
-	TruncationInfo    *TruncationInfo              `json:"truncationInfo,omitempty"`
-	Provenance        *Provenance                  `json:"provenance"`
-	Drilldowns        []output.Drilldown           `json:"drilldowns,omitempty"`
+	// TestImpact holds the test code using the symbol when IncludeTests is off. It
+	// is kept out of DirectImpact, TransitiveImpact and everything counted from
+	// them, so a well-tested symbol doesn't look like a widely used one.
+	TestImpact []ImpactItem `json:"-"`
+	// NameMatchImplementations are types with the method of a one-method Go
+	// interface whose package doesn't import the interface's. They satisfy it, but
+	// break only where a third package uses them as it, so they are listed here and
+	// not counted in DirectImpact.
+	NameMatchImplementations []ImpactItem `json:"nameMatchImplementations,omitempty"`
+	// ConsumerFiles lists every file behind the item lists, which are budgeted.
+	ConsumerFiles  *ConsumerFiles     `json:"consumerFiles,omitempty"`
+	Truncated      bool               `json:"truncated,omitempty"`
+	TruncationInfo *TruncationInfo    `json:"truncationInfo,omitempty"`
+	Provenance     *Provenance        `json:"provenance"`
+	Drilldowns     []output.Drilldown `json:"drilldowns,omitempty"`
+}
+
+// MaxConsumerFiles bounds ConsumerFiles. A path is about 50 bytes, so this is at
+// most some 15 KB, or 3.7k tokens, against 20 items at 200 bytes each that say less.
+const MaxConsumerFiles = 300
+
+// ConsumerFiles is the list of files to look at when a symbol changes: unlike the
+// consumer items it is not budgeted down to a sample, because a path is cheap and a
+// missing one is a file nobody checks. Tests has every test file using or reaching
+// the symbol, whether or not test code counts as a consumer.
+type ConsumerFiles struct {
+	Direct     []string `json:"direct"`               // Reference a changed symbol themselves
+	Transitive []string `json:"transitive,omitempty"` // Reach one only through other code
+	Tests      []string `json:"tests,omitempty"`
+	// ContractChanged is the part of Direct to look at first: files with a use the change
+	// left as it was of a symbol whose declaration it changed or removed, whether or not
+	// the change touched the file elsewhere. They are likely to break. Heuristic:
+	// declarations are compared as text, not types.
+	ContractChanged      []string `json:"contractChanged,omitempty"`
+	ContractChangedTests []string `json:"contractChangedTests,omitempty"`
+	Total                int      `json:"total"` // Files found, including any cut from these lists
+	// Truncated means the lists are not the whole answer, and Note says why.
+	Truncated bool   `json:"truncated,omitempty"`
+	Note      string `json:"note,omitempty"`
+}
+
+// BuildConsumerFiles lists the files of consumers. A file is listed once, at its
+// closest. If the list has to be cut, transitive files go first. incomplete says
+// what the lookup itself did not cover, if anything.
+func BuildConsumerFiles(direct, transitive, tests []ImpactItem, incomplete string) *ConsumerFiles {
+	seen := make(map[string]bool)
+	collect := func(groups ...[]ImpactItem) []string {
+		var paths []string
+		for _, items := range groups {
+			for i := range items {
+				if items[i].Location == nil || items[i].Location.FileId == "" || seen[items[i].Location.FileId] {
+					continue
+				}
+				seen[items[i].Location.FileId] = true
+				paths = append(paths, items[i].Location.FileId)
+			}
+		}
+		sort.Strings(paths)
+		return paths
+	}
+	splitTests := func(items []ImpactItem) (production, inTests []ImpactItem) {
+		for i := range items {
+			if isTestFile(items[i].Location) {
+				inTests = append(inTests, items[i])
+			} else {
+				production = append(production, items[i])
+			}
+		}
+		return production, inTests
+	}
+	directProd, directTests := splitTests(direct)
+	transitiveProd, transitiveTests := splitTests(transitive)
+
+	files := &ConsumerFiles{Direct: collect(directProd)}
+	files.Tests = collect(directTests, tests, transitiveTests)
+	files.Transitive = collect(transitiveProd)
+	if files.Direct == nil {
+		files.Direct = []string{}
+	}
+	files.Total = len(files.Direct) + len(files.Transitive) + len(files.Tests)
+
+	notes := make([]string, 0, 2)
+	if files.Total > MaxConsumerFiles {
+		room := MaxConsumerFiles
+		cut := func(paths []string) []string {
+			if len(paths) > room {
+				paths = paths[:room]
+			}
+			room -= len(paths)
+			return paths
+		}
+		files.Direct = cut(files.Direct)
+		files.Tests = cut(files.Tests)
+		files.Transitive = cut(files.Transitive)
+		notes = append(notes, fmt.Sprintf("showing %d of %d files", MaxConsumerFiles, files.Total))
+	}
+	if incomplete != "" {
+		notes = append(notes, incomplete)
+	}
+	if len(notes) > 0 {
+		files.Truncated = true
+		files.Note = strings.Join(notes, "; ")
+	}
+	return files
 }
 
 // DocToUpdate represents documentation that may need updating when a symbol changes.
@@ -87,10 +192,18 @@ type RiskFactor struct {
 	Name   string  `json:"name"`
 	Value  float64 `json:"value"`
 	Weight float64 `json:"weight"`
+	// Evidence is a concrete, human-readable basis for this factor's value
+	// (e.g. "14 direct consumers", "3 modules affected"). Optional: only
+	// AnalyzeChangeSet's aggregated factors populate it today.
+	Evidence string `json:"evidence,omitempty"`
 }
 
 // ImpactItem describes an impact from changing a symbol.
 type ImpactItem struct {
+	// StableId and ModuleId are NOT omitempty: schemaVersion 1 documents
+	// them as always-present strings, so an unresolved value serializes
+	// as "" rather than dropping the key (see PrepareDependent for the
+	// same contract).
 	StableId   string          `json:"stableId"`
 	Name       string          `json:"name,omitempty"`
 	Kind       string          `json:"kind"` // direct-caller, transitive-caller, type-dependency, test-dependency
@@ -115,7 +228,7 @@ type BlastRadiusSummary struct {
 	ModuleCount       int    `json:"moduleCount"`
 	FileCount         int    `json:"fileCount"`
 	UniqueCallerCount int    `json:"uniqueCallerCount"` // SCIP static callers only (drives thresholds)
-	RiskLevel         string `json:"riskLevel"`         // "low", "medium", "high"
+	RiskLevel         string `json:"riskLevel"`         // same value as riskScore.level, kept for consumers reading it here
 
 	// LIP semantic enrichment (omitted when LIP is unavailable)
 	StaticCallerCount   int                  `json:"staticCallerCount,omitempty"`
@@ -136,14 +249,133 @@ type SemanticCallerInfo struct {
 // scipCallerProvider adapts SCIPAdapter to the TransitiveCallerProvider interface
 type scipCallerProvider struct {
 	adapter *scip.SCIPAdapter
+	nodes   map[string]*scip.CallGraphNode // callers seen by the last GetTransitiveCallers
+	// constructions, for a Python __init__, are the functions that construct its
+	// class or a subclass inheriting it. Nil leaves them out.
+	constructions func(initID string) []string
+	// separateTests moves callers in test files out of the result into testCallers.
+	separateTests bool
+	testCallers   map[string]int
+	nodeLimitHit  bool // The call graph stopped at transitiveCallerNodes
+}
+
+// transitiveCallerNodes bounds the call graph walked per symbol, for performance.
+const transitiveCallerNodes = 100
+
+// CallerLocation implements impact.CallerLocator. The module is the directory
+// of the caller's file, the same derivation used for direct references.
+func (p *scipCallerProvider) CallerLocation(callerId string) (string, *impact.Location, bool) {
+	n := p.nodes[callerId]
+	if n == nil || n.Location == nil || n.Location.FileId == "" {
+		return "", nil, false
+	}
+	return filepath.Dir(n.Location.FileId), &impact.Location{
+		FileId:    n.Location.FileId,
+		StartLine: n.Location.StartLine + 1,
+	}, true
 }
 
 // GetTransitiveCallers implements impact.TransitiveCallerProvider
 func (p *scipCallerProvider) GetTransitiveCallers(symbolId string, maxDepth int) (map[string]int, error) {
+	var result map[string]int
+	var err error
+	if p.constructions != nil && strings.HasPrefix(symbolId, "scip-python ") {
+		result, err = p.pythonCallers(symbolId, maxDepth)
+	} else {
+		result, err = p.graphCallers(symbolId, maxDepth)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if p.separateTests {
+		p.testCallers = make(map[string]int)
+		for id, depth := range result {
+			if n := p.nodes[id]; n != nil && n.Location != nil && isTestFilePath(n.Location.FileId) {
+				p.testCallers[id] = depth
+				delete(result, id)
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// pythonCallers walks the callers of a Python symbol one level at a time, so that
+// wherever the walk reaches an __init__, the functions constructing its class are
+// its callers too: the call graph only knows the uses of __init__ itself.
+func (p *scipCallerProvider) pythonCallers(symbolId string, maxDepth int) (map[string]int, error) {
+	p.nodes = make(map[string]*scip.CallGraphNode)
+	result := make(map[string]int)
+	type entry struct {
+		id    string
+		depth int
+	}
+	visited := map[string]bool{symbolId: true}
+	queue := []entry{{symbolId, 0}}
+	for len(queue) > 0 {
+		curr := queue[0]
+		queue = queue[1:]
+		if curr.depth >= maxDepth {
+			continue
+		}
+		if len(p.nodes) >= transitiveCallerNodes {
+			p.nodeLimitHit = true
+			break
+		}
+		graph, err := p.adapter.BuildCallGraph(curr.id, scip.CallGraphOptions{
+			Direction: scip.DirectionCallers,
+			MaxDepth:  1,
+			MaxNodes:  transitiveCallerNodes,
+		})
+		if err != nil {
+			if curr.id == symbolId {
+				return nil, err
+			}
+			continue
+		}
+		var callers []*scip.CallGraphNode
+		if graph != nil {
+			if _, ok := p.nodes[curr.id]; !ok && curr.id != symbolId && graph.Root != nil {
+				p.nodes[curr.id] = graph.Root
+			}
+			callers = graph.Callers
+		}
+		if diff.PythonInitClass(curr.id) != "" {
+			for _, id := range p.constructions(curr.id) {
+				callers = append(callers, &scip.CallGraphNode{SymbolID: id, Location: p.definitionNode(id)})
+			}
+		}
+		for _, caller := range callers {
+			if caller == nil || visited[caller.SymbolID] {
+				continue
+			}
+			visited[caller.SymbolID] = true
+			if _, ok := p.nodes[caller.SymbolID]; !ok {
+				p.nodes[caller.SymbolID] = caller
+			}
+			result[caller.SymbolID] = curr.depth + 1
+			queue = append(queue, entry{caller.SymbolID, curr.depth + 1})
+		}
+	}
+	return result, nil
+}
+
+// definitionNode is where id is defined, as a call graph node places it.
+func (p *scipCallerProvider) definitionNode(id string) *scip.Location {
+	loc := p.adapter.DefinitionLocation(id)
+	if loc == nil {
+		return nil
+	}
+	return &scip.Location{FileId: loc.Path, StartLine: loc.Line - 1, StartColumn: loc.Column - 1}
+}
+
+// graphCallers takes the callers from one call graph built from symbolId.
+func (p *scipCallerProvider) graphCallers(symbolId string, maxDepth int) (map[string]int, error) {
 	graph, err := p.adapter.BuildCallGraph(symbolId, scip.CallGraphOptions{
 		Direction: scip.DirectionCallers,
 		MaxDepth:  maxDepth,
-		MaxNodes:  100, // Bounded for performance
+		MaxNodes:  transitiveCallerNodes,
 	})
 	if err != nil {
 		return nil, err
@@ -153,6 +385,8 @@ func (p *scipCallerProvider) GetTransitiveCallers(symbolId string, maxDepth int)
 	if graph == nil {
 		return result, nil
 	}
+	p.nodes = graph.Nodes
+	p.nodeLimitHit = len(graph.Nodes) >= transitiveCallerNodes
 
 	// BFS to compute depths from root
 	visited := make(map[string]bool)
@@ -193,6 +427,32 @@ func (p *scipCallerProvider) GetTransitiveCallers(symbolId string, maxDepth int)
 
 	return result, nil
 }
+
+// testCallerItems describes the transitive callers GetTransitiveCallers set aside.
+// Direct ones come from the references, which also know the file-level uses.
+func (p *scipCallerProvider) testCallerItems() []ImpactItem {
+	items := make([]ImpactItem, 0, len(p.testCallers))
+	for id, depth := range p.testCallers {
+		if depth <= 1 {
+			continue
+		}
+		n := p.nodes[id]
+		items = append(items, ImpactItem{
+			StableId:   id,
+			Name:       n.Name,
+			Kind:       string(impact.TestDependency),
+			Distance:   depth,
+			ModuleId:   filepath.Dir(n.Location.FileId),
+			Location:   &LocationInfo{FileId: n.Location.FileId, StartLine: n.Location.StartLine + 1},
+			Confidence: 0.85,
+		})
+	}
+	return items
+}
+
+// maxImpactReferences bounds the references read per symbol; past it,
+// ConsumerFiles says the list is partial.
+const maxImpactReferences = 5000
 
 // AnalyzeImpact analyzes the impact of changing a symbol.
 func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (*AnalyzeImpactResponse, error) {
@@ -272,47 +532,125 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 		completeness = CompletenessInfo{Score: 0.5, Reason: "identity-only"}
 	}
 
+	// Search without a SCIP index hands out tree-sitter IDs, which are hashes of a
+	// position: they name nothing here, and suggesting another search would only
+	// produce the same ID.
+	if symbolInfo == nil && strings.HasPrefix(opts.SymbolId, treesitterIDPrefix) {
+		return nil, errors.NewCkbError(
+			errors.IndexMissing,
+			fmt.Sprintf("Impact analysis needs a SCIP index, and %s came from a tree-sitter search without one", opts.SymbolId),
+			nil,
+			errors.GetSuggestedFixes(errors.IndexMissing),
+			nil,
+		)
+	}
+
 	// If we still don't have symbol info, return not found
 	if symbolInfo == nil {
 		return nil, errors.NewCkbError(
 			errors.SymbolNotFound,
-			fmt.Sprintf("Symbol not found: %s", opts.SymbolId),
+			e.notFoundMessage(opts.SymbolId),
 			nil, nil, nil,
 		)
 	}
 
 	// Find references for impact analysis
 	var refs []impact.Reference
+	var incomplete []string
 	if e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
 		refOpts := backends.RefOptions{
-			MaxResults:   500,
-			IncludeTests: opts.IncludeTests,
+			MaxResults:   maxImpactReferences,
+			IncludeTests: true, // Set aside below if not wanted as consumers
 		}
 		refsResult, refsErr := e.scipAdapter.FindReferences(ctx, symbolIdForLookup, refOpts)
 		if refsErr == nil && refsResult != nil {
-			for _, ref := range refsResult.References {
+			if refsResult.TotalReferences > len(refsResult.References) {
+				incomplete = append(incomplete, fmt.Sprintf("looked at the first %d of %d references",
+					len(refsResult.References), refsResult.TotalReferences))
+			}
+			references := refsResult.References
+			// A Python __init__ is used by constructing its class, or a subclass
+			// that inherits it, and those calls are references to the class.
+			if constructions, ok := pythonConstructions(ctx, e.scipAdapter, e.repoRoot, symbolIdForLookup); ok {
+				references = append(references, constructions...)
+			} else {
+				incomplete = append(incomplete, "couldn't look up the constructions of the class")
+			}
+			// One row per consumer and line: `lc.Win(p), lc.SubWin(p)` constructs
+			// Win and SubWin on one line, and both run Win.__init__.
+			seenRows := make(map[string]bool, len(references))
+			for _, ref := range references {
+				// An import only brings the name in; the uses after it are the
+				// callers. As an item it was a nameless "unknown" at module level.
+				if ref.Kind == "import" {
+					continue
+				}
+				row := fmt.Sprintf("%s\x00%s\x00%d\x00%s", ref.FromSymbol, ref.Location.Path, ref.Location.Line, ref.Kind)
+				if seenRows[row] {
+					continue
+				}
+				seenRows[row] = true
+				fromModule := ""
+				if ref.Location.Path != "" {
+					fromModule = filepath.Dir(ref.Location.Path)
+				}
 				impactRef := impact.Reference{
 					Kind: impact.ReferenceKind(ref.Kind),
 					Location: &impact.Location{
 						FileId:    ref.Location.Path,
 						StartLine: ref.Location.Line,
 					},
-					IsTest: isTestFilePath(ref.Location.Path), // Set IsTest based on file path
+					IsTest: isTestFilePath(ref.Location.Path),
+					// FromSymbol/FromName resolve the enclosing symbol (e.g. the
+					// caller function containing this reference) when the backend
+					// found one. Left empty (not "unknown") when genuinely
+					// unresolvable, e.g. a package-level reference outside any
+					// function.
+					FromSymbol: ref.FromSymbol,
+					FromName:   ref.FromSymbolName,
+					// FromModule is derived from the reference's own file path,
+					// the same way resolvePrepareTarget derives ModuleId for a
+					// symbol-based prepareChange target: the backend doesn't
+					// resolve a module id on references, so without this every
+					// direct dependent reported an empty moduleId and the
+					// module-spread count in prepareChange silently undercounted.
+					FromModule: fromModule,
 				}
 				refs = append(refs, impactRef)
 			}
 		}
 	}
 
-	// Filter test references if not included
+	// A Go interface method's implementations don't reference it, and break with it.
+	var nameMatchImpls []ImpactItem
+	if symbolInfo.Location != nil {
+		implRefs, nameMatch := e.goImplementationRefs(symbolIdForLookup, symbolInfo.Location.FileId)
+		refs = append(refs, implRefs...)
+		nameMatchImpls = implementationItems(nameMatch)
+	}
+
+	// Without IncludeTests, test code isn't counted as a consumer, but it still uses
+	// the symbol and is reported as such.
+	var testRefs []impact.Reference
 	if !opts.IncludeTests {
-		refs = filterTestReferences(refs)
+		refs, testRefs = splitTestReferences(refs)
 	}
 
 	// Create impact analyzer with transitive caller support if SCIP available
 	var analyzer *impact.ImpactAnalyzer
+	var callerProv *scipCallerProvider
 	if e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
-		callerProv := &scipCallerProvider{adapter: e.scipAdapter}
+		callerProv = &scipCallerProvider{adapter: e.scipAdapter, separateTests: !opts.IncludeTests}
+		callerProv.constructions = func(initID string) []string {
+			calls, _ := pythonConstructions(ctx, e.scipAdapter, e.repoRoot, initID)
+			var ids []string
+			for _, call := range calls {
+				if call.FromSymbol != "" && !scip.IsModuleScopeSymbol(call.FromSymbol) {
+					ids = append(ids, call.FromSymbol)
+				}
+			}
+			return ids
+		}
 		analyzer = impact.NewImpactAnalyzerWithCallers(opts.Depth, callerProv)
 	} else {
 		analyzer = impact.NewImpactAnalyzer(opts.Depth)
@@ -331,6 +669,14 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 	result, err := analyzer.Analyze(impactSymbol, refs)
 	if err != nil {
 		return nil, e.wrapError(err, errors.InternalError)
+	}
+
+	testImpact := testReferenceItems(testRefs, impactSymbol)
+	if callerProv != nil {
+		testImpact = append(testImpact, callerProv.testCallerItems()...)
+		if callerProv.nodeLimitHit {
+			incomplete = append(incomplete, fmt.Sprintf("stopped following callers after %d symbols", transitiveCallerNodes))
+		}
 	}
 
 	// Fetch LIP enrichment up-front so tier-1 static callers can be folded
@@ -357,11 +703,17 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 	transitiveImpact := convertImpactItems(result.TransitiveImpact)
 	modulesAffected := convertModuleImpacts(result.ModulesAffected)
 
+	consumerFiles := BuildConsumerFiles(directImpact, transitiveImpact, testImpact, strings.Join(incomplete, "; "))
+
+	// Sort by impact priority, so the budget below keeps the ones that matter most
+	sortImpactItems(directImpact)
+	sortImpactItems(transitiveImpact)
+
 	// Apply budget
 	budget := e.compressor.GetBudget()
 	var truncationInfo *TruncationInfo
 	totalItems := len(directImpact) + len(transitiveImpact)
-	if totalItems > budget.MaxImpactItems {
+	if !opts.AllItems && totalItems > budget.MaxImpactItems {
 		truncationInfo = &TruncationInfo{
 			Reason:        "max-items",
 			OriginalCount: totalItems,
@@ -379,10 +731,6 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 		}
 	}
 
-	// Sort by impact priority
-	sortImpactItems(directImpact)
-	sortImpactItems(transitiveImpact)
-
 	// Sort modules by impact count
 	sort.Slice(modulesAffected, func(i, j int) bool {
 		return modulesAffected[i].ImpactCount > modulesAffected[j].ImpactCount
@@ -396,6 +744,13 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 	// Convert visibility and risk score
 	visibility := symbolInfo.Visibility
 	riskScore := convertRiskScore(result.RiskScore)
+
+	// Reached on identity data alone: the symbol is known, but no references were
+	// looked up, so a low score here would be a statement about nothing.
+	consumersNotAssessed := !e.hasConsumerGraph() && len(refs) == 0
+	if consumersNotAssessed {
+		riskScore = notAssessedRisk(1)
+	}
 
 	// Build provenance
 	provenance := e.buildProvenance(repoState, "full", startTime, backendContribs, completeness)
@@ -503,22 +858,33 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 		}
 	}
 
+	// One level per answer. The analyzer classifies the blast radius by its
+	// counts alone, which disagreed with riskScore in the same response (medium
+	// next to high, low next to medium). prepareChange already reports the
+	// score's level here; the counts stay as they are.
+	if blastRadius != nil {
+		blastRadius.RiskLevel = riskScore.Level
+	}
+
 	resp := &AnalyzeImpactResponse{
-		Symbol:            symbolInfo,
-		Visibility:        visibility,
-		RiskScore:         riskScore,
-		BlastRadius:       blastRadius,
-		DirectImpact:      directImpact,
-		TransitiveImpact:  transitiveImpact,
-		ModulesAffected:   modulesAffected,
-		ObservedUsage:     observedUsage,
-		RelatedDecisions:  relatedDecisions,
-		DocsToUpdate:      docsToUpdate,
-		BlendedConfidence: blendedConfidence,
-		Truncated:         truncationInfo != nil,
-		TruncationInfo:    truncationInfo,
-		Provenance:        provenance,
-		Drilldowns:        drilldowns,
+		Symbol:                   symbolInfo,
+		Visibility:               visibility,
+		RiskScore:                riskScore,
+		BlastRadius:              blastRadius,
+		DirectImpact:             directImpact,
+		TransitiveImpact:         transitiveImpact,
+		ModulesAffected:          modulesAffected,
+		ObservedUsage:            observedUsage,
+		RelatedDecisions:         relatedDecisions,
+		DocsToUpdate:             docsToUpdate,
+		BlendedConfidence:        blendedConfidence,
+		TestImpact:               testImpact,
+		NameMatchImplementations: nameMatchImpls,
+		ConsumerFiles:            consumerFiles,
+		Truncated:                truncationInfo != nil,
+		TruncationInfo:           truncationInfo,
+		Provenance:               provenance,
+		Drilldowns:               drilldowns,
 	}
 
 	// Augment with Cartographer architectural simulation for the symbol's file.
@@ -755,15 +1121,36 @@ func computeBlendedConfidenceScore(staticConfidence, observedConfidence float64)
 	return result
 }
 
-// filterTestReferences removes test references.
-func filterTestReferences(refs []impact.Reference) []impact.Reference {
-	filtered := make([]impact.Reference, 0, len(refs))
+// splitTestReferences separates references from test code.
+func splitTestReferences(refs []impact.Reference) (production, tests []impact.Reference) {
+	production = make([]impact.Reference, 0, len(refs))
 	for _, ref := range refs {
-		if !ref.IsTest {
-			filtered = append(filtered, ref)
+		if ref.IsTest {
+			tests = append(tests, ref)
+		} else {
+			production = append(production, ref)
 		}
 	}
-	return filtered
+	return production, tests
+}
+
+// testReferenceItems describes direct references from test code.
+func testReferenceItems(refs []impact.Reference, symbol *impact.Symbol) []ImpactItem {
+	items := make([]impact.ImpactItem, 0, len(refs))
+	for i := range refs {
+		ref := &refs[i]
+		kind, confidence := impact.ClassifyImpactWithConfidence(ref, symbol)
+		items = append(items, impact.ImpactItem{
+			StableId:   ref.FromSymbol,
+			Name:       ref.FromName,
+			Kind:       kind,
+			Confidence: confidence,
+			ModuleId:   ref.FromModule,
+			Location:   ref.Location,
+			Distance:   1,
+		})
+	}
+	return convertImpactItems(items)
 }
 
 // convertImpactItems converts impact items to response format.
@@ -907,7 +1294,16 @@ type AnalyzeChangeSetOptions struct {
 
 // AnalyzeChangeSetResponse is the response for AnalyzeChangeSet.
 type AnalyzeChangeSetResponse struct {
-	Summary         *ChangeSummary      `json:"summary"`
+	Summary *ChangeSummary `json:"summary"`
+	// DoneCheck says which uses of a changed declaration the diff left untouched.
+	// It and CoChangeCheck come right after the summary on purpose: they are
+	// what an agent has to act on, and a client that keeps only the head of a
+	// large result (Claude Code moves results over its size limit to a file and
+	// shows a preview) must still show them.
+	DoneCheck *DoneCheck `json:"doneCheck,omitempty"`
+	// CoChangeCheck says which files usually change with the touched files and were
+	// left alone, from git history alone.
+	CoChangeCheck   *CoChangeCheck      `json:"coChangeCheck,omitempty"`
 	ChangedSymbols  []ChangedSymbolInfo `json:"changedSymbols"`
 	AffectedSymbols []ImpactItem        `json:"affectedSymbols"`
 	ModulesAffected []ModuleImpact      `json:"modulesAffected"`
@@ -919,6 +1315,108 @@ type AnalyzeChangeSetResponse struct {
 	TruncationInfo  *TruncationInfo     `json:"truncationInfo,omitempty"`
 	Provenance      *Provenance         `json:"provenance"`
 	Drilldowns      []output.Drilldown  `json:"drilldowns,omitempty"`
+
+	// Change describes what was diffed: branch, base ref, and mode. Added for
+	// assessChange/`ckb changes` (analyzeChange's grown-up form).
+	Change *ChangeInfo `json:"change,omitempty"`
+	// AffectedTests are tests that reach the changed symbols (direct or
+	// transitive), derived via deriveAffectedTests (shared with GetAffectedTests).
+	AffectedTests []AffectedTest `json:"affectedTests,omitempty"`
+	// TestGaps summarizes direct consumers of changed symbols that no test
+	// appears to reach within a depth-2 call graph traversal.
+	TestGaps *TestGapsInfo `json:"testGaps,omitempty"`
+	// Contracts flags changed symbols that are public/exported, as a
+	// "possible contract change" heuristic. This is deliberately not called
+	// a "breaking change" -- it is a line-level, visibility-only signal.
+	Contracts []ContractSignal `json:"contracts,omitempty"`
+	// Decisions are ADRs related to any changed symbol's module, collected
+	// from each per-symbol AnalyzeImpact call and deduped by ADR ID.
+	Decisions []RelatedDecision `json:"decisions,omitempty"`
+	// Reviewers are suggested reviewers for the changed files (ownership-based).
+	Reviewers []SuggestedReview `json:"reviewers,omitempty"`
+	// ConsumerFiles lists every file using or reaching a changed symbol, while
+	// AffectedSymbols is budgeted to a detailed sample of them.
+	ConsumerFiles *ConsumerFiles `json:"consumerFiles,omitempty"`
+	// Confidence summarizes result quality (SCIP availability/freshness,
+	// symbol-mapping confidence). Mirrors the shape of envelope.Confidence;
+	// see ChangeConfidence's doc comment for why it isn't that type directly.
+	Confidence *ChangeConfidence `json:"confidence,omitempty"`
+}
+
+// ChangeInfo describes the diff that was analyzed.
+type ChangeInfo struct {
+	Branch       string `json:"branch,omitempty"`
+	Base         string `json:"base,omitempty"`
+	Mode         string `json:"mode"` // "working-tree" | "staged" | "range"
+	FilesChanged int    `json:"filesChanged"`
+}
+
+// ContractSignal flags a changed symbol whose contract may have shifted. Never call
+// this a "breaking change": it is a heuristic, nothing is compiled.
+//
+// Kind says what it rests on: "signature-changed", "definition-removed" and
+// "compatible-signature-change" compare the declaration's text across the diff,
+// "possible-contract-change" is visibility alone, for code it can't read, and
+// "shape-changed" is a type read off a value whose keys or members changed.
+type ContractSignal struct {
+	Symbol string `json:"symbol"`
+	File   string `json:"file"`
+	Kind   string `json:"kind"`  // See above
+	Basis  string `json:"basis"` // What it rests on, always starting "heuristic:"
+	// Before and After are the declarations compared, where known.
+	Before string `json:"before,omitempty"`
+	After  string `json:"after,omitempty"`
+	// Detail says what changed where the declaration didn't: the keys of the schema a
+	// type is read off, as `+ custom (required in output, default [])`.
+	Detail string `json:"detail,omitempty"`
+	// ConsumerCount counts the production files with a use the diff left as it was, and
+	// Consumers names the first of them.
+	ConsumerCount int      `json:"consumerCount,omitempty"`
+	Consumers     []string `json:"consumers,omitempty"`
+}
+
+// TestGapsInfo summarizes direct consumers of changed symbols with no
+// detected reaching test (call graph, depth 2).
+type TestGapsInfo struct {
+	UntestedConsumers int      `json:"untestedConsumers"`
+	Examples          []string `json:"examples,omitempty"` // "Consumer -> changed symbol", up to 5
+}
+
+// ChangeConfidenceFactor explains one component of a ChangeConfidence score.
+// Field shape mirrors envelope.ConfidenceFactor.
+type ChangeConfidenceFactor struct {
+	Factor string  `json:"factor"`
+	Status string  `json:"status"`
+	Impact float64 `json:"impact"`
+}
+
+// ChangeConfidence describes AnalyzeChangeSet's result quality. It
+// deliberately mirrors envelope.Confidence's shape (Score/Tier/Reasons)
+// rather than embedding that type: internal/envelope imports internal/query
+// (builder.go's FromProvenance takes a *query.Provenance), so internal/query
+// importing internal/envelope back would be an import cycle. internal/mcp,
+// which imports both packages, converts this to envelope.Confidence when
+// wrapping the assessChange/analyzeChange tool response.
+type ChangeConfidence struct {
+	Score   float64                  `json:"score"`
+	Tier    string                   `json:"tier"` // "high" | "medium" | "low" | "speculative"
+	Reasons []string                 `json:"reasons,omitempty"`
+	Factors []ChangeConfidenceFactor `json:"factors,omitempty"`
+}
+
+// changeScoreToTier mirrors envelope.ScoreToTier's thresholds without
+// importing internal/envelope (see ChangeConfidence doc comment).
+func changeScoreToTier(score float64) string {
+	switch {
+	case score >= 0.95:
+		return "high"
+	case score >= 0.70:
+		return "medium"
+	case score >= 0.30:
+		return "low"
+	default:
+		return "speculative"
+	}
 }
 
 // ChangeSummary provides a high-level overview of a change set.
@@ -927,7 +1425,7 @@ type ChangeSummary struct {
 	SymbolsChanged       int    `json:"symbolsChanged"`
 	DirectlyAffected     int    `json:"directlyAffected"`
 	TransitivelyAffected int    `json:"transitivelyAffected"`
-	EstimatedRisk        string `json:"estimatedRisk"` // "low", "medium", "high", "critical"
+	EstimatedRisk        string `json:"estimatedRisk"` // "low", "medium", "high", "critical", or RiskLevelNotAssessed
 }
 
 // ChangedSymbolInfo represents a symbol affected by a code change.
@@ -935,9 +1433,21 @@ type ChangedSymbolInfo struct {
 	SymbolID   string  `json:"symbolId"`
 	Name       string  `json:"name"`
 	File       string  `json:"file"`
-	ChangeType string  `json:"changeType"` // "added", "modified", "deleted"
-	Lines      []int   `json:"lines,omitempty"`
+	ChangeType string  `json:"changeType"`      // "added", "modified", "deleted"
+	Lines      []int   `json:"lines,omitempty"` // New-file lines; a deleted symbol's are its old-file lines
 	Confidence float64 `json:"confidence"`
+	// Note qualifies the entry: on a file-level entry (symbolId "file:..."), which
+	// changed lines could not be attributed to a definition and why; on a symbol,
+	// that only comments or whitespace changed in it.
+	Note string `json:"note,omitempty"`
+	// Declaration says what happened to its declaration, from comparing text:
+	// "unchanged" (a body edit), "compatible", "changed" or "removed". Empty if unread.
+	Declaration string `json:"declaration,omitempty"`
+	// Trivial is set when only comments or whitespace changed in it.
+	Trivial bool `json:"trivial,omitempty"`
+	// QualifiedName is Name with its enclosing type, "Backend.Priority"; omitted when
+	// the symbol has none. Name stays the bare name.
+	QualifiedName string `json:"qualifiedName,omitempty"`
 }
 
 // Recommendation suggests an action based on impact analysis.
@@ -946,6 +1456,10 @@ type Recommendation struct {
 	Severity string `json:"severity"` // "info", "warning", "error"
 	Message  string `json:"message"`
 	Action   string `json:"action,omitempty"`
+	// Source names the finding this recommendation derives from (e.g.
+	// "risk", "module-spread", "test-gaps", "contracts"), so callers can
+	// trace generic text back to concrete evidence.
+	Source string `json:"source,omitempty"`
 }
 
 // IndexStalenessInfo provides information about SCIP index freshness.
@@ -1040,7 +1554,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	}
 
 	if symbolIndex != nil {
-		mapper := diff.NewDiffSymbolMapper(symbolIndex)
+		mapper := diff.NewDiffSymbolMapper(symbolIndex).WithFileReader(e.diffFileReader(opts.Staged, opts.BaseBranch))
 		changedSymbols, err = mapper.MapToSymbols(parsedDiff)
 		if err != nil {
 			e.logger.Warn("Failed to map diff to symbols",
@@ -1083,12 +1597,79 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	// Analyze impact for each changed symbol
 	var allDirectImpact []ImpactItem
 	var allTransitiveImpact []ImpactItem
+	var allTestImpact []ImpactItem
+	// testCauses maps a consumer (see impactItemKey) to the changed symbols it uses
+	// or reaches, so an affected test names what selected it rather than itself.
+	testCauses := make(map[string][]string)
 	moduleImpactMap := make(map[string]*ModuleImpact)
-	seenAffected := make(map[string]bool)
+	lookupNotes := make(map[string]bool)
+
+	// v1: decisions surfaced per changed symbol's module, deduped by ADR ID, capped at 10.
+	var changeDecisions []RelatedDecision
+	seenDecisionIDs := make(map[string]bool)
+
+	// v1: contracts heuristic -- exported/public changed symbols.
+	var contracts []ContractSignal
+	seenContractSymbols := make(map[string]bool)
+
+	// v1: test-gap synthesis -- for each direct consumer of a changed symbol,
+	// check whether any test reaches it within a depth-2 call graph. Bounded
+	// to avoid O(symbols * consumers) AnalyzeImpact calls on large diffs.
+	const maxTestGapConsumers = 20
+	testGapConsumersChecked := 0
+	seenGapConsumers := make(map[string]bool)
+	untestedConsumers := 0
+	var untestedExamples []string
+
+	// Deleted symbols whose consumers were not touched by this diff: they don't
+	// compile anymore unless something else changes.
+	changedFilePaths := make(map[string]bool, len(parsedDiff.Files))
+	for i := range parsedDiff.Files {
+		changedFilePaths[diff.GetEffectivePath(&parsedDiff.Files[i])] = true
+		if parsedDiff.Files[i].Renamed {
+			changedFilePaths[parsedDiff.Files[i].OldPath] = true // Where an older index has it
+		}
+	}
+	var brokenContracts []brokenContract
+	var contractChangedFiles, contractChangedTests []string
+	done := newDoneChecker(e.repoRoot, opts, parsedDiff)
+	if opts.DiffContent == "" {
+		done.base = e.diffOldRev(opts.Staged, opts.BaseBranch) // Read the old side the diff came from
+	}
+	var usesFinder referenceFinder
+	if e.hasConsumerGraph() {
+		usesFinder = e.scipAdapter
+	}
+	publicContractChanges := 0
+	outsideNames := make(map[string]string) // Changed declarations' names, to their language
+	// Go and TypeScript types whose members changed, read from the files before the
+	// symbols are looked at: a changed line inside one is explained by it.
+	rustOpens := done.checkTypeFiles(ctx, usesFinder)
+	// Interfaces whose method set changed: their implementations don't refer to them.
+	rustOpens = append(rustOpens, done.checkImplementations(usesFinder)...)
+	// TypeScript types read off a changed value with typeof: their declaration didn't move.
+	rustOpens = append(rustOpens, done.checkDerivedTypes(ctx, usesFinder, changedSymbols)...)
+
+	// Confidence input: average symbol-mapping confidence across changed symbols.
+	var totalMappingConfidence float64
+	var mappingConfidenceCount int
 
 	for _, sym := range changedSymbols {
-		// Skip file-level entries for transitive analysis
-		if strings.HasPrefix(sym.SymbolID, "file:") {
+		if sym.Confidence > 0 && !sym.Trivial { // Trivial is low for another reason than mapping
+			totalMappingConfidence += sym.Confidence
+			mappingConfidenceCount++
+		}
+
+		if sym.DeletionUnresolved && !done.explains(sym) {
+			done.unreadable = append(done.unreadable, unreadableName(sym))
+		}
+		if sym.NotInIndex {
+			done.unindexed = append(done.unindexed, sym.File)
+		}
+
+		// Skip file-level entries for transitive analysis, and anything that only
+		// changed comments or whitespace: it has no blast radius to report.
+		if strings.HasPrefix(sym.SymbolID, "file:") || sym.Trivial {
 			continue
 		}
 
@@ -1096,25 +1677,89 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 			SymbolId:     sym.SymbolID,
 			Depth:        opts.TransitiveDepth,
 			IncludeTests: opts.IncludeTests,
+			AllItems:     true, // This aggregate is budgeted below, once
 		})
 		if err != nil {
+			done.failed++
 			continue // Skip symbols that can't be analyzed
 		}
 
-		// Collect direct impact (deduplicated)
-		for _, item := range impactResult.DirectImpact {
-			if !seenAffected[item.StableId] {
-				seenAffected[item.StableId] = true
-				allDirectImpact = append(allDirectImpact, item)
+		declaration := symbolDeclarationChange(sym)
+		if declaration == "" && sym.ChangeType != impact.ChangeAdded && !done.explains(sym) {
+			done.unreadable = append(done.unreadable, unreadableName(sym))
+		}
+		var contractConsumers []string
+		if declaration == impact.DeclChanged || declaration == impact.DeclRemoved {
+			// A file in the diff only counts as handled if the diff touched its uses.
+			handled := changedFilePaths
+			if name := useName(sym); name != "" {
+				outsideNames[name] = sourceFamily(sym.File)
+				done.noteGoDeclaration(name, sym.File)
+			}
+			// A Go field whose struct tag is all that changed: its Go uses compile as
+			// before, only what reads or writes the serialized key can break.
+			tagOnly := declaration == impact.DeclChanged && detectLanguage(sym.File) == "go" &&
+				goTagOnlyChange(sym.DeclarationBefore, sym.DeclarationAfter)
+			if !tagOnly {
+				if openFiles, ok := done.checkSymbol(ctx, usesFinder, sym, declaration); ok {
+					handled = withoutFiles(changedFilePaths, openFiles)
+				}
+			}
+			// A config file still writing a renamed or removed serialized key.
+			var configFiles []string
+			if detectLanguage(sym.File) == "go" {
+				configFiles = done.checkConfigKeys(sym, goWireKeyChanges(sym.DeclarationBefore, sym.DeclarationAfter, declaration == impact.DeclRemoved))
+			}
+			if viaAlias := done.checkRustAlias(ctx, usesFinder, sym); len(viaAlias) > 0 {
+				rustOpens = append(rustOpens, rustOpen{name: sym.Name, change: declaration, files: viaAlias})
+			}
+			var broken *brokenContract
+			switch {
+			case !tagOnly:
+				broken = findBrokenContract(sym.Name, declaration, impactResult.DirectImpact, handled)
+			case len(configFiles) > 0:
+				broken = &brokenContract{name: sym.Name, change: declaration, consumers: configFiles, files: configFiles}
+			}
+			if broken != nil {
+				brokenContracts = append(brokenContracts, *broken)
+				contractConsumers = broken.files
+				contractChangedFiles = append(contractChangedFiles, broken.files...)
+			}
+			if !tagOnly {
+				contractConsumers = append(contractConsumers, configFiles...)
+				contractChangedFiles = append(contractChangedFiles, configFiles...)
+				for i := range impactResult.TestImpact {
+					item := &impactResult.TestImpact[i]
+					if item.Distance == 1 && item.Location != nil && !handled[item.Location.FileId] {
+						contractChangedTests = append(contractChangedTests, item.Location.FileId)
+					}
+				}
+				for i := range impactResult.DirectImpact {
+					item := &impactResult.DirectImpact[i]
+					if isTestFile(item.Location) && !handled[item.Location.FileId] {
+						contractChangedTests = append(contractChangedTests, item.Location.FileId)
+					}
+				}
+			}
+			if broken == nil && impactResult.Visibility != nil &&
+				(isExportedSymbol(sym.Name, impactResult.Visibility.Visibility, detectLanguage(sym.File)) || declaresPublic(sym.DeclarationBefore)) {
+				publicContractChanges++
 			}
 		}
 
-		// Collect transitive impact (deduplicated)
-		for _, item := range impactResult.TransitiveImpact {
-			if !seenAffected[item.StableId] {
-				seenAffected[item.StableId] = true
-				allTransitiveImpact = append(allTransitiveImpact, item)
+		for _, items := range [][]ImpactItem{impactResult.DirectImpact, impactResult.TransitiveImpact, impactResult.TestImpact} {
+			for i := range items {
+				if items[i].Location != nil && isRunnableTestPath(items[i].Location.FileId) {
+					key := impactItemKey(&items[i])
+					testCauses[key] = appendUnique(testCauses[key], sym.SymbolID)
+				}
 			}
+		}
+		allDirectImpact = append(allDirectImpact, impactResult.DirectImpact...)
+		allTransitiveImpact = append(allTransitiveImpact, impactResult.TransitiveImpact...)
+		allTestImpact = append(allTestImpact, impactResult.TestImpact...)
+		if impactResult.ConsumerFiles != nil && impactResult.ConsumerFiles.Note != "" {
+			lookupNotes[impactResult.ConsumerFiles.Note] = true
 		}
 
 		// Aggregate module impacts
@@ -1131,7 +1776,69 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 				}
 			}
 		}
+
+		// Decisions: surface RelatedDecisions already computed by AnalyzeImpact
+		// for this symbol's module, deduped by ADR ID, capped at 10.
+		for _, d := range impactResult.RelatedDecisions {
+			changeDecisions = appendDedupedDecision(changeDecisions, seenDecisionIDs, d, 10)
+		}
+
+		// Contracts heuristic: flag what the declaration's text says changed, or for
+		// code that can't be read, symbols whose visibility looks public. Deliberately
+		// not "breaking change": nothing here was compiled.
+		if impactResult.Symbol != nil && impactResult.Visibility != nil && !seenContractSymbols[sym.SymbolID] {
+			lang := detectLanguage(sym.File)
+			if signal := contractSignalFor(sym, declaration, impactResult.Symbol.Name, impactResult.Visibility.Visibility, lang, contractConsumers); signal != nil {
+				seenContractSymbols[sym.SymbolID] = true
+				contracts = append(contracts, *signal)
+			}
+		}
+
+		// Test-gap synthesis: for each direct consumer of this changed
+		// symbol, check whether any test reaches it (depth 2). Bounded.
+		for _, consumer := range impactResult.DirectImpact {
+			if testGapConsumersChecked >= maxTestGapConsumers {
+				break
+			}
+			// A use outside any definition has no callers a test could reach it through.
+			if consumer.StableId == "" || seenGapConsumers[consumer.StableId] {
+				continue
+			}
+			seenGapConsumers[consumer.StableId] = true
+			testGapConsumersChecked++
+
+			hasTest := e.hasReachingTest(ctx, consumer)
+			untestedConsumers, untestedExamples = recordTestGap(untestedConsumers, untestedExamples, consumer.Name, sym.Name, hasTest)
+		}
 	}
+
+	// What the changed symbols' own references can't reach. Risk and consumerFiles follow
+	// the same answer as the check does for those.
+	rustOpens = append(rustOpens, done.checkRustFiles(ctx, usesFinder)...)
+	if usesFinder != nil {
+		if index := e.scipAdapter.GetIndex(); index != nil {
+			done.checkOutsideIndex(outsideNames, func(path string) bool { return index.GetDocument(path) != nil })
+		}
+	}
+	for _, open := range rustOpens {
+		var files []string
+		for path := range open.files {
+			if isTestFilePath(path) {
+				contractChangedTests = append(contractChangedTests, path)
+			} else {
+				files = append(files, path)
+			}
+		}
+		if len(files) > 0 {
+			sort.Strings(files)
+			contractChangedFiles = append(contractChangedFiles, files...)
+			brokenContracts = append(brokenContracts, brokenContract{name: open.name, change: open.change, consumers: files, files: files})
+		}
+	}
+
+	contracts = append(contracts, done.shapes...)
+
+	allDirectImpact, allTransitiveImpact = mergeConsumers(allDirectImpact, allTransitiveImpact)
 
 	// Convert module map to slice
 	modulesAffected := make([]ModuleImpact, 0, len(moduleImpactMap))
@@ -1146,12 +1853,17 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	changedSymbolInfos := make([]ChangedSymbolInfo, len(changedSymbols))
 	for i, sym := range changedSymbols {
 		changedSymbolInfos[i] = ChangedSymbolInfo{
-			SymbolID:   sym.SymbolID,
-			Name:       sym.Name,
-			File:       sym.File,
-			ChangeType: string(sym.ChangeType),
-			Lines:      sym.Lines,
-			Confidence: sym.Confidence,
+			SymbolID:    sym.SymbolID,
+			Name:        sym.Name,
+			File:        sym.File,
+			ChangeType:  string(sym.ChangeType),
+			Lines:       sym.Lines,
+			Confidence:  sym.Confidence,
+			Note:        sym.Note,
+			Declaration: string(symbolDeclarationChange(sym)),
+			Trivial:     sym.Trivial,
+
+			QualifiedName: sym.QualifiedName,
 		}
 	}
 
@@ -1164,7 +1876,23 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	}
 
 	// Calculate aggregated risk score
-	riskScore := e.calculateAggregatedRisk(changedSymbols, allDirectImpact, allTransitiveImpact, modulesAffected)
+	substantive := make([]impact.ChangedSymbol, 0, len(changedSymbols))
+	for _, sym := range changedSymbols {
+		if !sym.Trivial {
+			substantive = append(substantive, sym)
+		}
+	}
+	riskScore := e.calculateAggregatedRisk(substantive, allDirectImpact, allTransitiveImpact, modulesAffected)
+	if len(substantive) == 0 && len(changedSymbols) > 0 {
+		riskScore.Explanation = "Only comments or whitespace changed."
+	}
+	applyContractChangesToRisk(riskScore, brokenContracts, publicContractChanges)
+	for _, sym := range changedSymbols {
+		if sym.DeletionUnresolved {
+			riskScore.Explanation += " Removed code could not be traced to its consumers, so this is a lower bound."
+			break
+		}
+	}
 	summary.EstimatedRisk = riskScore.Level
 
 	// Calculate blast radius
@@ -1187,8 +1915,45 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		RiskLevel:         riskScore.Level,
 	}
 
+	// Nothing in the diff: there is nothing a level could describe.
+	if len(parsedDiff.Files) == 0 {
+		riskScore = &RiskScore{Level: RiskLevelNotAssessed, Explanation: NothingToAssess}
+		summary.EstimatedRisk = riskScore.Level
+		blastRadius.RiskLevel = riskScore.Level
+	}
+
+	// Without SCIP there is no consumer graph, so "0 consumers" means nobody
+	// looked, and a score built on it would read as a clean bill of health.
+	// Consumers found some other way still count as a lower bound.
+	if !e.hasConsumerGraph() && len(allDirectImpact)+len(allTransitiveImpact) == 0 && len(changedSymbols) > 0 {
+		riskScore = notAssessedRisk(len(changedSymbols))
+		summary.EstimatedRisk = riskScore.Level
+		blastRadius.RiskLevel = riskScore.Level
+	}
+
+	testGapsInfo := &TestGapsInfo{
+		UntestedConsumers: untestedConsumers,
+		Examples:          untestedExamples,
+	}
+
 	// Generate recommendations
-	recommendations := e.generateRecommendations(summary, riskScore, changedSymbols, modulesAffected)
+	recommendations := e.generateRecommendations(summary, riskScore, changedSymbols, modulesAffected, testGapsInfo, contracts)
+	recommendations = append(contractRecommendations(brokenContracts, changedSymbols), recommendations...)
+
+	// Before the budget: a cut in the consumer list must not lose a file or a test.
+	consumerFiles := BuildConsumerFiles(allDirectImpact, allTransitiveImpact, allTestImpact, joinNotes(lookupNotes))
+	consumerFiles.ContractChanged = boundedUniqueSorted(contractChangedFiles)
+	consumerFiles.ContractChangedTests = boundedUniqueSorted(contractChangedTests)
+	testConsumers := make([]ImpactItem, 0, len(allDirectImpact)+len(allTransitiveImpact)+len(allTestImpact))
+	testConsumers = append(append(append(testConsumers, allDirectImpact...), allTransitiveImpact...), allTestImpact...)
+	affectedTests := e.deriveAffectedTests(changedSymbolInfos, testConsumers, testCauses)
+	if e.hasConsumerGraph() {
+		affectedTests = mergeFileLevelTests(affectedTests, testsUsingFiles(e.scipAdapter.GetIndex(), changedSourceFiles(changedSymbols)))
+	}
+
+	// Sort impact items, so the budget below keeps the ones that matter most
+	sortImpactItems(allDirectImpact)
+	sortImpactItems(allTransitiveImpact)
 
 	// Apply budget
 	budget := e.compressor.GetBudget()
@@ -1216,10 +1981,6 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		modulesAffected = modulesAffected[:budget.MaxModules]
 	}
 
-	// Sort impact items
-	sortImpactItems(allDirectImpact)
-	sortImpactItems(allTransitiveImpact)
-
 	// Combine all affected for response
 	allAffected := append(allDirectImpact, allTransitiveImpact...)
 
@@ -1243,6 +2004,58 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	if indexStaleness != nil && indexStaleness.IsStale {
 		provenance.Warnings = append(provenance.Warnings, indexStaleness.StalenessMessage)
 	}
+	for _, sym := range changedSymbols {
+		if sym.DeletionUnresolved {
+			provenance.Warnings = append(provenance.Warnings, fmt.Sprintf("deleted symbols not resolved in %s: %s", sym.File, sym.Note))
+		}
+	}
+
+	var staleIndex string
+	if e.hasConsumerGraph() {
+		staleIndex = indexDoubt(e.repoRoot, e.scipAdapter.GetIndexInfo().IndexedCommit)
+	}
+
+	// Change: what was diffed (branch, base, mode).
+	mode := "working-tree"
+	base := ""
+	if opts.Staged {
+		mode = "staged"
+	} else if opts.BaseBranch != "" && opts.BaseBranch != "HEAD" {
+		mode = "range"
+		base = opts.BaseBranch
+	}
+	branch := ""
+	if e.gitAdapter != nil {
+		if b, berr := e.gitAdapter.GetCurrentBranch(); berr == nil {
+			branch = b
+		}
+	}
+	changeInfo := &ChangeInfo{
+		Branch:       branch,
+		Base:         base,
+		Mode:         mode,
+		FilesChanged: len(parsedDiff.Files),
+	}
+
+	// Reviewers: ownership-based suggestions over the unique changed files.
+	var reviewers []SuggestedReview
+	seenReviewerFiles := make(map[string]bool)
+	var reviewerFiles []PRFileChange
+	for _, sym := range changedSymbolInfos {
+		if sym.File == "" || seenReviewerFiles[sym.File] {
+			continue
+		}
+		seenReviewerFiles[sym.File] = true
+		reviewerFiles = append(reviewerFiles, PRFileChange{Path: sym.File})
+	}
+	if e.gitAdapter != nil && len(reviewerFiles) > 0 {
+		reviewers = e.getSuggestedReviewers(ctx, reviewerFiles)
+	} else if len(reviewerFiles) > 0 {
+		provenance.Warnings = append(provenance.Warnings, "reviewers unavailable: git ownership data not available")
+	}
+
+	// Confidence: SCIP availability + freshness + average symbol-mapping confidence.
+	confidence := e.buildChangeConfidence(completeness, indexStaleness, totalMappingConfidence, mappingConfidenceCount)
 
 	return &AnalyzeChangeSetResponse{
 		Summary:         summary,
@@ -1256,26 +2069,232 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 		Truncated:       truncationInfo != nil,
 		TruncationInfo:  truncationInfo,
 		Provenance:      provenance,
+		Change:          changeInfo,
+		AffectedTests:   affectedTests,
+		ConsumerFiles:   consumerFiles,
+		TestGaps:        testGapsInfo,
+		DoneCheck:       done.result(diffContent, e.hasConsumerGraph(), len(parsedDiff.Files) == 0, staleIndex),
+		CoChangeCheck:   e.coChangeCheck(ctx, parsedDiff),
+		Contracts:       contracts,
+		Decisions:       changeDecisions,
+		Reviewers:       reviewers,
+		Confidence:      confidence,
 	}, nil
+}
+
+// joinNotes joins distinct notes in a stable order.
+func joinNotes(notes map[string]bool) string {
+	list := make([]string, 0, len(notes))
+	for note := range notes {
+		list = append(list, note)
+	}
+	sort.Strings(list)
+	return strings.Join(list, "; ")
+}
+
+// consumerKey identifies a consumer across changed symbols. A reference outside
+// any definition, like an import or a package-level initializer, has no symbol to
+// name, so its file stands in: those are consumers too, and two of them in
+// different files are not the same one.
+func consumerKey(item ImpactItem) string {
+	if item.StableId != "" {
+		return item.StableId
+	}
+	if item.Location != nil {
+		return "file:" + item.Location.FileId
+	}
+	return "name:" + item.Name
+}
+
+// mergeConsumers dedupes the consumers of all changed symbols. Direct beats
+// transitive, whichever changed symbol came first: a consumer calling one changed
+// symbol and reaching another is a direct consumer. A file-level entry says nothing
+// more once the file has a named consumer, which is the usual fate of an import.
+func mergeConsumers(direct, transitive []ImpactItem) (mergedDirect, mergedTransitive []ImpactItem) {
+	namedFiles := make(map[string]bool)
+	for i := range direct {
+		if direct[i].StableId != "" && direct[i].Location != nil {
+			namedFiles[direct[i].Location.FileId] = true
+		}
+	}
+	seen := make(map[string]bool, len(direct)+len(transitive))
+	for _, item := range direct {
+		key := consumerKey(item)
+		if seen[key] || (item.StableId == "" && item.Location != nil && namedFiles[item.Location.FileId]) {
+			continue
+		}
+		seen[key] = true
+		mergedDirect = append(mergedDirect, item)
+	}
+	closest := make(map[string]int, len(transitive))
+	for _, item := range transitive {
+		key := consumerKey(item)
+		if seen[key] {
+			continue
+		}
+		if i, ok := closest[key]; ok {
+			if item.Distance < mergedTransitive[i].Distance {
+				mergedTransitive[i] = item
+			}
+			continue
+		}
+		closest[key] = len(mergedTransitive)
+		mergedTransitive = append(mergedTransitive, item)
+	}
+	return mergedDirect, mergedTransitive
+}
+
+// buildChangeConfidence computes a ChangeConfidence for AnalyzeChangeSet from
+// SCIP availability/freshness and the average symbol-mapping confidence.
+// Score/tier thresholds mirror envelope.ScoreToTier (see changeScoreToTier).
+func (e *Engine) buildChangeConfidence(
+	completeness CompletenessInfo,
+	staleness *IndexStalenessInfo,
+	totalMappingConfidence float64,
+	mappingConfidenceCount int,
+) *ChangeConfidence {
+	score := completeness.Score
+	var reasons []string
+	var factors []ChangeConfidenceFactor
+
+	hasSCIP := e.scipAdapter != nil && e.scipAdapter.IsAvailable()
+	if hasSCIP {
+		factors = append(factors, ChangeConfidenceFactor{Factor: "scip_backend", Status: "available", Impact: 0.3})
+	} else {
+		reasons = append(reasons, "no SCIP index: file-level mapping")
+		factors = append(factors, ChangeConfidenceFactor{Factor: "scip_backend", Status: "unavailable", Impact: -0.2})
+	}
+
+	if staleness != nil && staleness.IsStale {
+		score -= 0.1
+		reasons = append(reasons, fmt.Sprintf("index is %d commit(s) behind", staleness.CommitsBehind))
+		factors = append(factors, ChangeConfidenceFactor{Factor: "index_freshness", Status: "stale", Impact: -0.1})
+	} else if hasSCIP {
+		factors = append(factors, ChangeConfidenceFactor{Factor: "index_freshness", Status: "fresh", Impact: 0.0})
+	}
+
+	if mappingConfidenceCount > 0 {
+		avgMapping := totalMappingConfidence / float64(mappingConfidenceCount)
+		reasons = append(reasons, fmt.Sprintf("average symbol-mapping confidence %.0f%%", avgMapping*100))
+		factors = append(factors, ChangeConfidenceFactor{Factor: "symbol_mapping", Status: fmt.Sprintf("%.0f%%", avgMapping*100), Impact: (avgMapping - 0.5) * 0.2})
+		score = (score + avgMapping) / 2
+	}
+
+	if score < 0 {
+		score = 0
+	} else if score > 1 {
+		score = 1
+	}
+
+	if len(reasons) == 0 {
+		reasons = append(reasons, completeness.Reason)
+	}
+
+	return &ChangeConfidence{
+		Score:   score,
+		Tier:    changeScoreToTier(score),
+		Reasons: reasons,
+		Factors: factors,
+	}
+}
+
+// forkPoint returns where head forked from base, for diffing a branch the way
+// a pull request shows it. Without a merge base (a shallow clone, unrelated
+// histories) it keeps base, which compares the two tips.
+func (e *Engine) forkPoint(base, head string) string {
+	if e.gitAdapter == nil || base == "" {
+		return base
+	}
+	mb, err := e.gitAdapter.MergeBase(base, head)
+	if err != nil {
+		e.logger.Warn("No merge base, diffing against the base's tip", "base", base, "head", head, "error", err)
+		return base
+	}
+	return mb
+}
+
+// diffFileReader reads a changed file's whole text from the two sides getGitDiff
+// compares. For a diff passed in from outside these may be other revisions; the
+// mapper checks the text against the hunks and drops what doesn't match.
+func (e *Engine) diffFileReader(staged bool, baseBranch string) diff.FileReader {
+	var oldRev string
+	var resolved bool
+	show := func(object string) []string {
+		cmd := exec.Command("git", "show", object) // #nosec G204 -- fixed binary, no shell; object is <rev>:<path> from the diff
+		cmd.Dir = e.repoRoot
+		out, err := cmd.Output()
+		if err != nil {
+			return nil
+		}
+		return splitFileLines(string(out))
+	}
+	return func(path string, old bool) []string {
+		if !old {
+			if staged {
+				return show(":" + path)
+			}
+			content, err := os.ReadFile(filepath.Join(e.repoRoot, path))
+			if err != nil {
+				return nil
+			}
+			return splitFileLines(string(content))
+		}
+		if !resolved {
+			resolved = true
+			oldRev = e.diffOldRev(staged, baseBranch)
+		}
+		return show(oldRev + ":" + path)
+	}
+}
+
+// diffOldRev is the revision getGitDiff compares against: the base's merge base with
+// HEAD, the base itself for staged changes, HEAD without one.
+func (e *Engine) diffOldRev(staged bool, baseBranch string) string {
+	switch {
+	case baseBranch == "":
+		return "HEAD"
+	case baseBranch != "HEAD" && !staged:
+		return e.forkPoint(baseBranch, "HEAD")
+	}
+	return baseBranch
 }
 
 // getGitDiff gets the current git diff.
 func (e *Engine) getGitDiff(staged bool, baseBranch string) (string, error) {
-	args := []string{"diff"}
+	args := []string{"diff", fmt.Sprintf("-U%d", diff.DeclarationContextLines)}
 	if staged {
 		args = append(args, "--cached")
 	}
-	if baseBranch != "" && baseBranch != "HEAD" {
-		args = append(args, baseBranch)
+	// A bare `git diff` compares the working tree with the index, so anything staged
+	// would look unchanged. HEAD covers both, unless there is no commit yet.
+	base := baseBranch
+	if base == "" && !staged {
+		base = "HEAD"
 	}
-
-	cmd := exec.Command("git", args...)
-	cmd.Dir = e.repoRoot
-	out, err := cmd.Output()
+	if base != "" && base != "HEAD" && !staged {
+		base = e.forkPoint(base, "HEAD")
+	}
+	if staged && base == "HEAD" {
+		base = ""
+	}
+	run := func(args []string) (string, error) {
+		cmd := exec.Command("git", args...) // #nosec G204 -- fixed binary, no shell; args are diff subcommands and the caller's own base ref
+		cmd.Dir = e.repoRoot
+		out, err := cmd.Output()
+		return string(out), err
+	}
+	withBase := args
+	if base != "" {
+		withBase = append(append([]string{}, args...), base)
+	}
+	out, err := run(withBase)
+	if err != nil && base == "HEAD" {
+		out, err = run(args)
+	}
 	if err != nil {
 		return "", fmt.Errorf("git diff failed: %w", err)
 	}
-	return string(out), nil
+	return out, nil
 }
 
 // bridgeMultiplierFromGraph computes a risk multiplier from Cartographer's
@@ -1335,9 +2354,225 @@ func bridgeMultiplierFromGraph(nodes []cartographer.GraphNode, files []string) (
 
 	multiplier := math.Min(1.0+maxScore/1000.0, 2.0)
 	return multiplier, &RiskFactor{
-		Name:   "bridge_centrality",
-		Value:  maxScore / 1000.0, // 0.0-1.0 informational
-		Weight: 0,                 // applied as multiplier, not weighted mean
+		Name:     "bridge_centrality",
+		Value:    maxScore / 1000.0, // 0.0-1.0 informational
+		Weight:   0,                 // applied as multiplier, not weighted mean
+		Evidence: fmt.Sprintf("on a critical architectural path (bridge score %.2f)", maxScore/1000.0),
+	}
+}
+
+// boundedUniqueSorted is a sorted file list at most as long as ConsumerFiles allows.
+func boundedUniqueSorted(paths []string) []string {
+	seen := make(map[string]bool, len(paths))
+	unique := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if !seen[p] {
+			seen[p] = true
+			unique = append(unique, p)
+		}
+	}
+	sort.Strings(unique)
+	if len(unique) > MaxConsumerFiles {
+		unique = unique[:MaxConsumerFiles]
+	}
+	return unique
+}
+
+// symbolDeclarationChange is what happened to a changed symbol's declaration. A
+// definition deleted outright is removed whatever its text could show.
+func symbolDeclarationChange(sym impact.ChangedSymbol) impact.DeclarationChange {
+	if sym.ChangeType == impact.ChangeDeleted {
+		return impact.DeclRemoved
+	}
+	return sym.Declaration
+}
+
+// brokenContract is a symbol whose declaration changed or went away while code
+// outside the files in the diff still uses it.
+type brokenContract struct {
+	name      string
+	change    impact.DeclarationChange
+	consumers []string
+	files     []string
+}
+
+// withoutFiles returns files minus the ones in remove.
+func withoutFiles(files, remove map[string]bool) map[string]bool {
+	kept := make(map[string]bool, len(files))
+	for path := range files {
+		if !remove[path] {
+			kept[path] = true
+		}
+	}
+	return kept
+}
+
+// findBrokenContract returns the changed symbol's production consumers in files the
+// diff didn't handle, or nil if there are none. handled normally holds the changed
+// files whose uses of this symbol were all touched. A test using it breaks too, but the
+// tests are reported apart and don't add to the risk of the change.
+func findBrokenContract(name string, change impact.DeclarationChange, direct []ImpactItem, handled map[string]bool) *brokenContract {
+	var consumers, files []string
+	for i := range direct {
+		item := &direct[i]
+		if isTestFile(item.Location) || (item.Location != nil && handled[item.Location.FileId]) {
+			continue
+		}
+		// Implementations are the done check's (checkImplementations), which knows
+		// what the diff did to the interface: removing a method breaks none of them.
+		if item.Kind == kindImplementation {
+			continue
+		}
+		consumer := item.Name
+		if item.Location != nil {
+			files = append(files, item.Location.FileId)
+			if consumer == "" {
+				consumer = item.Location.FileId // A use at file level, such as an import
+			}
+		}
+		consumers = append(consumers, consumer)
+	}
+	if len(consumers) == 0 {
+		return nil
+	}
+	return &brokenContract{name: name, change: change, consumers: consumers, files: files}
+}
+
+const (
+	criticalRiskFloor = 0.8
+	highRiskFloor     = 0.6
+	mediumRiskFloor   = 0.4
+)
+
+// riskLevelFor is the level of a change risk score, the same bands for assessChange
+// and prepareChange: one change scored before and after the edit gets one level.
+func riskLevelFor(score float64) string {
+	switch {
+	case score >= criticalRiskFloor:
+		return "critical"
+	case score >= highRiskFloor:
+		return "high"
+	case score >= mediumRiskFloor:
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+// applyContractChangesToRisk keeps the score from calling a change low when a
+// declaration changed under code that still uses it, because the count-based score
+// has no idea: however few consumers there are, that is what breaks a build.
+//
+// The rule, from what these changes do rather than from any sample:
+//   - Removed, or changed so existing uses may not survive, with production consumers
+//     outside the diff, of any visibility: at least high. An unexported function's
+//     callers break just like an exported one's.
+//   - The same on an exported symbol with no such consumers: at least medium. Nothing
+//     here visibly breaks, but this index can't see other repos.
+//   - A compatible change, a body edit, or either with every consumer in the diff:
+//     no floor. The counts are all that's left.
+//
+// It stays a heuristic: declarations are compared as text, and nothing is compiled.
+func applyContractChangesToRisk(risk *RiskScore, broken []brokenContract, publicChanges int) {
+	var removed, changed int
+	for i := range broken {
+		if broken[i].change == impact.DeclRemoved {
+			removed++
+		} else {
+			changed++
+		}
+	}
+	if removed+changed > 0 && risk.Score < highRiskFloor {
+		risk.Score = highRiskFloor
+		risk.Level = "high"
+	}
+	if removed > 0 {
+		risk.Factors = append(risk.Factors, RiskFactor{
+			Name:     "deleted_with_consumers",
+			Value:    1,
+			Evidence: fmt.Sprintf("%d deleted symbol(s) still used by code this diff left as it was", removed),
+		})
+		risk.Explanation += fmt.Sprintf(" %d deleted symbol(s) are still used by code this diff left as it was.", removed)
+	}
+	if changed > 0 {
+		risk.Factors = append(risk.Factors, RiskFactor{
+			Name:     "signature_changed_with_consumers",
+			Value:    1,
+			Evidence: fmt.Sprintf("%d symbol(s) changed declaration, still used by code this diff left as it was (heuristic: text comparison)", changed),
+		})
+		risk.Explanation += fmt.Sprintf(" %d symbol(s) changed their declaration and are still used by code this diff left as it was (heuristic: compared as text).", changed)
+	}
+	if publicChanges > 0 {
+		if risk.Score < mediumRiskFloor {
+			risk.Score = mediumRiskFloor
+			risk.Level = "medium"
+		}
+		risk.Factors = append(risk.Factors, RiskFactor{
+			Name:     "public_contract_changed",
+			Value:    1,
+			Evidence: fmt.Sprintf("%d exported symbol(s) changed declaration; consumers in other repos can't be seen", publicChanges),
+		})
+		risk.Explanation += fmt.Sprintf(" %d exported symbol(s) changed their declaration, and consumers in other repos can't be seen.", publicChanges)
+	}
+}
+
+// contractRecommendations says what a declaration change breaks, or that it can't tell.
+func contractRecommendations(broken []brokenContract, changedSymbols []impact.ChangedSymbol) []Recommendation {
+	var recs []Recommendation
+	for _, b := range broken {
+		shown := b.consumers
+		more := ""
+		if len(shown) > 5 {
+			more = fmt.Sprintf(" and %d more", len(shown)-5)
+			shown = shown[:5]
+		}
+		rec := Recommendation{
+			Type:     "review",
+			Severity: "error",
+			Message:  fmt.Sprintf("Deleted %s is still used by %s%s, at uses this diff left as they were.", b.name, strings.Join(shown, ", "), more),
+			Action:   "Update those consumers, or keep the symbol",
+			Source:   "deleted-symbols",
+		}
+		if b.change == impact.DeclChanged {
+			rec.Severity = "warning"
+			rec.Message = fmt.Sprintf("%s changed its declaration and is still used by %s%s, at uses this diff left as they were (heuristic).", b.name, strings.Join(shown, ", "), more)
+			rec.Action = "Update those consumers, or keep the old signature"
+			rec.Source = "contracts"
+		}
+		recs = append(recs, rec)
+	}
+	for _, sym := range changedSymbols {
+		if sym.DeletionUnresolved {
+			recs = append(recs, Recommendation{
+				Type:     "coverage",
+				Severity: "warning",
+				Message:  fmt.Sprintf("Removed code in %s can't be traced: %s.", sym.File, sym.Note),
+				Action:   "The index already includes this deletion. Index the base revision and re-run to see the consumers, or search for the removed names",
+				Source:   "deleted-symbols",
+			})
+		}
+	}
+	return recs
+}
+
+// RiskLevelNotAssessed is the risk level of a change whose consumers could not
+// be looked up. It is deliberately not on the low..critical scale.
+const RiskLevelNotAssessed = "not_assessed"
+
+// NothingToAssess explains a not-assessed risk for a diff with no source changes.
+const NothingToAssess = "Nothing to assess: no source changes in this diff."
+
+// hasConsumerGraph reports whether anything can answer who uses a symbol. Without
+// it, "0 consumers" means nobody looked.
+func (e *Engine) hasConsumerGraph() bool {
+	return e.scipAdapter != nil && e.scipAdapter.IsAvailable()
+}
+
+// notAssessedRisk is the risk of a change analyzed without a consumer graph.
+func notAssessedRisk(changedSymbols int) *RiskScore {
+	return &RiskScore{
+		Level:       RiskLevelNotAssessed,
+		Explanation: fmt.Sprintf("%d symbol(s) changed, but downstream impact was not assessed: no SCIP index. Run 'ckb index' for a risk score.", changedSymbols),
 	}
 }
 
@@ -1352,8 +2587,9 @@ func (e *Engine) calculateAggregatedRisk(
 
 	// Factor: Number of symbols changed
 	symbolCountFactor := RiskFactor{
-		Name:   "symbols_changed",
-		Weight: 0.2,
+		Name:     "symbols_changed",
+		Weight:   0.2,
+		Evidence: fmt.Sprintf("%d changed symbol(s)", len(changedSymbols)),
 	}
 	switch {
 	case len(changedSymbols) > 20:
@@ -1369,8 +2605,9 @@ func (e *Engine) calculateAggregatedRisk(
 
 	// Factor: Direct impact count
 	directImpactFactor := RiskFactor{
-		Name:   "direct_impact",
-		Weight: 0.3,
+		Name:     "direct_impact",
+		Weight:   0.3,
+		Evidence: fmt.Sprintf("%d direct consumers", len(directImpact)),
 	}
 	switch {
 	case len(directImpact) > 50:
@@ -1386,8 +2623,9 @@ func (e *Engine) calculateAggregatedRisk(
 
 	// Factor: Transitive impact
 	transitiveFactor := RiskFactor{
-		Name:   "transitive_impact",
-		Weight: 0.2,
+		Name:     "transitive_impact",
+		Weight:   0.2,
+		Evidence: fmt.Sprintf("%d transitive consumers", len(transitiveImpact)),
 	}
 	switch {
 	case len(transitiveImpact) > 100:
@@ -1403,8 +2641,9 @@ func (e *Engine) calculateAggregatedRisk(
 
 	// Factor: Module spread
 	moduleFactor := RiskFactor{
-		Name:   "module_spread",
-		Weight: 0.3,
+		Name:     "module_spread",
+		Weight:   0.3,
+		Evidence: fmt.Sprintf("%d modules affected", len(modules)),
 	}
 	switch {
 	case len(modules) > 5:
@@ -1457,18 +2696,7 @@ func (e *Engine) calculateAggregatedRisk(
 		}
 	}
 
-	// Determine level
-	var level string
-	switch {
-	case score >= 0.8:
-		level = "critical"
-	case score >= 0.6:
-		level = "high"
-	case score >= 0.4:
-		level = "medium"
-	default:
-		level = "low"
-	}
+	level := riskLevelFor(score)
 
 	// Build explanation
 	explanation := fmt.Sprintf("Change affects %d symbols across %d modules with %d direct and %d transitive impacts.",
@@ -1508,17 +2736,19 @@ type AffectedTestsResponse struct {
 type AffectedTest struct {
 	FilePath   string   `json:"filePath"`
 	TestNames  []string `json:"testNames,omitempty"`  // Specific test functions if known
-	Reason     string   `json:"reason"`               // "direct", "transitive", "coverage"
+	Reason     string   `json:"reason"`               // "direct", "transitive", "coverage", "naming-convention", "semantic-proximity"
 	AffectedBy []string `json:"affectedBy,omitempty"` // Symbol IDs that caused this test to be selected
 	Confidence float64  `json:"confidence"`
 }
 
 // TestSummary provides an overview of affected tests.
 type TestSummary struct {
-	TotalFiles       int    `json:"totalFiles"`
-	DirectFiles      int    `json:"directFiles"`
-	TransitiveFiles  int    `json:"transitiveFiles"`
-	CoverageFiles    int    `json:"coverageFiles"`
+	TotalFiles      int `json:"totalFiles"`
+	DirectFiles     int `json:"directFiles"`
+	TransitiveFiles int `json:"transitiveFiles"`
+	CoverageFiles   int `json:"coverageFiles"`
+	// FileLevelFiles use something defined in a changed file, not a changed symbol.
+	FileLevelFiles   int    `json:"fileLevelFiles,omitempty"`
 	EstimatedRuntime string `json:"estimatedRuntime,omitempty"`
 }
 
@@ -1548,103 +2778,29 @@ func (e *Engine) GetAffectedTests(ctx context.Context, opts GetAffectedTestsOpti
 	if err != nil {
 		return nil, err
 	}
+	return e.affectedTestsFromChangeSet(ctx, changeSet, startTime), nil
+}
 
-	// Collect test files
-	testFileMap := make(map[string]*AffectedTest)
+// affectedTestsOptions are the AnalyzeChangeSet options GetAffectedTests runs
+// with, for a caller that computes the change set once and shares it.
+func affectedTestsChangeSetOptions(baseBranch string, staged bool) AnalyzeChangeSetOptions {
+	if baseBranch == "" {
+		baseBranch = "HEAD"
+	}
+	return AnalyzeChangeSetOptions{
+		Staged:          staged,
+		BaseBranch:      baseBranch,
+		TransitiveDepth: 1,
+		IncludeTests:    true,
+	}
+}
+
+// affectedTestsFromChangeSet builds GetAffectedTests' response from a change set
+// analyzed with tests included.
+func (e *Engine) affectedTestsFromChangeSet(ctx context.Context, changeSet *AnalyzeChangeSetResponse, startTime time.Time) *AffectedTestsResponse {
 	var coverageUsed bool
 
-	// 1. Direct test files (tests that reference changed symbols)
-	for _, sym := range changeSet.AffectedSymbols {
-		if isTestFile(sym.Location) {
-			path := ""
-			if sym.Location != nil {
-				path = sym.Location.FileId
-			} else {
-				continue
-			}
-
-			if existing, ok := testFileMap[path]; ok {
-				existing.AffectedBy = append(existing.AffectedBy, sym.StableId)
-				if sym.Confidence > existing.Confidence {
-					existing.Confidence = sym.Confidence
-				}
-			} else {
-				testFileMap[path] = &AffectedTest{
-					FilePath:   path,
-					Reason:     categorizeTestReason(sym.Distance),
-					AffectedBy: []string{sym.StableId},
-					Confidence: sym.Confidence,
-				}
-			}
-		}
-	}
-
-	// 2. Test files for changed production code (heuristic: find corresponding test files)
-	for _, sym := range changeSet.ChangedSymbols {
-		if isTestFilePathEnhanced(sym.File) {
-			continue // Already a test file
-		}
-
-		// Find corresponding test files
-		testFiles := findCorrespondingTestFiles(e.repoRoot, sym.File)
-		for _, testFile := range testFiles {
-			if _, ok := testFileMap[testFile]; !ok {
-				testFileMap[testFile] = &AffectedTest{
-					FilePath:   testFile,
-					Reason:     "direct",
-					AffectedBy: []string{sym.SymbolID},
-					Confidence: 0.8, // High confidence for corresponding test
-				}
-			}
-		}
-	}
-
-	// Note: coverage-based test mapping not implemented yet (requires parsing coverage files)
-
-	// 3. LIP semantic pass: for each changed production file, find semantically
-	// similar test files. This catches tests that cover the changed code but don't
-	// follow naming conventions (e.g. integration tests, table-driven suites).
-	for _, sym := range changeSet.ChangedSymbols {
-		if isTestFilePathEnhanced(sym.File) {
-			continue
-		}
-		fileURI := "file://" + filepath.Join(e.repoRoot, sym.File)
-		// Filter to *_test.go files only; require at least 0.6 cosine similarity.
-		const lipTestMinScore = float32(0.6)
-		neighbors, _ := lip.NearestByFileFiltered(fileURI, 5, "*_test.go", lipTestMinScore)
-		for _, n := range neighbors {
-			relPath := strings.TrimPrefix(strings.TrimPrefix(n.URI, "file://"+e.repoRoot), "/")
-			if relPath == "" || relPath == sym.File {
-				continue
-			}
-			if _, ok := testFileMap[relPath]; !ok {
-				testFileMap[relPath] = &AffectedTest{
-					FilePath:   relPath,
-					Reason:     "semantic-proximity",
-					AffectedBy: []string{sym.SymbolID},
-					Confidence: float64(n.Score),
-				}
-			}
-		}
-	}
-
-	// Convert map to slice
-	tests := make([]AffectedTest, 0, len(testFileMap))
-	for _, test := range testFileMap {
-		// Cap affected-by list
-		if len(test.AffectedBy) > 5 {
-			test.AffectedBy = test.AffectedBy[:5]
-		}
-		tests = append(tests, *test)
-	}
-
-	// Sort by confidence then path
-	sort.Slice(tests, func(i, j int) bool {
-		if tests[i].Confidence != tests[j].Confidence {
-			return tests[i].Confidence > tests[j].Confidence
-		}
-		return tests[i].FilePath < tests[j].FilePath
-	})
+	tests := changeSet.AffectedTests
 
 	// Build summary
 	summary := &TestSummary{TotalFiles: len(tests)}
@@ -1656,6 +2812,8 @@ func (e *Engine) GetAffectedTests(ctx context.Context, opts GetAffectedTestsOpti
 			summary.TransitiveFiles++
 		case "coverage":
 			summary.CoverageFiles++
+		case reasonUsesChangedFile:
+			summary.FileLevelFiles++
 		}
 	}
 
@@ -1683,7 +2841,307 @@ func (e *Engine) GetAffectedTests(ctx context.Context, opts GetAffectedTestsOpti
 		Confidence:   avgConfidence,
 		RunCommand:   runCommand,
 		Provenance:   provenance,
-	}, nil
+	}
+}
+
+// deriveAffectedTests computes the tests that use or reach a set of changed
+// symbols, given every consumer of them including those in test files. Other
+// consumers are ignored.
+//
+// causes maps a consumer (impactItemKey) to the changed symbols that selected it;
+// those, not the test's own id, go into AffectedBy. TestNames are short names.
+func (e *Engine) deriveAffectedTests(changedSymbols []ChangedSymbolInfo, affectedSymbols []ImpactItem, causes map[string][]string) []AffectedTest {
+	testFileMap := make(map[string]*AffectedTest)
+
+	// 1. Direct test files (tests that reference changed symbols)
+	for _, sym := range affectedSymbols {
+		if sym.Location == nil || !isRunnableTestPath(sym.Location.FileId) {
+			continue
+		}
+		path := ""
+		if sym.Location != nil {
+			path = sym.Location.FileId
+		} else {
+			continue
+		}
+
+		existing, ok := testFileMap[path]
+		if !ok {
+			existing = &AffectedTest{FilePath: path, Reason: categorizeTestReason(sym.Distance), Confidence: sym.Confidence}
+			testFileMap[path] = existing
+		}
+		if categorizeTestReason(sym.Distance) == "direct" {
+			existing.Reason = "direct"
+		}
+		if sym.Confidence > existing.Confidence {
+			existing.Confidence = sym.Confidence
+		}
+		for _, cause := range causes[impactItemKey(&sym)] {
+			existing.AffectedBy = appendUnique(existing.AffectedBy, cause)
+		}
+		if name := impact.ShortName(sym.Name, sym.StableId); name != "" {
+			existing.TestNames = appendUnique(existing.TestNames, name)
+		}
+	}
+
+	// 2. Test files for changed production code (heuristic: find corresponding test files)
+	for _, sym := range changedSymbols {
+		if isTestFilePath(sym.File) {
+			continue // Already a test file
+		}
+
+		// Find corresponding test files
+		testFiles := findCorrespondingTestFiles(e.repoRoot, sym.File)
+		for _, testFile := range testFiles {
+			if _, ok := testFileMap[testFile]; !ok {
+				testFileMap[testFile] = &AffectedTest{
+					FilePath:   testFile,
+					Reason:     "naming-convention", // Named after the file, whether it uses the symbol or not
+					AffectedBy: []string{sym.SymbolID},
+					Confidence: 0.8,
+				}
+			}
+		}
+	}
+
+	// Note: coverage-based test mapping not implemented yet (requires parsing coverage files)
+
+	// 3. LIP semantic pass: for each changed production file, find semantically
+	// similar test files. This catches tests that cover the changed code but don't
+	// follow naming conventions (e.g. integration tests, table-driven suites).
+	for _, sym := range changedSymbols {
+		if isTestFilePath(sym.File) {
+			continue
+		}
+		fileURI := "file://" + filepath.Join(e.repoRoot, sym.File)
+		// Filter to *_test.go files only; require at least 0.6 cosine similarity.
+		const lipTestMinScore = float32(0.6)
+		neighbors, _ := lip.NearestByFileFiltered(fileURI, 5, "*_test.go", lipTestMinScore)
+		for _, n := range neighbors {
+			relPath := strings.TrimPrefix(strings.TrimPrefix(n.URI, "file://"+e.repoRoot), "/")
+			if relPath == "" || relPath == sym.File {
+				continue
+			}
+			if _, ok := testFileMap[relPath]; !ok {
+				testFileMap[relPath] = &AffectedTest{
+					FilePath:   relPath,
+					Reason:     "semantic-proximity",
+					AffectedBy: []string{sym.SymbolID},
+					Confidence: float64(n.Score),
+				}
+			}
+		}
+	}
+
+	// Convert map to slice
+	tests := make([]AffectedTest, 0, len(testFileMap))
+	for _, test := range testFileMap {
+		// Cap the per-file lists; the file is what has to be looked at.
+		if len(test.AffectedBy) > 5 {
+			test.AffectedBy = test.AffectedBy[:5]
+		}
+		if len(test.TestNames) > 5 {
+			test.TestNames = test.TestNames[:5]
+		}
+		tests = append(tests, *test)
+	}
+
+	// Sort by confidence then path
+	sort.Slice(tests, func(i, j int) bool {
+		if tests[i].Confidence != tests[j].Confidence {
+			return tests[i].Confidence > tests[j].Confidence
+		}
+		return tests[i].FilePath < tests[j].FilePath
+	})
+
+	return tests
+}
+
+// impactItemKey identifies a consumer across the per-symbol impact results: its
+// symbol, or its file and line where no enclosing symbol was resolved.
+func impactItemKey(item *ImpactItem) string {
+	if item.StableId != "" {
+		return item.StableId
+	}
+	if item.Location != nil {
+		return fmt.Sprintf("%s:%d", item.Location.FileId, item.Location.StartLine)
+	}
+	return ""
+}
+
+func appendUnique(list []string, value string) []string {
+	for _, have := range list {
+		if have == value {
+			return list
+		}
+	}
+	return append(list, value)
+}
+
+// appendDedupedDecision appends d to decisions if its ID hasn't been seen
+// (per the seen map) and the list hasn't reached capN. Pure helper factored
+// out of AnalyzeChangeSet's per-symbol loop so the dedup/cap logic is
+// unit-testable without a full Engine.
+func appendDedupedDecision(decisions []RelatedDecision, seen map[string]bool, d RelatedDecision, capN int) []RelatedDecision {
+	if len(decisions) >= capN {
+		return decisions
+	}
+	if seen[d.ID] {
+		return decisions
+	}
+	seen[d.ID] = true
+	return append(decisions, d)
+}
+
+// buildContractSignal returns a ContractSignal for symbolName if visibility
+// (refined by language-specific inference via isExportedSymbol) indicates
+// it's public/exported, or nil otherwise. Pure heuristic: a visibility-only,
+// line-level signal, deliberately not called a "breaking change" anywhere.
+func buildContractSignal(symbolName, visibility, language, file string) *ContractSignal {
+	if !isExportedSymbol(symbolName, visibility, language) {
+		return nil
+	}
+	return &ContractSignal{
+		Symbol: symbolName,
+		File:   file,
+		Kind:   "possible-contract-change",
+		Basis:  "heuristic: exported/public symbol lines changed",
+	}
+}
+
+// contractSignalFor flags a changed symbol by what its declaration did. A body edit
+// flags nothing, however public the symbol: its contract is the same text as before.
+// Only a declaration that can't be read falls back on visibility.
+func contractSignalFor(sym impact.ChangedSymbol, declaration impact.DeclarationChange, name, visibility, language string, consumers []string) *ContractSignal {
+	var kind, basis string
+	switch declaration {
+	case impact.DeclUnchanged:
+		return nil
+	case impact.DeclChanged:
+		kind, basis = "signature-changed", "heuristic: declaration text differs across the diff"
+	case impact.DeclRemoved:
+		kind, basis = "definition-removed", "heuristic: declaration is gone from the file, deleted or renamed"
+	case impact.DeclCompatible:
+		kind, basis = "compatible-signature-change", "heuristic: declaration text differs, existing uses should still fit"
+	default:
+		return buildContractSignal(name, visibility, language, sym.File)
+	}
+	signal := &ContractSignal{
+		Symbol: name,
+		File:   sym.File,
+		Kind:   kind,
+		Basis:  basis,
+		Before: boundedText(sym.DeclarationBefore),
+		After:  boundedText(sym.DeclarationAfter),
+	}
+	if language == "go" {
+		signal.Detail = goWireKeyChange(sym.DeclarationBefore, sym.DeclarationAfter, declaration == impact.DeclRemoved)
+	}
+	if files := boundedUniqueSorted(consumers); len(files) > 0 {
+		signal.ConsumerCount = len(files)
+		signal.Consumers = files
+		if len(signal.Consumers) > maxContractConsumers {
+			signal.Consumers = signal.Consumers[:maxContractConsumers]
+		}
+	}
+	return signal
+}
+
+// goWireTagRe reads the key a Go struct tag gives a field in a serialized format.
+var goWireTagRe = regexp.MustCompile(`\b(json|yaml|xml|toml):"([^",]*)`)
+
+// goWireKeyChange names what a field's change does to the keys it is serialized under,
+// which no compiler checks: a client reading `originalCount` finds nothing. Only a
+// field with a tag says it is serialized; an untagged one may never be.
+func goWireKeyChange(before, after string, removed bool) string {
+	was, now := goWireKeys(before), goWireKeys(after)
+	var notes []string
+	for _, format := range []string{"json", "yaml", "xml", "toml"} {
+		old, ok := was[format]
+		if !ok || old == "" {
+			continue
+		}
+		switch current, still := now[format]; {
+		case removed:
+			notes = append(notes, fmt.Sprintf("%s key %q gone", format, old))
+		case !still:
+			notes = append(notes, fmt.Sprintf("%s key %q now the format's default", format, old))
+		case current != old && current != "":
+			notes = append(notes, fmt.Sprintf("%s key %q -> %q", format, old, current))
+		}
+	}
+	if len(notes) == 0 {
+		return ""
+	}
+	return strings.Join(notes, ", ") + " (serialized: readers outside the code don't compile)"
+}
+
+// maxContractConsumers bounds the files named on each signal; ConsumerFiles has them all.
+const maxContractConsumers = 10
+
+func boundedText(text string) string {
+	const limit = 200
+	if len(text) > limit {
+		return text[:limit] + "…"
+	}
+	return text
+}
+
+var publicDeclarationRe = regexp.MustCompile(`^\s*(export|pub)\b`)
+
+// declaresPublic reports whether a declaration's own text marks it as public, for
+// languages where the name doesn't and the index may not say.
+func declaresPublic(declaration string) bool {
+	return publicDeclarationRe.MatchString(declaration)
+}
+
+// recordTestGap updates the untested-consumer count and capped example list
+// (max 5, "Consumer -> Symbol") for one direct consumer. Pure helper so the
+// counting/capping logic is unit-testable without AnalyzeImpact.
+func recordTestGap(untestedCount int, examples []string, consumerName, symbolName string, hasTest bool) (int, []string) {
+	if hasTest {
+		return untestedCount, examples
+	}
+	untestedCount++
+	if len(examples) < 5 {
+		examples = append(examples, fmt.Sprintf("%s -> %s", consumerName, symbolName))
+	}
+	return untestedCount, examples
+}
+
+// hasReachingTest reports whether any test symbol reaches consumer within a
+// depth-2 call graph traversal (caller direction). Used for test-gap
+// synthesis: a direct consumer of a changed symbol counts as "untested" when
+// no test transitively calls it. Conservative on error: if the consumer
+// can't be analyzed, it is reported as unverified (counts as a gap).
+func (e *Engine) hasReachingTest(ctx context.Context, consumer ImpactItem) bool {
+	if consumer.Kind == "test-dependency" || isTestFile(consumer.Location) {
+		return true
+	}
+	if consumer.StableId == "" {
+		return false
+	}
+
+	result, err := e.AnalyzeImpact(ctx, AnalyzeImpactOptions{
+		SymbolId:     consumer.StableId,
+		Depth:        2,
+		IncludeTests: true,
+		AllItems:     true, // A budget cuts transitive items first, and a test can be one
+	})
+	if err != nil {
+		return false
+	}
+	for _, item := range result.DirectImpact {
+		if item.Kind == "test-dependency" || isTestFile(item.Location) {
+			return true
+		}
+	}
+	for _, item := range result.TransitiveImpact {
+		if item.Kind == "test-dependency" || isTestFile(item.Location) {
+			return true
+		}
+	}
+	return false
 }
 
 // isTestFile checks if a location is in a test file.
@@ -1691,38 +3149,7 @@ func isTestFile(loc *LocationInfo) bool {
 	if loc == nil {
 		return false
 	}
-	return isTestFilePathEnhanced(loc.FileId)
-}
-
-// isTestFilePathEnhanced checks if a file path is a test file (more comprehensive than isTestFilePath).
-func isTestFilePathEnhanced(path string) bool {
-	pathLower := strings.ToLower(path)
-
-	// Go tests
-	if strings.HasSuffix(pathLower, "_test.go") {
-		return true
-	}
-	// TypeScript/JavaScript tests
-	if strings.HasSuffix(pathLower, ".test.ts") || strings.HasSuffix(pathLower, ".test.js") ||
-		strings.HasSuffix(pathLower, ".spec.ts") || strings.HasSuffix(pathLower, ".spec.js") ||
-		strings.HasSuffix(pathLower, ".test.tsx") || strings.HasSuffix(pathLower, ".spec.tsx") {
-		return true
-	}
-	// Python tests
-	if strings.HasSuffix(pathLower, "_test.py") || strings.HasPrefix(filepath.Base(pathLower), "test_") {
-		return true
-	}
-	// Dart tests
-	if strings.HasSuffix(pathLower, "_test.dart") {
-		return true
-	}
-	// Test directory patterns
-	if strings.Contains(pathLower, "/test/") || strings.Contains(pathLower, "/tests/") ||
-		strings.Contains(pathLower, "/__tests__/") || strings.Contains(pathLower, "/spec/") {
-		return true
-	}
-
-	return false
+	return isTestFilePath(loc.FileId)
 }
 
 // categorizeTestReason determines if a test is direct or transitive based on distance.
@@ -1799,6 +3226,38 @@ func findCorrespondingTestFiles(repoRoot, sourcePath string) []string {
 }
 
 // fileExists checks if a file exists.
+// jsTestRunner names the JavaScript test runner a repo uses: "vitest" when it
+// has a vitest config or depends on vitest, "jest-config" when it has a jest
+// config, "" when neither shows. Suggesting npx jest in a vitest project hands
+// the agent a command that fails.
+func jsTestRunner(repoRoot string) string {
+	for _, ext := range []string{"ts", "mts", "cts", "js", "mjs", "cjs"} {
+		if fileExists(filepath.Join(repoRoot, "vitest.config."+ext)) {
+			return "vitest"
+		}
+	}
+	for _, ext := range []string{"js", "ts", "mjs", "cjs"} {
+		if fileExists(filepath.Join(repoRoot, "jest.config."+ext)) {
+			return "jest-config"
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(repoRoot, "package.json")); err == nil {
+		var pkg struct {
+			Dependencies    map[string]string `json:"dependencies"`
+			DevDependencies map[string]string `json:"devDependencies"`
+		}
+		if json.Unmarshal(data, &pkg) == nil {
+			if _, ok := pkg.DevDependencies["vitest"]; ok {
+				return "vitest"
+			}
+			if _, ok := pkg.Dependencies["vitest"]; ok {
+				return "vitest"
+			}
+		}
+	}
+	return ""
+}
+
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
@@ -1844,12 +3303,14 @@ func generateTestRunCommand(repoRoot string, tests []AffectedTest) string {
 		return fmt.Sprintf("go test %s", strings.Join(pkgList, " "))
 
 	case len(jsTests) > 0:
-		// Check for common test runners
-		if fileExists(filepath.Join(repoRoot, "jest.config.js")) ||
-			fileExists(filepath.Join(repoRoot, "jest.config.ts")) {
-			return fmt.Sprintf("npm test -- %s", strings.Join(jsTests[:min(5, len(jsTests))], " "))
+		files := strings.Join(jsTests[:min(5, len(jsTests))], " ")
+		switch jsTestRunner(repoRoot) {
+		case "vitest":
+			return fmt.Sprintf("npx vitest run %s", files)
+		case "jest-config":
+			return fmt.Sprintf("npm test -- %s", files)
 		}
-		return fmt.Sprintf("npx jest %s", strings.Join(jsTests[:min(5, len(jsTests))], " "))
+		return fmt.Sprintf("npx jest %s", files)
 
 	case len(pyTests) > 0:
 		return fmt.Sprintf("pytest %s", strings.Join(pyTests[:min(10, len(pyTests))], " "))
@@ -1901,6 +3362,8 @@ func (e *Engine) generateRecommendations(
 	risk *RiskScore,
 	changedSymbols []impact.ChangedSymbol,
 	modules []ModuleImpact,
+	testGaps *TestGapsInfo,
+	contracts []ContractSignal,
 ) []Recommendation {
 	var recs []Recommendation
 
@@ -1911,6 +3374,7 @@ func (e *Engine) generateRecommendations(
 			Severity: "warning",
 			Message:  fmt.Sprintf("High-risk change affecting %d modules. Consider additional code review.", len(modules)),
 			Action:   "Request review from module owners",
+			Source:   "risk",
 		})
 	}
 
@@ -1921,13 +3385,14 @@ func (e *Engine) generateRecommendations(
 			Severity: "info",
 			Message:  fmt.Sprintf("Changes affect %d distinct modules. Consider splitting into focused PRs.", len(modules)),
 			Action:   "Group related changes into separate PRs",
+			Source:   "module-spread",
 		})
 	}
 
 	// Check for low-confidence mappings
 	lowConfidenceCount := 0
 	for _, sym := range changedSymbols {
-		if sym.Confidence < 0.5 {
+		if sym.Confidence < 0.5 && !sym.Trivial {
 			lowConfidenceCount++
 		}
 	}
@@ -1937,6 +3402,7 @@ func (e *Engine) generateRecommendations(
 			Severity: "info",
 			Message:  fmt.Sprintf("%d symbols have low mapping confidence. Index may be stale.", lowConfidenceCount),
 			Action:   "Run 'ckb index' to refresh the SCIP index",
+			Source:   "symbol-mapping-confidence",
 		})
 	}
 
@@ -1947,6 +3413,29 @@ func (e *Engine) generateRecommendations(
 			Severity: "warning",
 			Message:  fmt.Sprintf("Significant transitive impact (%d symbols). Run comprehensive test suite.", summary.TransitivelyAffected),
 			Action:   "Run full test suite before merging",
+			Source:   "transitive-impact",
+		})
+	}
+
+	// Recommend adding tests for untested downstream consumers
+	if testGaps != nil && testGaps.UntestedConsumers > 0 {
+		recs = append(recs, Recommendation{
+			Type:     "test",
+			Severity: "warning",
+			Message:  fmt.Sprintf("%d downstream consumer(s) have no reaching test.", testGaps.UntestedConsumers),
+			Action:   "Add or extend tests covering the affected consumers",
+			Source:   "test-gaps",
+		})
+	}
+
+	// Flag possible contract changes for extra review (heuristic, not verified)
+	if len(contracts) > 0 {
+		recs = append(recs, Recommendation{
+			Type:     "review",
+			Severity: "info",
+			Message:  fmt.Sprintf("%d possible contract change(s) (heuristic: from declaration text or visibility, not compiled).", len(contracts)),
+			Action:   "Double-check API/consumer compatibility for the flagged symbols",
+			Source:   "contracts",
 		})
 	}
 

@@ -1,0 +1,248 @@
+{
+ "lang": "rust",
+ "name": "ripgrep",
+ "repo": "/tmp/ckb940/holdout/ripgrep",
+ "head": "91f5d22ef48bde459d90a8c7dbeab416e97d0f2b",
+ "seed": "ckb-eval-change-v1",
+ "commits_in_pool": 2241,
+ "candidates": 76,
+ "index_lang": "rust",
+ "prep": null,
+ "target": 4,
+ "sample": [
+  {
+   "sha": "7a149c20fe9f7c33c6db4e7c2546505c05c7e96f",
+   "parent": "d8d7560fd082ce2f2e004b70c7993b4eaac25033",
+   "symbol": "new",
+   "kind": "signature",
+   "definers": [
+    "src/ignore.rs",
+    "src/printer.rs"
+   ],
+   "decl_before": [
+    "pubfnnew()->Ignore",
+    "pubfnnew<P:AsRef<Path>>(path:P)->Result<Option<IgnoreDir>,Error>"
+   ],
+   "decl_after": [
+    "fnnew(gi:Option<Gitignore>)->Overrides",
+    "pubfnnew()->Ignore",
+    "pubfnnew<P:AsRef<Path>>(path:P)->Result<Option<IgnoreDir>,Error>"
+   ],
+   "truth_all": [
+    "src/args.rs",
+    "src/gitignore.rs",
+    "src/main.rs",
+    "src/out.rs",
+    "src/search.rs",
+    "src/types.rs"
+   ],
+   "truth_ref": [
+    "src/args.rs",
+    "src/main.rs",
+    "src/search.rs",
+    "src/types.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 10,
+   "rank": "055f680c09c4b93a7fb365a9a051cad46de2b39f51c34ac70655f7a4d3082d0c"
+  },
+  {
+   "sha": "e65ca21a6cebceb9ba79fcd164da24478cc01fb0",
+   "parent": "6771626553934f16306e8409aee78f7a63e43738",
+   "symbol": "parents",
+   "kind": "signature",
+   "definers": [
+    "ignore/src/dir.rs"
+   ],
+   "decl_before": [
+    "pubfnparents(&self)->Parents"
+   ],
+   "decl_after": [
+    "pubfnparents(&mutself,yes:bool)->&mutIgnoreBuilder",
+    "pubfnparents(&self)->Parents"
+   ],
+   "truth_all": [
+    "ignore/src/walk.rs"
+   ],
+   "truth_ref": [
+    "ignore/src/walk.rs"
+   ],
+   "truth_tests": [
+    "tests/tests.rs"
+   ],
+   "truth_tests_ref": [],
+   "files_in_commit": 4,
+   "rank": "05a91ae1142c17f397c85fa01954c411026fde885228e366c99de8d94baa678b"
+  },
+  {
+   "sha": "9c84575229131239f92149cd5790ddb553d7eea8",
+   "parent": "cddb5f57f8fa3413a6210bdd3a8f687b7dac69b2",
+   "symbol": "serialize",
+   "kind": "signature",
+   "definers": [
+    "crates/printer/src/util.rs"
+   ],
+   "decl_before": [
+    "fnserialize<S:Serializer>(&self,ser:S)->Result<S::Ok,S::Error>"
+   ],
+   "decl_after": [
+    "fnserialize<S:serde::Serializer>(&self,ser:S)->Result<S::Ok,S::Error>"
+   ],
+   "truth_all": [
+    "crates/printer/src/jsont.rs",
+    "crates/printer/src/stats.rs"
+   ],
+   "truth_ref": [
+    "crates/printer/src/jsont.rs",
+    "crates/printer/src/stats.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 5,
+   "rank": "06a5901beffc8b293c9f252c9781cac3cc5dbd970c6add9727beaa4def8febf1"
+  },
+  {
+   "sha": "b93762ea7a397b54e9ccf589a45a2c6ad91bc390",
+   "parent": "34677d262246462ce3027ee57be1869a9dc7730a",
+   "symbol": "bstr",
+   "kind": "signature",
+   "definers": [
+    "grep-searcher/src/line_buffer.rs"
+   ],
+   "decl_before": [
+    "fnbstr(&self)->&BStr"
+   ],
+   "decl_after": [
+    "fnbstr(&self)->&::bstr::BStr"
+   ],
+   "truth_all": [
+    "globset/src/glob.rs",
+    "globset/src/lib.rs",
+    "globset/src/pathutil.rs",
+    "grep-cli/src/escape.rs",
+    "grep-cli/src/pattern.rs",
+    "grep-printer/src/standard.rs",
+    "grep-printer/src/util.rs",
+    "grep-searcher/examples/search-stdin.rs",
+    "grep-searcher/src/lines.rs",
+    "grep-searcher/src/searcher/core.rs",
+    "grep-searcher/src/testutil.rs",
+    "grep/examples/simplegrep.rs",
+    "src/config.rs"
+   ],
+   "truth_ref": [
+    "globset/src/lib.rs",
+    "globset/src/pathutil.rs",
+    "grep-cli/src/escape.rs",
+    "grep-printer/src/standard.rs",
+    "grep-printer/src/util.rs",
+    "grep-searcher/src/lines.rs",
+    "grep-searcher/src/searcher/core.rs",
+    "grep-searcher/src/testutil.rs",
+    "src/config.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 20,
+   "rank": "09d2f5cb6ea21ebfcb6d018ae0ad6efbfaabd4351cfa689853d02f459efde9fa"
+  },
+  {
+   "sha": "e8a30cb8934106e63f9d0938c547e535acb7b888",
+   "parent": "03f76053228b646a7febed3853ab28f42b83b1ad",
+   "symbol": "new",
+   "kind": "signature",
+   "definers": [
+    "src/printer.rs"
+   ],
+   "decl_before": [
+    "pubfnnew()->ColorChoice",
+    "pubfnnew(wtr:W)->Printer<W>"
+   ],
+   "decl_after": [
+    "pubfnnew(user_specs:&[Spec])->ColorSpecs",
+    "pubfnnew(wtr:W)->Printer<W>"
+   ],
+   "truth_all": [
+    "src/app.rs",
+    "src/args.rs",
+    "src/atty.rs",
+    "src/main.rs",
+    "src/search_buffer.rs",
+    "src/search_stream.rs",
+    "src/worker.rs"
+   ],
+   "truth_ref": [
+    "src/args.rs",
+    "src/main.rs",
+    "src/search_buffer.rs",
+    "src/search_stream.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 23,
+   "rank": "0daf9c41a2734dd20b5fb1fe9d4dd079293ffed638bd8d552efa1187cade6282"
+  },
+  {
+   "sha": "ca740d9ace9065103036c101ca973b79e59ae85a",
+   "parent": "e80c102dee181a623b802e610fe17548fa877c6f",
+   "symbol": "new",
+   "kind": "signature",
+   "definers": [
+    "crates/regex/src/literal.rs"
+   ],
+   "decl_before": [
+    "pub(crate)fnnew(chir:&ConfiguredHIR,re:&Regex)->InnerLiterals"
+   ],
+   "decl_after": [
+    "fnnew()->Extractor",
+    "fnnew<I,B>(it:I)->TSeqwhereI:IntoIterator<Item=B>,B:AsRef<[u8]>,",
+    "pub(crate)fnnew(chir:&ConfiguredHIR,re:&Regex)->InnerLiterals"
+   ],
+   "truth_all": [
+    "crates/regex/src/matcher.rs"
+   ],
+   "truth_ref": [
+    "crates/regex/src/matcher.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 2,
+   "rank": "0f93c620b654084c64f4428374325a01946c5acae1f8c93ac6c517c55859257b"
+  },
+  {
+   "sha": "0766617e07ecccdeef8647f783f81deab9d03eac",
+   "parent": "afd99c43d7aee8bd85e728b2c947ccdc2ecc3bc7",
+   "symbol": "new",
+   "kind": "signature",
+   "definers": [
+    "src/out.rs",
+    "src/printer.rs"
+   ],
+   "decl_before": [
+    "pubfnnew(wtr:W)->Out<W>"
+   ],
+   "decl_after": [
+    "pubfnnew(color:bool)->Out",
+    "pubfnnew(color:bool)->OutBuffer",
+    "pubfnnew(wtr:W)->NoColorTerminal<W>"
+   ],
+   "truth_all": [
+    "src/args.rs",
+    "src/main.rs",
+    "src/search.rs",
+    "src/search_buffer.rs"
+   ],
+   "truth_ref": [
+    "src/args.rs",
+    "src/main.rs",
+    "src/search.rs",
+    "src/search_buffer.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 6,
+   "rank": "106a8a17e5a79b5924d757af415748d2907419a0f4b219c9d5677bfa7526fc00"
+  }
+ ]
+}

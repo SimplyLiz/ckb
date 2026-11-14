@@ -1,0 +1,22 @@
+{
+  "description": "At session start, after /clear and after compaction: one to three lines on the CKB index of this repo (current, behind HEAD, being built, missing and why). In the background: installs the plugin's pinned ckb into its data directory when no compatible ckb is on PATH.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CKB_SHIM_NO_NPX=1 \"${CLAUDE_PLUGIN_ROOT}/scripts/ckb\" hook session-start 2>/dev/null || true",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/ckb-install\"",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

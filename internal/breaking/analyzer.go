@@ -1,7 +1,6 @@
 package breaking
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -27,40 +26,13 @@ func NewAnalyzer(scipAdapter *scip.SCIPAdapter, repoRoot string, logger *slog.Lo
 }
 
 // Compare analyzes API changes between two versions
-func (a *Analyzer) Compare(ctx context.Context, opts CompareOptions) (*CompareResult, error) {
-	if opts.IgnorePrivate {
-		opts.IgnorePrivate = true // Default to true
-	}
-
-	a.logger.Debug("Starting breaking change analysis",
-		"baseRef", opts.BaseRef,
-		"targetRef", opts.TargetRef,
-		"scope", opts.Scope)
-
-	// For now, we can only analyze the current state (targetRef)
-	// Full git ref comparison would require indexing at different commits
-	// This simplified version analyzes current exported symbols
-
-	targetSymbols := a.extractAPISymbols(opts)
-
-	// Build the result with current analysis
-	// Note: Full implementation would diff two SCIP indexes
-	result := &CompareResult{
-		BaseRef:            opts.BaseRef,
-		TargetRef:          opts.TargetRef,
-		Changes:            []APIChange{},
-		TotalBaseSymbols:   0, // Would need to index base ref
-		TotalTargetSymbols: len(targetSymbols),
-	}
-
-	// For now, report all symbols as the API surface
-	// A full implementation would compare base vs target
-	a.logger.Debug("API analysis completed", "targetSymbols", len(targetSymbols))
-
-	result.Summary = a.computeSummary(result.Changes)
-	result.SemverAdvice = a.computeSemverAdvice(result.Summary)
-
-	return result, nil
+// Summarize counts changes and advises a semver bump, the way CompareSymbolSets does
+// for its own result. Callers that find changes another way (the change set's
+// declaration comparison) use it to report them in the same shape.
+func Summarize(changes []APIChange) (*Summary, string) {
+	a := &Analyzer{}
+	summary := a.computeSummary(changes)
+	return summary, a.computeSemverAdvice(summary)
 }
 
 // CompareSymbolSets compares two sets of API symbols directly
@@ -230,87 +202,6 @@ func severityOrder(s Severity) int {
 	}
 }
 
-// extractAPISymbols extracts all exported symbols from the current SCIP index
-func (a *Analyzer) extractAPISymbols(opts CompareOptions) []APISymbol {
-	if a.scipAdapter == nil || !a.scipAdapter.IsAvailable() {
-		return nil
-	}
-
-	allSymbols := a.scipAdapter.AllSymbols()
-	if allSymbols == nil {
-		return nil
-	}
-
-	var apiSymbols []APISymbol
-
-	for _, sym := range allSymbols {
-		if sym.Symbol == "" {
-			continue
-		}
-
-		// Extract symbol info
-		name := extractNameFromSymbol(sym.Symbol)
-		if name == "" {
-			continue
-		}
-
-		// Check if exported (Go: uppercase first letter)
-		exported := isExported(name)
-		if opts.IgnorePrivate && !exported {
-			continue
-		}
-
-		filePath := extractFilePathFromSymbol(sym.Symbol)
-
-		// Check scope
-		if len(opts.Scope) > 0 && !isInScope(filePath, opts.Scope) {
-			continue
-		}
-
-		// Skip test files
-		if isTestFile(filePath) {
-			continue
-		}
-
-		kind := kindToString(sym.Kind)
-		if kind == "unknown" || kind == "parameter" || kind == "variable" {
-			continue
-		}
-
-		apiSymbol := APISymbol{
-			Name:     name,
-			Kind:     kind,
-			Package:  extractPackageFromSymbol(sym.Symbol),
-			FilePath: filePath,
-			Exported: exported,
-		}
-
-		// Extract signature from display name or documentation
-		if len(sym.Documentation) > 0 {
-			apiSymbol.Documentation = strings.Join(sym.Documentation, "\n")
-			// Check for deprecation markers
-			for _, doc := range sym.Documentation {
-				if strings.Contains(strings.ToLower(doc), "deprecated") {
-					apiSymbol.Deprecated = true
-					break
-				}
-			}
-		}
-
-		if sym.DisplayName != "" {
-			if kind == "function" || kind == "method" {
-				apiSymbol.Signature = sym.DisplayName
-			} else if kind == "type" {
-				apiSymbol.TypeSignature = sym.DisplayName
-			}
-		}
-
-		apiSymbols = append(apiSymbols, apiSymbol)
-	}
-
-	return apiSymbols
-}
-
 // symbolKey generates a unique key for a symbol
 func (a *Analyzer) symbolKey(sym APISymbol) string {
 	return fmt.Sprintf("%s.%s.%s", sym.Package, sym.Kind, sym.Name)
@@ -396,45 +287,6 @@ func extractNameFromSymbol(symbolID string) string {
 	return name
 }
 
-func extractFilePathFromSymbol(symbolID string) string {
-	parts := strings.Split(symbolID, " ")
-	for _, part := range parts {
-		if strings.HasSuffix(part, ".go") ||
-			strings.HasSuffix(part, ".ts") ||
-			strings.HasSuffix(part, ".js") ||
-			strings.HasSuffix(part, ".py") {
-			idx := strings.LastIndex(part, "/")
-			if idx > 0 {
-				for i := idx + 1; i < len(part); i++ {
-					if part[i] == '/' {
-						return part[:i]
-					}
-				}
-			}
-			return part
-		}
-	}
-	return ""
-}
-
-func extractPackageFromSymbol(symbolID string) string {
-	parts := strings.Split(symbolID, " ")
-	for i, part := range parts {
-		if strings.HasSuffix(part, ".go") {
-			// Package is typically before the file
-			if i > 0 {
-				prev := parts[i-1]
-				if strings.Contains(prev, "/") {
-					lastSlash := strings.LastIndex(prev, "/")
-					return prev[lastSlash+1:]
-				}
-				return prev
-			}
-		}
-	}
-	return ""
-}
-
 func isExported(name string) bool {
 	if name == "" {
 		return false
@@ -450,41 +302,4 @@ func isTestFile(path string) bool {
 		strings.HasSuffix(path, "_test.py") ||
 		strings.Contains(path, "/tests/") ||
 		strings.Contains(path, "/__tests__/")
-}
-
-func isInScope(filePath string, scope []string) bool {
-	if len(scope) == 0 {
-		return true
-	}
-	for _, s := range scope {
-		if strings.HasPrefix(filePath, s) || strings.HasPrefix(filePath, s+"/") {
-			return true
-		}
-	}
-	return false
-}
-
-func kindToString(kind int32) string {
-	switch kind {
-	case 1:
-		return "package"
-	case 2:
-		return "type"
-	case 3:
-		return "term"
-	case 4:
-		return "method"
-	case 5:
-		return "type_parameter"
-	case 6:
-		return "parameter"
-	case 7:
-		return "self_parameter"
-	case 8:
-		return "attr"
-	case 9:
-		return "macro"
-	default:
-		return "unknown"
-	}
 }

@@ -103,6 +103,7 @@ type Symbol struct {
 	StartLine     int    // 1-indexed start line
 	EndLine       int    // 1-indexed end line
 	Documentation string // Doc comment if available
+	Callable      bool   // Function, method or function-valued constant (scip.IsCallableDefinition)
 }
 
 // Reference is a simplified reference for delta tracking

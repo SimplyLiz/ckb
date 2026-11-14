@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "ckb": {
-      "command": "/Users/lisa/Work/Ideas/CodeMCP/ckb",
+      "command": "/Users/lisa/Work/Projects/CKB/src/ckb",
       "args": [
         "mcp"
       ]

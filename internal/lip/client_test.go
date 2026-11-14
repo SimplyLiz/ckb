@@ -1137,3 +1137,23 @@ func TestSocketPath_Default(t *testing.T) {
 		t.Errorf("SocketPath base = %q, want lip.sock", filepath.Base(got))
 	}
 }
+
+func TestEncodeFrame(t *testing.T) {
+	frame, err := encodeFrame([]byte(`{"type":"ping"}`))
+	if err != nil {
+		t.Fatalf("encodeFrame: %v", err)
+	}
+	if got := binary.BigEndian.Uint32(frame[:4]); got != 15 {
+		t.Errorf("length prefix = %d, want 15", got)
+	}
+	if string(frame[4:]) != `{"type":"ping"}` {
+		t.Errorf("payload = %q", frame[4:])
+	}
+
+	if _, err := encodeFrame(make([]byte, maxFrameBytes)); err != nil {
+		t.Errorf("frame at the limit rejected: %v", err)
+	}
+	if _, err := encodeFrame(make([]byte, maxFrameBytes+1)); err == nil {
+		t.Error("frame over the limit accepted")
+	}
+}

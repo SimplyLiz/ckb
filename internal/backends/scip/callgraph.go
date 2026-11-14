@@ -3,12 +3,18 @@ package scip
 import (
 	"sort"
 	"strings"
+
+	bindingscip "github.com/sourcegraph/scip/bindings/go/scip"
+
+	scippb "github.com/sourcegraph/scip/bindings/go/scip"
 )
 
 // DefaultMaxFunctionLines is the default maximum function length (in lines) used
-// when we can't determine the actual function boundary. This is a heuristic
-// workaround because scip-go doesn't populate EnclosingRange for functions.
-// This value is conservative to avoid missing callees in long functions.
+// when we can't determine the actual function boundary, which only happens for
+// an index without EnclosingRange on its functions. Current scip-go,
+// rust-analyzer and scip-typescript all populate it for functions and methods;
+// older scip-go versions did not. This value is conservative to avoid missing
+// callees in long functions.
 const DefaultMaxFunctionLines = 500
 
 // CallGraphNode represents a node in the call graph
@@ -60,16 +66,23 @@ func (idx *SCIPIndex) FindCallees(symbolId string) ([]*CallGraphNode, error) {
 	var funcDoc *Document
 	var funcDefLine int = -1
 
-	for _, doc := range idx.Documents {
-		for _, occ := range doc.Occurrences {
-			if occ.Symbol == symbolId && occ.SymbolRoles&SymbolRoleDefinition != 0 {
-				funcDoc = doc
-				funcDefLine = int(occ.Range[0]) // #nosec G115 -- SCIP int32 fits in int
+	if idx.DefinitionIndex != nil {
+		if ref := idx.DefinitionIndex[symbolId]; ref != nil && ref.Doc != nil && len(ref.Occ.Range) > 0 {
+			funcDoc = ref.Doc
+			funcDefLine = int(ref.Occ.Range[0]) // #nosec G115 -- SCIP int32 fits in int
+		}
+	} else {
+		for _, doc := range idx.Documents {
+			for _, occ := range doc.Occurrences {
+				if occ.Symbol == symbolId && occ.SymbolRoles&SymbolRoleDefinition != 0 {
+					funcDoc = doc
+					funcDefLine = int(occ.Range[0]) // #nosec G115 -- SCIP int32 fits in int
+					break
+				}
+			}
+			if funcDoc != nil {
 				break
 			}
-		}
-		if funcDoc != nil {
-			break
 		}
 	}
 
@@ -110,14 +123,14 @@ func (idx *SCIPIndex) FindCallees(symbolId string) ([]*CallGraphNode, error) {
 			continue
 		}
 
-		// Check if the target is a callable (function, method)
-		// Use isFunctionSymbol since scip-go doesn't populate Kind
-		if isFunctionSymbol(occ.Symbol) {
+		// Check if the target is a callable (function, method, function-valued
+		// constant). The ID decides first, since scip-go doesn't populate Kind.
+		if idx.IsCallable(occ.Symbol) {
 			seen[occ.Symbol] = true
 
 			kind := KindFunction
 			if symInfo := idx.GetSymbol(occ.Symbol); symInfo != nil {
-				if k := mapSCIPKind(symInfo.Kind); k != KindUnknown {
+				if k := MapSCIPKind(symInfo.Kind); k != KindUnknown {
 					kind = k
 				}
 			}
@@ -147,10 +160,13 @@ func (idx *SCIPIndex) FindCallers(symbolId string) ([]*CallGraphNode, error) {
 	}
 	callers := make([]*CallGraphNode, 0, len(callerIDs))
 	for _, callerID := range callerIDs {
+		if IsModuleScopeSymbol(callerID) {
+			continue // file/module scope, not a function: same rule as convertToReference
+		}
 		symInfo := idx.GetSymbol(callerID)
 		kind := KindFunction
 		if symInfo != nil {
-			if k := mapSCIPKind(symInfo.Kind); k != KindUnknown {
+			if k := MapSCIPKind(symInfo.Kind); k != KindUnknown {
 				kind = k
 			}
 		}
@@ -192,7 +208,9 @@ func buildCallerIndex(docs []*Document) map[string][]string {
 			continue
 		}
 
-		// Sort intervals by start line for early-break during occurrence scan.
+		// Sort intervals by start line for early-break during occurrence scan,
+		// outermost first among equal starts, so the last interval containing
+		// a line is the innermost function around it.
 		ivs = ivs[:0]
 		if cap(ivs) < len(funcRanges) {
 			ivs = make([]interval, 0, len(funcRanges))
@@ -200,33 +218,40 @@ func buildCallerIndex(docs []*Document) map[string][]string {
 		for sym, lr := range funcRanges {
 			ivs = append(ivs, interval{sym, lr.start, lr.end})
 		}
-		sort.Slice(ivs, func(i, j int) bool { return ivs[i].start < ivs[j].start })
+		sort.Slice(ivs, func(i, j int) bool {
+			if ivs[i].start != ivs[j].start {
+				return ivs[i].start < ivs[j].start
+			}
+			return ivs[i].end > ivs[j].end
+		})
 
 		// Bump generation to logically clear docSeen without re-allocating.
 		gen++
 
 		for _, occ := range doc.Occurrences {
-			if occ.Symbol == "" || occ.SymbolRoles&SymbolRoleDefinition != 0 {
+			// A local's ID is only unique within its document; keyed globally,
+			// "local 12" in one file would collect the callers of every other
+			// file's "local 12".
+			if occ.Symbol == "" || IsLocalSymbol(occ.Symbol) || occ.SymbolRoles&SymbolRoleDefinition != 0 {
 				continue
 			}
 			occLine := int(occ.Range[0]) // #nosec G115 -- SCIP int32 fits in int
+			caller := ""
 			for _, iv := range ivs {
 				if occLine < iv.start {
 					break // ivs sorted by start; no later interval can contain occLine
 				}
 				if occLine <= iv.end {
-					callee := occ.Symbol
-					caller := iv.symbol
-					if caller == callee {
-						break // skip self-references
-					}
-					e := edge{callee, caller}
-					if docSeen[e] != gen {
-						docSeen[e] = gen
-						callerIdx[callee] = append(callerIdx[callee], caller)
-					}
-					break
+					caller = iv.symbol // keep going: a later match is more deeply nested
 				}
+			}
+			if caller == "" || caller == occ.Symbol {
+				continue // outside any function, or a self-reference
+			}
+			e := edge{occ.Symbol, caller}
+			if docSeen[e] != gen {
+				docSeen[e] = gen
+				callerIdx[occ.Symbol] = append(callerIdx[occ.Symbol], caller)
 			}
 		}
 	}
@@ -240,69 +265,336 @@ type lineRange struct {
 	end   int
 }
 
-// buildFunctionRanges builds a map of function symbol -> line range for a document
-// It infers function end lines by looking at the next function's start line
+// buildFunctionRanges builds a map of function symbol -> line range for a
+// document. The bound comes from the indexer's EnclosingRange where it gave one;
+// otherwise the end is inferred from the next function's start line.
 func buildFunctionRanges(doc *Document) map[string]lineRange {
 	ranges := make(map[string]lineRange)
-
-	// Collect all function definition locations
-	type funcDef struct {
-		symbol    string
-		startLine int
+	for _, b := range functionBounds(doc) {
+		ranges[b.Symbol] = lineRange{start: b.Start, end: b.End}
 	}
-	var funcs []funcDef
-
-	for _, sym := range doc.Symbols {
-		// Detect functions from symbol ID format since scip-go doesn't set Kind
-		// Functions have () in the symbol ID, e.g., "...`pkg`/FuncName()."
-		if !isFunctionSymbol(sym.Symbol) && mapSCIPKind(sym.Kind) != KindFunction && mapSCIPKind(sym.Kind) != KindMethod {
-			continue
-		}
-
-		// Find the definition occurrence for this symbol
-		for _, occ := range doc.Occurrences {
-			if occ.Symbol == sym.Symbol && occ.SymbolRoles&SymbolRoleDefinition != 0 {
-				funcs = append(funcs, funcDef{
-					symbol:    sym.Symbol,
-					startLine: int(occ.Range[0]), // #nosec G115 -- SCIP int32 fits in int
-				})
-				break
-			}
-		}
-	}
-
-	// Sort by start line
-	sort.Slice(funcs, func(i, j int) bool {
-		return funcs[i].startLine < funcs[j].startLine
-	})
-
-	// Assign end lines (next function's start - 1, or a reasonable default)
-	for i, f := range funcs {
-		endLine := f.startLine + DefaultMaxFunctionLines
-		if i+1 < len(funcs) {
-			endLine = funcs[i+1].startLine - 1
-		}
-		ranges[f.symbol] = lineRange{start: f.startLine, end: endLine}
-	}
-
 	return ranges
 }
 
-// isFunctionSymbol detects if a SCIP symbol ID represents a function/method.
-// This is a heuristic workaround because scip-go doesn't populate the Kind field.
-// scip-go uses format like: scip-go gomod mod version `pkg`/FuncName().
-// Functions have "()" before the final "." in the descriptor.
+// BoundsPrecision says how far a DefinitionBound's line range can be trusted.
+type BoundsPrecision int
+
+const (
+	// BoundsExact means the range is the indexer's own EnclosingRange.
+	BoundsExact BoundsPrecision = iota
+	// BoundsInferred means a function without EnclosingRange, closed off at the
+	// next function or DefaultMaxFunctionLines. Whatever sits between two
+	// functions is inside the range too.
+	BoundsInferred
+	// BoundsPoint means only the definition's own line is known: scip-go gives
+	// types, constants, variables and fields no EnclosingRange, so a multi-line
+	// initializer or struct body has no known extent.
+	BoundsPoint
+)
+
+// DefinitionBound is where one definition in a document starts and ends.
+// Lines are 0-based and inclusive, as in SCIP ranges.
+type DefinitionBound struct {
+	Symbol    string
+	DefLine   int // line of the defining identifier
+	Start     int
+	End       int
+	Precision BoundsPrecision
+}
+
+// DefinitionBounds returns the bounds of every definition in a document that a
+// code change can be attributed to (see IsChangeableDefinition).
+func DefinitionBounds(doc *Document) []DefinitionBound {
+	kinds := make(map[string]int32, len(doc.Symbols))
+	for _, sym := range doc.Symbols {
+		kinds[sym.Symbol] = sym.Kind
+	}
+	functions := make(map[string]DefinitionBound)
+	for _, b := range functionBounds(doc) {
+		functions[b.Symbol] = b
+	}
+
+	bounds := make([]DefinitionBound, 0, len(doc.Occurrences))
+	for _, occ := range doc.Occurrences {
+		if occ.SymbolRoles&SymbolRoleDefinition == 0 || len(occ.Range) == 0 {
+			continue
+		}
+		if !IsChangeableDefinition(occ.Symbol) || isContainerOrParameterKind(kinds[occ.Symbol]) {
+			continue
+		}
+		line := int(occ.Range[0]) // #nosec G115 -- SCIP int32 fits in int
+		if start, end, ok := enclosingLines(occ); ok {
+			bounds = append(bounds, DefinitionBound{Symbol: occ.Symbol, DefLine: line, Start: start, End: end, Precision: BoundsExact})
+			continue
+		}
+		if f, ok := functions[occ.Symbol]; ok && f.DefLine == line {
+			bounds = append(bounds, f)
+			continue
+		}
+		bounds = append(bounds, DefinitionBound{Symbol: occ.Symbol, DefLine: line, Start: line, End: line, Precision: BoundsPoint})
+	}
+	return bounds
+}
+
+// IsLocalSymbol reports whether a symbol is a SCIP local ("local 12"): visible in
+// one document only, and with an ID that means nothing outside it.
+func IsLocalSymbol(symbolID string) bool {
+	return strings.HasPrefix(symbolID, "local ")
+}
+
+// IsChangeableDefinition reports whether a symbol is the kind of definition a
+// code change can belong to. Locals, parameters and type parameters are part of
+// the definition around them; a package or namespace is not changed because a
+// line inside it was.
+func IsChangeableDefinition(symbolID string) bool {
+	if symbolID == "" || IsLocalSymbol(symbolID) {
+		return false
+	}
+	sym, err := bindingscip.ParseSymbol(symbolID)
+	if err != nil {
+		return true // legacy identifier that can't be taken apart: nothing rules it out
+	}
+	if len(sym.Descriptors) == 0 {
+		return false
+	}
+	switch sym.Descriptors[len(sym.Descriptors)-1].Suffix {
+	case bindingscip.Descriptor_Namespace, bindingscip.Descriptor_Parameter, bindingscip.Descriptor_TypeParameter,
+		bindingscip.Descriptor_Local, bindingscip.Descriptor_Meta:
+		return false
+	}
+	return true
+}
+
+// SymbolSimpleName returns the bare name of a symbol ("sum" for
+// "... impl#[Point]sum()."), or "" if the identifier can't be parsed.
+// ConstructorType returns the type a compiler-named constructor belongs to, `Foo`
+// for `Foo#<constructor>().`, and "" for any other symbol. A use of the
+// constructor spells the type (`new Foo(x)`), never the member's name.
+func ConstructorType(symbolID string) string {
+	sym, err := bindingscip.ParseSymbol(symbolID)
+	if err != nil || len(sym.Descriptors) < 2 {
+		return ""
+	}
+	switch sym.Descriptors[len(sym.Descriptors)-1].Name {
+	case "<constructor>", "<init>":
+		return sym.Descriptors[len(sym.Descriptors)-2].Name
+	}
+	return ""
+}
+
+// SpelledNames are the words source text spells a symbol with. Mostly its name; a
+// compiler-named constructor is spelled as its type where it is used (`new Foo(x)`,
+// Java's `Foo(x)`) and as `constructor` where TypeScript declares it. Nil if the
+// identifier can't be parsed.
+func SpelledNames(symbolID string) []string {
+	if class := ConstructorType(symbolID); class != "" {
+		return []string{class, "constructor"}
+	}
+	if name := SymbolSimpleName(symbolID); name != "" {
+		return []string{name}
+	}
+	return nil
+}
+
+func SymbolSimpleName(symbolID string) string {
+	sym, err := bindingscip.ParseSymbol(symbolID)
+	if err != nil || len(sym.Descriptors) == 0 {
+		return ""
+	}
+	return sym.Descriptors[len(sym.Descriptors)-1].Name
+}
+
+// isContainerOrParameterKind covers the same exclusions as
+// IsChangeableDefinition for indexers that only say so through the symbol kind.
+func isContainerOrParameterKind(kind int32) bool {
+	switch bindingscip.SymbolInformation_Kind(kind) {
+	case bindingscip.SymbolInformation_File, bindingscip.SymbolInformation_Module,
+		bindingscip.SymbolInformation_Namespace, bindingscip.SymbolInformation_Package,
+		bindingscip.SymbolInformation_PackageObject, bindingscip.SymbolInformation_Parameter,
+		bindingscip.SymbolInformation_SelfParameter, bindingscip.SymbolInformation_TypeParameter:
+		return true
+	}
+	return false
+}
+
+// isCallableKind reports whether a SymbolInformation.Kind is a function-like one.
+func isCallableKind(kind int32) bool {
+	switch bindingscip.SymbolInformation_Kind(kind) {
+	case bindingscip.SymbolInformation_Function, bindingscip.SymbolInformation_Method,
+		bindingscip.SymbolInformation_Constructor, bindingscip.SymbolInformation_StaticMethod,
+		bindingscip.SymbolInformation_TraitMethod, bindingscip.SymbolInformation_AbstractMethod,
+		bindingscip.SymbolInformation_ProtocolMethod, bindingscip.SymbolInformation_PureVirtualMethod,
+		bindingscip.SymbolInformation_SingletonMethod, bindingscip.SymbolInformation_Macro:
+		return true
+	}
+	return false
+}
+
+// enclosingLines returns the line span of an occurrence's EnclosingRange. SCIP
+// ranges are [startLine, startCol, endCol] on a single line or
+// [startLine, startCol, endLine, endCol] across several.
+func enclosingLines(occ *Occurrence) (start, end int, ok bool) {
+	switch len(occ.EnclosingRange) {
+	case 3:
+		return int(occ.EnclosingRange[0]), int(occ.EnclosingRange[0]), true // #nosec G115 -- SCIP int32 fits in int
+	case 4:
+		return int(occ.EnclosingRange[0]), int(occ.EnclosingRange[2]), true // #nosec G115 -- SCIP int32 fits in int
+	}
+	return 0, 0, false
+}
+
+// FunctionBounds is functionBounds for code that reads documents itself: the
+// call sites of a document belong to the innermost bound that holds them.
+func FunctionBounds(doc *Document) []DefinitionBound {
+	return functionBounds(doc)
+}
+
+// functionBounds returns the bounds of every function in a document, one per
+// symbol: EnclosingRange where the indexer gave it, otherwise closed off at the
+// next function. A local function is not one of them: what it calls is called by
+// the function around it, and it must not end that function's inferred range.
+func functionBounds(doc *Document) []DefinitionBound {
+	callable := make(map[string]bool, len(doc.Symbols))
+	kinds := make(map[string]int32, len(doc.Symbols))
+	for _, sym := range doc.Symbols {
+		kinds[sym.Symbol] = sym.Kind
+		// Detect functions from the symbol ID as well: Kind is optional in SCIP,
+		// and scip-typescript never sets it.
+		if !IsLocalSymbol(sym.Symbol) && (isFunctionSymbol(sym.Symbol) || isCallableKind(sym.Kind)) {
+			callable[sym.Symbol] = true
+		}
+	}
+
+	var funcs []DefinitionBound
+	seen := make(map[string]bool, len(callable))
+	for _, occ := range doc.Occurrences {
+		if seen[occ.Symbol] || occ.SymbolRoles&SymbolRoleDefinition == 0 || len(occ.Range) == 0 {
+			continue
+		}
+		if !callable[occ.Symbol] && !isFunctionValuedTerm(occ.Symbol, kinds[occ.Symbol], occ) {
+			continue
+		}
+		seen[occ.Symbol] = true
+		funcs = append(funcs, DefinitionBound{Symbol: occ.Symbol, DefLine: int(occ.Range[0])}) // #nosec G115 -- SCIP int32 fits in int
+		if start, end, ok := enclosingLines(occ); ok {
+			f := &funcs[len(funcs)-1]
+			f.Start, f.End, f.Precision = start, end, BoundsExact
+		} else {
+			funcs[len(funcs)-1].Precision = BoundsInferred
+		}
+	}
+
+	sort.Slice(funcs, func(i, j int) bool { return funcs[i].DefLine < funcs[j].DefLine })
+
+	for i := range funcs {
+		if funcs[i].Precision != BoundsInferred {
+			continue
+		}
+		funcs[i].Start = funcs[i].DefLine
+		funcs[i].End = funcs[i].DefLine + DefaultMaxFunctionLines
+		if i+1 < len(funcs) {
+			funcs[i].End = funcs[i+1].DefLine - 1
+		}
+	}
+	return funcs
+}
+
+// isFunctionValuedTerm reports whether a term definition is a function written
+// as a value, `export const f = (x) => …`, which SCIP names like any other
+// constant ("f."). scip-typescript gives such a definition an EnclosingRange
+// that covers the initializer only, so it starts after the name; a plain
+// constant gets none, and the range rust-analyzer gives `const LIMIT` starts at
+// the keyword, before the name. An indexer that states a Kind has said what the
+// symbol is, so only a symbol without one is looked at.
+func isFunctionValuedTerm(symbolID string, kind int32, def *Occurrence) bool {
+	if def == nil {
+		return false
+	}
+	return IsFunctionValuedTerm(symbolID, kind, def.Range, def.EnclosingRange)
+}
+
+// IsFunctionValuedTerm is isFunctionValuedTerm on the raw ranges of a
+// definition occurrence, for callers that hold the protobuf types.
+func IsFunctionValuedTerm(symbolID string, kind int32, rng, enclosing []int32) bool {
+	if kind != 0 || IsLocalSymbol(symbolID) || !strings.HasSuffix(symbolID, ".") || isFunctionSymbol(symbolID) {
+		return false
+	}
+	if len(rng) < 3 || len(enclosing) < 3 {
+		return false
+	}
+	nameEndLine, nameEndCol := rng[0], rng[2]
+	if len(rng) >= 4 {
+		nameEndLine, nameEndCol = rng[2], rng[3]
+	}
+	encLine, encCol := enclosing[0], enclosing[1]
+	return encLine > nameEndLine || encLine == nameEndLine && encCol >= nameEndCol
+}
+
+// IsCallableDefinition decides for one definition occurrence whether its
+// symbol can be called, from what a single document knows: the ID, the Kind
+// the indexer stated (0 when it stated none), and the definition's ranges.
+// It is the rule SCIPIndex.IsCallable applies, for code that reads documents
+// one at a time.
+func IsCallableDefinition(symbolID string, kind int32, rng, enclosing []int32) bool {
+	return isFunctionSymbol(symbolID) || isCallableKind(kind) || IsFunctionValuedTerm(symbolID, kind, rng, enclosing)
+}
+
+// IsCallableReference decides whether a reference targets something callable
+// when only the ID and, if the target is defined in the same document, its
+// Kind are known. A function-valued constant defined in another document is
+// missed: telling it apart from a plain constant needs its definition.
+func IsCallableReference(symbolID string, kind int32) bool {
+	return isFunctionSymbol(symbolID) || isCallableKind(kind)
+}
+
+// IsCallableKind reports whether a SCIP SymbolInformation.Kind is a callable.
+// The values are SCIP's own enum, not LSP's SymbolKind (where 6 and 12 are
+// method and function; in SCIP they are Boolean and EnumMember).
+func IsCallableKind(kind int32) bool {
+	return isCallableKind(kind)
+}
+
+// IsFunctionSymbol reports whether a SCIP ID names a function or method by its
+// descriptor alone (see isFunctionSymbol).
+func IsFunctionSymbol(symbolID string) bool {
+	return isFunctionSymbol(symbolID)
+}
+
+// IsCallable reports whether a symbol is something that can be called: a
+// function or method by its ID or Kind, or a function-valued constant (see
+// isFunctionValuedTerm). The ID alone misses the last kind, which in a
+// TypeScript codebase written with arrow functions is most of them.
+func (idx *SCIPIndex) IsCallable(symbolID string) bool {
+	if isFunctionSymbol(symbolID) {
+		return true
+	}
+	var kind int32
+	if sym := idx.GetSymbol(symbolID); sym != nil {
+		if isCallableKind(sym.Kind) {
+			return true
+		}
+		kind = sym.Kind
+	}
+	if ref := idx.DefinitionIndex[symbolID]; ref != nil {
+		return isFunctionValuedTerm(symbolID, kind, ref.Occ)
+	}
+	return false
+}
+
+// isFunctionSymbol detects if a SCIP symbol ID represents a function/method from
+// its descriptor, because Kind is optional in SCIP. A method descriptor is
+// "name(disambiguator)." at the very end of the ID, which leaves out a
+// parameter ("Target().(x)") and anything else nested inside a function.
 //
 // Examples:
-//   - "scip-go go ckb/internal/query NewEngine()." → function (has "()")
-//   - "scip-go go ckb/internal/query Engine#Close()." → method (has "()")
-//   - "scip-go go ckb/internal/query Engine#" → type (no "()")
-//   - "scip-go go ckb/internal/query Engine#logger." → field (no "()")
-//
-// Note: We infer function-ness from the symbol ID because scip-go does not
-// reliably populate sym.Kind for all symbol types.
+//   - "scip-go go ckb/internal/query NewEngine()." → function
+//   - "scip-go go ckb/internal/query Engine#Close()." → method
+//   - "rust-analyzer cargo demo 0.1.0 util/run(+1)." → overload
+//   - "scip-go go ckb/internal/query Engine#" → type
+//   - "scip-go go ckb/internal/query Engine#logger." → field
+//   - "scip-typescript npm demo 1.0.0 src/`a.ts`/run().(x)" → parameter
 func isFunctionSymbol(symbolId string) bool {
-	return strings.Contains(symbolId, "().")
+	return strings.HasSuffix(symbolId, ").")
 }
 
 // BuildCallGraph builds a call graph using bounded BFS
@@ -332,7 +624,7 @@ func (idx *SCIPIndex) BuildCallGraph(symbolId string, opts CallGraphOptions) (*C
 	rootLocation := findSymbolLocation(symbolId, idx)
 	rootKind := KindFunction
 	if rootInfo != nil {
-		rootKind = mapSCIPKind(rootInfo.Kind)
+		rootKind = MapSCIPKind(rootInfo.Kind)
 	}
 
 	graph.Root = &CallGraphNode{
@@ -487,85 +779,129 @@ func (idx *SCIPIndex) GetReferenceCount(symbolId string) int {
 	return len(refs)
 }
 
-// mapSCIPKind maps SCIP kind codes to SymbolKind
-func mapSCIPKind(kind int32) SymbolKind {
-	// SCIP SymbolInformation.Kind values
-	switch kind {
-	case 1: // UnspecifiedSymbol
-		return KindUnknown
-	case 2: // Comment
-		return KindUnknown
-	case 3: // Package
-		return KindPackage
-	case 4: // PackageObject
-		return KindModule
-	case 5: // Class
-		return KindClass
-	case 6: // Object
-		return KindClass
-	case 7: // Trait
-		return KindInterface
-	case 8: // TraitMethod
-		return KindMethod
-	case 9: // Method
-		return KindMethod
-	case 10: // Macro
+// MapSCIPKind maps a SCIP SymbolInformation.Kind to a SymbolKind, using the
+// protocol's own enum: its numbers are not contiguous or in any obvious order.
+func MapSCIPKind(kind int32) SymbolKind {
+	switch scippb.SymbolInformation_Kind(kind) {
+	case scippb.SymbolInformation_Function, scippb.SymbolInformation_Macro, scippb.SymbolInformation_Operator, scippb.SymbolInformation_Event:
 		return KindFunction
-	case 11: // Type
-		return KindType
-	case 12: // Parameter
-		return KindParameter
-	case 13: // SelfParameter
-		return KindParameter
-	case 14: // TypeParameter
-		return KindType
-	case 15: // Local
-		return KindVariable
-	case 16: // Field
-		return KindField
-	case 17: // Interface
+	case scippb.SymbolInformation_Method, scippb.SymbolInformation_AbstractMethod, scippb.SymbolInformation_StaticMethod,
+		scippb.SymbolInformation_TraitMethod, scippb.SymbolInformation_TypeClassMethod, scippb.SymbolInformation_ProtocolMethod,
+		scippb.SymbolInformation_PureVirtualMethod, scippb.SymbolInformation_SingletonMethod,
+		scippb.SymbolInformation_MethodSpecification, scippb.SymbolInformation_Constructor, scippb.SymbolInformation_Accessor,
+		scippb.SymbolInformation_Getter, scippb.SymbolInformation_Setter:
+		return KindMethod
+	case scippb.SymbolInformation_Class, scippb.SymbolInformation_Struct, scippb.SymbolInformation_Object, scippb.SymbolInformation_SingletonClass:
+		return KindClass
+	case scippb.SymbolInformation_Interface, scippb.SymbolInformation_Trait, scippb.SymbolInformation_Protocol, scippb.SymbolInformation_TypeClass:
 		return KindInterface
-	case 18: // Function
-		return KindFunction
-	case 19: // Variable
-		return KindVariable
-	case 20: // Constant
-		return KindConstant
-	case 21: // String
-		return KindConstant
-	case 22: // Number
-		return KindConstant
-	case 23: // Boolean
-		return KindConstant
-	case 24: // Array
-		return KindVariable
-	case 25: // Namespace
-		return KindNamespace
-	case 26: // Null
-		return KindConstant
-	case 27: // Property
-		return KindProperty
-	case 28: // Enum
+	case scippb.SymbolInformation_Enum:
 		return KindEnum
-	case 29: // EnumMember
+	case scippb.SymbolInformation_Type, scippb.SymbolInformation_TypeAlias, scippb.SymbolInformation_TypeParameter, scippb.SymbolInformation_AssociatedType, scippb.SymbolInformation_TypeFamily:
+		return KindType
+	case scippb.SymbolInformation_Property, scippb.SymbolInformation_StaticProperty:
+		return KindProperty
+	case scippb.SymbolInformation_Field, scippb.SymbolInformation_StaticField, scippb.SymbolInformation_EnumMember, scippb.SymbolInformation_Key:
+		return KindField
+	case scippb.SymbolInformation_Variable, scippb.SymbolInformation_StaticVariable, scippb.SymbolInformation_Value:
+		return KindVariable
+	case scippb.SymbolInformation_Constant:
 		return KindConstant
-	case 30: // Struct
-		return KindClass
-	case 31: // Event
-		return KindFunction
-	case 32: // Operator
-		return KindFunction
-	case 33: // Constructor
-		return KindMethod
-	case 34: // Destructor
-		return KindMethod
+	case scippb.SymbolInformation_Parameter, scippb.SymbolInformation_SelfParameter, scippb.SymbolInformation_ThisParameter:
+		return KindParameter
+	case scippb.SymbolInformation_Package, scippb.SymbolInformation_PackageObject:
+		return KindPackage
+	case scippb.SymbolInformation_Module:
+		return KindModule
+	case scippb.SymbolInformation_Namespace:
+		return KindNamespace
 	default:
 		return KindUnknown
 	}
 }
 
-// extractSymbolName extracts a human-readable name from a SCIP symbol ID
+// extractSymbolName extracts a human-readable name from a SCIP symbol ID,
+// suitable for a call graph node label. Unlike SCIPIdentifier.GetSimpleName
+// (which returns the bare last-descriptor name, e.g. "handle"), this keeps
+// a "Type#Member" receiver prefix when the symbol is a member of a type —
+// call graph node names want that context.
+//
+// Uses the official scip bindings parser (descriptor-aware, so it handles
+// backtick-escaped names like "`<constructor>`" and dotted module paths
+// like "github.com/org/repo/pkg" correctly, unlike naive space/dot
+// splitting). Falls back to a legacy heuristic splitter for identifiers
+// that don't conform to the strict SCIP grammar (e.g. malformed/legacy
+// test fixtures using a 4-field form with no package version).
 func extractSymbolName(symbolId string) string {
+	sym, err := bindingscip.ParseSymbol(symbolId)
+	if err != nil || sym.Package == nil || len(sym.Descriptors) == 0 {
+		return legacyExtractSymbolName(symbolId)
+	}
+
+	if name := callgraphNameFromDescriptors(sym.Descriptors); name != "" {
+		return name
+	}
+
+	return legacyExtractSymbolName(symbolId)
+}
+
+// callgraphNameFromDescriptors joins a descriptor chain into a call-graph
+// node label, dropping package/module path segments (Namespace descriptors)
+// and adding back just enough of each descriptor's own suffix punctuation
+// to stay readable and unambiguous — "()." between a method and whatever
+// comes after it, "(...)" around a parameter, "#" after a type — while
+// omitting that trailing punctuation on the terminal descriptor (nobody
+// wants a call graph node literally named "buildModuleLevelResponse()."),
+// with the sole exception of a type descriptor's '#', which is part of how
+// a bare type's own symbol ID naturally ends (e.g. "Engine#").
+func callgraphNameFromDescriptors(descriptors []*bindingscip.Descriptor) string {
+	descriptors = normalizeImplDescriptors(descriptors)
+	var b strings.Builder
+	for i, d := range descriptors {
+		isLast := i == len(descriptors)-1
+		switch d.Suffix {
+		case bindingscip.Descriptor_Namespace:
+			continue
+		case bindingscip.Descriptor_Type:
+			b.WriteString(d.Name)
+			b.WriteByte('#')
+		case bindingscip.Descriptor_Method:
+			b.WriteString(d.Name)
+			if !isLast {
+				b.WriteString("().")
+			}
+		case bindingscip.Descriptor_Parameter:
+			b.WriteByte('(')
+			b.WriteString(d.Name)
+			b.WriteByte(')')
+		case bindingscip.Descriptor_TypeParameter:
+			b.WriteByte('[')
+			b.WriteString(d.Name)
+			b.WriteByte(']')
+		case bindingscip.Descriptor_Meta:
+			b.WriteString(d.Name)
+			if !isLast {
+				b.WriteByte(':')
+			}
+		case bindingscip.Descriptor_Macro:
+			b.WriteString(d.Name)
+			if !isLast {
+				b.WriteByte('!')
+			}
+		default: // Descriptor_Term, Descriptor_Local
+			b.WriteString(d.Name)
+			if !isLast {
+				b.WriteByte('.')
+			}
+		}
+	}
+	return b.String()
+}
+
+// legacyExtractSymbolName is the original heuristic implementation, used as
+// a fallback when the identifier didn't parse through the strict SCIP
+// grammar.
+func legacyExtractSymbolName(symbolId string) string {
 	// SCIP symbol format: scheme ' ' package ' ' descriptor
 	// Example: "go local ... func NewEngine"
 	// We want to extract the last meaningful part

@@ -33,9 +33,9 @@ func TestToolsListTokenBudget(t *testing.T) {
 		minTools int // Ensure we don't accidentally drop tools
 		maxTools int
 	}{
-		{PresetCore, maxCorePresetBytes, 20, 25},     // v8.3: 24 tools (+explainPath, responsibilities, exportForLLM); +1 symbolExists = 25
-		{PresetReview, maxReviewPresetBytes, 30, 42}, // v8.4: 41 tools (+findUnwiredModules); +1 symbolExists = 42
-		{PresetFull, maxFullPresetBytes, 80, 110},    // v8.5: 107 tools (+3 Cartographer, +3 LIP annotation); +1 symbolExists in all presets = 109; +1 analyzeOutgoingImpact = 110
+		{PresetCore, maxCorePresetBytes, 20, 27},     // v8.3: 24 tools (+explainPath, responsibilities, exportForLLM); +1 symbolExists = 25; v9.4: +1 assessChange = 26; +1 reindex = 27
+		{PresetReview, maxReviewPresetBytes, 30, 44}, // v8.4: 41 tools (+findUnwiredModules); +1 symbolExists = 42; v9.4: +1 assessChange = 43; +1 reindex = 44
+		{PresetFull, maxFullPresetBytes, 80, 111},    // v8.5: 107 tools (+3 Cartographer, +3 LIP annotation); +1 symbolExists in all presets = 109; +1 analyzeOutgoingImpact = 110; v9.4: +1 assessChange = 111
 	}
 
 	for _, tt := range tests {

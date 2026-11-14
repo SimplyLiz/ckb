@@ -3,6 +3,8 @@ package mcp
 import (
 	"strings"
 	"testing"
+
+	"github.com/SimplyLiz/CodeMCP/internal/query"
 )
 
 // =============================================================================
@@ -351,5 +353,40 @@ func TestToolBatchSearch_WithAllOptions(t *testing.T) {
 
 	if resp.Error != nil {
 		t.Errorf("unexpected JSON-RPC error: %v", resp.Error)
+	}
+}
+
+func TestCompactPrepareChange_TargetLabelAndHint(t *testing.T) {
+	const id = "scip-go gomod example.com/m 1a2b `example.com/m/lib`/Save()."
+	symbol := buildMCPCompactPrepareChange(id, &query.PrepareChangeResponse{
+		Target: &query.PrepareChangeTarget{SymbolId: id, Name: "Save", Kind: "function"},
+	}, "scip")
+	if symbol.Hint != "" {
+		t.Errorf("a symbol target got a hint: %q", symbol.Hint)
+	}
+	if strings.Contains(symbol.Summary, "scip-go") || !strings.Contains(symbol.Summary, "Save") {
+		t.Errorf("summary should name the symbol, not repeat its ID: %q", symbol.Summary)
+	}
+	if symbol.Target != id {
+		t.Errorf("target %q, want the ID as given", symbol.Target)
+	}
+
+	file := buildMCPCompactPrepareChange("lib/save.go", &query.PrepareChangeResponse{
+		Target: &query.PrepareChangeTarget{Name: "save.go", Kind: "file", Path: "lib/save.go"},
+	}, "scip")
+	if !strings.Contains(file.Hint, "searchSymbols") {
+		t.Errorf("a file target should point at a symbol target: %q", file.Hint)
+	}
+}
+
+// The compact view is the MCP default, so what a modify score assumes has to
+// reach it, not only the full response.
+func TestCompactPrepareChange_CarriesRiskBasis(t *testing.T) {
+	const basis = "Scored as an edit that keeps the declaration; assessChange rescores the real diff."
+	c := buildMCPCompactPrepareChange("x", &query.PrepareChangeResponse{
+		RiskAssessment: &query.PrepareRisk{Level: "low", Basis: basis},
+	}, "scip")
+	if c.RiskBasis != basis {
+		t.Errorf("risk_basis = %q, want %q", c.RiskBasis, basis)
 	}
 }

@@ -97,6 +97,7 @@ func (s *MCPServer) ensureActiveEngine(repoRoot string) error {
 	// Wire up metrics persistence
 	if entry.engine.DB() != nil {
 		SetMetricsDB(entry.engine.DB())
+		wireActivityRecorder(entry.engine, s.logger)
 	}
 
 	s.logger.Info("Auto-resolved active repo",

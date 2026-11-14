@@ -1,0 +1,314 @@
+{
+ "lang": "rust",
+ "name": "axum",
+ "repo": "/tmp/ckb940/holdout/axum",
+ "head": "40d061fdacd468217c7a609bede16357276b6c40",
+ "seed": "ckb-eval-change-v1",
+ "commits_in_pool": 2015,
+ "candidates": 117,
+ "index_lang": "rust",
+ "prep": null,
+ "target": 8,
+ "sample": [
+  {
+   "sha": "6b218c7150d432e774e729edf1fcb6052917026d",
+   "parent": "bc27b09f5ca54a6d4dfae9faaccc5b22d154bc28",
+   "symbol": "into_request",
+   "kind": "removed",
+   "definers": [
+    "src/extract/mod.rs"
+   ],
+   "decl_before": [
+    "pub(crate)fninto_request(&mutself)->Request<B>"
+   ],
+   "decl_after": [],
+   "truth_all": [
+    "src/error.rs",
+    "src/extract/extractor_middleware.rs",
+    "src/extract/rejection.rs",
+    "src/extract/request_parts.rs"
+   ],
+   "truth_ref": [
+    "src/extract/extractor_middleware.rs",
+    "src/extract/request_parts.rs"
+   ],
+   "truth_tests": [
+    "src/tests/mod.rs"
+   ],
+   "truth_tests_ref": [],
+   "files_in_commit": 8,
+   "rank": "0b2b10bec607847bbb088c1514475b7e5f8c7069f20f93d05909ca699e0996b4"
+  },
+  {
+   "sha": "6777dc1e5cd5eb2d69639f6d79942faaba3a282e",
+   "parent": "a753eac23f29dc0321b87999834d4a1fbc673531",
+   "symbol": "sse",
+   "kind": "removed",
+   "definers": [
+    "src/response/sse.rs"
+   ],
+   "decl_before": [
+    "pubfnsse<S>(stream:S)->Sse<S>whereS:TryStream<Ok=Event>+Send+'static,S::Error:Into<BoxError>,"
+   ],
+   "decl_after": [],
+   "truth_all": [
+    "examples/sse/src/main.rs",
+    "src/response/mod.rs"
+   ],
+   "truth_ref": [
+    "examples/sse/src/main.rs",
+    "src/response/mod.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 3,
+   "rank": "0f1a73c1bfc58508b7a8279300321200116755cd9c35bdf33e1c2854d44f7ee2"
+  },
+  {
+   "sha": "d943ba6d81ba932423f55a086ffd9c9476a5b2db",
+   "parent": "99fbd3d32c28adfd94380c6601ebb809d569c558",
+   "symbol": "merge",
+   "kind": "signature",
+   "definers": [
+    "axum/src/routing/mod.rs"
+   ],
+   "decl_before": [
+    "pubfnmerge(mutself,other:Router<B>)->Self"
+   ],
+   "decl_after": [
+    "pubfnmerge<R>(mutself,other:R)->SelfwhereR:Into<Router<B>>,"
+   ],
+   "truth_all": [
+    "axum-extra/src/routing/mod.rs",
+    "axum-extra/src/routing/resource.rs"
+   ],
+   "truth_ref": [
+    "axum-extra/src/routing/mod.rs",
+    "axum-extra/src/routing/resource.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 5,
+   "rank": "101f795856bce252595679d4be78264f48c8d87de38d8d2febc5502af1d2091e"
+  },
+  {
+   "sha": "e43bdf0ecf3ad8a8de7694658f73143e1ca066fc",
+   "parent": "59819e42bf06babda35e3c02d766706b303162e8",
+   "symbol": "method_not_allowed",
+   "kind": "removed",
+   "definers": [
+    "src/routing/mod.rs"
+   ],
+   "decl_before": [
+    "pub(crate)fnmethod_not_allowed()->Self"
+   ],
+   "decl_after": [],
+   "truth_all": [
+    "src/handler/mod.rs",
+    "src/routing/future.rs",
+    "src/routing/handler_method_router.rs",
+    "src/routing/service_method_router.rs"
+   ],
+   "truth_ref": [
+    "src/routing/handler_method_router.rs",
+    "src/routing/service_method_router.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 6,
+   "rank": "111c82f3c75e0ca257d8e7a7a0b9c476bb782ec889d17f1bb7a6eff60bfa4609"
+  },
+  {
+   "sha": "7705ef666131a11ae77ed8998ea9bb78bfb2f62b",
+   "parent": "db08419a3b4e666d87b23965988411b3cb0f69b7",
+   "symbol": "expand",
+   "kind": "signature",
+   "definers": [
+    "axum-macros/src/from_request.rs"
+   ],
+   "decl_before": [
+    "pub(crate)fnexpand(item:syn::Item)->syn::Result<TokenStream>"
+   ],
+   "decl_after": [
+    "pub(crate)fnexpand(item:syn::Item,tr:Trait)->syn::Result<TokenStream>"
+   ],
+   "truth_all": [
+    "axum-macros/src/lib.rs"
+   ],
+   "truth_ref": [
+    "axum-macros/src/lib.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 21,
+   "rank": "1179ebe5fd512b77a8d4fa6ebb2f2dfe37c197db8a598f1d2419f8f18e2a63d3"
+  },
+  {
+   "sha": "0e04260a27dc6c3930977a803d55a41254919cdb",
+   "parent": "fa51cf52664d2e33fe37ca4252879bb1c73e87e9",
+   "symbol": "merge",
+   "kind": "signature",
+   "definers": [
+    "axum/src/routing/method_routing.rs"
+   ],
+   "decl_before": [
+    "asyncfnmerge()",
+    "fnmerge(self,other:Self)->Self",
+    "pubfnmerge(mutself,other:MethodRouter<S,B,E>)->Self"
+   ],
+   "decl_after": [
+    "asyncfnmerge()",
+    "fnmerge(self,other:Self)->Self",
+    "pubfnmerge(self,other:MethodRouter<S,B,E>)->Self"
+   ],
+   "truth_all": [
+    "axum/src/routing/mod.rs"
+   ],
+   "truth_ref": [
+    "axum/src/routing/mod.rs"
+   ],
+   "truth_tests": [
+    "axum/src/routing/tests/mod.rs"
+   ],
+   "truth_tests_ref": [
+    "axum/src/routing/tests/mod.rs"
+   ],
+   "files_in_commit": 3,
+   "rank": "194ccabb0450338125e37f13ed16656031b91f8bd76fe841bb512dc3538cae36"
+  },
+  {
+   "sha": "8da69a98fcd69653aaad8669e8ce4acb2d3b2dfc",
+   "parent": "54d8439e35f05c346c7f30b9c974b18fa9becb68",
+   "symbol": "parse_container_attrs",
+   "kind": "removed",
+   "definers": [
+    "axum-macros/src/from_request/attr.rs"
+   ],
+   "decl_before": [
+    "pub(crate)fnparse_container_attrs(attrs:&[syn::Attribute])->syn::Result<FromRequestContainerAttr>"
+   ],
+   "decl_after": [],
+   "truth_all": [
+    "axum-macros/src/from_request.rs",
+    "axum-macros/src/lib.rs"
+   ],
+   "truth_ref": [
+    "axum-macros/src/from_request.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 5,
+   "rank": "1a4163fbe5adbe8057b8ca6f5684b0963942d745d67a0bf573e15c4f484b57ef"
+  },
+  {
+   "sha": "2e8a7e51a105ab2fda2e7ca7cb09168cc8a26bf1",
+   "parent": "b1f894a50074933ec3d924775d792671091b10df",
+   "symbol": "layer",
+   "kind": "signature",
+   "definers": [
+    "axum/src/handler/mod.rs"
+   ],
+   "decl_before": [
+    "fnlayer<L>(self,layer:L)->Layered<L,Self,T,S,B>whereL:Layer<HandlerService<Self,T,S,B>>+Clone,"
+   ],
+   "decl_after": [
+    "fnlayer<L,NewReqBody>(self,layer:L)->Layered<L,Self,T,S,B,NewReqBody>whereL:Layer<HandlerService<Self,T,S,B>>+Clone,L::Service:Service<Request<NewReqBody>>,"
+   ],
+   "truth_all": [
+    "examples/key-value-store/src/main.rs"
+   ],
+   "truth_ref": [
+    "examples/key-value-store/src/main.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 7,
+   "rank": "1a79981b2396a8c6a3c733f8e7c0e055351ac0d621810fede55cb0e7deb8ce0f"
+  },
+  {
+   "sha": "1cf78fa807b8bcf185c2e0fa240bae356f4d0db1",
+   "parent": "1f8b39f05d9e35c3be19b8e8564797af972c7ddf",
+   "symbol": "get_typed",
+   "kind": "signature",
+   "definers": [
+    "src/extract/mod.rs"
+   ],
+   "decl_before": [
+    "pubfnget_typed<T>(&self,key:&str)->Option<T>whereT:FromStr,"
+   ],
+   "decl_after": [
+    "pubfnget_typed<T>(&self,key:&str)->Option<Result<T,T::Err>>whereT:FromStr,"
+   ],
+   "truth_all": [
+    "src/body.rs",
+    "src/extract/rejection.rs",
+    "src/lib.rs",
+    "src/tests.rs"
+   ],
+   "truth_ref": [
+    "src/tests.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 6,
+   "rank": "1c199b2756ec45047b19aea8ae39a76382ba955f0fc269e0995ed90e5ae14c41"
+  },
+  {
+   "sha": "dea36db400f27c025b646e5720b9a6784ea4db6e",
+   "parent": "4625e1953b25cbd1d1bf0e700597e041bb4ec224",
+   "symbol": "new",
+   "kind": "signature",
+   "definers": [
+    "axum/src/test_helpers.rs"
+   ],
+   "decl_before": [
+    "pub(crate)fnnew<S,ResBody>(svc:S)->SelfwhereS:Service<Request<Body>,Response=http::Response<ResBody>>+Clone+Send+'static,ResBody:http_body::Body+Send+'static,ResBody::Data:Send,ResBody::Error:Into<BoxError>,S::Future:Send,S::Error:Into<BoxError>,"
+   ],
+   "decl_after": [
+    "pub(crate)fnnew<S,ResBody>(svc:S)->SelfwhereS:Service<Request<Body>,Response=http::Response<ResBody>>+Clone+Send+'static,ResBody:HttpBody+Send+'static,ResBody::Data:Send,ResBody::Error:Into<BoxError>,S::Future:Send,S::Error:Into<BoxError>,"
+   ],
+   "truth_all": [
+    "axum/src/body/mod.rs",
+    "axum/src/body/stream_body.rs",
+    "axum/src/extract/content_length_limit.rs",
+    "axum/src/extract/extractor_middleware.rs",
+    "axum/src/extract/form.rs",
+    "axum/src/extract/multipart.rs",
+    "axum/src/extract/rejection.rs",
+    "axum/src/extract/request_parts.rs",
+    "axum/src/extract/ws.rs",
+    "axum/src/handler/mod.rs",
+    "axum/src/json.rs",
+    "axum/src/macros.rs",
+    "axum/src/response/mod.rs",
+    "axum/src/response/redirect.rs",
+    "axum/src/response/sse.rs",
+    "axum/src/routing/method_routing.rs",
+    "axum/src/routing/mod.rs",
+    "axum/src/routing/route.rs",
+    "axum/src/util.rs"
+   ],
+   "truth_ref": [
+    "axum/src/body/mod.rs",
+    "axum/src/extract/content_length_limit.rs",
+    "axum/src/extract/form.rs",
+    "axum/src/macros.rs"
+   ],
+   "truth_tests": [
+    "axum/src/routing/tests/merge.rs",
+    "axum/src/routing/tests/mod.rs"
+   ],
+   "truth_tests_ref": [
+    "axum/src/routing/tests/mod.rs"
+   ],
+   "files_in_commit": 23,
+   "rank": "1c2680c8fc2b076854592189213aeb2e79f00e86d13aec4730a9c619e65b6da8"
+  }
+ ],
+ "excluded": 7,
+ "must_compile": {
+  "tried": 11,
+  "kept": 10,
+  "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)"
+ }
+}

@@ -1,8 +1,11 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/envelope"
@@ -39,9 +42,15 @@ func (s *MCPServer) handleRequest(msg *MCPMessage) *MCPMessage {
 		"id", msg.Id,
 	)
 
+	if modernRequest(msg) {
+		return s.handleModernRequest(msg)
+	}
+
 	switch msg.Method {
 	case "initialize":
 		return s.handleInitializeRequest(msg)
+	case "ping":
+		return NewResultMessage(msg.Id, map[string]interface{}{})
 	case "tools/list":
 		return s.handleListToolsRequest(msg)
 	case "tools/call":
@@ -239,6 +248,12 @@ func (s *MCPServer) handleCallToolRequest(msg *MCPMessage) *MCPMessage {
 
 	result, err := s.handleCallTool(params)
 	if err != nil {
+		// An unknown tool or a missing name is the caller's mistake, which
+		// the spec reports as invalid params, not as a server fault.
+		var unknown *errUnknownTool
+		if stderrors.As(err, &unknown) {
+			return NewErrorMessage(msg.Id, InvalidParams, err.Error(), nil)
+		}
 		return NewErrorMessage(msg.Id, InternalError, err.Error(), nil)
 	}
 
@@ -320,7 +335,7 @@ func (s *MCPServer) handleListTools(params map[string]interface{}) (interface{},
 func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, error) {
 	toolName, ok := params["name"].(string)
 	if !ok {
-		return nil, errors.NewInvalidParameterError("name", "")
+		return nil, &errUnknownTool{err: errors.NewInvalidParameterError("name", "")}
 	}
 
 	toolParams, ok := params["arguments"].(map[string]interface{})
@@ -330,7 +345,7 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 
 	handler, exists := s.tools[toolName]
 	if !exists {
-		return nil, errors.NewResourceNotFoundError("tool", toolName)
+		return nil, &errUnknownTool{err: errors.NewResourceNotFoundError("tool", toolName)}
 	}
 
 	s.logger.Info("Calling tool",
@@ -345,11 +360,18 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 		}
 	}
 
+	// Reload a changed index before resolving IDs against it, so a stream
+	// sees it too.
+	s.refreshIndexIfChanged(toolName)
+
+	// Symbol IDs held from an index built at another commit
+	remapWarnings := s.remapSymbolIDs(toolParams)
+
 	// v8.0: Check for streaming request
 	if streamResp, err := s.wrapForStreaming(toolName, toolParams); streamResp != nil || err != nil {
 		if err != nil {
 			errResp := envelope.New().Data(nil).Error(err).Build()
-			jsonBytes, _ := json.Marshal(errResp)
+			jsonBytes, _ := marshalForAgent(errResp)
 			return map[string]interface{}{
 				"content": []map[string]interface{}{
 					{
@@ -357,10 +379,15 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 						"text": string(jsonBytes),
 					},
 				},
+				"isError": true,
 			}, nil
 		}
-		// Return streaming initial response
-		jsonBytes, err := json.Marshal(streamResp)
+		// Return streaming initial response. Its warnings are the ones a
+		// non-streaming answer would carry: the chunks that follow come from the
+		// same engine, so an agent must learn here that there is no index.
+		streamResp = withWarnings(streamResp, remapWarnings)
+		streamResp = withWarnings(streamResp, s.missingIndexWarnings(toolName))
+		jsonBytes, err := marshalForAgent(streamResp)
 		if err != nil {
 			return nil, errors.NewOperationError("marshal streaming response", err)
 		}
@@ -374,11 +401,14 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 		}, nil
 	}
 
+	toolStart := time.Now()
 	result, err := handler(toolParams)
 	if err != nil {
 		// Wrap error in envelope format
 		errResp := envelope.New().Data(nil).Error(err).Build()
-		jsonBytes, _ := json.Marshal(errResp)
+		s.markStaleServer(errResp)
+		jsonBytes, _ := marshalForAgent(errResp)
+		s.recordActivity(toolName, toolParams, toolStart, jsonBytes, nil, err)
 		return map[string]interface{}{
 			"content": []map[string]interface{}{
 				{
@@ -386,14 +416,21 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 					"text": string(jsonBytes),
 				},
 			},
+			"isError": true,
 		}, nil
 	}
 
-	// Marshal the envelope response to JSON
-	jsonBytes, err := json.Marshal(result)
+	result = withWarnings(result, remapWarnings)
+	result = withWarnings(result, s.missingIndexWarnings(toolName))
+	s.markStaleServer(result)
+
+	// The envelope as JSON, or for a result with a text form, that text
+	jsonBytes, err := toolResultText(result)
 	if err != nil {
 		return nil, errors.NewOperationError("marshal response", err)
 	}
+
+	s.recordActivity(toolName, toolParams, toolStart, jsonBytes, result, nil)
 
 	return map[string]interface{}{
 		"content": []map[string]interface{}{
@@ -403,6 +440,64 @@ func (s *MCPServer) handleCallTool(params map[string]interface{}) (interface{}, 
 			},
 		},
 	}, nil
+}
+
+// marshalForAgent is json.Marshal without HTML escaping: a reader of code needs `<`,
+// `>` and `&` as they are, not as \u003c.
+func marshalForAgent(v interface{}) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// textResult is a tool result written for reading rather than parsing.
+type textResult interface {
+	Text() string
+}
+
+// toolResultText returns what a tool call sends back. A result with a text form goes
+// out as that text, followed by what the envelope would have said next to it; any
+// other as the envelope's JSON.
+func toolResultText(result *envelope.Response) ([]byte, error) {
+	var data textResult
+	if result != nil {
+		data, _ = result.Data.(textResult)
+	}
+	if data == nil {
+		return marshalForAgent(result)
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(data.Text(), "\n"))
+	b.WriteByte('\n')
+	if m := result.Meta; m != nil {
+		if m.Confidence != nil && m.Confidence.Tier != "" {
+			fmt.Fprintf(&b, "\nconfidence: %s (%.2f)\n", m.Confidence.Tier, m.Confidence.Score)
+		}
+		if m.StaleServer != "" {
+			b.WriteString("stale server: " + m.StaleServer + "\n")
+		}
+		if f := m.IndexFreshness; f != nil && f.AffectsResult {
+			b.WriteString("index: files in this answer changed since it was built, so lines may be off")
+			if f.Hint != "" {
+				b.WriteString(". " + f.Hint)
+			}
+			b.WriteByte('\n')
+		}
+		if t := m.Truncation; t != nil && t.IsTruncated {
+			fmt.Fprintf(&b, "truncated: %d of %d shown\n", t.Shown, t.Total)
+		}
+	}
+	for _, w := range result.Warnings {
+		b.WriteString("warning: " + w.Message + "\n")
+	}
+	if result.Error != nil {
+		b.WriteString("error: " + *result.Error + "\n")
+	}
+	return []byte(b.String()), nil
 }
 
 // handleListResources returns the list of available resources
@@ -429,14 +524,25 @@ func (s *MCPServer) handleReadResource(params map[string]interface{}) (interface
 	if err != nil {
 		return nil, errors.NewOperationError("resource read", err)
 	}
+	text, err := json.Marshal(result)
+	if err != nil {
+		return nil, errors.NewOperationError("marshal resource", err)
+	}
 
 	return map[string]interface{}{
 		"contents": []map[string]interface{}{
 			{
 				"uri":      uri,
 				"mimeType": "application/json",
-				"text":     fmt.Sprintf("%v", result),
+				"text":     string(text),
 			},
 		},
 	}, nil
 }
+
+// errUnknownTool marks a tools/call that names no tool or one that does not
+// exist, so the request handler can answer with InvalidParams.
+type errUnknownTool struct{ err error }
+
+func (e *errUnknownTool) Error() string { return e.err.Error() }
+func (e *errUnknownTool) Unwrap() error { return e.err }

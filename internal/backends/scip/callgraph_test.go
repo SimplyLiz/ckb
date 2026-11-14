@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SimplyLiz/CodeMCP/internal/config"
@@ -115,7 +116,7 @@ func TestFindCallers(t *testing.T) {
 			break
 		}
 		for _, sym := range doc.Symbols {
-			if mapSCIPKind(sym.Kind) == KindFunction {
+			if MapSCIPKind(sym.Kind) == KindFunction {
 				for _, occ := range doc.Occurrences {
 					if occ.Symbol == sym.Symbol && occ.SymbolRoles&SymbolRoleDefinition != 0 {
 						t.Logf("Function %s: range=%v, enclosing=%v",
@@ -140,7 +141,7 @@ func TestFindCallers(t *testing.T) {
 			}
 			// Also show symbol kinds and raw data
 			for _, sym := range doc.Symbols {
-				kind := mapSCIPKind(sym.Kind)
+				kind := MapSCIPKind(sym.Kind)
 				t.Logf("  Symbol %s: rawKind=%d mapped=%s displayName=%q",
 					sym.Symbol, sym.Kind, kind, sym.DisplayName)
 			}
@@ -262,49 +263,35 @@ func TestMapSCIPKind(t *testing.T) {
 		kind     int32
 		expected SymbolKind
 	}{
-		{0, KindUnknown},    // Default case
-		{1, KindUnknown},    // UnspecifiedSymbol
-		{2, KindUnknown},    // Comment
-		{3, KindPackage},    // Package
-		{4, KindModule},     // PackageObject
-		{5, KindClass},      // Class
-		{6, KindClass},      // Object
-		{7, KindInterface},  // Trait
-		{8, KindMethod},     // TraitMethod
-		{9, KindMethod},     // Method
-		{10, KindFunction},  // Macro
-		{11, KindType},      // Type
-		{12, KindParameter}, // Parameter
-		{13, KindParameter}, // SelfParameter
-		{14, KindType},      // TypeParameter
-		{15, KindVariable},  // Local
-		{16, KindField},     // Field
-		{17, KindInterface}, // Interface
-		{18, KindFunction},  // Function
-		{19, KindVariable},  // Variable
-		{20, KindConstant},  // Constant
-		{21, KindConstant},  // String
-		{22, KindConstant},  // Number
-		{23, KindConstant},  // Boolean
-		{24, KindVariable},  // Array
-		{25, KindNamespace}, // Namespace
-		{26, KindConstant},  // Null
-		{27, KindProperty},  // Property
-		{28, KindEnum},      // Enum
-		{29, KindConstant},  // EnumMember
-		{30, KindClass},     // Struct
-		{31, KindFunction},  // Event
-		{32, KindFunction},  // Operator
-		{33, KindMethod},    // Constructor
-		{34, KindMethod},    // Destructor
-		{99, KindUnknown},   // Unknown kind
+		{0, KindUnknown},    // UnspecifiedKind
+		{17, KindFunction},  // Function
+		{26, KindMethod},    // Method
+		{66, KindMethod},    // AbstractMethod
+		{80, KindMethod},    // StaticMethod
+		{9, KindMethod},     // Constructor
+		{7, KindClass},      // Class
+		{49, KindClass},     // Struct
+		{21, KindInterface}, // Interface
+		{53, KindInterface}, // Trait
+		{11, KindEnum},      // Enum
+		{54, KindType},      // Type
+		{55, KindType},      // TypeAlias
+		{15, KindField},     // Field
+		{41, KindProperty},  // Property
+		{61, KindVariable},  // Variable
+		{8, KindConstant},   // Constant
+		{37, KindParameter}, // Parameter
+		{35, KindPackage},   // Package
+		{29, KindModule},    // Module
+		{30, KindNamespace}, // Namespace
+		{9999, KindUnknown}, // Unknown kind
 	}
 
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("kind_%d", tt.kind), func(t *testing.T) {
-			result := mapSCIPKind(tt.kind)
+			result := MapSCIPKind(tt.kind)
 			if result != tt.expected {
-				t.Errorf("mapSCIPKind(%d) = %s, want %s", tt.kind, result, tt.expected)
+				t.Errorf("MapSCIPKind(%d) = %s, want %s", tt.kind, result, tt.expected)
 			}
 		})
 	}
@@ -350,6 +337,36 @@ func TestExtractSymbolName(t *testing.T) {
 			name:     "single word",
 			symbolId: "test",
 			expected: "test",
+		},
+		// Regression cases below: real scip-go symbol IDs quote the full
+		// module-relative package path in backticks inside the descriptor
+		// itself (`github.com/org/repo/pkg`/Type#Method()., not split out
+		// as a separate space-delimited field the way these simplified
+		// fixtures above are). The old implementation looked for the last
+		// "." anywhere in the descriptor to find a name separator, which
+		// found the dot in "github.com" instead — e.g. ckb callgraph's
+		// human/JSON output showed the node name as
+		// "com/SimplyLiz/CodeMCP/internal/query`/Engine#buildModuleLevelResponse"
+		// (the "github." prefix silently sliced off).
+		{
+			name:     "real scip-go method with dotted module path",
+			symbolId: "scip-go gomod github.com/SimplyLiz/CodeMCP v0.0.0 `github.com/SimplyLiz/CodeMCP/internal/query`/Engine#buildModuleLevelResponse().",
+			expected: "Engine#buildModuleLevelResponse",
+		},
+		{
+			name:     "real scip-go bare type with dotted module path",
+			symbolId: "scip-go gomod github.com/SimplyLiz/CodeMCP v0.0.0 `github.com/SimplyLiz/CodeMCP/internal/query`/Engine#",
+			expected: "Engine#",
+		},
+		{
+			name:     "real scip-go field with dotted module path",
+			symbolId: "scip-go gomod github.com/SimplyLiz/CodeMCP v0.0.0 `github.com/SimplyLiz/CodeMCP/internal/query`/Engine#logger.",
+			expected: "Engine#logger",
+		},
+		{
+			name:     "real scip-go package-level function with dotted module path",
+			symbolId: "scip-go gomod github.com/SimplyLiz/CodeMCP v0.0.0 `github.com/SimplyLiz/CodeMCP/internal/api`/NewServer().",
+			expected: "NewServer",
 		},
 	}
 
@@ -701,5 +718,202 @@ func TestIsFunctionSymbol(t *testing.T) {
 				t.Errorf("isFunctionSymbol(%q) = %v, want %v", tt.symbolId, got, tt.want)
 			}
 		})
+	}
+}
+
+// Bounds and caller attribution with the EnclosingRange real indexers emit.
+func TestFunctionBounds_EnclosingRange(t *testing.T) {
+	pkg := "scip-typescript npm demo 1.0.0 src/`a.ts`/"
+	doc := &Document{
+		RelativePath: "src/a.ts",
+		Occurrences: []*Occurrence{
+			{Range: []int32{0, 0, 3}, Symbol: pkg + "outer().", SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{0, 0, 10, 1}},
+			{Range: []int32{0, 6, 7}, Symbol: pkg + "outer().(x)", SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{2, 2, 3}, Symbol: pkg + "inner().", SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{2, 2, 4, 3}},
+			{Range: []int32{3, 4, 5}, Symbol: pkg + "callee().", SymbolRoles: 8},
+			{Range: []int32{5, 4, 5}, Symbol: pkg + "other().", SymbolRoles: 8},
+			{Range: []int32{6, 4, 5}, Symbol: pkg + "outer().(x)", SymbolRoles: 8},
+			{Range: []int32{12, 0, 5}, Symbol: pkg + "LIMIT.", SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{12, 8, 12}, Symbol: pkg + "topLevel().", SymbolRoles: 8},
+		},
+		Symbols: []*SymbolInformation{
+			{Symbol: pkg + "outer()."},
+			{Symbol: pkg + "outer().(x)"},
+			{Symbol: pkg + "inner()."},
+			{Symbol: pkg + "LIMIT.", Kind: 8}, // SCIP's Constant: not a function
+		},
+	}
+
+	ranges := buildFunctionRanges(doc)
+	if len(ranges) != 2 {
+		t.Fatalf("ranges = %+v, want outer and inner only: no parameter, no constant", ranges)
+	}
+	if r := ranges[pkg+"outer()."]; r.start != 0 || r.end != 10 {
+		t.Errorf("outer = %+v, want its EnclosingRange 0-10", r)
+	}
+
+	callers := buildCallerIndex([]*Document{doc})
+	if got := callers[pkg+"callee()."]; len(got) != 1 || got[0] != pkg+"inner()." {
+		t.Errorf("callers of callee = %v, want the innermost function", got)
+	}
+	if got := callers[pkg+"other()."]; len(got) != 1 || got[0] != pkg+"outer()." {
+		t.Errorf("callers of other = %v, want outer", got)
+	}
+	if got := callers[pkg+"topLevel()."]; len(got) != 0 {
+		t.Errorf("callers of topLevel = %v, want none: line 12 is outside every function", got)
+	}
+}
+
+func TestDefinitionBounds_Exclusions(t *testing.T) {
+	pkg := "rust-analyzer cargo demo 0.1.0 "
+	doc := &Document{
+		Occurrences: []*Occurrence{
+			{Range: []int32{0, 0, 24, 0}, Symbol: pkg + "crate/", SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{0, 0, 24, 0}},
+			{Range: []int32{2, 10, 15}, Symbol: pkg + "LIMIT.", SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{2, 0, 26}},
+			{Range: []int32{4, 7, 13}, Symbol: pkg + "run().", SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{5, 8, 9}, Symbol: "local 1", SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{5, 8, 9}},
+			{Range: []int32{7, 7, 13}, Symbol: pkg + "T#", SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{8, 7, 13}, Symbol: pkg + "byKind.", SymbolRoles: SymbolRoleDefinition},
+		},
+		Symbols: []*SymbolInformation{
+			{Symbol: pkg + "run()."},
+			{Symbol: pkg + "byKind.", Kind: 29}, // Module
+		},
+	}
+	got := make(map[string]DefinitionBound)
+	for _, b := range DefinitionBounds(doc) {
+		got[b.Symbol] = b
+	}
+	if len(got) != 3 {
+		t.Fatalf("bounds = %+v, want LIMIT, run and T", got)
+	}
+	if b := got[pkg+"LIMIT."]; b.Start != 2 || b.End != 2 || b.Precision != BoundsExact {
+		t.Errorf("LIMIT = %+v, want a single-line exact range", b)
+	}
+	if b := got[pkg+"run()."]; b.Precision != BoundsInferred || b.End != 4+DefaultMaxFunctionLines {
+		t.Errorf("run = %+v, want an inferred range", b)
+	}
+	if b := got[pkg+"T#"]; b.Precision != BoundsPoint || b.Start != 7 || b.End != 7 {
+		t.Errorf("T = %+v, want a point", b)
+	}
+}
+
+// scip-dart gives a local function a callable Kind and a "local N" ID. That ID
+// is unique per document only, so it must never become a node of the call graph.
+func TestBuildCallerIndex_LocalFunctionsDoNotLeakAcrossDocuments(t *testing.T) {
+	pkg := "scip-dart pub demo 1.0.0 lib/`a.dart`/"
+	outer, callee, unrelated := pkg+"outer().", pkg+"callee().", pkg+"unrelated()."
+	fnKind := int32(17) // SymbolInformation_Function
+	withLocal := &Document{
+		RelativePath: "lib/a.dart",
+		Symbols:      []*SymbolInformation{{Symbol: outer}, {Symbol: "local 1", Kind: fnKind}},
+		Occurrences: []*Occurrence{
+			{Range: []int32{0, 5, 10}, Symbol: outer, SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{1, 7, 12}, Symbol: "local 1", SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{2, 4, 10}, Symbol: callee},
+			{Range: []int32{4, 2, 7}, Symbol: "local 1"},
+		},
+	}
+	sameIDElsewhere := &Document{
+		RelativePath: "lib/b.dart",
+		Symbols:      []*SymbolInformation{{Symbol: unrelated}},
+		Occurrences: []*Occurrence{
+			{Range: []int32{0, 5, 14}, Symbol: unrelated, SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{1, 2, 7}, Symbol: "local 1"},
+		},
+	}
+
+	callers := buildCallerIndex([]*Document{withLocal, sameIDElsewhere})
+	if got := callers[callee]; len(got) != 1 || got[0] != outer {
+		t.Errorf("callers of callee = %v, want the named function around the local one", got)
+	}
+	if got := callers["local 1"]; len(got) != 0 {
+		t.Errorf("callers of local 1 = %v, want none", got)
+	}
+}
+
+// `export const removeEntry = (kind, id) => (cv) => setList(…)`, as
+// scip-typescript emits it: a term whose EnclosingRange covers only the arrow
+// function and so starts after the name. Its calls belong to it.
+func TestFunctionValuedTerms(t *testing.T) {
+	pkg := "scip-typescript npm demo 1.0.0 src/`entries.ts`/"
+	removeEntry, setList, limit, labels := pkg+"removeEntry.", pkg+"setList().", pkg+"MAX_BULLETS.", pkg+"ADD_LABEL."
+	rust := "rust-analyzer cargo demo 0.1.0 LIMIT."
+	doc := &Document{
+		RelativePath: "src/entries.ts",
+		Occurrences: []*Occurrence{
+			{Range: []int32{0, 9, 16}, Symbol: setList, SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{0, 0, 3, 1}},
+			{Range: []int32{5, 13, 24}, Symbol: removeEntry, SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{6, 2, 9, 3}},
+			{Range: []int32{8, 4, 11}, Symbol: setList},
+			{Range: []int32{11, 13, 24}, Symbol: limit, SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{12, 13, 22}, Symbol: labels, SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{12, 0, 14, 2}},
+			{Range: []int32{13, 4, 11}, Symbol: setList},
+			{Range: []int32{20, 10, 15}, Symbol: rust, SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{20, 0, 22, 2}},
+			{Range: []int32{21, 4, 11}, Symbol: setList},
+		},
+	}
+
+	callers := buildCallerIndex([]*Document{doc})
+	if got := callers[setList]; len(got) != 1 || got[0] != removeEntry {
+		t.Errorf("callers of setList = %v, want only removeEntry: a range that starts at or before the name is a declaration, not a function value", got)
+	}
+
+	idx := &SCIPIndex{Documents: []*Document{doc}, DefinitionIndex: map[string]*OccurrenceRef{}}
+	for _, occ := range doc.Occurrences {
+		if occ.SymbolRoles&SymbolRoleDefinition != 0 {
+			idx.DefinitionIndex[occ.Symbol] = &OccurrenceRef{Doc: doc, Occ: occ}
+		}
+	}
+	for sym, want := range map[string]bool{removeEntry: true, setList: true, limit: false, labels: false, rust: false} {
+		if got := idx.IsCallable(sym); got != want {
+			t.Errorf("IsCallable(%s) = %v, want %v", sym, got, want)
+		}
+	}
+
+	// An indexer that sets a Kind has the last word.
+	if isFunctionValuedTerm(removeEntry, 13, doc.Occurrences[1]) { // SymbolInformation_Variable
+		t.Error("a term with a stated non-callable Kind must not become a function")
+	}
+}
+
+func TestConstructorType(t *testing.T) {
+	for id, want := range map[string]string{
+		"scip-typescript npm m 1.0.0 src/`board.ts`/Board#`<constructor>`().": "Board",
+		"semanticdb maven m 1.0 com/x/Board#`<init>`().":                      "Board",
+		"scip-typescript npm m 1.0.0 src/`board.ts`/Board#post().":            "",
+		"scip-typescript npm m 1.0.0 src/`board.ts`/Board#":                   "",
+	} {
+		if got := ConstructorType(id); got != want {
+			t.Errorf("ConstructorType(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+func TestSpelledNames(t *testing.T) {
+	for id, want := range map[string]string{
+		"scip-typescript npm m 1.0.0 src/`board.ts`/Board#`<constructor>`().": "Board constructor",
+		"semanticdb maven m 1.0 com/x/Board#`<init>`().":                      "Board constructor",
+		"scip-typescript npm m 1.0.0 src/`board.ts`/Board#post().":            "post",
+		"not a symbol": "",
+	} {
+		if got := strings.Join(SpelledNames(id), " "); got != want {
+			t.Errorf("SpelledNames(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// A reference to a constructor spells its type: the line is still its context.
+func TestContextReader_Constructor(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.ts"), []byte("const b = new Board(1)\nlet x = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := newContextReader(root)
+	names := SpelledNames("scip-typescript npm m 1.0.0 src/`board.ts`/Board#`<constructor>`().")
+	if got := c.line("a.ts", 0, names); got != "const b = new Board(1)" {
+		t.Errorf("constructor use: %q", got)
+	}
+	if got := c.line("a.ts", 1, names); got != "" {
+		t.Errorf("a line that doesn't spell it: %q", got)
 	}
 }

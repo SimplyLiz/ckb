@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,9 +24,16 @@ type OccurrenceRef struct {
 }
 
 // NameEntry is a compact (name, symbolID) pair used in the sorted NameIndex.
+//
+// Alias is the container-qualified form ("Container.member") when the symbol
+// has a container, mirroring the FTS signature alias in
+// convertSymbolToFTSRecord — it lets a member stay findable by searching its
+// container's name (e.g. "Handler" finds "Handler#handle") on the non-FTS
+// SearchSymbols path too.
 type NameEntry struct {
-	Name string
-	ID   string
+	Name  string
+	Alias string
+	ID    string
 }
 
 // SCIPIndex represents a loaded SCIP index
@@ -65,6 +73,12 @@ type SCIPIndex struct {
 	// FindCallers is O(1) via this index instead of the former O(docs×syms×occs) scan.
 	CallerIndex     map[string][]string
 	callerIndexOnce sync.Once
+
+	// versionlessIndex maps a SCIP ID with its package-version field removed
+	// to every ID in the index that has that shape. Built lazily on the first
+	// ResolveAcrossVersions miss (see version_resolve.go).
+	versionlessIndex     map[string][]string
+	versionlessIndexOnce sync.Once
 
 	// LoadedAt is when the index was loaded
 	LoadedAt time.Time
@@ -149,8 +163,8 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 			case 1: // Metadata
 				v, n := protowire.ConsumeBytes(b)
 				if n < 0 {
-					b = b[max(n, 1):]
-					continue
+					parseErr = fmt.Errorf("protowire: malformed field %d at offset %d", num, len(data)-len(b))
+					return
 				}
 				var m scippb.Metadata
 				if discardUnknownOpts.Unmarshal(v, &m) == nil {
@@ -161,8 +175,8 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 			case 2: // Document (protobuf:"bytes,2,rep,name=documents")
 				v, n := protowire.ConsumeBytes(b)
 				if n < 0 {
-					b = b[max(n, 1):]
-					continue
+					parseErr = fmt.Errorf("protowire: malformed field %d at offset %d", num, len(data)-len(b))
+					return
 				}
 				var d scippb.Document
 				if discardUnknownOpts.Unmarshal(v, &d) == nil {
@@ -173,8 +187,8 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 			default: // external_symbols (field 3) or unknown fields — skip
 				n := protowire.ConsumeFieldValue(num, typ, b)
 				if n < 0 {
-					b = b[max(n, 1):]
-					continue
+					parseErr = fmt.Errorf("protowire: malformed field %d at offset %d", num, len(data)-len(b))
+					return
 				}
 				b = b[n:]
 			}
@@ -193,14 +207,19 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 			defer wg.Done()
 			for msg := range jobs {
 				pbDoc := msg.doc
+				// Indexers also record generated files outside the project, such
+				// as scip-go's test mains in the Go build cache. They are not this
+				// repo's code, and their paths would leak into every answer.
+				if pbDoc.RelativePath == ".." || strings.HasPrefix(pbDoc.RelativePath, "../") {
+					continue
+				}
 				doc := convertDocument(pbDoc)
 
 				r := docResult{
-					doc:              doc,
-					symbols:          make(map[string]*SymbolInformation, len(doc.Symbols)),
-					refEntries:       make(map[string][]*OccurrenceRef, len(doc.Occurrences)/4+1),
-					defEntries:       make(map[string]*OccurrenceRef),
-					containerEntries: make(map[string]string),
+					doc:        doc,
+					symbols:    make(map[string]*SymbolInformation, len(doc.Symbols)),
+					refEntries: make(map[string][]*OccurrenceRef, len(doc.Occurrences)/4+1),
+					defEntries: make(map[string]*OccurrenceRef),
 				}
 
 				for _, sym := range doc.Symbols {
@@ -233,43 +252,7 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 					}
 				}
 
-				// ContainerIndex: sort def-scopes by size so first match = innermost.
-				type defScope struct {
-					symbol    string
-					startLine int32
-					endLine   int32
-				}
-				var defScopes []defScope
-				for _, occ := range doc.Occurrences {
-					if occ.SymbolRoles&SymbolRoleDefinition != 0 && len(occ.EnclosingRange) >= 3 {
-						startLine := occ.EnclosingRange[0]
-						endLine := startLine
-						if len(occ.EnclosingRange) >= 4 {
-							endLine = occ.EnclosingRange[2]
-						}
-						defScopes = append(defScopes, defScope{occ.Symbol, startLine, endLine})
-					}
-				}
-				if len(defScopes) > 0 {
-					sort.Slice(defScopes, func(a, b int) bool {
-						return (defScopes[a].endLine - defScopes[a].startLine) <
-							(defScopes[b].endLine - defScopes[b].startLine)
-					})
-					for _, occ := range doc.Occurrences {
-						if len(occ.Range) < 2 {
-							continue
-						}
-						occLine := occ.Range[0]
-						for di := range defScopes {
-							ds := &defScopes[di]
-							if occLine >= ds.startLine && occLine <= ds.endLine {
-								r.containerEntries[fmt.Sprintf("%s:%d:%d",
-									doc.RelativePath, occ.Range[0], occ.Range[1])] = ds.symbol
-								break
-							}
-						}
-					}
-				}
+				r.containerEntries = containerEntries(doc)
 
 				resultsMu.Lock()
 				results = append(results, r)
@@ -414,7 +397,11 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 		// produce non-deterministic output since the map iteration order is random.
 		nameIdx := make([]NameEntry, 0, len(scipIndex.ConvertedSymbols))
 		for id, sym := range scipIndex.ConvertedSymbols {
-			nameIdx = append(nameIdx, NameEntry{Name: sym.Name, ID: id})
+			alias := ""
+			if sym.ContainerName != "" {
+				alias = sym.ContainerName + "." + sym.Name
+			}
+			nameIdx = append(nameIdx, NameEntry{Name: sym.Name, Alias: alias, ID: id})
 		}
 		sort.Slice(nameIdx, func(a, b int) bool {
 			if nameIdx[a].Name != nameIdx[b].Name {
@@ -622,4 +609,58 @@ func GetIndexPath(repoRoot string, configPath string) string {
 		return configPath
 	}
 	return filepath.Join(repoRoot, configPath)
+}
+
+// containerEntries maps each occurrence in a document to the innermost definition
+// containing it, keyed by path, line and column. Only a definition a change can
+// belong to is a container. rust-analyzer gives a local variable's definition an
+// enclosing range covering its let statement, so counting those would answer
+// "local 12" for the call in `let id = project.save(x)`, and the caller is lost.
+func containerEntries(doc *Document) map[string]string {
+	entries := make(map[string]string)
+	type defScope struct {
+		symbol    string
+		startLine int32
+		endLine   int32
+	}
+	var defScopes []defScope
+	for _, occ := range doc.Occurrences {
+		if occ.SymbolRoles&SymbolRoleDefinition != 0 && len(occ.EnclosingRange) >= 3 && IsChangeableDefinition(occ.Symbol) {
+			startLine := occ.EnclosingRange[0]
+			endLine := startLine
+			if len(occ.EnclosingRange) >= 4 {
+				endLine = occ.EnclosingRange[2]
+			}
+			defScopes = append(defScopes, defScope{occ.Symbol, startLine, endLine})
+		}
+	}
+	if len(defScopes) == 0 {
+		// scip-dart gives no EnclosingRange at all. Infer the functions' extents
+		// the way the caller index does, or no reference has a caller.
+		for _, b := range functionBounds(doc) {
+			defScopes = append(defScopes, defScope{b.Symbol, int32(b.Start), int32(b.End)}) // #nosec G115 -- lines came from int32 SCIP ranges
+		}
+	}
+	if len(defScopes) == 0 {
+		return entries
+	}
+	// Smallest first, so the first match is the innermost.
+	sort.Slice(defScopes, func(a, b int) bool {
+		return (defScopes[a].endLine - defScopes[a].startLine) <
+			(defScopes[b].endLine - defScopes[b].startLine)
+	})
+	for _, occ := range doc.Occurrences {
+		if len(occ.Range) < 2 {
+			continue
+		}
+		occLine := occ.Range[0]
+		for di := range defScopes {
+			ds := &defScopes[di]
+			if occLine >= ds.startLine && occLine <= ds.endLine {
+				entries[fmt.Sprintf("%s:%d:%d", doc.RelativePath, occ.Range[0], occ.Range[1])] = ds.symbol
+				break
+			}
+		}
+	}
+	return entries
 }

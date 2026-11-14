@@ -9,10 +9,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/complexity"
+	"github.com/SimplyLiz/CodeMCP/internal/config"
 	"github.com/SimplyLiz/CodeMCP/internal/coupling"
+	"github.com/SimplyLiz/CodeMCP/internal/pathclass"
 )
 
 // Analyzer performs risk analysis on codebases
@@ -21,6 +24,17 @@ type Analyzer struct {
 	logger             *slog.Logger
 	couplingAnalyzer   *coupling.Analyzer
 	complexityAnalyzer *complexity.Analyzer
+	// classes keeps generated and data paths (.ckb/config.json paths) out of the audit.
+	classes *pathclass.Classifier
+	// settings is .ckb/config.json "audit": keywords and disabled factors.
+	settings settings
+
+	authorsOnce  sync.Once
+	singleAuthor bool
+
+	// scripts are the files Analyze found run directly and imported by
+	// nothing (see standaloneScripts), slash-separated.
+	scripts map[string]bool
 }
 
 // NewAnalyzer creates a new risk analyzer
@@ -29,11 +43,18 @@ func NewAnalyzer(repoRoot string, logger *slog.Logger) *Analyzer {
 	if complexity.IsAvailable() {
 		ca = complexity.NewAnalyzer()
 	}
+	cfg, err := config.LoadConfig(repoRoot)
+	if err != nil {
+		cfg = nil
+	}
+	classes := pathclass.FromConfig(repoRoot, cfg)
 	return &Analyzer{
 		repoRoot:           repoRoot,
 		logger:             logger,
-		couplingAnalyzer:   coupling.NewAnalyzer(repoRoot, logger),
+		couplingAnalyzer:   coupling.NewAnalyzer(repoRoot, logger).WithClasses(classes),
 		complexityAnalyzer: ca,
+		classes:            classes,
+		settings:           newSettings(cfg),
 	}
 }
 
@@ -55,15 +76,20 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AuditOptions) (*RiskAnalysi
 		"minScore", opts.MinScore,
 		"limit", opts.Limit)
 
-	// Find all source files
+	// Find all source files; generated and data paths are counted, not scored
+	var leftOut pathclass.Counter
 	files, err := a.findSourceFiles(opts.RepoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find source files: %w", err)
 	}
+	a.scripts = standaloneScripts(opts.RepoRoot, files, a.logger)
 
 	// Analyze each file
 	items := make([]RiskItem, 0, len(files))
 	for _, file := range files {
+		if leftOut.Skip(a.classes, filepath.ToSlash(file)) {
+			continue
+		}
 		item, err := a.analyzeFile(ctx, opts.RepoRoot, file)
 		if err != nil {
 			a.logger.Warn("Failed to analyze file",
@@ -115,6 +141,7 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AuditOptions) (*RiskAnalysi
 		Items:      items,
 		Summary:    summary,
 		QuickWins:  quickWins,
+		LeftOut:    leftOut.Tally(),
 	}, nil
 }
 
@@ -138,7 +165,10 @@ func (a *Analyzer) analyzeFile(ctx context.Context, repoRoot, file string) (*Ris
 	hasTests := a.hasTestFile(file)
 	coverageContrib := 0.0
 	var coverageValue string
-	if !hasTests {
+	if !hasTests && a.scripts[filepath.ToSlash(file)] {
+		// A one-off script: "add tests" is no advice for it.
+		coverageValue = "no test file; a script nothing imports, not scored"
+	} else if !hasTests {
 		coverageContrib = 15.0 // Penalize missing tests
 		coverageValue = "no test file"
 	} else {
@@ -162,6 +192,13 @@ func (a *Analyzer) analyzeFile(ctx context.Context, repoRoot, file string) (*Ris
 	busValue := fmt.Sprintf("%d", busFactor)
 	if activeContributor != "" {
 		busValue += fmt.Sprintf(" (%s only)", activeContributor)
+	}
+	// With one author in the whole history every file has bus factor 1; that
+	// is the repo's situation, not this file's risk, and "assign a backup
+	// owner" has nobody to assign.
+	if busFactor == 1 && a.singleAuthorRepo(ctx) {
+		busContrib = 0
+		busValue += "; single-author repo, not scored"
 	}
 	factors = append(factors, RiskFactor{
 		Factor:       FactorBusFactor,
@@ -208,11 +245,15 @@ func (a *Analyzer) analyzeFile(ctx context.Context, repoRoot, file string) (*Ris
 	})
 
 	// 7. Co-change coupling
-	coupledFiles := a.getCoupledFilesCount(ctx, file)
+	coupledFiles, coupledLeftOut := a.getCoupledFilesCount(ctx, file)
 	couplingContrib := min(float64(coupledFiles)/10, 1.0) * 5
+	couplingValue := fmt.Sprintf("%d files", coupledFiles)
+	if coupledLeftOut > 0 {
+		couplingValue += fmt.Sprintf(" (%d in data/generated paths left out)", coupledLeftOut)
+	}
 	factors = append(factors, RiskFactor{
 		Factor:       FactorCoChangeCoupling,
-		Value:        fmt.Sprintf("%d files", coupledFiles),
+		Value:        couplingValue,
 		Weight:       RiskWeights[FactorCoChangeCoupling],
 		Contribution: couplingContrib,
 	})
@@ -226,6 +267,15 @@ func (a *Analyzer) analyzeFile(ctx context.Context, repoRoot, file string) (*Ris
 		Weight:       RiskWeights[FactorChurn],
 		Contribution: churnContrib,
 	})
+
+	// Factors disabled in .ckb/config.json audit.disabledFactors stay listed
+	// but score nothing.
+	for i := range factors {
+		if a.settings.disabled[factors[i].Factor] {
+			factors[i].Contribution = 0
+			factors[i].Value = "disabled (audit.disabledFactors)"
+		}
+	}
 
 	// Calculate total risk score
 	totalScore := 0.0
@@ -246,18 +296,23 @@ func (a *Analyzer) analyzeFile(ctx context.Context, repoRoot, file string) (*Ris
 	}, nil
 }
 
-// findSourceFiles finds all source files in the repository
+// findSourceFiles finds the repo's source files: in a git repo the ones git
+// lists (tracked, and untracked but not ignored), so a gitignored .venv, build
+// tree or nested checkout isn't audited as this repo's code; outside one every
+// file on disk. The named directories are skipped either way.
 func (a *Analyzer) findSourceFiles(repoRoot string) ([]string, error) {
-	var files []string
+	if files, err := gitSourceFiles(repoRoot); err == nil {
+		return files, nil
+	}
 
+	var files []string
 	err := filepath.Walk(repoRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // skip inaccessible files
 		}
 
 		if info.IsDir() {
-			name := info.Name()
-			if name == "node_modules" || name == "vendor" || name == ".git" || name == "__pycache__" || name == ".ckb" {
+			if skippedDirs[info.Name()] {
 				return filepath.SkipDir
 			}
 			return nil
@@ -275,6 +330,35 @@ func (a *Analyzer) findSourceFiles(repoRoot string) ([]string, error) {
 	})
 
 	return files, err
+}
+
+// skippedDirs are never audited, even when git tracks them.
+var skippedDirs = map[string]bool{"node_modules": true, "vendor": true, ".git": true, "__pycache__": true, ".ckb": true}
+
+// gitSourceFiles lists the source files git knows in repoRoot. An error means
+// repoRoot isn't a git work tree or git is missing.
+func gitSourceFiles(repoRoot string) ([]string, error) {
+	cmd := exec.Command("git", "ls-files", "-co", "--exclude-standard", "-z") // #nosec G204 //nolint:gosec // fixed git subcommand
+	cmd.Dir = repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+next:
+	for _, path := range strings.Split(string(out), "\x00") {
+		if path == "" || !isSourceFile(filepath.Ext(path)) {
+			continue
+		}
+		parts := strings.Split(path, "/")
+		for _, dir := range parts[:len(parts)-1] {
+			if skippedDirs[dir] {
+				continue next
+			}
+		}
+		files = append(files, filepath.FromSlash(path))
+	}
+	return files, nil
 }
 
 // getComplexityDetailed returns total complexity and per-function breakdown.
@@ -346,9 +430,13 @@ func (a *Analyzer) hasTestFile(file string) bool {
 		base + "_test" + ext,
 		base + ".test" + ext,
 		base + ".spec" + ext,
-		strings.Replace(file, "/", "/test/", 1),
 		"test/" + file,
 		"tests/" + file,
+	}
+	// pkg/x.go -> pkg/test/x.go. Without a slash the replacement is the file
+	// itself, and every repo-root file passed for tested.
+	if strings.Contains(file, "/") {
+		testPatterns = append(testPatterns, strings.Replace(file, "/", "/test/", 1))
 	}
 
 	for _, pattern := range testPatterns {
@@ -421,20 +509,20 @@ func (a *Analyzer) detectSecurityKeywords(filePath string) []string {
 		return nil
 	}
 
-	textLower := strings.ToLower(string(content))
-	found := make([]string, 0)
-
-	for _, kw := range SecurityKeywords {
-		if strings.Contains(textLower, kw) {
-			found = append(found, kw)
-		}
+	keywords := a.settings.keywords
+	if keywords == nil {
+		keywords = compileKeywords(SecurityKeywords)
 	}
-
+	found := matchSecurityKeywords(string(content), keywords)
+	if found == nil {
+		found = make([]string, 0)
+	}
 	return found
 }
 
-// getCoupledFilesCount returns the number of highly coupled files
-func (a *Analyzer) getCoupledFilesCount(ctx context.Context, file string) int {
+// getCoupledFilesCount returns the number of highly coupled files, and how many
+// co-changed files in generated or data paths were left out of that count.
+func (a *Analyzer) getCoupledFilesCount(ctx context.Context, file string) (int, int) {
 	result, err := a.couplingAnalyzer.Analyze(ctx, coupling.AnalyzeOptions{
 		RepoRoot:       a.repoRoot,
 		Target:         file,
@@ -444,10 +532,13 @@ func (a *Analyzer) getCoupledFilesCount(ctx context.Context, file string) int {
 	})
 
 	if err != nil {
-		return 0
+		return 0, 0
 	}
-
-	return len(result.Correlations)
+	leftOut := 0
+	if result.LeftOut != nil {
+		leftOut = result.LeftOut.Count
+	}
+	return len(result.Correlations), leftOut
 }
 
 // getRecentChurn returns the number of commits in the recent period

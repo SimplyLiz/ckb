@@ -1,6 +1,6 @@
 {
   "facts": {
-    "module": "",
+    "module": "pkg",
     "symbol": {
       "file": "pkg/service.go",
       "kind": "class",
@@ -13,8 +13,8 @@
     }
   },
   "summary": {
-    "identity": "class DefaultService in module ",
-    "tldr": "class DefaultService in module  – 0 callers, 5 references across 1 modules",
+    "identity": "class DefaultService in module pkg",
+    "tldr": "class DefaultService in module pkg – 0 callers, 5 references across 1 modules",
     "usage": "0 callers, 5 references across 1 modules"
   }
 }

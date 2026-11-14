@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -24,8 +25,10 @@ type CompactPrepareChange struct {
 	TestsNeeded   []string `json:"tests_needed"`   // top 5
 	OwnerSuggest  string   `json:"owner_suggest,omitempty"`
 	Summary       string   `json:"summary"`
-	Backend       string   `json:"backend"`
-	Accuracy      string   `json:"accuracy"`
+	// RiskBasis is what the risk assumes, for modify: that the declaration stays.
+	RiskBasis string `json:"risk_basis,omitempty"`
+	Backend   string `json:"backend"`
+	Accuracy  string `json:"accuracy"`
 }
 
 var (
@@ -99,13 +102,14 @@ Examples:
 
 var impactDiffCmd = &cobra.Command{
 	Use:   "diff",
-	Short: "Analyze impact of code changes",
+	Short: "Analyze impact of code changes (alias of 'ckb changes')",
 	Long: `Analyze the impact of a set of code changes from git diff.
+This is an alias of 'ckb changes' -- prefer that name going forward.
 
 Answers three key questions:
   1. What downstream code might break?
   2. Which tests should I run?
-  3. Who needs to review this?
+  3. Who needs to review this? (see "Likely reviewers" in the human output)
 
 Examples:
   ckb impact diff                    # Analyze current working tree changes
@@ -150,6 +154,7 @@ func runPrepareChange(cmd *cobra.Command, args []string) {
 
 	repoRoot := mustGetRepoRoot()
 	eng := mustGetEngine(repoRoot, logger)
+	target = remapSymbolID(eng, target)
 	ctx := newContext()
 
 	changeType := query.ChangeModify
@@ -197,9 +202,9 @@ func runPrepareChange(cmd *cobra.Command, args []string) {
 
 // buildCompactPrepareChange builds a CompactPrepareChange from a PrepareChangeResponse.
 func buildCompactPrepareChange(target string, r *query.PrepareChangeResponse, activeBackend string) CompactPrepareChange {
-	risk := "unknown"
+	risk, riskBasis := "unknown", ""
 	if r.RiskAssessment != nil {
-		risk = r.RiskAssessment.Level
+		risk, riskBasis = r.RiskAssessment.Level, r.RiskAssessment.Basis
 	}
 
 	// Collect unique affected files from direct dependents (top 10)
@@ -215,9 +220,11 @@ func buildCompactPrepareChange(target string, r *query.PrepareChangeResponse, ac
 		}
 	}
 
+	// TotalCallers already counts the direct callers, and counts them all:
+	// DirectDependents is cut to the response budget.
 	affectedCount := len(r.DirectDependents)
 	if r.TransitiveImpact != nil {
-		affectedCount += r.TransitiveImpact.TotalCallers
+		affectedCount = r.TransitiveImpact.TotalCallers
 	}
 
 	// Top 5 tests
@@ -234,6 +241,9 @@ func buildCompactPrepareChange(target string, r *query.PrepareChangeResponse, ac
 	}
 
 	summary := fmt.Sprintf("Changing %s affects %d files with %s risk.", target, len(affectedFiles), risk)
+	if risk == query.RiskLevelNotAssessed {
+		summary = fmt.Sprintf("Changing %s: what depends on it was not assessed (no SCIP index).", target)
+	}
 
 	return CompactPrepareChange{
 		Target:        target,
@@ -242,6 +252,7 @@ func buildCompactPrepareChange(target string, r *query.PrepareChangeResponse, ac
 		AffectedFiles: affectedFiles,
 		TestsNeeded:   testsNeeded,
 		Summary:       summary,
+		RiskBasis:     riskBasis,
 		Backend:       activeBackend,
 		Accuracy:      envelope.AccuracyForBackend(activeBackend),
 	}
@@ -285,6 +296,7 @@ func runImpact(cmd *cobra.Command, args []string) {
 
 	repoRoot := mustGetRepoRoot()
 	engine := mustGetEngine(repoRoot, logger)
+	symbolID = remapSymbolID(engine, symbolID)
 	ctx := newContext()
 
 	// Analyze impact using Query Engine
@@ -333,6 +345,28 @@ type ImpactResponseCLI struct {
 	TransitiveImpact []ImpactItemCLI   `json:"transitiveImpact,omitempty"`
 	ModulesAffected  []ModuleImpactCLI `json:"modulesAffected"`
 	Provenance       *ProvenanceCLI    `json:"provenance,omitempty"`
+	// ConsumerFiles is every file behind the item lists, which can be cut. Truncated
+	// says they were.
+	ConsumerFiles  *query.ConsumerFiles `json:"consumerFiles,omitempty"`
+	Truncated      bool                 `json:"truncated,omitempty"`
+	TruncationInfo *TruncationInfoCLI   `json:"truncationInfo,omitempty"`
+	// NameMatchImplementations: types with a one-method interface's method whose
+	// package doesn't import the interface's. Not counted in directImpact.
+	NameMatchImplementations []ImpactItemCLI `json:"nameMatchImplementations,omitempty"`
+}
+
+// TruncationInfoCLI says how much of a list was cut.
+type TruncationInfoCLI struct {
+	Reason        string `json:"reason"`
+	OriginalCount int    `json:"originalCount"`
+	ReturnedCount int    `json:"returnedCount"`
+}
+
+func convertTruncation(info *query.TruncationInfo) *TruncationInfoCLI {
+	if info == nil {
+		return nil
+	}
+	return &TruncationInfoCLI{Reason: info.Reason, OriginalCount: info.OriginalCount, ReturnedCount: info.ReturnedCount}
 }
 
 // RiskScoreCLI describes risk assessment
@@ -345,9 +379,10 @@ type RiskScoreCLI struct {
 
 // RiskFactorCLI describes a risk factor
 type RiskFactorCLI struct {
-	Name   string  `json:"name"`
-	Value  float64 `json:"value"`
-	Weight float64 `json:"weight"`
+	Name     string  `json:"name"`
+	Value    float64 `json:"value"`
+	Weight   float64 `json:"weight"`
+	Evidence string  `json:"evidence,omitempty"`
 }
 
 // ImpactItemCLI represents an affected symbol
@@ -369,9 +404,9 @@ type ModuleImpactCLI struct {
 	DirectCount int    `json:"directCount,omitempty"`
 }
 
-func convertImpactResponse(symbolID string, resp *query.AnalyzeImpactResponse) *ImpactResponseCLI {
-	directImpact := make([]ImpactItemCLI, 0, len(resp.DirectImpact))
-	for _, item := range resp.DirectImpact {
+func impactItemsCLI(items []query.ImpactItem) []ImpactItemCLI {
+	out := make([]ImpactItemCLI, 0, len(items))
+	for _, item := range items {
 		impactItem := ImpactItemCLI{
 			StableID:   item.StableId,
 			Name:       item.Name,
@@ -388,28 +423,17 @@ func convertImpactResponse(symbolID string, resp *query.AnalyzeImpactResponse) *
 				StartColumn: item.Location.StartColumn,
 			}
 		}
-		directImpact = append(directImpact, impactItem)
+		out = append(out, impactItem)
 	}
+	return out
+}
 
-	transitiveImpact := make([]ImpactItemCLI, 0, len(resp.TransitiveImpact))
-	for _, item := range resp.TransitiveImpact {
-		impactItem := ImpactItemCLI{
-			StableID:   item.StableId,
-			Name:       item.Name,
-			Kind:       item.Kind,
-			Distance:   item.Distance,
-			ModuleID:   item.ModuleId,
-			Confidence: item.Confidence,
-		}
-		if item.Location != nil {
-			impactItem.Location = &LocationCLI{
-				FileID:      item.Location.FileId,
-				Path:        item.Location.FileId,
-				StartLine:   item.Location.StartLine,
-				StartColumn: item.Location.StartColumn,
-			}
-		}
-		transitiveImpact = append(transitiveImpact, impactItem)
+func convertImpactResponse(symbolID string, resp *query.AnalyzeImpactResponse) *ImpactResponseCLI {
+	directImpact := impactItemsCLI(resp.DirectImpact)
+	transitiveImpact := impactItemsCLI(resp.TransitiveImpact)
+	var nameMatch []ImpactItemCLI
+	if len(resp.NameMatchImplementations) > 0 {
+		nameMatch = impactItemsCLI(resp.NameMatchImplementations)
 	}
 
 	modulesAffected := make([]ModuleImpactCLI, 0, len(resp.ModulesAffected))
@@ -427,6 +451,11 @@ func convertImpactResponse(symbolID string, resp *query.AnalyzeImpactResponse) *
 		DirectImpact:     directImpact,
 		TransitiveImpact: transitiveImpact,
 		ModulesAffected:  modulesAffected,
+		ConsumerFiles:    resp.ConsumerFiles,
+		Truncated:        resp.Truncated,
+		TruncationInfo:   convertTruncation(resp.TruncationInfo),
+
+		NameMatchImplementations: nameMatch,
 	}
 
 	if resp.Symbol != nil {
@@ -540,6 +569,66 @@ type ChangeSetResponseCLI struct {
 	Recommendations []RecommendationCLI `json:"recommendations,omitempty"`
 	IndexStaleness  *IndexStalenessCLI  `json:"indexStaleness,omitempty"`
 	Provenance      *ProvenanceCLI      `json:"provenance,omitempty"`
+
+	Change        *ChangeInfoCLI       `json:"change,omitempty"`
+	AffectedTests []AffectedTestCLI    `json:"affectedTests,omitempty"`
+	TestGaps      *TestGapsCLI         `json:"testGaps,omitempty"`
+	Contracts     []ContractSignalCLI  `json:"contracts,omitempty"`
+	Decisions     []RelatedDecisionCLI `json:"decisions,omitempty"`
+	Reviewers     []SuggestedReviewCLI `json:"reviewers,omitempty"`
+	Confidence    *ChangeConfidenceCLI `json:"confidence,omitempty"`
+	DoneCheck     *query.DoneCheck     `json:"doneCheck,omitempty"`
+	CoChangeCheck *query.CoChangeCheck `json:"coChangeCheck,omitempty"`
+
+	// ConsumerFiles is every file behind AffectedSymbols, which can be cut. Truncated
+	// says it was.
+	ConsumerFiles  *query.ConsumerFiles `json:"consumerFiles,omitempty"`
+	Truncated      bool                 `json:"truncated,omitempty"`
+	TruncationInfo *TruncationInfoCLI   `json:"truncationInfo,omitempty"`
+}
+
+// ChangeInfoCLI describes the diff that was analyzed.
+type ChangeInfoCLI struct {
+	Branch       string `json:"branch,omitempty"`
+	Base         string `json:"base,omitempty"`
+	Mode         string `json:"mode"`
+	FilesChanged int    `json:"filesChanged"`
+}
+
+// TestGapsCLI summarizes untested downstream consumers.
+type TestGapsCLI struct {
+	UntestedConsumers int      `json:"untestedConsumers"`
+	Examples          []string `json:"examples,omitempty"`
+}
+
+// ContractSignalCLI flags a possible contract change (heuristic).
+type ContractSignalCLI struct {
+	Symbol string `json:"symbol"`
+	File   string `json:"file"`
+	Kind   string `json:"kind"`
+	Basis  string `json:"basis"`
+
+	Before        string   `json:"before,omitempty"`
+	After         string   `json:"after,omitempty"`
+	Detail        string   `json:"detail,omitempty"`
+	ConsumerCount int      `json:"consumerCount,omitempty"`
+	Consumers     []string `json:"consumers,omitempty"`
+}
+
+// RelatedDecisionCLI is a lightweight ADR reference.
+type RelatedDecisionCLI struct {
+	ID              string   `json:"id"`
+	Title           string   `json:"title"`
+	Status          string   `json:"status"`
+	AffectedModules []string `json:"affectedModules,omitempty"`
+	FilePath        string   `json:"filePath,omitempty"`
+}
+
+// ChangeConfidenceCLI summarizes result quality for a change set.
+type ChangeConfidenceCLI struct {
+	Score   float64  `json:"score"`
+	Tier    string   `json:"tier"`
+	Reasons []string `json:"reasons,omitempty"`
 }
 
 // ChangeSummaryCLI provides a high-level overview of changes
@@ -559,6 +648,12 @@ type ChangedSymbolCLI struct {
 	ChangeType string  `json:"changeType"`
 	Lines      []int   `json:"lines,omitempty"`
 	Confidence float64 `json:"confidence"`
+	Note       string  `json:"note,omitempty"`
+	// Declaration: unchanged (a body edit), compatible, changed or removed (heuristic).
+	Declaration string `json:"declaration,omitempty"`
+	// QualifiedName is Name with its enclosing type, "Backend.Priority"; omitted when
+	// it has none.
+	QualifiedName string `json:"qualifiedName,omitempty"`
 }
 
 // BlastRadiusCLI summarizes the impact spread
@@ -575,6 +670,7 @@ type RecommendationCLI struct {
 	Severity string `json:"severity"`
 	Message  string `json:"message"`
 	Action   string `json:"action,omitempty"`
+	Source   string `json:"source,omitempty"`
 }
 
 // IndexStalenessCLI provides index freshness information
@@ -591,12 +687,16 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 	changedSymbols := make([]ChangedSymbolCLI, 0, len(resp.ChangedSymbols))
 	for _, sym := range resp.ChangedSymbols {
 		changedSymbols = append(changedSymbols, ChangedSymbolCLI{
-			SymbolID:   sym.SymbolID,
-			Name:       sym.Name,
-			File:       sym.File,
-			ChangeType: sym.ChangeType,
-			Lines:      sym.Lines,
-			Confidence: sym.Confidence,
+			SymbolID:    sym.SymbolID,
+			Name:        sym.Name,
+			File:        sym.File,
+			ChangeType:  sym.ChangeType,
+			Lines:       sym.Lines,
+			Confidence:  sym.Confidence,
+			Note:        sym.Note,
+			Declaration: sym.Declaration,
+
+			QualifiedName: sym.QualifiedName,
 		})
 	}
 
@@ -641,6 +741,7 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 			Severity: rec.Severity,
 			Message:  rec.Message,
 			Action:   rec.Action,
+			Source:   rec.Source,
 		})
 	}
 
@@ -649,6 +750,11 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 		AffectedSymbols: affectedSymbols,
 		ModulesAffected: modulesAffected,
 		Recommendations: recommendations,
+		ConsumerFiles:   resp.ConsumerFiles,
+		DoneCheck:       resp.DoneCheck,
+		CoChangeCheck:   resp.CoChangeCheck,
+		Truncated:       resp.Truncated,
+		TruncationInfo:  convertTruncation(resp.TruncationInfo),
 	}
 
 	// Convert summary
@@ -677,9 +783,10 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 		factors := make([]RiskFactorCLI, 0, len(resp.RiskScore.Factors))
 		for _, f := range resp.RiskScore.Factors {
 			factors = append(factors, RiskFactorCLI{
-				Name:   f.Name,
-				Value:  f.Value,
-				Weight: f.Weight,
+				Name:     f.Name,
+				Value:    f.Value,
+				Weight:   f.Weight,
+				Evidence: f.Evidence,
 			})
 		}
 		result.RiskScore = &RiskScoreCLI{
@@ -710,10 +817,105 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 		}
 	}
 
+	// Convert change info
+	if resp.Change != nil {
+		result.Change = &ChangeInfoCLI{
+			Branch:       resp.Change.Branch,
+			Base:         resp.Change.Base,
+			Mode:         resp.Change.Mode,
+			FilesChanged: resp.Change.FilesChanged,
+		}
+	}
+
+	// Convert affected tests
+	if len(resp.AffectedTests) > 0 {
+		result.AffectedTests = make([]AffectedTestCLI, 0, len(resp.AffectedTests))
+		for _, t := range resp.AffectedTests {
+			result.AffectedTests = append(result.AffectedTests, AffectedTestCLI{
+				FilePath:   t.FilePath,
+				TestNames:  t.TestNames,
+				Reason:     t.Reason,
+				AffectedBy: t.AffectedBy,
+				Confidence: t.Confidence,
+			})
+		}
+	}
+
+	// Convert test gaps
+	if resp.TestGaps != nil {
+		result.TestGaps = &TestGapsCLI{
+			UntestedConsumers: resp.TestGaps.UntestedConsumers,
+			Examples:          resp.TestGaps.Examples,
+		}
+	}
+
+	// Convert contracts
+	if len(resp.Contracts) > 0 {
+		result.Contracts = make([]ContractSignalCLI, 0, len(resp.Contracts))
+		for _, c := range resp.Contracts {
+			result.Contracts = append(result.Contracts, ContractSignalCLI{
+				Symbol: c.Symbol,
+				File:   c.File,
+				Kind:   c.Kind,
+				Basis:  c.Basis,
+
+				Before:        c.Before,
+				After:         c.After,
+				Detail:        c.Detail,
+				ConsumerCount: c.ConsumerCount,
+				Consumers:     c.Consumers,
+			})
+		}
+	}
+
+	// Convert decisions
+	if len(resp.Decisions) > 0 {
+		result.Decisions = make([]RelatedDecisionCLI, 0, len(resp.Decisions))
+		for _, d := range resp.Decisions {
+			result.Decisions = append(result.Decisions, RelatedDecisionCLI{
+				ID:              d.ID,
+				Title:           d.Title,
+				Status:          d.Status,
+				AffectedModules: d.AffectedModules,
+				FilePath:        d.FilePath,
+			})
+		}
+	}
+
+	// Convert reviewers
+	if len(resp.Reviewers) > 0 {
+		result.Reviewers = make([]SuggestedReviewCLI, 0, len(resp.Reviewers))
+		for _, r := range resp.Reviewers {
+			result.Reviewers = append(result.Reviewers, SuggestedReviewCLI{
+				Owner:      r.Owner,
+				Reason:     r.Reason,
+				Coverage:   r.Coverage,
+				Confidence: r.Confidence,
+			})
+		}
+	}
+
+	// Convert confidence
+	if resp.Confidence != nil {
+		result.Confidence = &ChangeConfidenceCLI{
+			Score:   resp.Confidence.Score,
+			Tier:    resp.Confidence.Tier,
+			Reasons: resp.Confidence.Reasons,
+		}
+	}
+
 	return result
 }
 
 // formatImpactMarkdown generates a markdown report for PR comments
+// riskLevelLabel is a risk level the way a heading prints it.
+func riskLevelLabel(level string) string {
+	if level == query.RiskLevelNotAssessed {
+		return "NOT ASSESSED"
+	}
+	return strings.ToUpper(level)
+}
+
 func formatImpactMarkdown(resp *ChangeSetResponseCLI) string {
 	var b strings.Builder
 
@@ -735,21 +937,30 @@ func formatImpactMarkdown(resp *ChangeSetResponseCLI) string {
 
 	b.WriteString(fmt.Sprintf("## %s Change Impact Analysis\n\n", emoji))
 
+	if nothingToAssess(resp) {
+		b.WriteString(query.NothingToAssess + "\n")
+		return b.String()
+	}
+
 	// Summary table
 	if resp.Summary != nil {
 		s := resp.Summary
 		b.WriteString("| Metric | Value |\n")
 		b.WriteString("|:-------|------:|\n")
-		b.WriteString(fmt.Sprintf("| **Risk Level** | **%s** %s |\n", strings.ToUpper(risk), emoji))
+		b.WriteString(fmt.Sprintf("| **Risk Level** | **%s** %s |\n", riskLevelLabel(risk), emoji))
 		b.WriteString(fmt.Sprintf("| Files Changed | %d |\n", s.FilesChanged))
 		b.WriteString(fmt.Sprintf("| Symbols Changed | %d |\n", s.SymbolsChanged))
-		b.WriteString(fmt.Sprintf("| Directly Affected | %d |\n", s.DirectlyAffected))
-		b.WriteString(fmt.Sprintf("| Transitively Affected | %d |\n", s.TransitivelyAffected))
+		if risk == query.RiskLevelNotAssessed {
+			b.WriteString("| Downstream Impact | not assessed |\n")
+		} else {
+			b.WriteString(fmt.Sprintf("| Directly Affected | %d |\n", s.DirectlyAffected))
+			b.WriteString(fmt.Sprintf("| Transitively Affected | %d |\n", s.TransitivelyAffected))
+		}
 		b.WriteString("\n")
 	}
 
-	// Blast radius
-	if resp.BlastRadius != nil {
+	// Blast radius: nobody looked for callers if the risk wasn't assessed.
+	if resp.BlastRadius != nil && risk != query.RiskLevelNotAssessed {
 		br := resp.BlastRadius
 		b.WriteString(fmt.Sprintf("**Blast Radius:** %d modules, %d files, %d unique callers\n\n",
 			br.ModuleCount, br.FileCount, br.UniqueCallerCount))
@@ -767,7 +978,7 @@ func formatImpactMarkdown(resp *ChangeSetResponseCLI) string {
 				break
 			}
 			b.WriteString(fmt.Sprintf("| `%s` | `%s` | %s | %.0f%% |\n",
-				sym.Name, sym.File, sym.ChangeType, sym.Confidence*100))
+				cmp.Or(sym.QualifiedName, sym.Name), sym.File, sym.ChangeType, sym.Confidence*100))
 		}
 		b.WriteString("\n</details>\n\n")
 	}
@@ -776,6 +987,9 @@ func formatImpactMarkdown(resp *ChangeSetResponseCLI) string {
 	if len(resp.AffectedSymbols) > 0 {
 		b.WriteString("<details>\n")
 		b.WriteString(fmt.Sprintf("<summary>🎯 Affected Downstream (%d)</summary>\n\n", len(resp.AffectedSymbols)))
+		if line := truncationLine(resp.TruncationInfo); line != "" {
+			b.WriteString(line + "\n\n")
+		}
 		b.WriteString("| Symbol | Module | Distance | Kind |\n")
 		b.WriteString("|:-------|:-------|:--------:|:-----|\n")
 		for i, sym := range resp.AffectedSymbols {
@@ -786,6 +1000,26 @@ func formatImpactMarkdown(resp *ChangeSetResponseCLI) string {
 			b.WriteString(fmt.Sprintf("| `%s` | `%s` | %d | %s |\n",
 				sym.Name, sym.ModuleID, sym.Distance, sym.Kind))
 		}
+		b.WriteString("\n</details>\n\n")
+	}
+
+	if resp.DoneCheck != nil {
+		var check strings.Builder
+		writeDoneCheck(&check, resp.DoneCheck, true)
+		b.WriteString("```\n" + strings.TrimSpace(check.String()) + "\n```\n\n")
+	}
+	if resp.CoChangeCheck != nil {
+		var check strings.Builder
+		writeCoChangeCheck(&check, resp.CoChangeCheck, true)
+		b.WriteString("```\n" + strings.TrimSpace(check.String()) + "\n```\n\n")
+	}
+
+	if files := resp.ConsumerFiles; files != nil && files.Total > 0 {
+		b.WriteString("<details>\n")
+		b.WriteString(fmt.Sprintf("<summary>📄 Consumer Files (%d)</summary>\n\n", files.Total))
+		var list strings.Builder
+		writeConsumerFiles(&list, files, true)
+		b.WriteString("```\n" + strings.TrimSpace(list.String()) + "\n```\n")
 		b.WriteString("\n</details>\n\n")
 	}
 
@@ -861,6 +1095,7 @@ func runImpactOutgoing(cmd *cobra.Command, args []string) {
 
 	repoRoot := mustGetRepoRoot()
 	engine := mustGetEngine(repoRoot, logger)
+	symbolID = remapSymbolID(engine, symbolID)
 	ctx := newContext()
 
 	resp, err := engine.AnalyzeOutgoingImpact(ctx, query.AnalyzeOutgoingImpactOptions{

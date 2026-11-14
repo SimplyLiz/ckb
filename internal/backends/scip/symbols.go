@@ -193,6 +193,13 @@ func inferSymbolKind(symInfo *SymbolInformation, scipId *SCIPIdentifier) SymbolK
 // findSymbolLocation finds the definition location of a symbol
 // This is the O(n*m) fallback when RefIndex is not available
 func findSymbolLocation(symbolId string, idx *SCIPIndex) *Location {
+	// The loader indexes every definition; the scan below is for an index
+	// built by hand. Per symbol it costs a pass over the whole index, and
+	// FindCallees asks once per callee, which put the unwired walk over CKB at
+	// three minutes, nearly all of it here.
+	if idx.DefinitionIndex != nil || idx.RefIndex != nil {
+		return findSymbolLocationFast(symbolId, idx)
+	}
 	// Search through all documents for the definition occurrence
 	for _, doc := range idx.Documents {
 		for _, occ := range doc.Occurrences {
@@ -292,7 +299,12 @@ func inferVisibility(symInfo *SymbolInformation, scipId *SCIPIdentifier, name st
 	language := scipId.GetLanguage()
 	switch language {
 	case "go":
-		// In Go, uppercase first letter means exported
+		// In Go, uppercase first letter means exported, but a member of an
+		// unexported type (engine#Build) is not reachable by name outside the
+		// package, so it is not part of the public API either.
+		if container := scipId.GetContainerName(); container != "" && !(container[0] >= 'A' && container[0] <= 'Z') {
+			return "private"
+		}
 		if len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z' {
 			return "public"
 		}
@@ -341,8 +353,8 @@ func GetSymbolSignature(symInfo *SymbolInformation, scipId *SCIPIdentifier) stri
 // better throughput on large symbol sets. Prefix queries also benefit from
 // binary-search early termination.
 func (idx *SCIPIndex) SearchSymbols(query string, options SearchOptions) ([]*SCIPSymbol, error) {
-	var matches []*SCIPSymbol
 	queryLower := strings.ToLower(query)
+	c := &matchCollector{max: options.MaxResults}
 
 	if len(idx.NameIndex) > 0 && len(idx.ConvertedSymbols) > 0 {
 		// Fast path: iterate the compact sorted name slice.
@@ -351,34 +363,31 @@ func (idx *SCIPIndex) SearchSymbols(query string, options SearchOptions) ([]*SCI
 		// The cache-line advantage of []NameEntry over map iteration already
 		// gives a significant speedup at large N.
 		for _, entry := range idx.NameIndex {
-			if !strings.Contains(strings.ToLower(entry.Name), queryLower) {
+			nameMatch := strings.Contains(strings.ToLower(entry.Name), queryLower)
+			aliasMatch := entry.Alias != "" && strings.Contains(strings.ToLower(entry.Alias), queryLower)
+			if !nameMatch && !aliasMatch {
 				continue
 			}
 			sym, ok := idx.ConvertedSymbols[entry.ID]
 			if !ok {
 				continue
 			}
-			if matchesQuery(sym, queryLower, options) {
-				matches = append(matches, sym)
-				if options.MaxResults > 0 && len(matches) >= options.MaxResults {
-					return matches, nil
-				}
+			if matchesQuery(sym, queryLower, options) && c.add(sym, nameMatch) {
+				break
 			}
 		}
-		return matches, nil
+		return c.result(), nil
 	}
 
 	// Fallback: ConvertedSymbols map iteration (no NameIndex).
 	if len(idx.ConvertedSymbols) > 0 {
 		for _, scipSym := range idx.ConvertedSymbols {
-			if matchesQuery(scipSym, queryLower, options) {
-				matches = append(matches, scipSym)
-			}
-			if options.MaxResults > 0 && len(matches) >= options.MaxResults {
+			if matchesQuery(scipSym, queryLower, options) &&
+				c.add(scipSym, strings.Contains(strings.ToLower(scipSym.Name), queryLower)) {
 				break
 			}
 		}
-		return matches, nil
+		return c.result(), nil
 	}
 
 	// Last resort: convert on-the-fly (no pre-converted cache at all).
@@ -387,15 +396,42 @@ func (idx *SCIPIndex) SearchSymbols(query string, options SearchOptions) ([]*SCI
 		if err != nil {
 			continue
 		}
-		if matchesQuery(scipSym, queryLower, options) {
-			matches = append(matches, scipSym)
-		}
-		if options.MaxResults > 0 && len(matches) >= options.MaxResults {
+		if matchesQuery(scipSym, queryLower, options) &&
+			c.add(scipSym, strings.Contains(strings.ToLower(scipSym.Name), queryLower)) {
 			break
 		}
 	}
+	return c.result(), nil
+}
 
-	return matches, nil
+// matchCollector gathers matches so that the MaxResults cap is applied after
+// ranking, not while scanning. Matches on the symbol's own name rank ahead of
+// matches that only hit the container-qualified alias ("Server.Close" for
+// "serve"); capping during the scan let a run of alias-only members crowd out
+// the real name matches (ServeHTTP for query "Serve").
+type matchCollector struct {
+	max     int
+	byName  []*SCIPSymbol
+	byAlias []*SCIPSymbol
+}
+
+// add records a match and reports true once name matches alone fill the cap,
+// at which point nothing scanned later can outrank them.
+func (c *matchCollector) add(sym *SCIPSymbol, nameMatch bool) bool {
+	if nameMatch {
+		c.byName = append(c.byName, sym)
+	} else if c.max <= 0 || len(c.byAlias) < c.max {
+		c.byAlias = append(c.byAlias, sym)
+	}
+	return c.max > 0 && len(c.byName) >= c.max
+}
+
+func (c *matchCollector) result() []*SCIPSymbol {
+	out := append(c.byName, c.byAlias...)
+	if c.max > 0 && len(out) > c.max {
+		out = out[:c.max]
+	}
+	return out
 }
 
 // SearchOptions contains options for symbol search
@@ -408,9 +444,16 @@ type SearchOptions struct {
 
 // matchesQuery checks if a symbol matches a search query
 func matchesQuery(sym *SCIPSymbol, queryLower string, options SearchOptions) bool {
-	// Check name match
+	// Check name match, including the container-qualified alias
+	// ("Handler.handle") so a member stays findable by searching its
+	// container's name even when FTS is unavailable.
 	nameLower := strings.ToLower(sym.Name)
-	if !strings.Contains(nameLower, queryLower) {
+	nameMatch := strings.Contains(nameLower, queryLower)
+	aliasMatch := false
+	if !nameMatch && sym.ContainerName != "" {
+		aliasMatch = strings.Contains(strings.ToLower(sym.ContainerName+"."+sym.Name), queryLower)
+	}
+	if !nameMatch && !aliasMatch {
 		return false
 	}
 

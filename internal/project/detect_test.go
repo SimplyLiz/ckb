@@ -2,6 +2,7 @@ package project
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -879,5 +880,105 @@ func TestLoadConfig_NotFound(t *testing.T) {
 	_, err := LoadConfig(dir)
 	if err == nil {
 		t.Errorf("LoadConfig() should return error for missing config")
+	}
+}
+
+func TestDetectAllLanguages_SkipsHiddenAndVendoredDirs(t *testing.T) {
+	root := t.TempDir()
+	for _, path := range []string{"go.mod", ".claude/worktrees/x/package.json", "third_party/lib/Cargo.toml", ".github/actions/a/package.json"} {
+		full := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lang, _, all := DetectAllLanguages(root)
+	if lang != LangGo || len(all) != 1 {
+		t.Errorf("detected %v (primary %s), want Go alone: hidden and vendored manifests are not this project's", all, lang)
+	}
+}
+
+// A repo of scripts has no manifest; the language of most tracked source files is
+// picked, and git-ignored files don't count.
+func TestDetectLanguage_SourceFilesWithoutManifest(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".gitignore", "Temp/\n")
+	write("exp/a.py", "x = 1\n")
+	write("exp/b.py", "y = 2\n")
+	write("mods/hook.ts", "export const r = 1\n")
+	for i := 0; i < 5; i++ {
+		write(filepath.Join("Temp", string(rune('a'+i))+".ts"), "export const s = 1\n")
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	lang, from, ok := DetectLanguage(dir)
+	if !ok || lang != LangPython {
+		t.Fatalf("DetectLanguage = %v %q %v, want python", lang, from, ok)
+	}
+	if from != "2 tracked .py files, no manifest" {
+		t.Errorf("from = %q", from)
+	}
+}
+
+func TestDetectLanguage_NoSourcesNoManifest(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "init", "-q")
+	cmd.Dir = dir
+	_ = cmd.Run()
+	if lang, _, ok := DetectLanguage(dir); ok {
+		t.Fatalf("DetectLanguage = %v, want unknown", lang)
+	}
+}
+
+// Scripts beside a few TypeScript hooks, both without a manifest: both languages
+// are indexed, the more common one first. A lone .js config file is not a language.
+func TestDetectAllLanguages_SourceFilesSeveralLanguages(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{"exp/a.py", "exp/b.py", "exp/c.py", "exp/d.py",
+		"mods/x/hooks/register.ts", "mods/x/tests/x.test.ts", "mods/x/types/index.d.ts",
+		"eslint.config.js"} {
+		write(f)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	primary, from, all := DetectAllLanguages(dir)
+	if primary != LangPython || from != "4 tracked .py files, no manifest" {
+		t.Fatalf("primary = %v %q, want python from 4 .py files", primary, from)
+	}
+	if len(all) != 2 || all[0] != LangPython || all[1] != LangTypeScript {
+		t.Fatalf("all = %v, want [python typescript]", all)
 	}
 }

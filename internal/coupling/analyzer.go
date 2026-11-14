@@ -8,23 +8,39 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/SimplyLiz/CodeMCP/internal/pathclass"
 )
 
 // Analyzer performs co-change pattern analysis on files
 type Analyzer struct {
 	repoRoot string
 	logger   *slog.Logger
+	// classes keeps generated and data paths (.ckb/config.json paths) out of the
+	// correlations: a data directory committed in batches couples to everything.
+	classes *pathclass.Classifier
 }
 
-// NewAnalyzer creates a new coupling analyzer
+// NewAnalyzer creates a new coupling analyzer. It reads the repo's path classes
+// from .ckb/config.json once.
 func NewAnalyzer(repoRoot string, logger *slog.Logger) *Analyzer {
 	return &Analyzer{
 		repoRoot: repoRoot,
 		logger:   logger,
+		classes:  pathclass.Load(repoRoot),
 	}
 }
 
+// WithClasses replaces the path classes, for callers holding a loaded config.
+func (a *Analyzer) WithClasses(c *pathclass.Classifier) *Analyzer {
+	a.classes = c
+	return a
+}
+
 // Analyze performs coupling analysis on a target file or symbol
+// maxFilesPerCommit is the largest commit co-change analysis counts.
+const maxFilesPerCommit = 50
+
 func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingAnalysis, error) {
 	// Set defaults
 	if opts.MinCorrelation <= 0 {
@@ -77,8 +93,13 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingA
 		}, nil
 	}
 
-	// For each commit, get all other files changed
+	// For each commit, get all other files changed. A commit touching more than
+	// maxFilesPerCommit files (an initial import, a rename sweep, a formatter run)
+	// says nothing about which files belong together, and counted it made every
+	// file in it 100% coupled to every other: it is left out of the count and of
+	// the total, as Cartographer's co-change analysis does.
 	coChangeCounts := make(map[string]int)
+	counted := 0
 	for _, commitHash := range targetCommits {
 		filesInCommit, err := a.getFilesInCommit(ctx, commitHash)
 		if err != nil {
@@ -87,6 +108,10 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingA
 				"error", err.Error())
 			continue
 		}
+		if len(filesInCommit) > maxFilesPerCommit {
+			continue
+		}
+		counted++
 
 		for _, file := range filesInCommit {
 			if file != targetFile && file != "" {
@@ -95,27 +120,36 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingA
 		}
 	}
 
+	// Generated and data files still count in the commit size above (a batch
+	// commit is no evidence either way), but are not correlations.
+	var leftOut pathclass.Counter
+	for file := range coChangeCounts {
+		if leftOut.Skip(a.classes, file) {
+			delete(coChangeCounts, file)
+		}
+	}
+
 	// Compute correlations
 	correlations := make([]Correlation, 0, len(coChangeCounts))
 	for file, count := range coChangeCounts {
-		correlation := float64(count) / float64(len(targetCommits))
+		correlation := float64(count) / float64(counted)
 
 		if correlation >= opts.MinCorrelation {
 			correlations = append(correlations, Correlation{
-				File:          filepath.Base(file),
+				// Repo-relative, like FilePath: a basename names nothing to
+				// open, and every consumer matching against diff or file lists
+				// (review's split graph, prepareChange) has paths, not names.
+				File:          file,
 				FilePath:      file,
 				Correlation:   correlation,
 				CoChangeCount: count,
-				TotalChanges:  len(targetCommits),
+				TotalChanges:  counted,
 				Level:         GetCorrelationLevel(correlation),
 			})
 		}
 	}
 
-	// Sort by correlation descending
-	sort.Slice(correlations, func(i, j int) bool {
-		return correlations[i].Correlation > correlations[j].Correlation
-	})
+	sortCorrelations(correlations)
 
 	// Apply limit
 	if len(correlations) > opts.Limit {
@@ -124,6 +158,9 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingA
 
 	// Generate insights
 	insights := a.generateInsights(correlations, targetFile)
+	if note := leftOut.Note(); note != "" {
+		insights = append(insights, note)
+	}
 
 	// Generate recommendations
 	recommendations := a.generateRecommendations(correlations, targetFile)
@@ -132,6 +169,7 @@ func (a *Analyzer) Analyze(ctx context.Context, opts AnalyzeOptions) (*CouplingA
 		Correlations:    correlations,
 		Insights:        insights,
 		Recommendations: recommendations,
+		LeftOut:         leftOut.Tally(),
 	}
 	result.Target.File = targetFile
 	result.Target.CommitCount = len(targetCommits)
@@ -294,7 +332,7 @@ func (a *Analyzer) generateRecommendations(correlations []Correlation, targetFil
 
 // executeGit executes a git command and returns the output
 func (a *Analyzer) executeGit(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- fixed binary, no shell; args are built by this package
 	cmd.Dir = a.repoRoot
 
 	output, err := cmd.Output()
@@ -331,4 +369,20 @@ func uitoa(u uint) string {
 		u /= 10
 	}
 	return string(buf[i:])
+}
+
+// sortCorrelations orders by correlation, strongest first. The counts come out
+// of a map, so ties need an order of their own, or a limit keeps a different
+// set of equally coupled files on every run.
+func sortCorrelations(correlations []Correlation) {
+	sort.Slice(correlations, func(i, j int) bool {
+		a, b := correlations[i], correlations[j]
+		if a.Correlation != b.Correlation {
+			return a.Correlation > b.Correlation
+		}
+		if a.CoChangeCount != b.CoChangeCount {
+			return a.CoChangeCount > b.CoChangeCount
+		}
+		return a.FilePath < b.FilePath
+	})
 }

@@ -85,8 +85,9 @@ Releases are fully automated via `.github/workflows/release.yml`, triggered by p
 **Steps to release:**
 1. `go run scripts/sync-version.go X.Y.Z` (see below)
 2. Update `CHANGELOG.md`
-3. Merge to main, tag `vX.Y.Z`, push the tag
-4. The pipeline handles everything else:
+3. For a minor or major release, rewrite the post-update notice in `internal/update/notice.txt` and set `noticeLine` in `notice.go` (a test fails until it matches). Patch releases keep both. The same file becomes the Homebrew caveats (`scripts/brew-formula.sh`)
+4. Merge to main, tag `vX.Y.Z`, push the tag
+5. The pipeline handles everything else:
    - Runs `go test -race ./...`
    - Builds each target on a native runner (cgo + the prebuilt Cartographer
      static lib) and uploads the archives straight to the GitHub Release
@@ -107,6 +108,8 @@ Everything that has to repeat it is derived from there by
 | `npm/package.json` `version` | package manifest |
 | `npm/package.json` `optionalDependencies` | platform package pins |
 | `README.md` | MCP banner sample output |
+| `claude-plugin/.claude-plugin/plugin.json` | Claude Code plugin manifest (pinned: users only re-fetch on a version change) |
+| `claude-plugin/scripts/ckb` | `pin=`: the npm version the plugin falls back to, and the minimum minor of a local ckb |
 
 ```bash
 go run scripts/sync-version.go 9.4.0   # set everywhere
@@ -152,7 +155,7 @@ npx @tastehub/ckb setup
 
 ## MCP Integration
 
-CKB provides 110 code intelligence tools via MCP. Supports Claude Code, Cursor, Windsurf, VS Code, OpenCode, Grok, and Claude Desktop.
+CKB provides 111 code intelligence tools via MCP. Supports Claude Code, Cursor, Windsurf, VS Code, OpenCode, Grok, Claude Desktop, and Codex.
 
 ```bash
 # Auto-configure (interactive)
@@ -167,6 +170,12 @@ claude mcp add ckb -- npx @tastehub/ckb mcp
 ```
 
 `ckb setup --tool=claude-code` also installs the `/ckb-review` and `/ckb-audit` slash commands for Claude Code, which orchestrate CKB's structural analysis with LLM semantic review.
+
+The same two texts ship as a Claude Code plugin (`claude plugin marketplace add SimplyLiz/ckb && claude plugin install ckb@lisa`): `.claude-plugin/marketplace.json` at the repo root points at `claude-plugin/`, which holds the manifest, `.mcp.json` (`scripts/ckb mcp`), `skills/{review,audit}/SKILL.md`, `scripts/ckb`, `scripts/ckb-install` and `hooks/hooks.json`. Those SKILL.md files are the single source of the skill texts — `setup.go` embeds them via `claude-plugin/skills.go`. Validate with `claude plugin validate ./claude-plugin` and `claude plugin validate .`.
+
+- **`scripts/ckb`** is the shim MCP server, skills and hook all start (`"${CLAUDE_PLUGIN_ROOT}/scripts/ckb"`; Claude Code substitutes the path into skill text, `allowed-tools` included, with the quotes). It runs a `ckb` on PATH with the plugin's major and at least its minor version, else the copy `scripts/ckb-install` (async SessionStart hook) put into `${CLAUDE_PLUGIN_DATA}/ckb-<pin>` (derived from the cache path when Claude Code does not export it, as in skill Bash calls), else `npx -y @tastehub/ckb@<pin>`. The `pin=` line is a `sync-version.go` site. **No top-level `bin/`**: claude.ai and org plugin sync reject the whole plugin for it (`TestShim`). A command file from `ckb setup` has no plugin root, so `claudeplugin.CommandText` replaces `PluginCKB` with `ckb`, or with the pinned npx call when `ckb` is not on PATH. New `ckb` calls in a skill must use `PluginCKB` (`TestSkillsCallTheShim`).
+- **`/ckb:review` injects** `` !`"${CLAUDE_PLUGIN_ROOT}/scripts/ckb" review --target='$ARGUMENTS' --compact || true` `` (`--compact`: the full JSON passes the ~30,000 characters Claude Code inlines on a few commits). Claude Code puts `$ARGUMENTS` into the line before the shell parses it, and a non-zero exit or a command `allowed-tools` doesn't cover aborts the whole skill — keep the `|| true` and the `allowed-tools: Bash("${CLAUDE_PLUGIN_ROOT}/scripts/ckb" review *)` line.
+- **`hooks/hooks.json`** runs `ckb hook session-start` (cmd/ckb/hook.go) on `startup|resume|clear|compact`: 1–3 lines on the repo's index state from `CheckFreshness`, `startupRefreshReason`, `diagnoseIndex` and the MCP warning texts. It must stay fast (Claude's first response waits for it; `timeout: 5`, `CKB_SHIM_NO_NPX=1` so it is silent instead of downloading) and never fail. The second, async hook is `scripts/ckb-install`; it prints nothing (async output reaches the model on the next turn). PreToolUse/PostToolUse/Stop hooks are deliberately not part of the plugin.
 
 ### Key MCP Tools
 
@@ -200,7 +209,7 @@ claude mcp add ckb -- npx @tastehub/ckb mcp
 
 ## A2A Integration
 
-CKB also supports the A2A (Agent-to-Agent) protocol v0.3, enabling agent-to-agent communication over HTTP. All 110 MCP tools are exposed as A2A skills.
+CKB also supports the A2A (Agent-to-Agent) protocol v0.3, enabling agent-to-agent communication over HTTP. All 111 MCP tools are exposed as A2A skills.
 
 ```bash
 # Start the A2A server
@@ -242,7 +251,7 @@ Storage Layer (internal/storage/) - SQLite for caching and symbol mappings
 - **internal/identity/**: Stable symbol IDs that survive refactoring. Uses fingerprinting and alias chains.
 - **internal/compression/**: Response budget enforcement for LLM-optimized output.
 - **internal/impact/**: Change impact analysis with visibility detection and risk scoring.
-- **internal/mcp/**: Model Context Protocol server (110 tools).
+- **internal/mcp/**: Model Context Protocol server (111 tools).
 - **internal/a2a/**: Agent-to-Agent protocol server (v0.3). Wraps MCP tools as A2A skills with task persistence, SSE streaming, push notifications.
 - **internal/ownership/**: CODEOWNERS parsing + git-blame analysis with time decay.
 - **internal/responsibilities/**: Module responsibility extraction from READMEs and code.

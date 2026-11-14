@@ -1,20 +1,20 @@
 {
   "facts": {
-    "module": "",
+    "module": "src/pkg",
     "symbol": {
       "file": "src/pkg/handler.ts",
       "kind": "function",
       "name": "newHandler"
     },
     "usage": {
-      "calleeCount": 0,
+      "calleeCount": 1,
       "callerCount": 0,
       "referenceCount": 4
     }
   },
   "summary": {
-    "identity": "function newHandler in module ",
-    "tldr": "function newHandler in module  – 0 callers, 4 references across 1 modules",
+    "identity": "function newHandler in module src/pkg",
+    "tldr": "function newHandler in module src/pkg – 0 callers, 4 references across 1 modules",
     "usage": "0 callers, 4 references across 1 modules"
   }
 }

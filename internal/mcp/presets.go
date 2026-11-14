@@ -26,7 +26,7 @@ const DefaultPreset = PresetCore
 // Core must enable one complete workflow without expansion.
 // Default workflow: "Investigate & Assess Impact"
 var Presets = map[string][]string{
-	// Core: 24 tools - enables "Investigate & Assess Impact" workflow completely
+	// Core: 27 tools - enables "Investigate & Assess Impact" workflow completely
 	// v8.0: Added compound tools (explore, understand, prepareChange, batchGet, batchSearch)
 	// to reduce tool calls by 60-70% for common workflows
 	PresetCore: {
@@ -34,6 +34,7 @@ var Presets = map[string][]string{
 		"explore",       // Replaces: explainFile → searchSymbols → getCallGraph → getHotspots
 		"understand",    // Replaces: searchSymbols → getSymbol → explainSymbol → findReferences → getCallGraph
 		"prepareChange", // Replaces: analyzeImpact + getAffectedTests + analyzeCoupling + risk
+		"assessChange",  // The other end of prepareChange: what the change left open
 		"batchGet",      // Multiple symbols in one call
 		"batchSearch",   // Multiple searches in one call
 
@@ -65,6 +66,7 @@ var Presets = map[string][]string{
 
 		// System
 		"getStatus",
+		"reindex",       // Builds the index when there is none: without it nothing above has SCIP
 		"switchProject", // v8.1: Dynamic project switching
 
 		// v8.1 Refactoring compound tool
@@ -97,16 +99,18 @@ var Presets = map[string][]string{
 		"findDeadCode",       // Dead code in changes
 		"findUnwiredModules", // Exported symbols not reachable from entrypoints
 		"auditRisk",          // Multi-factor risk scoring
-		"analyzeChange",      // Change analysis
+		"assessChange",       // Change analysis (post-change counterpart to prepareChange)
+		"analyzeChange",      // Deprecated alias of assessChange
 		"getFileComplexity",  // File complexity for review
 		"listEntrypoints",    // Key entry points in changed code
 		"auditCompliance",    // Regulatory compliance audit
+		"reindex",            // Rebuild+reload the index before impact analysis on a stale index
 	},
 
 	// Refactor: core + refactoring analysis tools
 	PresetRefactor: {
 		// Core tools
-		"explore", "understand", "prepareChange", "batchGet", "batchSearch",
+		"explore", "understand", "prepareChange", "assessChange", "batchGet", "batchSearch",
 		"searchSymbols", "symbolExists", "getSymbol", "explainSymbol", "explainFile", "explainPath",
 		"findReferences", "getCallGraph", "traceUsage",
 		"getArchitecture", "getModuleOverview", "getModuleResponsibilities", "listKeyConcepts",
@@ -131,17 +135,18 @@ var Presets = map[string][]string{
 		"listSymbols",           // v8.3: Bulk symbol listing with complexity
 		"getSymbolGraph",        // v8.3: Batch call graph
 		"analyzeStructuralPerf", // v8.5: Loop call sites in hot files
+		"reindex",               // Rebuild+reload the index before impact analysis on a stale index
 	},
 
 	// Federation: core + federation + contract tools
 	PresetFederation: {
 		// Core tools
-		"explore", "understand", "prepareChange", "batchGet", "batchSearch",
+		"explore", "understand", "prepareChange", "assessChange", "batchGet", "batchSearch",
 		"searchSymbols", "symbolExists", "getSymbol", "explainSymbol", "explainFile", "explainPath",
 		"findReferences", "getCallGraph", "traceUsage",
 		"getArchitecture", "getModuleOverview", "getModuleResponsibilities", "listKeyConcepts",
 		"analyzeImpact", "getHotspots", "exportForLLM",
-		"getStatus", "switchProject", "planRefactor", "expandToolset",
+		"getStatus", "reindex", "switchProject", "planRefactor", "expandToolset",
 		// Federation-specific
 		"listFederations",
 		"federationStatus",
@@ -170,12 +175,12 @@ var Presets = map[string][]string{
 	// Docs: core + doc-symbol linking + decision tools
 	PresetDocs: {
 		// Core tools
-		"explore", "understand", "prepareChange", "batchGet", "batchSearch",
+		"explore", "understand", "prepareChange", "assessChange", "batchGet", "batchSearch",
 		"searchSymbols", "symbolExists", "getSymbol", "explainSymbol", "explainFile", "explainPath",
 		"findReferences", "getCallGraph", "traceUsage",
 		"getArchitecture", "getModuleOverview", "getModuleResponsibilities", "listKeyConcepts",
 		"analyzeImpact", "getHotspots", "exportForLLM",
-		"getStatus", "switchProject", "planRefactor", "expandToolset",
+		"getStatus", "reindex", "switchProject", "planRefactor", "expandToolset",
 		// Docs-specific
 		"indexDocs",
 		"getDocsForSymbol",
@@ -192,7 +197,7 @@ var Presets = map[string][]string{
 	// Ops: core + operational + telemetry tools
 	PresetOps: {
 		// Core tools
-		"explore", "understand", "prepareChange", "batchGet", "batchSearch",
+		"explore", "understand", "prepareChange", "assessChange", "batchGet", "batchSearch",
 		"searchSymbols", "symbolExists", "getSymbol", "explainSymbol", "explainFile", "explainPath",
 		"findReferences", "getCallGraph", "traceUsage",
 		"getArchitecture", "getModuleOverview", "getModuleResponsibilities", "listKeyConcepts",
@@ -260,6 +265,7 @@ var coreToolOrder = []string{
 	"explore",
 	"understand",
 	"prepareChange",
+	"assessChange",
 	"batchGet",
 	"batchSearch",
 	// Granular tools (fallback)
@@ -280,6 +286,7 @@ var coreToolOrder = []string{
 	"getHotspots",
 	"exportForLLM",
 	"getStatus",
+	"reindex",
 	"switchProject",
 	"planRefactor",
 	"expandToolset",

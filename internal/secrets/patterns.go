@@ -13,6 +13,16 @@ type Pattern struct {
 	Examples    []string // For testing
 }
 
+// The parts of a URL's authority, for the patterns that look for a password in
+// one. Userinfo holds no whitespace, quotes or delimiters (RFC 3986), so a
+// match can't run from "http://host:8080" to an '@' later on the line, such
+// as the "$@" of a shell command. A password may contain ':'; a user may not.
+const (
+	urlUser = "[^\\s:/?#@'\"`<>]+"
+	urlPass = "[^\\s/?#@'\"`<>]"
+	urlHost = "[^\\s/?#@'\"`<>]+"
+)
+
 // BuiltinPatterns contains all builtin secret detection patterns.
 // These are based on well-known secret formats from various providers.
 var BuiltinPatterns = []Pattern{
@@ -220,7 +230,7 @@ var BuiltinPatterns = []Pattern{
 		Name:        "password_in_url",
 		Type:        SecretTypePasswordInURL,
 		Severity:    SeverityHigh,
-		Regex:       regexp.MustCompile(`://[^:]+:([^@]{3,})@[^/]+`),
+		Regex:       regexp.MustCompile(`://` + urlUser + `:(` + urlPass + `{3,})@` + urlHost),
 		MinEntropy:  2.5,
 		Description: "Password in URL",
 	},
@@ -252,7 +262,7 @@ var BuiltinPatterns = []Pattern{
 		Name:        "azure_connection_string",
 		Type:        SecretTypeAzureConnectionStr,
 		Severity:    SeverityCritical,
-		Regex:       regexp.MustCompile(`DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{88}`),
+		Regex:       regexp.MustCompile(`DefaultEndpointsProtocol=https;AccountName=[^;\s]+;AccountKey=[A-Za-z0-9+/=]{88}`),
 		Description: "Azure Storage Connection String",
 	},
 
@@ -312,7 +322,7 @@ var BuiltinPatterns = []Pattern{
 		Name:        "mongodb_uri",
 		Type:        SecretTypeMongoDBURI,
 		Severity:    SeverityHigh,
-		Regex:       regexp.MustCompile(`mongodb(?:\+srv)?://[^:]+:([^@]+)@[^/]+`),
+		Regex:       regexp.MustCompile(`mongodb(?:\+srv)?://` + urlUser + `:(` + urlPass + `+)@` + urlHost),
 		MinEntropy:  2.5,
 		Description: "MongoDB Connection URI with Password",
 	},
@@ -320,7 +330,7 @@ var BuiltinPatterns = []Pattern{
 		Name:        "postgres_uri",
 		Type:        SecretTypePostgresURI,
 		Severity:    SeverityHigh,
-		Regex:       regexp.MustCompile(`postgres(?:ql)?://[^:]+:([^@]+)@[^/]+`),
+		Regex:       regexp.MustCompile(`postgres(?:ql)?://` + urlUser + `:(` + urlPass + `+)@` + urlHost),
 		MinEntropy:  2.5,
 		Description: "PostgreSQL Connection URI with Password",
 	},
@@ -328,7 +338,7 @@ var BuiltinPatterns = []Pattern{
 		Name:        "mysql_uri",
 		Type:        SecretTypeMySQLURI,
 		Severity:    SeverityHigh,
-		Regex:       regexp.MustCompile(`mysql://[^:]+:([^@]+)@[^/]+`),
+		Regex:       regexp.MustCompile(`mysql://` + urlUser + `:(` + urlPass + `+)@` + urlHost),
 		MinEntropy:  2.5,
 		Description: "MySQL Connection URI with Password",
 	},
@@ -336,7 +346,7 @@ var BuiltinPatterns = []Pattern{
 		Name:        "redis_uri",
 		Type:        SecretTypeRedisURI,
 		Severity:    SeverityHigh,
-		Regex:       regexp.MustCompile(`redis://(?:[^:]*:)?([^@]+)@[^/]+`),
+		Regex:       regexp.MustCompile(`redis://(?:(?:` + urlUser + `)?:)?(` + urlPass + `+)@` + urlHost),
 		MinEntropy:  2.5,
 		Description: "Redis Connection URI with Password",
 	},

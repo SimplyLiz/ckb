@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -102,7 +103,7 @@ var nfrTokenBaselines = map[string]map[string]int{
 // These are per-response limits used when testing with real SCIP index.
 const (
 	maxCallGraphBytes      = 20000 // ~5000 tokens
-	maxFindReferencesBytes = 12000 // ~3000 tokens
+	maxFindReferencesBytes = 30000 // ~7500 tokens: the test asks for 100 references at ~250 bytes each
 	maxAnalyzeImpactBytes  = 16000 // ~4000 tokens
 	maxGetHotspotsBytes    = 13000 // ~3250 tokens — accommodates cartographer-tagged builds where each hotspot is enriched with up to 3 co-change partners
 )
@@ -653,4 +654,28 @@ func TestWideResultMetricsOutput(t *testing.T) {
 
 	t.Log("==================================")
 	t.Log("")
+}
+
+// consumerFiles is uncapped in spirit but has to stay affordable: at the bound, with
+// longer paths than most repos have, it costs less than the budget of the analyzeImpact
+// response it is part of.
+func TestConsumerFilesStayWithinBudget(t *testing.T) {
+	if query.MaxConsumerFiles != testdata.MaxConsumerFilesFixture() {
+		t.Fatalf("fixtures bound consumerFiles at %d, the engine at %d", testdata.MaxConsumerFilesFixture(), query.MaxConsumerFiles)
+	}
+	items := make([]query.ImpactItem, 5000)
+	for i := range items {
+		items[i].Location = &query.LocationInfo{FileId: fmt.Sprintf("internal/some/module%d/consumer_file_%04d.go", i%40, i)}
+	}
+	files := query.BuildConsumerFiles(items, nil, nil, "")
+	if files.Total != 5000 || !files.Truncated || files.Note == "" {
+		t.Errorf("a cut list must say so: total=%d truncated=%v note=%q", files.Total, files.Truncated, files.Note)
+	}
+	data, err := json.Marshal(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > maxAnalyzeImpactBytes {
+		t.Errorf("consumerFiles is %d bytes at its bound, over the %d of a whole analyzeImpact response", len(data), maxAnalyzeImpactBytes)
+	}
 }

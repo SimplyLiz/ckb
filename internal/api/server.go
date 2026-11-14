@@ -144,6 +144,7 @@ func (s *Server) applyMiddleware(handler http.Handler) http.Handler {
 	// Apply middleware in reverse order (last one wraps first)
 	// Order: CORS -> RequestID -> Auth -> Logging -> Recovery
 	// (Recovery is outermost, CORS is innermost before handler)
+	handler = IndexRefreshMiddleware(s.engine, s.logger)(handler)
 	handler = RecoveryMiddleware(s.logger)(handler)
 	handler = LoggingMiddleware(s.logger)(handler)
 

@@ -7,15 +7,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends"
+	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/complexity"
 	"github.com/SimplyLiz/CodeMCP/internal/compression"
 	"github.com/SimplyLiz/CodeMCP/internal/errors"
 	"github.com/SimplyLiz/CodeMCP/internal/output"
+	"github.com/SimplyLiz/CodeMCP/internal/symbols"
 )
 
 // GetSymbolOptions contains options for getSymbol.
@@ -72,6 +75,26 @@ type LocationInfo struct {
 	EndColumn   int    `json:"endColumn,omitempty"`
 }
 
+// ftsResultLocation locates a symbol found through the FTS table, which only
+// stores its file. The rest comes from its SCIP definition, in the same 1-based
+// lines as every other location; without an index only the file is known, and
+// the lines stay 0.
+func (e *Engine) ftsResultLocation(symbolID, filePath string) *LocationInfo {
+	loc := &LocationInfo{FileId: filePath}
+	if e.scipAdapter == nil || !e.scipAdapter.IsAvailable() {
+		return loc
+	}
+	def := e.scipAdapter.DefinitionLocation(symbolID)
+	if def == nil {
+		return loc
+	}
+	loc.StartLine = def.Line
+	loc.StartColumn = def.Column
+	loc.EndLine = def.EndLine
+	loc.EndColumn = def.EndColumn
+	return loc
+}
+
 // TruncationInfo describes why results were truncated.
 type TruncationInfo struct {
 	Reason        string `json:"reason"`
@@ -97,9 +120,10 @@ func (e *Engine) GetSymbol(ctx context.Context, opts GetSymbolOptions) (*GetSymb
 	// Resolve symbol ID through aliases
 	resolved, err := e.resolver.ResolveSymbolId(opts.SymbolId)
 	if err != nil {
-		// If identity resolution fails and this looks like a raw SCIP ID,
-		// try querying SCIP directly as a fallback
-		if strings.HasPrefix(opts.SymbolId, "scip-") && e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
+		// If identity resolution fails, this may be a raw SCIP ID: ask the index.
+		// It's a map lookup, and the scheme says nothing about whether the ID is
+		// in there: rust-analyzer, semanticdb and cxx don't start with "scip-".
+		if e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
 			result, scipErr := e.scipAdapter.GetSymbol(ctx, opts.SymbolId)
 			if scipErr == nil && result != nil {
 				// Successfully found in SCIP - build response directly
@@ -122,7 +146,7 @@ func (e *Engine) GetSymbol(ctx context.Context, opts GetSymbolOptions) (*GetSymb
 						Signature:           result.SignatureFull,
 						SignatureNormalized: result.SignatureNormalized,
 						ContainerName:       result.ContainerName,
-						ModuleId:            result.ModuleID,
+						ModuleId:            symbolModuleID(result.ModuleID, result.Location.Path),
 						Documentation:       result.Documentation,
 						LocationFreshness:   e.getLocationFreshness(repoState),
 						Visibility: &VisibilityInfo{
@@ -193,7 +217,7 @@ func (e *Engine) GetSymbol(ctx context.Context, opts GetSymbolOptions) (*GetSymb
 					Signature:           result.SignatureFull,
 					SignatureNormalized: result.SignatureNormalized,
 					ContainerName:       result.ContainerName,
-					ModuleId:            result.ModuleID,
+					ModuleId:            symbolModuleID(result.ModuleID, result.Location.Path),
 					Documentation:       result.Documentation,
 					LocationFreshness:   e.getLocationFreshness(repoState),
 					Visibility: &VisibilityInfo{
@@ -278,12 +302,15 @@ type SearchSymbolsOptions struct {
 
 // SearchSymbolsResponse is the response for searchSymbols.
 type SearchSymbolsResponse struct {
-	Symbols        []SearchResultItem `json:"symbols"`
-	TotalCount     int                `json:"totalCount"`
-	Truncated      bool               `json:"truncated"`
-	TruncationInfo *TruncationInfo    `json:"truncationInfo,omitempty"`
-	Provenance     *Provenance        `json:"provenance"`
-	Drilldowns     []output.Drilldown `json:"drilldowns,omitempty"`
+	Symbols    []SearchResultItem `json:"symbols"`
+	TotalCount int                `json:"totalCount"`
+	// TotalIsLowerBound is true when a backend stopped at its result cap, so
+	// TotalCount is the number seen, not the number that exist.
+	TotalIsLowerBound bool               `json:"totalIsLowerBound,omitempty"`
+	Truncated         bool               `json:"truncated"`
+	TruncationInfo    *TruncationInfo    `json:"truncationInfo,omitempty"`
+	Provenance        *Provenance        `json:"provenance"`
+	Drilldowns        []output.Drilldown `json:"drilldowns,omitempty"`
 }
 
 // RankingV52 contains v5.2 ranking signals for auditable, deterministic ordering.
@@ -337,7 +364,9 @@ type SemanticEvidenceChunk struct {
 func generateSearchCacheKey(opts SearchSymbolsOptions) string {
 	// Build a deterministic key from the options
 	keyParts := []string{
-		"search",
+		// Bump when the shape of a cached result changes: entries live until the
+		// next commit, across an upgrade of the binary.
+		"search-v2",
 		opts.Query,
 		opts.Scope,
 		fmt.Sprintf("%d", opts.Limit),
@@ -396,6 +425,7 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 	var backendContribs []BackendContribution
 	var completeness CompletenessInfo
 	lipRanked := false // true when results already came from LIP semantic search
+	totalIsLowerBound := false
 
 	// Try FTS5 first for fast symbol search.
 	// Request more results when filters are set, since most will be excluded.
@@ -408,12 +438,20 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 	// vocabulary-mismatch misses. Falls back to the raw query when LIP is
 	// unavailable or returns nothing.
 	ftsQuery := e.expandQueryViaLIP(opts.Query)
-	ftsResults, ftsErr := e.SearchSymbolsFTS(ctx, ftsQuery, opts.Limit*ftsMultiplier)
+	ftsLimit := opts.Limit * ftsMultiplier
+	ftsResults, ftsErr := e.SearchSymbolsFTS(ctx, ftsQuery, ftsLimit)
+	if ftsErr == nil && len(ftsResults) >= ftsLimit {
+		totalIsLowerBound = true
+	}
 	if ftsErr == nil && len(ftsResults) > 0 {
 		for _, r := range ftsResults {
 			// Skip symbols with no name — they can match via documentation/signature
 			// in FTS5 but are meaningless as search results.
 			if r.Name == "" {
+				continue
+			}
+			// A table populated by an older version still has locals in it.
+			if scip.IsLocalSymbol(r.ID) {
 				continue
 			}
 			// Filter by kinds if specified
@@ -439,11 +477,9 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 				Name:     r.Name,
 				Kind:     r.Kind,
 				ModuleId: filepath.Dir(r.FilePath),
-				Location: &LocationInfo{
-					FileId: r.FilePath,
-				},
+				Location: e.ftsResultLocation(r.ID, r.FilePath),
 				Visibility: &VisibilityInfo{
-					Visibility: inferVisibility(r.Name, r.Kind),
+					Visibility: inferFTSVisibility(r.ID, r.Name, r.Kind),
 					Confidence: 0.7,
 					Source:     "fts",
 				},
@@ -475,6 +511,9 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 		}
 		searchResult, err := e.scipAdapter.SearchSymbols(ctx, opts.Query, searchOpts)
 		if err == nil && searchResult != nil {
+			if len(searchResult.Symbols) >= searchOpts.MaxResults {
+				totalIsLowerBound = true
+			}
 			for _, sym := range searchResult.Symbols {
 				results = append(results, SearchResultItem{
 					StableId: sym.StableID,
@@ -561,9 +600,9 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 						Name:     s.Name,
 						Kind:     s.Kind,
 						ModuleId: filepath.Dir(s.FilePath),
-						Location: &LocationInfo{FileId: s.FilePath},
+						Location: e.ftsResultLocation(s.ID, s.FilePath),
 						Visibility: &VisibilityInfo{
-							Visibility: inferVisibility(s.Name, s.Kind),
+							Visibility: inferVisibility(s.Name, s.Kind, s.FilePath),
 							Confidence: 0.6,
 							Source:     "lip",
 						},
@@ -701,12 +740,13 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 	drilldowns := e.generateDrilldowns(compTrunc, completeness, "", nil)
 
 	response := &SearchSymbolsResponse{
-		Symbols:        results,
-		TotalCount:     totalCount,
-		Truncated:      truncationInfo != nil,
-		TruncationInfo: truncationInfo,
-		Provenance:     provenance,
-		Drilldowns:     drilldowns,
+		Symbols:           results,
+		TotalCount:        totalCount,
+		TotalIsLowerBound: totalIsLowerBound,
+		Truncated:         truncationInfo != nil,
+		TruncationInfo:    truncationInfo,
+		Provenance:        provenance,
+		Drilldowns:        drilldowns,
 	}
 
 	// Store in cache
@@ -731,7 +771,37 @@ func parseScope(scope string) []string {
 	return []string{scope}
 }
 
+// isTypeLikeKind reports whether kind names a type-defining symbol (as
+// opposed to a member like a property/field/parameter). Used to break ties
+// between symbols whose names only match case-insensitively — e.g. a class
+// `Model` vs. a field `model` — in favor of the type.
+//
+// This covers every type-defining SymbolKind this codebase emits
+// (internal/backends/scip/types.go): class, interface, struct, type, and
+// enum (SymbolInformation_Enum via MapSCIPKind — e.g. Go/TS/Java/Rust enums,
+// case-fold-matched by a query like "STATUS" against `enum Status`).
+// There is no separate trait/protocol/typealias SymbolKind in this
+// codebase — Rust traits and meta descriptors both resolve to KindType,
+// and Swift-style protocols aren't a distinct kind here — so nothing
+// further needs listing.
+func isTypeLikeKind(kind string) bool {
+	switch kind {
+	case "class", "interface", "struct", "type", "enum":
+		return true
+	default:
+		return false
+	}
+}
+
 // rankSearchResults applies ranking to search results with v5.2 signals.
+//
+// Case handling: a query like "Model" must outrank a case-insensitive-only
+// match like a field named "model" — matching Go's FTS candidate selection
+// (searchExact in internal/storage/fts.go), which already sorts a
+// case-sensitive exact match ahead of a case-fold-only one before any LIMIT
+// is applied, so the right candidate survives into this pool in the first
+// place. Here we replicate that preference in the score so it holds even
+// for the SCIP/tree-sitter fallback paths that don't go through FTS at all.
 func rankSearchResults(results []SearchResultItem, query string) {
 	queryLower := strings.ToLower(query)
 
@@ -739,18 +809,38 @@ func rankSearchResults(results []SearchResultItem, query string) {
 		score := 0.0
 		var matchType string
 
-		// Determine match type and apply score
+		// Determine match type and apply score. A case-sensitive exact match
+		// ("Model" == "Model") outranks a case-insensitive-only one
+		// ("Model" vs. "model") — the latter is still an "exact" name match,
+		// just not the one the user typed.
 		nameLower := strings.ToLower(results[i].Name)
-		if strings.EqualFold(results[i].Name, query) {
+		switch {
+		case results[i].Name == query:
 			matchType = "exact"
 			score += 100
-		} else if strings.HasPrefix(nameLower, queryLower) {
+		case strings.EqualFold(results[i].Name, query):
+			matchType = "exact-fold"
+			score += 80
+			// Among case-fold-only matches, prefer the type over a member
+			// (field/property/parameter) with the same name: a user typing
+			// "Model" almost always means the type, not a `model` field.
+			//
+			// The bonus is deliberately 12, not 15: with 15 a fold-matched
+			// class (80+15+25) tied exactly with an exact-case function
+			// (100+20), and was able to beat an exact-case property. 12 keeps
+			// the invariant that an exact-case match beats a fold match of the
+			// same kind (by 20 points) and puts the fold-type total off the
+			// multiples of 5 every other component sums to, so it never ties.
+			if isTypeLikeKind(results[i].Kind) {
+				score += 12
+			}
+		case strings.HasPrefix(nameLower, queryLower):
 			matchType = "partial"
 			score += 50
-		} else if strings.Contains(nameLower, queryLower) {
+		case strings.Contains(nameLower, queryLower):
 			matchType = "partial"
 			score += 25
-		} else {
+		default:
 			matchType = "fuzzy"
 			score += 10
 		}
@@ -770,14 +860,14 @@ func rankSearchResults(results []SearchResultItem, query string) {
 		}
 
 		// Kind weight
-		switch results[i].Kind {
-		case "class", "interface":
+		switch {
+		case isTypeLikeKind(results[i].Kind):
 			score += 25
-		case "function":
+		case results[i].Kind == "function":
 			score += 20
-		case "method":
+		case results[i].Kind == "method":
 			score += 15
-		case "property":
+		case results[i].Kind == "property":
 			score += 10
 		default:
 			score += 5
@@ -826,6 +916,51 @@ type ReferenceInfo struct {
 	Kind     string        `json:"kind"`
 	Context  string        `json:"context,omitempty"`
 	IsTest   bool          `json:"isTest,omitempty"`
+	// From is the name of the definition the reference sits in, where the index says.
+	From string `json:"from,omitempty"`
+}
+
+// FileReferences is every reference in one file, by line.
+type FileReferences struct {
+	Path            string `json:"path"`
+	Lines           []int  `json:"lines,omitempty"`
+	DefinitionLines []int  `json:"definitionLines,omitempty"`
+	IsTest          bool   `json:"isTest,omitempty"`
+}
+
+// GroupReferencesByFile folds references into one entry per file, in the order
+// the files first appear, with each file's lines ascending and unique. Repeating
+// a path and five position fields per reference costs several times the bytes of
+// the answer most callers want, which is where a symbol is used.
+func GroupReferencesByFile(refs []ReferenceInfo) []FileReferences {
+	groups := make([]FileReferences, 0)
+	indexByPath := make(map[string]int)
+	for _, r := range refs {
+		if r.Location == nil {
+			continue
+		}
+		i, ok := indexByPath[r.Location.FileId]
+		if !ok {
+			i = len(groups)
+			indexByPath[r.Location.FileId] = i
+			groups = append(groups, FileReferences{Path: r.Location.FileId, IsTest: r.IsTest})
+		}
+		if r.Kind == "definition" {
+			groups[i].DefinitionLines = append(groups[i].DefinitionLines, r.Location.StartLine)
+		} else {
+			groups[i].Lines = append(groups[i].Lines, r.Location.StartLine)
+		}
+	}
+	for i := range groups {
+		groups[i].Lines = sortedUniqueInts(groups[i].Lines)
+		groups[i].DefinitionLines = sortedUniqueInts(groups[i].DefinitionLines)
+	}
+	return groups
+}
+
+func sortedUniqueInts(values []int) []int {
+	sort.Ints(values)
+	return slices.Compact(values)
 }
 
 // FindReferences finds all references to a symbol.
@@ -856,17 +991,21 @@ func (e *Engine) FindReferences(ctx context.Context, opts FindReferencesOptions)
 	var refs []ReferenceInfo
 	var backendContribs []BackendContribution
 	var completeness CompletenessInfo
+	backendTotal := 0 // uncapped count from the backend, set when SCIP answers
 
 	// Query SCIP for references
 	if e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
 		refOpts := backends.RefOptions{
-			MaxResults:         opts.Limit * 2,
+			// Enough to choose from: the cut below spreads over files, and a
+			// backend cut in its own order would decide which files survive.
+			MaxResults:         maxRefCandidates(opts.Limit),
 			IncludeTests:       opts.IncludeTests,
 			IncludeDeclaration: true,
 			Scope:              parseScope(opts.Scope),
 		}
 		refsResult, err := e.scipAdapter.FindReferences(ctx, symbolIdToQuery, refOpts)
 		if err == nil && refsResult != nil {
+			backendTotal = refsResult.TotalReferences
 			for _, ref := range refsResult.References {
 				refs = append(refs, ReferenceInfo{
 					Location: &LocationInfo{
@@ -878,6 +1017,7 @@ func (e *Engine) FindReferences(ctx context.Context, opts FindReferencesOptions)
 					},
 					Kind:    ref.Kind,
 					Context: ref.Context,
+					From:    ref.FromSymbolName,
 				})
 			}
 			backendContribs = append(backendContribs, BackendContribution{
@@ -898,7 +1038,7 @@ func (e *Engine) FindReferences(ctx context.Context, opts FindReferencesOptions)
 	if len(refs) == 0 && (resolved == nil || resolved.Symbol == nil) {
 		return nil, errors.NewCkbError(
 			errors.SymbolNotFound,
-			fmt.Sprintf("Symbol not found: %s", opts.SymbolId),
+			e.notFoundMessage(opts.SymbolId),
 			nil, nil, nil,
 		)
 	}
@@ -909,16 +1049,28 @@ func (e *Engine) FindReferences(ctx context.Context, opts FindReferencesOptions)
 	// Sort deterministically
 	sortReferences(refs)
 
-	// Apply limit and track truncation
+	// The backend was asked for at most Limit*2 refs, so len(refs) can be a
+	// capped subset. backendTotal is the uncapped distinct count; it is never
+	// smaller than what we actually got back, so take the max.
 	totalCount := len(refs)
+	if backendTotal > totalCount {
+		totalCount = backendTotal
+	}
+
+	// Apply limit and track truncation
 	var truncationInfo *TruncationInfo
-	if len(refs) > opts.Limit {
+	if totalCount > opts.Limit {
 		truncationInfo = &TruncationInfo{
 			Reason:        "max-refs",
 			OriginalCount: totalCount,
 			ReturnedCount: opts.Limit,
 		}
-		refs = refs[:opts.Limit]
+	}
+	if len(refs) > opts.Limit {
+		refs = spreadReferences(refs, opts.Limit)
+	}
+	if truncationInfo != nil {
+		truncationInfo.ReturnedCount = len(refs)
 	}
 
 	// Build provenance
@@ -965,6 +1117,42 @@ func deduplicateReferences(refs []ReferenceInfo) []ReferenceInfo {
 }
 
 // sortReferences sorts references deterministically.
+// maxRefCandidates is how many references FindReferences asks a backend for.
+func maxRefCandidates(limit int) int {
+	if n := limit * 10; n > 5000 {
+		return n
+	}
+	return 5000
+}
+
+// spreadReferences keeps limit of refs (sorted by path), every file's first
+// reference before any file's second, and returns them sorted again. Cut in path
+// order, tests/ sorted after src/ and a widely used symbol came back with 100
+// production references and none of the 13 tests using it.
+func spreadReferences(refs []ReferenceInfo, limit int) []ReferenceInfo {
+	if len(refs) <= limit {
+		return refs
+	}
+	rank := make([]int, len(refs)) // Position of each ref within its file
+	for i := range refs {
+		if i > 0 && refs[i].Location.FileId == refs[i-1].Location.FileId {
+			rank[i] = rank[i-1] + 1
+		}
+	}
+	order := make([]int, len(refs))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return rank[order[a]] < rank[order[b]] })
+	keep := order[:limit]
+	sort.Ints(keep)
+	out := make([]ReferenceInfo, 0, limit)
+	for _, i := range keep {
+		out = append(out, refs[i])
+	}
+	return out
+}
+
 func sortReferences(refs []ReferenceInfo) {
 	sort.Slice(refs, func(i, j int) bool {
 		if refs[i].Location.FileId != refs[j].Location.FileId {
@@ -1115,7 +1303,15 @@ func (e *Engine) searchWithTreesitter(ctx context.Context, opts SearchSymbolsOpt
 
 	// Extract all symbols from the directory — tree-sitter cgo requires mutex
 	e.tsMu.Lock()
-	allSymbols, err := e.treesitterExtractor.ExtractDirectory(ctx, searchRoot, nil)
+	// File list honours .gitignore (git work trees) and backends.treesitter.exclude.
+	var exclude []string
+	if e.config != nil {
+		exclude = e.config.Backends.Treesitter.Exclude
+	}
+	allSymbols, err := e.treesitterExtractor.ExtractDirectoryWithOptions(ctx, searchRoot, symbols.DirOptions{
+		RepoRoot: e.repoRoot,
+		Exclude:  exclude,
+	})
 	e.tsMu.Unlock()
 	if err != nil {
 		e.logger.Warn("Tree-sitter extraction failed",
@@ -1170,7 +1366,7 @@ func (e *Engine) searchWithTreesitter(ctx context.Context, opts SearchSymbolsOpt
 				EndLine:   sym.EndLine,
 			},
 			Visibility: &VisibilityInfo{
-				Visibility: inferVisibility(sym.Name, sym.Kind),
+				Visibility: inferVisibility(sym.Name, sym.Kind, relPath),
 				Confidence: 0.5, // Lower confidence for inferred visibility
 				Source:     "treesitter",
 			},
@@ -1180,17 +1376,45 @@ func (e *Engine) searchWithTreesitter(ctx context.Context, opts SearchSymbolsOpt
 	return results, nil
 }
 
+// treesitterIDPrefix starts the IDs of symbols found by tree-sitter.
+const treesitterIDPrefix = "ts-"
+
 // generateTreesitterSymbolId creates a stable ID for tree-sitter extracted symbols.
 func generateTreesitterSymbolId(path, name, kind string, line int) string {
 	key := fmt.Sprintf("%s:%s:%s:%d", path, name, kind, line)
 	hash := sha256.Sum256([]byte(key))
-	return "ts-" + hex.EncodeToString(hash[:8])
+	return treesitterIDPrefix + hex.EncodeToString(hash[:8])
 }
 
 // inferVisibility guesses visibility from naming conventions.
-func inferVisibility(name, kind string) string {
+// inferFTSVisibility is inferVisibility for an FTS row, which also has the SCIP
+// ID: an exported Go name on an unexported type (engine#Build) is not public API.
+//
+// Python and TypeScript/JavaScript don't spell visibility by case: a module-level
+// `price` is as public as `Price` in Go, and only a leading underscore says otherwise.
+func inferFTSVisibility(id, name, kind string) string {
+	if strings.HasPrefix(id, "scip-python ") || strings.HasPrefix(id, "scip-typescript ") {
+		return underscoreVisibility(name)
+	}
+	if strings.HasPrefix(id, "scip-go ") {
+		if parsed, err := scip.ParseSCIPIdentifier(id); err == nil {
+			if container := parsed.GetContainerName(); container != "" && container[0] >= 'a' && container[0] <= 'z' {
+				return "private"
+			}
+		}
+	}
+	return inferVisibility(name, kind, "")
+}
+
+// path is the declaring file where known: in Python, TypeScript and JavaScript case
+// says nothing about visibility, a leading underscore does.
+func inferVisibility(name, kind, path string) string {
 	if name == "" {
 		return "unknown"
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".py", ".pyi", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs":
+		return underscoreVisibility(name)
 	}
 
 	// Go convention: lowercase = package-private, uppercase = exported
@@ -1208,4 +1432,18 @@ func inferVisibility(name, kind string) string {
 	}
 
 	return "internal"
+}
+
+// underscoreVisibility is visibility by Python's and JavaScript's convention: a
+// leading underscore is private, a dunder is the language's protocol and public.
+func underscoreVisibility(name string) string {
+	switch {
+	case name == "":
+		return "unknown"
+	case strings.HasPrefix(name, "__") && strings.HasSuffix(name, "__"):
+		return "public"
+	case strings.HasPrefix(name, "_"):
+		return "private"
+	}
+	return "public"
 }

@@ -1,0 +1,17 @@
+{
+  "name": "lisa",
+  "owner": {
+    "name": "SimplyLiz",
+    "url": "https://github.com/SimplyLiz"
+  },
+  "description": "CKB · Code Knowledge Backend — change safety for AI coding agents.",
+  "plugins": [
+    {
+      "name": "ckb",
+      "source": "./claude-plugin",
+      "description": "Before your agent changes code, CKB tells it what can break. MCP server plus /ckb:review and /ckb:audit.",
+      "category": "code-intelligence",
+      "tags": ["impact-analysis", "code-review", "scip", "mcp"]
+    }
+  ]
+}

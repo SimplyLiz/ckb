@@ -1,9 +1,13 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
+
+	"github.com/SimplyLiz/CodeMCP/internal/query"
 )
 
 // OutputFormat represents the output format type
@@ -289,6 +293,7 @@ func formatStatusHuman(resp *StatusResponseCLI) (string, error) {
 			b.WriteString(fmt.Sprintf("  ⚠ %s\n", resp.IndexStatus.Reason))
 			b.WriteString("  Run 'ckb index' to refresh.\n")
 		}
+		writeIndexLanguages(&b, resp.IndexStatus)
 	}
 
 	// Change Impact Analysis section
@@ -391,7 +396,12 @@ func formatSearchHuman(resp *SearchResponseCLI) (string, error) {
 		b.WriteString(fmt.Sprintf("   ID: %s\n", sym.StableID))
 		b.WriteString(fmt.Sprintf("   Module: %s\n", sym.ModuleID))
 		if sym.Location != nil {
-			b.WriteString(fmt.Sprintf("   Location: %s:%d\n", sym.Location.FileID, sym.Location.StartLine))
+			if sym.Location.StartLine > 0 {
+				b.WriteString(fmt.Sprintf("   Location: %s:%d\n", sym.Location.FileID, sym.Location.StartLine))
+			} else {
+				// Found without a SCIP index: the file is all that is known.
+				b.WriteString(fmt.Sprintf("   Location: %s\n", sym.Location.FileID))
+			}
 		}
 		b.WriteString(fmt.Sprintf("   Relevance: %.2f\n\n", sym.RelevanceScore))
 	}
@@ -493,13 +503,21 @@ func formatImpactHuman(resp *ImpactResponseCLI) (string, error) {
 	b.WriteString(strings.Repeat("=", 60) + "\n\n")
 
 	if resp.RiskScore != nil {
-		b.WriteString(fmt.Sprintf("Risk Level: %s (score: %.2f)\n", resp.RiskScore.Level, resp.RiskScore.Score))
+		if resp.RiskScore.Level == query.RiskLevelNotAssessed {
+			b.WriteString("Risk: NOT ASSESSED\n")
+		} else {
+			b.WriteString(fmt.Sprintf("Risk Level: %s (score: %.2f)\n", resp.RiskScore.Level, resp.RiskScore.Score))
+		}
 		b.WriteString(fmt.Sprintf("Explanation: %s\n\n", resp.RiskScore.Explanation))
 	}
 
 	b.WriteString(fmt.Sprintf("Direct Impact: %d symbols\n", len(resp.DirectImpact)))
 	b.WriteString(fmt.Sprintf("Transitive Impact: %d symbols\n", len(resp.TransitiveImpact)))
+	if line := truncationLine(resp.TruncationInfo); line != "" {
+		b.WriteString(line + "\n")
+	}
 	b.WriteString(fmt.Sprintf("Modules Affected: %d\n\n", len(resp.ModulesAffected)))
+	writeConsumerFiles(&b, resp.ConsumerFiles, false)
 
 	if len(resp.ModulesAffected) > 0 {
 		b.WriteString("Affected Modules:\n")
@@ -624,15 +642,30 @@ func formatCallgraphHuman(resp *CallgraphResponseCLI) (string, error) {
 
 	b.WriteString(fmt.Sprintf("Nodes: %d, Edges: %d\n\n", len(resp.Nodes), len(resp.Edges)))
 
-	// Group by callers and callees based on depth
+	// Group by role, not by depth: Depth is always a non-negative distance
+	// from the root (0=root, 1=direct, 2=transitive) regardless of
+	// direction, so it can't distinguish callers from callees — Role is
+	// the field the query engine actually sets to "caller"/"callee"/
+	// "transitive"/"root" (see internal/query/navigation.go GetCallGraph).
+	// Grouping used to be `n.Depth < 0` / `n.Depth > 0`, but no code path
+	// ever emits a negative Depth, so every non-root node — callers
+	// included — fell into the ">0" (callees) bucket.
 	callers := make([]CallgraphNodeCLI, 0)
 	callees := make([]CallgraphNodeCLI, 0)
+	transitive := make([]CallgraphNodeCLI, 0)
 
 	for _, n := range resp.Nodes {
-		if n.Depth < 0 {
+		switch n.Role {
+		case "caller":
 			callers = append(callers, n)
-		} else if n.Depth > 0 {
+		case "callee":
 			callees = append(callees, n)
+		case "transitive":
+			// BFS nodes beyond depth 1 don't carry which direction they
+			// were reached from, so they can't be sorted into callers vs.
+			// callees without guessing — list them separately instead of
+			// mislabeling them as one or the other.
+			transitive = append(transitive, n)
 		}
 	}
 
@@ -654,6 +687,17 @@ func formatCallgraphHuman(resp *CallgraphResponseCLI) (string, error) {
 		}
 		if len(callees) > 15 {
 			b.WriteString(fmt.Sprintf("  ... and %d more\n", len(callees)-15))
+		}
+		b.WriteString("\n")
+	}
+
+	if len(transitive) > 0 {
+		b.WriteString("Transitive (indirect, direction not tracked):\n")
+		for _, n := range transitive[:min(15, len(transitive))] {
+			b.WriteString(fmt.Sprintf("  %s (depth %d)\n", n.Name, n.Depth))
+		}
+		if len(transitive) > 15 {
+			b.WriteString(fmt.Sprintf("  ... and %d more\n", len(transitive)-15))
 		}
 	}
 
@@ -712,7 +756,11 @@ func formatHotspotsHuman(resp *HotspotsResponseCLI) (string, error) {
 	b.WriteString("Code Hotspots\n")
 	b.WriteString(strings.Repeat("=", 60) + "\n\n")
 
-	b.WriteString(fmt.Sprintf("Total Hotspots: %d (period: %s)\n\n", resp.TotalCount, resp.TimeWindow))
+	b.WriteString(fmt.Sprintf("Total Hotspots: %d (period: %s)\n", resp.TotalCount, resp.TimeWindow))
+	if resp.LeftOut != nil {
+		b.WriteString(resp.LeftOut.Note + "\n")
+	}
+	b.WriteString("\n")
 
 	for i, h := range resp.Hotspots {
 		b.WriteString(fmt.Sprintf("%d. %s\n", i+1, h.FilePath))
@@ -766,15 +814,25 @@ func formatEntrypointsHuman(resp *EntrypointsResponseCLI) (string, error) {
 	b.WriteString("Entrypoints\n")
 	b.WriteString(strings.Repeat("=", 60) + "\n\n")
 
-	b.WriteString(fmt.Sprintf("Total Entrypoints: %d\n\n", resp.TotalCount))
+	if resp.TotalCount > len(resp.Entrypoints) {
+		b.WriteString(fmt.Sprintf("Total Entrypoints: %d (showing %d, raise --limit for more)\n\n", resp.TotalCount, len(resp.Entrypoints)))
+	} else {
+		b.WriteString(fmt.Sprintf("Total Entrypoints: %d\n\n", resp.TotalCount))
+	}
 
 	// Group by type
 	byType := make(map[string][]EntrypointDetailCLI)
+	var types []string
 	for _, ep := range resp.Entrypoints {
+		if _, ok := byType[ep.Type]; !ok {
+			types = append(types, ep.Type)
+		}
 		byType[ep.Type] = append(byType[ep.Type], ep)
 	}
+	sort.Strings(types)
 
-	for epType, eps := range byType {
+	for _, epType := range types {
+		eps := byType[epType]
 		b.WriteString(fmt.Sprintf("%s (%d):\n", epType, len(eps)))
 		for _, ep := range eps[:min(10, len(eps))] {
 			b.WriteString(fmt.Sprintf("  %s\n", ep.Name))
@@ -1004,33 +1062,47 @@ func formatChangeSetHuman(resp *ChangeSetResponseCLI) string {
 	b.WriteString("Change Impact Analysis\n")
 	b.WriteString(strings.Repeat("=", 60) + "\n\n")
 
+	if nothingToAssess(resp) {
+		b.WriteString(query.NothingToAssess + "\n")
+		return b.String()
+	}
+
 	// Summary
 	if resp.Summary != nil {
 		b.WriteString("Summary:\n")
 		b.WriteString(fmt.Sprintf("  Files Changed:    %d\n", resp.Summary.FilesChanged))
 		b.WriteString(fmt.Sprintf("  Symbols Changed:  %d\n", resp.Summary.SymbolsChanged))
-		b.WriteString(fmt.Sprintf("  Direct Impact:    %d symbols\n", resp.Summary.DirectlyAffected))
-		b.WriteString(fmt.Sprintf("  Transitive Impact: %d symbols\n", resp.Summary.TransitivelyAffected))
+		if resp.Summary.EstimatedRisk == query.RiskLevelNotAssessed {
+			b.WriteString("  Downstream Impact: not assessed\n")
+		} else {
+			b.WriteString(fmt.Sprintf("  Direct Impact:    %d symbols\n", resp.Summary.DirectlyAffected))
+			b.WriteString(fmt.Sprintf("  Transitive Impact: %d symbols\n", resp.Summary.TransitivelyAffected))
+		}
 		b.WriteString("\n")
 	}
 
 	// Risk Score
 	if resp.RiskScore != nil {
-		riskIcon := "✓"
-		if resp.RiskScore.Level == "high" {
-			riskIcon = "⚠"
-		} else if resp.RiskScore.Level == "critical" {
-			riskIcon = "✗"
+		if resp.RiskScore.Level == query.RiskLevelNotAssessed {
+			b.WriteString("Risk: NOT ASSESSED\n")
+		} else {
+			riskIcon := "✓"
+			if resp.RiskScore.Level == "high" {
+				riskIcon = "⚠"
+			} else if resp.RiskScore.Level == "critical" {
+				riskIcon = "✗"
+			}
+			b.WriteString(fmt.Sprintf("%s Risk Level: %s (score: %.2f)\n", riskIcon, resp.RiskScore.Level, resp.RiskScore.Score))
 		}
-		b.WriteString(fmt.Sprintf("%s Risk Level: %s (score: %.2f)\n", riskIcon, resp.RiskScore.Level, resp.RiskScore.Score))
 		if resp.RiskScore.Explanation != "" {
 			b.WriteString(fmt.Sprintf("  %s\n", resp.RiskScore.Explanation))
 		}
 		b.WriteString("\n")
 	}
 
-	// Blast Radius
-	if resp.BlastRadius != nil {
+	// Blast Radius: nobody looked for callers if the risk wasn't assessed, and
+	// "Callers: 0" would read as there being none.
+	if resp.BlastRadius != nil && (resp.RiskScore == nil || resp.RiskScore.Level != query.RiskLevelNotAssessed) {
 		b.WriteString("Blast Radius:\n")
 		b.WriteString(fmt.Sprintf("  Modules: %d, Files: %d, Callers: %d\n",
 			resp.BlastRadius.ModuleCount, resp.BlastRadius.FileCount, resp.BlastRadius.UniqueCallerCount))
@@ -1047,8 +1119,11 @@ func formatChangeSetHuman(resp *ChangeSetResponseCLI) string {
 		b.WriteString(fmt.Sprintf("Changed Symbols (%d):\n", len(resp.ChangedSymbols)))
 		shown := min(10, len(resp.ChangedSymbols))
 		for _, s := range resp.ChangedSymbols[:shown] {
-			b.WriteString(fmt.Sprintf("  %s %s\n", s.ChangeType, s.Name))
+			b.WriteString(fmt.Sprintf("  %s %s\n", s.ChangeType, cmp.Or(s.QualifiedName, s.Name)))
 			b.WriteString(fmt.Sprintf("    %s\n", s.File))
+			if s.Note != "" {
+				b.WriteString(fmt.Sprintf("    (not attributed to a symbol: %s)\n", s.Note))
+			}
 		}
 		if len(resp.ChangedSymbols) > shown {
 			b.WriteString(fmt.Sprintf("  ... and %d more\n", len(resp.ChangedSymbols)-shown))
@@ -1069,6 +1144,20 @@ func formatChangeSetHuman(resp *ChangeSetResponseCLI) string {
 		b.WriteString("\n")
 	}
 
+	if line := truncationLine(resp.TruncationInfo); line != "" {
+		b.WriteString(line + "\n\n")
+	}
+	writeConsumerFiles(&b, resp.ConsumerFiles, false)
+
+	// Likely reviewers (ownership-based)
+	if len(resp.Reviewers) > 0 {
+		b.WriteString("Likely reviewers:\n")
+		for _, r := range resp.Reviewers {
+			b.WriteString(fmt.Sprintf("  %s (%.0f%% of changed files)\n", r.Owner, r.Coverage*100))
+		}
+		b.WriteString("\n")
+	}
+
 	// Recommendations
 	if len(resp.Recommendations) > 0 {
 		b.WriteString("Recommendations:\n")
@@ -1084,6 +1173,376 @@ func formatChangeSetHuman(resp *ChangeSetResponseCLI) string {
 				b.WriteString(fmt.Sprintf("    Action: %s\n", r.Action))
 			}
 		}
+	}
+
+	return b.String()
+}
+
+// changesRiskFactorLabels maps the internal risk-factor names computed by
+// calculateAggregatedRisk to short, human-readable labels for `ckb changes`.
+var changesRiskFactorLabels = map[string]string{
+	"symbols_changed":   "symbols changed",
+	"direct_impact":     "downstream paths",
+	"transitive_impact": "transitive reach",
+	"module_spread":     "module spread",
+	"bridge_centrality": "architectural bridge",
+
+	"deleted_with_consumers":           "deleted, still used",
+	"signature_changed_with_consumers": "signature changed, still used",
+	"public_contract_changed":          "public contract changed",
+}
+
+// formatChangesHuman renders the `ckb changes` human-readable report: a
+// denser, evidence-first view than formatChangeSetHuman, matching the
+// assessChange mock. Every inferred/heuristic item carries its label inline.
+// caps lists at 10 unless verbose is set.
+// countNoun renders "1 changed symbol" / "3 changed symbols".
+func countNoun(n int, singular, plural string) string {
+	if n == 1 {
+		return "1 " + singular
+	}
+	return fmt.Sprintf("%d %s", n, plural)
+}
+
+// nothingToAssess reports a change set with no source changes in it.
+func nothingToAssess(resp *ChangeSetResponseCLI) bool {
+	return resp.RiskScore != nil && resp.RiskScore.Explanation == query.NothingToAssess
+}
+
+// truncationLine says a list of consumers was cut, so it can't read as complete.
+func truncationLine(info *TruncationInfoCLI) string {
+	if info == nil {
+		return ""
+	}
+	return fmt.Sprintf("Consumer details cut to %d of %d (%s); consumer files below are not.",
+		info.ReturnedCount, info.OriginalCount, info.Reason)
+}
+
+// writeConsumerFiles lists the files behind the consumer items. Lists stop at 10
+// unless all is set; the rest stay in the JSON output.
+func writeConsumerFiles(b *strings.Builder, files *query.ConsumerFiles, all bool) {
+	if files != nil && len(files.ContractChanged)+len(files.ContractChangedTests) > 0 {
+		b.WriteString(fmt.Sprintf("Look at these first: they use a symbol whose declaration changed, at a use this diff left as it was (%d, heuristic)\n",
+			len(files.ContractChanged)+len(files.ContractChangedTests)))
+		for _, p := range append(append([]string{}, files.ContractChanged...), files.ContractChangedTests...) {
+			b.WriteString("  " + p + "\n")
+		}
+		b.WriteString("\n")
+	}
+	if files == nil || files.Total == 0 {
+		return
+	}
+	section := func(title string, paths []string) {
+		if len(paths) == 0 {
+			return
+		}
+		b.WriteString(fmt.Sprintf("%s (%d)\n", title, len(paths)))
+		shown := len(paths)
+		if !all && shown > 10 {
+			shown = 10
+		}
+		for _, p := range paths[:shown] {
+			b.WriteString("  " + p + "\n")
+		}
+		if len(paths) > shown {
+			b.WriteString(fmt.Sprintf("  … and %d more (all of them with --format=json)\n", len(paths)-shown))
+		}
+		b.WriteString("\n")
+	}
+	section("Consumer files, direct", files.Direct)
+	section("Consumer files, transitive", files.Transitive)
+	section("Test files", files.Tests)
+	if files.Truncated {
+		b.WriteString(fmt.Sprintf("Consumer files are incomplete: %s.\n\n", files.Note))
+	}
+}
+
+// writeDoneCheck lists the uses a change left as they were. It says "open", never
+// "safe": the comparison is of text, and nothing was compiled.
+func writeDoneCheck(b *strings.Builder, check *query.DoneCheck, verbose bool) {
+	if check == nil {
+		return
+	}
+	switch check.Status {
+	case query.DoneCheckOpen:
+		b.WriteString(fmt.Sprintf("Done check: OPEN  %s left as they were, %d touched\n",
+			countNoun(check.OpenCount, "use", "uses"), check.UpdatedCount))
+	case query.DoneCheckClear:
+		b.WriteString(fmt.Sprintf("Done check: clear  %d touched\n", check.UpdatedCount))
+	default:
+		b.WriteString("Done check: NOT ASSESSED\n")
+	}
+	shown := len(check.OpenSites)
+	if !verbose && shown > 20 {
+		shown = 20
+	}
+	writeSites := func(sites []query.OpenSite) {
+		for i := range sites {
+			site := &sites[i]
+			b.WriteString(fmt.Sprintf("  %s:%d  %s", site.File, site.Line, site.Code))
+			if site.Via != "" {
+				b.WriteString(fmt.Sprintf("  (%s)", site.Via))
+			}
+			if site.Unverified {
+				b.WriteString("  (index out of date here, line may be off)")
+			}
+			b.WriteString(fmt.Sprintf("  [%s %s]\n", cmp.Or(site.QualifiedName, site.Symbol), site.Change))
+		}
+	}
+	writeSites(check.OpenSites[:shown])
+	if more := check.OpenCount - check.RarelyCount - shown; more > 0 {
+		b.WriteString(fmt.Sprintf("  … and %d more (--verbose, or --format=json up to %d)\n", more, query.MaxOpenSites))
+	}
+	if check.RarelyCount > 0 {
+		if verbose {
+			b.WriteString(fmt.Sprintf("  These %d rarely break:\n", check.RarelyCount))
+			writeSites(check.RarelySites)
+		} else {
+			b.WriteString(fmt.Sprintf("  %d more rarely break, counted per symbol (--verbose lists them):\n", check.RarelyCount))
+			for _, g := range check.Rarely {
+				b.WriteString(fmt.Sprintf("    %s: %d in %s\n", cmp.Or(g.QualifiedName, g.Symbol), g.Count, countNoun(g.Files, "file", "files")))
+			}
+		}
+	}
+	if check.Note != "" {
+		b.WriteString("  " + check.Note + "\n")
+	}
+	b.WriteString("\n")
+}
+
+// writeCoChangeCheck lists the files that usually change with the touched files and
+// were left alone. History, not code: it says "open", never "missing".
+func writeCoChangeCheck(b *strings.Builder, check *query.CoChangeCheck, verbose bool) {
+	if check == nil {
+		return
+	}
+	switch check.Status {
+	case query.CoChangeOpen:
+		b.WriteString(fmt.Sprintf("Usually changed with: OPEN  %s left alone\n",
+			countNoun(check.OpenCount, "file", "files")))
+	case query.CoChangeClear:
+		b.WriteString(fmt.Sprintf("Usually changed with: clear  %d commits read\n", check.CommitsRead))
+	default:
+		b.WriteString("Usually changed with: NOT ASSESSED\n")
+	}
+	shown := len(check.OpenFiles)
+	if !verbose && shown > 10 {
+		shown = 10
+	}
+	for i := range check.OpenFiles[:shown] {
+		file := &check.OpenFiles[i]
+		b.WriteString(fmt.Sprintf("  %s  with %s in %d of %d commits", file.File, file.With, file.Together, file.Of))
+		if file.LastTogether != "" {
+			b.WriteString(", last " + file.LastTogether)
+		}
+		b.WriteString("\n")
+	}
+	if more := check.OpenCount - shown; more > 0 {
+		b.WriteString(fmt.Sprintf("  … and %d more (--verbose, or --format=json up to %d)\n", more, query.MaxCoChangeFiles))
+	}
+	if check.Note != "" {
+		b.WriteString("  " + check.Note + "\n")
+	}
+	b.WriteString("\n")
+}
+
+func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
+	var b strings.Builder
+
+	cap10 := func(n int) int {
+		if verbose {
+			return n
+		}
+		return min(10, n)
+	}
+
+	// Header
+	branch := "current branch"
+	mode := "working tree"
+	if resp.Change != nil {
+		if resp.Change.Branch != "" {
+			branch = resp.Change.Branch
+		}
+		switch resp.Change.Mode {
+		case "staged":
+			mode = "staged"
+		case "range":
+			mode = "vs " + resp.Change.Base
+		default:
+			mode = "working tree"
+		}
+	}
+	b.WriteString(fmt.Sprintf("Current change · %s (%s)\n\n", branch, mode))
+
+	if nothingToAssess(resp) {
+		b.WriteString(query.NothingToAssess + "\n")
+		return b.String()
+	}
+
+	// Risk
+	if resp.RiskScore != nil {
+		if resp.RiskScore.Level == query.RiskLevelNotAssessed {
+			b.WriteString("Risk: NOT ASSESSED\n")
+			b.WriteString("  " + resp.RiskScore.Explanation + "\n")
+		} else {
+			b.WriteString(fmt.Sprintf("Risk: %s (%.2f)\n", strings.ToUpper(resp.RiskScore.Level), resp.RiskScore.Score))
+		}
+		for _, f := range resp.RiskScore.Factors {
+			label := changesRiskFactorLabels[f.Name]
+			if label == "" {
+				label = f.Name
+			}
+			evidence := f.Evidence
+			if evidence == "" {
+				evidence = fmt.Sprintf("value %.2f", f.Value)
+			}
+			b.WriteString(fmt.Sprintf("  %-26s weight %.2f   %s\n", label, f.Weight, evidence))
+		}
+		b.WriteString("\n")
+	}
+
+	writeDoneCheck(&b, resp.DoneCheck, verbose)
+	writeCoChangeCheck(&b, resp.CoChangeCheck, verbose)
+
+	// Counts line
+	symbolsChanged, downstream, modules := 0, 0, 0
+	if resp.Summary != nil {
+		symbolsChanged = resp.Summary.SymbolsChanged
+		downstream = resp.Summary.DirectlyAffected
+	}
+	modules = len(resp.ModulesAffected)
+	if resp.RiskScore != nil && resp.RiskScore.Level == query.RiskLevelNotAssessed {
+		b.WriteString(fmt.Sprintf("%s · downstream consumers unknown\n\n",
+			countNoun(symbolsChanged, "changed symbol", "changed symbols")))
+	} else {
+		b.WriteString(fmt.Sprintf("%s · %s · %s\n\n",
+			countNoun(symbolsChanged, "changed symbol", "changed symbols"),
+			countNoun(downstream, "downstream consumer", "downstream consumers"),
+			countNoun(modules, "affected module", "affected modules")))
+	}
+
+	if line := truncationLine(resp.TruncationInfo); line != "" {
+		b.WriteString(line + "\n\n")
+	}
+	if resp.ConsumerFiles != nil {
+		production := *resp.ConsumerFiles
+		production.Tests = nil // Listed with their reasons right below
+		writeConsumerFiles(&b, &production, verbose)
+	}
+
+	// Affected tests
+	if len(resp.AffectedTests) > 0 {
+		b.WriteString(fmt.Sprintf("Affected tests (%d)\n", len(resp.AffectedTests)))
+		shown := cap10(len(resp.AffectedTests))
+		for _, t := range resp.AffectedTests[:shown] {
+			b.WriteString(fmt.Sprintf("  %s  (%s)\n", t.FilePath, t.Reason))
+			if verbose && len(t.TestNames) > 0 {
+				b.WriteString(fmt.Sprintf("    %s\n", strings.Join(t.TestNames, ", ")))
+			}
+		}
+		if len(resp.AffectedTests) > shown {
+			b.WriteString(fmt.Sprintf("  … and %d more\n", len(resp.AffectedTests)-shown))
+		}
+		b.WriteString("\n")
+	}
+
+	// Possible contract changes
+	if len(resp.Contracts) > 0 {
+		basis := resp.Contracts[0].Basis
+		for _, c := range resp.Contracts {
+			if c.Basis != basis {
+				basis = "heuristic: compared as text, not compiled"
+			}
+		}
+		b.WriteString(fmt.Sprintf("Possible contract changes (%d)  [%s]\n", len(resp.Contracts), basis))
+		qualified := make(map[[2]string]string, len(resp.ChangedSymbols))
+		for _, s := range resp.ChangedSymbols {
+			if s.QualifiedName != "" {
+				qualified[[2]string{s.Name, s.File}] = s.QualifiedName
+			}
+		}
+		shown := cap10(len(resp.Contracts))
+		for _, c := range resp.Contracts[:shown] {
+			b.WriteString(fmt.Sprintf("  %-19s %s\n", cmp.Or(qualified[[2]string{c.Symbol, c.File}], c.Symbol), c.File))
+			if c.Kind != "possible-contract-change" {
+				line := "    " + c.Kind
+				if c.ConsumerCount > 0 {
+					line += fmt.Sprintf(", %s with a use this change left as it was", countNoun(c.ConsumerCount, "consumer file", "consumer files"))
+				}
+				b.WriteString(line + "\n")
+			}
+			if c.Detail != "" {
+				b.WriteString("    " + c.Detail + "\n")
+			}
+			if verbose && c.Before != "" {
+				b.WriteString(fmt.Sprintf("    - %s\n", c.Before))
+			}
+			if verbose && c.After != "" {
+				b.WriteString(fmt.Sprintf("    + %s\n", c.After))
+			}
+		}
+		if len(resp.Contracts) > shown {
+			b.WriteString(fmt.Sprintf("  … and %d more\n", len(resp.Contracts)-shown))
+		}
+		b.WriteString("\n")
+	}
+
+	// Relevant decisions
+	if len(resp.Decisions) > 0 {
+		b.WriteString("Relevant decisions\n")
+		shown := cap10(len(resp.Decisions))
+		for _, d := range resp.Decisions[:shown] {
+			b.WriteString(fmt.Sprintf("  %-8s %s\n", d.ID, d.Title))
+		}
+		if len(resp.Decisions) > shown {
+			b.WriteString(fmt.Sprintf("  … and %d more\n", len(resp.Decisions)-shown))
+		}
+		b.WriteString("\n")
+	}
+
+	// Likely reviewers
+	if len(resp.Reviewers) > 0 {
+		b.WriteString("Likely reviewers\n")
+		shown := cap10(len(resp.Reviewers))
+		for _, r := range resp.Reviewers[:shown] {
+			b.WriteString(fmt.Sprintf("  %s (%.0f%% of changed files)\n", r.Owner, r.Coverage*100))
+		}
+		if len(resp.Reviewers) > shown {
+			b.WriteString(fmt.Sprintf("  … and %d more\n", len(resp.Reviewers)-shown))
+		}
+		b.WriteString("\n")
+	}
+
+	// Potential issues: test gaps + stale index, each labeled with its basis
+	var issues []string
+	if resp.TestGaps != nil && resp.TestGaps.UntestedConsumers > 0 {
+		issues = append(issues, fmt.Sprintf("%d downstream consumer(s) have no reaching test  (Consumer -> Changed)",
+			resp.TestGaps.UntestedConsumers))
+	}
+	if resp.IndexStaleness != nil && resp.IndexStaleness.IsStale {
+		issues = append(issues, fmt.Sprintf("index is %d commit(s) behind — results may be stale", resp.IndexStaleness.CommitsBehind))
+	}
+	if len(issues) > 0 {
+		b.WriteString("Potential issues\n")
+		for _, issue := range issues {
+			b.WriteString(fmt.Sprintf("  %s\n", issue))
+		}
+		if verbose && resp.TestGaps != nil && len(resp.TestGaps.Examples) > 0 {
+			for _, ex := range resp.TestGaps.Examples {
+				b.WriteString(fmt.Sprintf("    %s\n", ex))
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// Confidence
+	if resp.Confidence != nil {
+		reasons := strings.Join(resp.Confidence.Reasons, ", ")
+		b.WriteString(fmt.Sprintf("Confidence: %s", resp.Confidence.Tier))
+		if reasons != "" {
+			b.WriteString(fmt.Sprintf(" — %s", reasons))
+		}
+		b.WriteString("\n")
 	}
 
 	return b.String()

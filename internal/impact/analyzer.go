@@ -3,6 +3,9 @@ package impact
 import (
 	"fmt"
 	"sort"
+	"strings"
+
+	bindingscip "github.com/sourcegraph/scip/bindings/go/scip"
 )
 
 // TransitiveCallerProvider provides transitive caller information
@@ -12,6 +15,17 @@ type TransitiveCallerProvider interface {
 	// GetTransitiveCallers returns callers up to maxDepth levels
 	// Returns map of symbolId -> depth (1 = direct, 2+ = transitive)
 	GetTransitiveCallers(symbolId string, maxDepth int) (map[string]int, error)
+}
+
+// CallerLocator is an optional extension of TransitiveCallerProvider. After
+// GetTransitiveCallers has run, it reports where a returned caller lives so
+// the analyzer can attribute the caller to a module. Providers that only know
+// symbol ids simply don't implement it and transitive items keep an empty
+// ModuleId.
+type CallerLocator interface {
+	// CallerLocation returns the module and source location of a caller, or
+	// ok=false when unknown.
+	CallerLocation(callerId string) (moduleId string, loc *Location, ok bool)
 }
 
 // ImpactAnalyzer performs impact analysis on symbols
@@ -126,9 +140,13 @@ func (a *ImpactAnalyzer) processDirectReferences(symbol *Symbol, refs []Referenc
 		kind, confidence := ClassifyImpactWithConfidence(&ref, symbol)
 
 		// Create impact item
+		name := ref.FromName
+		if name == "" {
+			name = extractNameFromStableId(ref.FromSymbol)
+		}
 		item := ImpactItem{
 			StableId:   ref.FromSymbol,
-			Name:       extractNameFromStableId(ref.FromSymbol),
+			Name:       name,
 			Kind:       kind,
 			Confidence: confidence,
 			ModuleId:   ref.FromModule,
@@ -201,22 +219,54 @@ func (a *ImpactAnalyzer) generateModuleSummaries(allImpact []ImpactItem) []Modul
 	return summaries
 }
 
-// extractNameFromStableId extracts a readable name from a stable identifier
+// ShortName is the name to show for a symbol: name itself, unless it is empty or
+// a whole SCIP symbol, in which case the short name is read from the symbol.
+func ShortName(name, stableId string) string {
+	if name != "" && !strings.Contains(name, " ") {
+		return name
+	}
+	if name != "" {
+		return extractNameFromStableId(name)
+	}
+	if n := extractNameFromStableId(stableId); n != stableId {
+		return n
+	}
+	return ""
+}
+
+// extractNameFromStableId returns the short name of a symbol: for a SCIP
+// symbol the name of its last descriptor that isn't a namespace, parameter or
+// type parameter ("collectDiagnostics" for "scip-go gomod m v `m/cmd`/collectDiagnostics()."),
+// which is what direct callers get from the backend too. Anything that doesn't
+// parse as SCIP is returned as it is.
 func extractNameFromStableId(stableId string) string {
-	// This is a simplified implementation
-	// In a real system, this would parse the stable ID format
 	if stableId == "" {
-		return "unknown"
+		return ""
+	}
+	sym, err := bindingscip.ParseSymbol(stableId)
+	if err != nil || sym == nil {
+		return stableId
+	}
+	for i := len(sym.Descriptors) - 1; i >= 0; i-- {
+		d := sym.Descriptors[i]
+		switch d.Suffix {
+		case bindingscip.Descriptor_Namespace, bindingscip.Descriptor_Parameter, bindingscip.Descriptor_TypeParameter:
+			continue
+		}
+		if d.Name != "" {
+			return d.Name
+		}
 	}
 	return stableId
 }
 
-// extractModuleNameFromId extracts a readable module name from a module ID
+// extractModuleNameFromId extracts a readable module name from a module ID.
+// Returns "" (not "unknown") when unavailable so callers can omit the field.
 func extractModuleNameFromId(moduleId string) string {
 	// This is a simplified implementation
 	// In a real system, this would parse the module ID format
 	if moduleId == "" {
-		return "unknown"
+		return ""
 	}
 	return moduleId
 }
@@ -305,6 +355,13 @@ func (a *ImpactAnalyzer) processTransitiveCallers(symbol *Symbol, vis *Visibilit
 			Distance:   depth,
 			Visibility: vis,
 		}
+		if locator, ok := a.callerProv.(CallerLocator); ok {
+			if mod, loc, found := locator.CallerLocation(callerId); found {
+				item.ModuleId = mod
+				item.ModuleName = extractModuleNameFromId(mod)
+				item.Location = loc
+			}
+		}
 		items = append(items, item)
 	}
 
@@ -338,7 +395,7 @@ func (a *ImpactAnalyzer) computeBlastRadius(allImpact []ImpactItem) *BlastRadius
 func RecomputeBlastRadius(allImpact []ImpactItem) *BlastRadius {
 	moduleSet := make(map[string]bool)
 	fileSet := make(map[string]bool)
-	callerCount := 0
+	_, callerCount := countCallers(allImpact)
 
 	for _, item := range allImpact {
 		if item.ModuleId != "" {
@@ -346,9 +403,6 @@ func RecomputeBlastRadius(allImpact []ImpactItem) *BlastRadius {
 		}
 		if item.Location != nil && item.Location.FileId != "" {
 			fileSet[item.Location.FileId] = true
-		}
-		if item.Kind == DirectCaller || item.Kind == TransitiveCaller {
-			callerCount++
 		}
 	}
 

@@ -124,162 +124,23 @@ func TestConvertOccurrence(t *testing.T) {
 	}
 }
 
-func TestConvertSymbolDef(t *testing.T) {
-	tests := []struct {
-		name     string
-		sym      *scip.SymbolInformation
-		doc      *scip.Document
-		expected *SymbolDefInfo
-	}{
-		{
-			name:     "nil symbol",
-			sym:      nil,
-			doc:      &scip.Document{},
-			expected: nil,
-		},
-		{
-			name: "basic symbol with display name",
-			sym: &scip.SymbolInformation{
-				Symbol:      "test#MyFunc",
-				DisplayName: "MyFunc",
-				Kind:        12, // function
-			},
-			doc: &scip.Document{
-				Occurrences: []*scip.Occurrence{
-					{
-						Symbol:      "test#MyFunc",
-						SymbolRoles: scip.SymbolRoleDefinition,
-						Range:       []int32{10, 5},
-					},
-				},
-			},
-			expected: &SymbolDefInfo{
-				Symbol:    "test#MyFunc",
-				Name:      "MyFunc",
-				Kind:      "function",
-				StartLine: 11,
-				EndLine:   21, // Default +10
-			},
-		},
-		{
-			name: "symbol with enclosing range",
-			sym: &scip.SymbolInformation{
-				Symbol:      "test#BigFunc",
-				DisplayName: "BigFunc",
-				Kind:        6, // method
-			},
-			doc: &scip.Document{
-				Occurrences: []*scip.Occurrence{
-					{
-						Symbol:         "test#BigFunc",
-						SymbolRoles:    scip.SymbolRoleDefinition,
-						Range:          []int32{20, 0},
-						EnclosingRange: []int32{20, 0, 50, 0},
-					},
-				},
-			},
-			expected: &SymbolDefInfo{
-				Symbol:    "test#BigFunc",
-				Name:      "BigFunc",
-				Kind:      "method",
-				StartLine: 21,
-				EndLine:   51,
-			},
-		},
-		{
-			name: "symbol without definition occurrence",
-			sym: &scip.SymbolInformation{
-				Symbol:      "test#Orphan",
-				DisplayName: "Orphan",
-				Kind:        13, // variable
-			},
-			doc: &scip.Document{
-				Occurrences: []*scip.Occurrence{}, // No occurrences
-			},
-			expected: &SymbolDefInfo{
-				Symbol:    "test#Orphan",
-				Name:      "Orphan",
-				Kind:      "variable",
-				StartLine: 0,
-				EndLine:   0,
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := convertSymbolDef(tt.sym, tt.doc)
-			if tt.expected == nil {
-				if result != nil {
-					t.Errorf("expected nil, got %+v", result)
-				}
-				return
-			}
-			if result == nil {
-				t.Fatalf("expected %+v, got nil", tt.expected)
-			}
-			if result.Symbol != tt.expected.Symbol {
-				t.Errorf("Symbol: got %q, want %q", result.Symbol, tt.expected.Symbol)
-			}
-			if result.Name != tt.expected.Name {
-				t.Errorf("Name: got %q, want %q", result.Name, tt.expected.Name)
-			}
-			if result.Kind != tt.expected.Kind {
-				t.Errorf("Kind: got %q, want %q", result.Kind, tt.expected.Kind)
-			}
-			if result.StartLine != tt.expected.StartLine {
-				t.Errorf("StartLine: got %d, want %d", result.StartLine, tt.expected.StartLine)
-			}
-			if result.EndLine != tt.expected.EndLine {
-				t.Errorf("EndLine: got %d, want %d", result.EndLine, tt.expected.EndLine)
-			}
-		})
-	}
-}
-
 func TestScipKindToString(t *testing.T) {
 	tests := []struct {
 		kind     int32
 		expected string
 	}{
-		{1, "file"},
-		{2, "module"},
-		{3, "namespace"},
-		{4, "package"},
-		{5, "class"},
-		{6, "method"},
-		{7, "property"},
-		{8, "field"},
-		{9, "constructor"},
-		{10, "enum"},
-		{11, "interface"},
-		{12, "function"},
-		{13, "variable"},
-		{14, "constant"},
-		{15, "string"},
-		{16, "number"},
-		{17, "boolean"},
-		{18, "array"},
-		{19, "object"},
-		{20, "key"},
-		{21, "null"},
-		{22, "enum_member"},
-		{23, "struct"},
-		{24, "event"},
-		{25, "operator"},
-		{26, "type_parameter"},
 		{0, "unknown"},
-		{99, "unknown"},
-		{-1, "unknown"},
+		{17, "function"},
+		{26, "method"},
+		{7, "class"},
+		{49, "class"},
+		{21, "interface"},
+		{9999, "unknown"},
 	}
-
 	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			result := scipKindToString(tt.kind)
-			if result != tt.expected {
-				t.Errorf("scipKindToString(%d) = %q, want %q", tt.kind, result, tt.expected)
-			}
-		})
+		if got := scipKindToString(tt.kind); got != tt.expected {
+			t.Errorf("scipKindToString(%d) = %q, want %q", tt.kind, got, tt.expected)
+		}
 	}
 }
 

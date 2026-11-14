@@ -16,6 +16,7 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/output"
+	"github.com/SimplyLiz/CodeMCP/internal/pathclass"
 	"github.com/SimplyLiz/CodeMCP/internal/version"
 )
 
@@ -137,6 +138,47 @@ type CallGraphOptions struct {
 	SymbolId  string
 	Direction string // "callers", "callees", or "both"
 	Depth     int
+	Limit     int // Maximum nodes returned, root included; 0 means defaultCallGraphNodes
+}
+
+// defaultCallGraphNodes keeps a call graph for an LLM consumer near 5k tokens: a
+// node plus its edge cost about 700 bytes, mostly the full SCIP IDs. Without a
+// cap a widely used symbol returned 250 nodes and 46k tokens.
+const defaultCallGraphNodes = 20
+
+// capCallGraph keeps the root and the nodes closest to it, and drops edges to
+// anything dropped. Order is by depth, then ID, so the same graph always keeps
+// the same nodes. It reports what was cut, or nil if nothing was.
+func capCallGraph(root string, nodes []CallGraphNode, edges []CallGraphEdge, limit int) ([]CallGraphNode, []CallGraphEdge, *TruncationInfo) {
+	if limit <= 0 {
+		limit = defaultCallGraphNodes
+	}
+	if len(nodes) <= limit {
+		return nodes, edges, nil
+	}
+	sort.SliceStable(nodes, func(i, j int) bool {
+		ri, rj := nodes[i].ID == root, nodes[j].ID == root
+		if ri != rj {
+			return ri
+		}
+		if nodes[i].Depth != nodes[j].Depth {
+			return nodes[i].Depth < nodes[j].Depth
+		}
+		return nodes[i].ID < nodes[j].ID
+	})
+	original := len(nodes)
+	nodes = nodes[:limit]
+	kept := make(map[string]bool, limit)
+	for _, n := range nodes {
+		kept[n.ID] = true
+	}
+	keptEdges := make([]CallGraphEdge, 0, len(edges))
+	for _, e := range edges {
+		if kept[e.From] && kept[e.To] {
+			keptEdges = append(keptEdges, e)
+		}
+	}
+	return nodes, keptEdges, &TruncationInfo{Reason: "max-nodes", OriginalCount: original, ReturnedCount: limit}
 }
 
 // CallGraphResponse contains a lightweight call graph.
@@ -627,14 +669,7 @@ func (e *Engine) GetCallGraph(ctx context.Context, opts CallGraphOptions) (*Call
 		prov.Warnings = append(prov.Warnings, warnings...)
 	}
 
-	var truncation *TruncationInfo
-	if len(nodes) >= 100 {
-		truncation = &TruncationInfo{
-			Reason:        "max-nodes",
-			OriginalCount: len(nodes),
-			ReturnedCount: len(nodes),
-		}
-	}
+	nodes, edges, truncation := capCallGraph(rootId, nodes, edges, opts.Limit)
 
 	return &CallGraphResponse{
 		AINavigationMeta: AINavigationMeta{
@@ -934,6 +969,35 @@ func (e *Engine) ExplainFile(ctx context.Context, opts ExplainFileOptions) (*Exp
 			Backend: "scip",
 			Status:  "missing",
 		})
+	}
+
+	// No index, or an index without this file's language: the parser still
+	// knows what the file defines. Without this, explainFile said "0 symbols"
+	// for every file of an unindexed repo.
+	if len(symbols) == 0 && e.treesitterExtractor != nil {
+		e.tsMu.Lock()
+		tsSyms, tsErr := e.treesitterExtractor.ExtractFile(ctx, filePath)
+		e.tsMu.Unlock()
+		if tsErr == nil && len(tsSyms) > 0 {
+			confidenceBasis = append(confidenceBasis, ConfidenceBasisItem{
+				Backend: "treesitter",
+				Status:  "available",
+			})
+			for _, sym := range tsSyms {
+				name := sym.Name
+				if sym.Container != "" {
+					name = sym.Container + "." + sym.Name
+				}
+				symbols = append(symbols, ExplainFileSymbol{
+					Name: name,
+					Kind: sym.Kind,
+					Line: sym.Line,
+				})
+				if sym.Container == "" && isExportedSymbol(sym.Name, "", language) {
+					exports = append(exports, sym.Name)
+				}
+			}
+		}
 	}
 
 	// Sort symbols by line number and limit to 15
@@ -1238,9 +1302,9 @@ type ListEntrypointsResponse struct {
 type EntrypointV52 struct {
 	SymbolId       string        `json:"symbolId"`
 	Name           string        `json:"name"`
-	Type           string        `json:"type"` // api, cli, job, event
+	Type           string        `json:"type"` // api, cli, page, job, event
 	Location       *LocationInfo `json:"location"`
-	DetectionBasis string        `json:"detectionBasis"` // naming, framework-config, static-call
+	DetectionBasis string        `json:"detectionBasis"` // naming, framework-convention, framework-config, static-call
 	FanOut         int           `json:"fanOut"`         // Number of functions called
 	Ranking        *RankingV52   `json:"ranking"`
 }
@@ -1263,30 +1327,8 @@ func (e *Engine) ListEntrypoints(ctx context.Context, opts ListEntrypointsOption
 			Status:  "available",
 		})
 
-		// Search for main functions
-		mainResults, _ := e.scipAdapter.SearchSymbols(ctx, "main", backends.SearchOptions{
-			MaxResults: 50,
-			Kind:       []string{"function"},
-		})
-
-		if mainResults != nil {
-			for _, sym := range mainResults.Symbols {
-				if sym.Name == "main" && strings.Contains(sym.Location.Path, "/cmd/") {
-					fanOut := e.scipAdapter.GetCalleeCount(sym.StableID)
-					entrypoints = append(entrypoints, EntrypointV52{
-						SymbolId: sym.StableID,
-						Name:     sym.Name,
-						Type:     "cli",
-						Location: &LocationInfo{
-							FileId:    sym.Location.Path,
-							StartLine: sym.Location.Line,
-						},
-						DetectionBasis: "naming",
-						FanOut:         fanOut,
-					})
-				}
-			}
-		}
+		// The functions programs start in (see programMains).
+		entrypoints = append(entrypoints, e.programMains(e.scipAdapter.GetIndex())...)
 
 		// Search for handler patterns
 		handlerPatterns := []string{"Handle", "Handler", "Serve", "Route"}
@@ -1301,10 +1343,12 @@ func (e *Engine) ListEntrypoints(ctx context.Context, opts ListEntrypointsOption
 					if strings.Contains(sym.Location.Path, "_test.") {
 						continue
 					}
-					// Check if it looks like an API handler
-					if strings.HasPrefix(sym.Name, "Handle") ||
-						strings.HasSuffix(sym.Name, "Handler") ||
-						strings.HasPrefix(sym.Name, "Serve") {
+					// Check if it looks like an API handler. Case-insensitive:
+					// Go convention capitalizes exported names ("Handle",
+					// "Handler"), but TS/JS methods are typically lowercase
+					// ("handle") — the naming convention this is meant to
+					// detect isn't specific to Go's export casing.
+					if looksLikeAPIHandlerName(sym.Name) {
 						fanOut := e.scipAdapter.GetCalleeCount(sym.StableID)
 						entrypoints = append(entrypoints, EntrypointV52{
 							SymbolId: sym.StableID,
@@ -1354,6 +1398,9 @@ func (e *Engine) ListEntrypoints(ctx context.Context, opts ListEntrypointsOption
 				}
 			}
 		}
+
+		// Files a framework calls by convention (Next.js pages and route handlers).
+		entrypoints = append(entrypoints, e.frameworkEntrypoints(e.scipAdapter.GetIndex())...)
 	} else {
 		confidenceBasis = append(confidenceBasis, ConfidenceBasisItem{
 			Backend: "scip",
@@ -1395,6 +1442,8 @@ func (e *Engine) ListEntrypoints(ctx context.Context, opts ListEntrypointsOption
 			score += 100 // CLI mains are most important
 		case "api":
 			score += 80
+		case "page":
+			score += 70
 		case "job":
 			score += 60
 		case "event":
@@ -1570,7 +1619,7 @@ func (e *Engine) TraceUsage(ctx context.Context, opts TraceUsageOptions) (*Trace
 	}
 
 	// Get entrypoints to use as start nodes
-	entrypointsResp, err := e.ListEntrypoints(ctx, ListEntrypointsOptions{Limit: 50})
+	entrypointsResp, err := e.ListEntrypoints(ctx, ListEntrypointsOptions{Limit: 200}) // A Next.js app has a hundred
 	if err != nil {
 		limitations = append(limitations, "Entrypoint detection failed")
 	}
@@ -1654,7 +1703,12 @@ func (e *Engine) TraceUsage(ctx context.Context, opts TraceUsageOptions) (*Trace
 
 		// Fallback: if no paths from entrypoints, use direct callers
 		if len(paths) == 0 {
-			limitations = append(limitations, "Entrypoint set unavailable; showing nearest callers")
+			if len(entrypoints) == 0 {
+				limitations = append(limitations, "No entrypoints found; showing nearest callers")
+			} else {
+				limitations = append(limitations, fmt.Sprintf(
+					"No path from %d entrypoint(s) within depth %d; showing nearest callers. Calls made inside a function assigned to a variable (const f = () => ...) are not in the call graph", len(entrypoints), opts.MaxDepth))
+			}
 
 			// Get callers and build short paths from them
 			graph, err := e.scipAdapter.BuildCallGraph(targetId, scip.CallGraphOptions{
@@ -1793,6 +1847,7 @@ func (e *Engine) findPathBFSCached(ctx context.Context, sourceId, targetId strin
 
 	const maxVisitedNodes = 500 // Cap to prevent explosion
 	const maxCalleesPerNode = 30
+	const maxCalleesFetched = 300
 
 	visited := make(map[string]bool)
 	queue := []bfsNode{{id: sourceId, path: []string{sourceId}, depth: 0}}
@@ -1814,10 +1869,13 @@ func (e *Engine) findPathBFSCached(ctx context.Context, sourceId, targetId strin
 				continue
 			}
 
+			// Fetch more than the cap, then keep the project's own callees: a
+			// component calls String#trim and Array#map as often as anything, and
+			// those took the 30 places of the calls a path can run through.
 			graph, err := e.scipAdapter.BuildCallGraph(current.id, scip.CallGraphOptions{
 				Direction: scip.DirectionCallees,
 				MaxDepth:  1,
-				MaxNodes:  maxCalleesPerNode,
+				MaxNodes:  maxCalleesFetched,
 			})
 
 			if err != nil || graph == nil {
@@ -1825,11 +1883,7 @@ func (e *Engine) findPathBFSCached(ctx context.Context, sourceId, targetId strin
 				continue
 			}
 
-			// Extract callee IDs and cache
-			callees = make([]string, 0, len(graph.Callees))
-			for _, callee := range graph.Callees {
-				callees = append(callees, callee.SymbolID)
-			}
+			callees = projectCallees(graph.Callees, e.scipAdapter.GetIndex(), maxCalleesPerNode)
 			cache.callees[current.id] = callees
 		}
 
@@ -1893,11 +1947,22 @@ func computePathScore(pathType string, pathLength int, confidence float64) float
 
 // isTestFilePath checks if a path is a test file.
 func isTestFilePath(path string) bool {
-	pathLower := strings.ToLower(path)
-	return strings.Contains(pathLower, "_test.") ||
-		strings.Contains(pathLower, ".test.") ||
-		strings.Contains(pathLower, "/test/") ||
-		strings.Contains(pathLower, "/tests/")
+	lower := "/" + strings.ToLower(path)
+	base := filepath.Base(lower)
+	for _, marker := range []string{"_test.", "_tests.", ".test.", ".spec."} {
+		if strings.Contains(base, marker) {
+			return true
+		}
+	}
+	if strings.HasPrefix(base, "test_") || base == "tests.rs" {
+		return true
+	}
+	for _, dir := range []string{"/test/", "/tests/", "/__tests__/", "/spec/", "/e2e/", "/benches/"} {
+		if strings.Contains(lower, dir) {
+			return true
+		}
+	}
+	return false
 }
 
 // SummarizeDiffOptions controls summarizeDiff behavior.
@@ -2508,7 +2573,14 @@ type GetHotspotsResponse struct {
 	Confidence      float64               `json:"confidence"`
 	ConfidenceBasis []ConfidenceBasisItem `json:"confidenceBasis"`
 	Limitations     []string              `json:"limitations,omitempty"`
+	// LeftOut counts the files in generated or data paths (.ckb/config.json paths,
+	// built-in generated patterns, large data files) kept out of the ranking.
+	LeftOut *pathclass.Tally `json:"leftOut,omitempty"`
 }
+
+// hotspotCandidateCap is how many churn-ranked files GetHotspots reads before its
+// filters. The git log is parsed in full regardless; this only bounds the sort.
+const hotspotCandidateCap = 2000
 
 // HotspotV52 represents a hotspot with v5.2 ranking signals.
 type HotspotV52 struct {
@@ -2588,22 +2660,28 @@ func (e *Engine) GetHotspots(ctx context.Context, opts GetHotspotsOptions) (*Get
 		Status:  "available",
 	})
 
-	// Get hotspots from git backend
-	gitHotspots, err := e.gitAdapter.GetHotspots(opts.Limit*2, since) // Get extra for filtering
+	// Get hotspots from git backend. The whole log is read either way; the limit only
+	// cuts the ranked list, so ask for plenty when filters follow, or a data directory
+	// committed in batches would leave fewer than opts.Limit files after them.
+	classifier := pathclass.FromConfig(e.repoRoot, e.config)
+	gitHotspots, err := e.gitAdapter.GetHotspots(max(opts.Limit*2, hotspotCandidateCap), since)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get hotspots: %w", err)
 	}
 
-	// Apply scope filter if specified
-	if opts.Scope != "" {
-		filtered := []git.ChurnMetrics{}
-		for _, h := range gitHotspots {
-			if strings.HasPrefix(h.FilePath, opts.Scope) {
-				filtered = append(filtered, h)
-			}
+	// Apply scope filter if specified, then leave out generated and data paths
+	var leftOut pathclass.Counter
+	filtered := make([]git.ChurnMetrics, 0, len(gitHotspots))
+	for _, h := range gitHotspots {
+		if opts.Scope != "" && !strings.HasPrefix(h.FilePath, opts.Scope) {
+			continue
 		}
-		gitHotspots = filtered
+		if leftOut.Skip(classifier, h.FilePath) {
+			continue
+		}
+		filtered = append(filtered, h)
 	}
+	gitHotspots = filtered
 
 	// Convert to v5.2 format with enrichment
 	for _, gh := range gitHotspots {
@@ -2728,6 +2806,11 @@ func (e *Engine) GetHotspots(ctx context.Context, opts GetHotspotsOptions) (*Get
 	if len(limitations) > 1 {
 		confidence = 0.69
 	}
+	// Said where readers look, not counted as a limitation: leaving data out
+	// sharpens the ranking rather than weakening it.
+	if note := leftOut.Note(); note != "" {
+		limitations = append(limitations, note)
+	}
 
 	// Build response
 	response := &GetHotspotsResponse{
@@ -2741,6 +2824,7 @@ func (e *Engine) GetHotspots(ctx context.Context, opts GetHotspotsOptions) (*Get
 		TimeWindow:      timeWindowStr,
 		Confidence:      confidence,
 		ConfidenceBasis: confidenceBasis,
+		LeftOut:         leftOut.Tally(),
 		Limitations:     limitations,
 	}
 
@@ -3897,4 +3981,68 @@ func (e *Engine) getRelatedDocs(symbolID string, limit int) []RelatedDoc {
 	}
 
 	return result
+}
+
+// looksLikeAPIHandlerName reports whether name follows the handler naming
+// convention: first word "handle" or "serve" (handleFoo, HandleFoo, serve_http,
+// ServeHTTP) or last word "handler" (UserHandler). Words are split on
+// camelCase and underscore boundaries, so "serverConfig" and "handled" do not
+// match just because they begin with the letters "serve"/"handle".
+func looksLikeAPIHandlerName(name string) bool {
+	words := splitNameWords(name)
+	if len(words) == 0 {
+		return false
+	}
+	switch words[0] {
+	case "handle", "serve":
+		return true
+	}
+	return words[len(words)-1] == "handler"
+}
+
+// splitNameWords splits an identifier into lowercase words at underscores and
+// lower-to-upper camelCase transitions ("ServeHTTP" -> serve, http).
+func splitNameWords(name string) []string {
+	var words []string
+	var cur []rune
+	flush := func() {
+		if len(cur) > 0 {
+			words = append(words, strings.ToLower(string(cur)))
+			cur = cur[:0]
+		}
+	}
+	runes := []rune(name)
+	for i, r := range runes {
+		switch {
+		case r == '_' || r == '-' || r == '.':
+			flush()
+		case unicode.IsUpper(r) && i > 0 && (unicode.IsLower(runes[i-1]) ||
+			(unicode.IsUpper(runes[i-1]) && i+1 < len(runes) && unicode.IsLower(runes[i+1]))):
+			flush()
+			cur = append(cur, r)
+		default:
+			cur = append(cur, r)
+		}
+	}
+	flush()
+	return words
+}
+
+// projectCallees returns up to limit callee IDs defined in the index, in order:
+// a path to a project symbol runs through project code, not through the standard
+// library's declarations.
+func projectCallees(nodes []*scip.CallGraphNode, idx *scip.SCIPIndex, limit int) []string {
+	out := make([]string, 0, limit)
+	for _, n := range nodes {
+		if n == nil || len(out) >= limit {
+			break
+		}
+		if idx != nil && idx.DefinitionIndex != nil {
+			if def := idx.DefinitionIndex[n.SymbolID]; def == nil {
+				continue
+			}
+		}
+		out = append(out, n.SymbolID)
+	}
+	return out
 }

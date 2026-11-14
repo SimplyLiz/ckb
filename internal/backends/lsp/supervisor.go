@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"sort"
 	"sync"
 	"time"
 
@@ -342,6 +343,44 @@ func (s *LspSupervisor) Shutdown() error {
 	s.wg.Wait()
 
 	return nil
+}
+
+// ServerAvailability describes one configured LSP server.
+// Running reports whether a process is currently held for the language.
+// OnPath reports whether the server command resolves via exec.LookPath.
+type ServerAvailability struct {
+	Language string
+	Command  string
+	OnPath   bool
+	Running  bool
+}
+
+// ConfiguredServers lists every server in config.Backends.Lsp.Servers, sorted by
+// language. Servers start lazily on the first query, so Running is false until then;
+// OnPath tells callers whether the server can be started at all.
+func (s *LspSupervisor) ConfiguredServers() []ServerAvailability {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	langs := make([]string, 0, len(s.config.Backends.Lsp.Servers))
+	for lang := range s.config.Backends.Lsp.Servers {
+		langs = append(langs, lang)
+	}
+	sort.Strings(langs)
+
+	out := make([]ServerAvailability, 0, len(langs))
+	for _, lang := range langs {
+		cmd := s.config.Backends.Lsp.Servers[lang].Command
+		_, running := s.processes[lang]
+		_, err := exec.LookPath(cmd)
+		out = append(out, ServerAvailability{
+			Language: lang,
+			Command:  cmd,
+			OnPath:   err == nil,
+			Running:  running,
+		})
+	}
+	return out
 }
 
 // GetStats returns statistics about running processes

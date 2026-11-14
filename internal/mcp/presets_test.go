@@ -14,18 +14,19 @@ func TestPresetFiltering(t *testing.T) {
 	// Test core preset (default)
 	// v8.3: Core now includes explainPath, getModuleResponsibilities, exportForLLM
 	coreTools := server.GetFilteredTools()
-	if len(coreTools) != 25 {
-		t.Errorf("expected 25 core tools, got %d", len(coreTools))
+	// v9.4: +1 reindex, so an agent in a repo without an index can build one = 27
+	if len(coreTools) != 27 {
+		t.Errorf("expected 27 core tools, got %d", len(coreTools))
 	}
 
 	// Verify compound tools come first (preferred for AI workflows)
 	expectedFirst := []string{
-		"explore", "understand", "prepareChange", "batchGet", "batchSearch",
+		"explore", "understand", "prepareChange", "assessChange", "batchGet", "batchSearch",
 		"searchSymbols", "symbolExists", "getSymbol", "explainSymbol", "explainFile", "explainPath",
 		"findReferences", "getCallGraph", "traceUsage",
 		"getArchitecture", "getModuleOverview", "getModuleResponsibilities", "listKeyConcepts",
 		"analyzeImpact", "getHotspots", "exportForLLM",
-		"getStatus", "switchProject", "planRefactor", "expandToolset",
+		"getStatus", "reindex", "switchProject", "planRefactor", "expandToolset",
 	}
 	for i, expected := range expectedFirst {
 		if i >= len(coreTools) {
@@ -43,8 +44,9 @@ func TestPresetFiltering(t *testing.T) {
 	}
 	fullTools := server.GetFilteredTools()
 	// v8.5: +3 Cartographer (shotgunSurgery, evolution, blastRadius) +3 LIP annotation tools = 107; +1 symbolExists = 108; +1 (full includes the expanded presets) = 109; +1 analyzeOutgoingImpact = 110
-	if len(fullTools) != 110 {
-		t.Errorf("expected 110 full tools, got %d", len(fullTools))
+	// v9.4: +1 assessChange (analyzeChange kept as a deprecated alias) = 111
+	if len(fullTools) != 111 {
+		t.Errorf("expected 111 full tools, got %d", len(fullTools))
 	}
 
 	// Full preset should still have core tools first

@@ -1,11 +1,117 @@
 {
   "edges": [
     {
-      "from": "scip-typescript npm fixture 1.0.0 src/`main.ts`/runServer().",
-      "to": "scip-typescript npm fixture 1.0.0 src/`main.ts`/main()."
+      "from": "scip-typescript npm fixture 1.0.0 src/`main.ts`/main().",
+      "to": "scip-typescript npm fixture 1.0.0 src/pkg/`model.ts`/newModel()."
+    },
+    {
+      "from": "scip-typescript npm fixture 1.0.0 src/`main.ts`/main().",
+      "to": "scip-typescript npm fixture 1.0.0 src/pkg/`model.ts`/Model#setConfig()."
+    },
+    {
+      "from": "scip-typescript npm fixture 1.0.0 src/`main.ts`/main().",
+      "to": "scip-typescript npm fixture 1.0.0 src/pkg/`service.ts`/newDefaultService()."
+    },
+    {
+      "from": "scip-typescript npm fixture 1.0.0 src/`main.ts`/main().",
+      "to": "scip-typescript npm fixture 1.0.0 src/pkg/`service.ts`/newCachingService()."
+    },
+    {
+      "from": "scip-typescript npm fixture 1.0.0 src/`main.ts`/main().",
+      "to": "scip-typescript npm fixture 1.0.0 src/pkg/`handler.ts`/newHandler()."
+    },
+    {
+      "from": "scip-typescript npm fixture 1.0.0 src/`main.ts`/main().",
+      "to": "scip-typescript npm fixture 1.0.0 src/pkg/`handler.ts`/Handler#handle()."
+    },
+    {
+      "from": "scip-typescript npm fixture 1.0.0 src/`main.ts`/main().",
+      "to": "scip-typescript npm fixture 1.0.0 src/pkg/`handler.ts`/handler()."
+    },
+    {
+      "from": "scip-typescript npm fixture 1.0.0 src/`main.ts`/main().",
+      "to": "scip-typescript npm fixture 1.0.0 src/internal/`util.ts`/FormatOutput()."
+    },
+    {
+      "from": "scip-typescript npm fixture 1.0.0 src/pkg/`model.ts`/newModel().",
+      "to": "scip-typescript npm fixture 1.0.0 src/pkg/`model.ts`/Model#`\u003cconstructor\u003e`()."
+    },
+    {
+      "from": "scip-typescript npm fixture 1.0.0 src/pkg/`service.ts`/newDefaultService().",
+      "to": "scip-typescript npm fixture 1.0.0 src/pkg/`service.ts`/DefaultService#`\u003cconstructor\u003e`()."
+    },
+    {
+      "from": "scip-typescript npm fixture 1.0.0 src/pkg/`service.ts`/newCachingService().",
+      "to": "scip-typescript npm fixture 1.0.0 src/pkg/`service.ts`/CachingService#`\u003cconstructor\u003e`()."
+    },
+    {
+      "from": "scip-typescript npm fixture 1.0.0 src/pkg/`handler.ts`/newHandler().",
+      "to": "scip-typescript npm fixture 1.0.0 src/pkg/`handler.ts`/Handler#`\u003cconstructor\u003e`()."
+    },
+    {
+      "from": "scip-typescript npm fixture 1.0.0 src/pkg/`handler.ts`/Handler#handle().",
+      "to": "scip-typescript npm fixture 1.0.0 src/pkg/`service.ts`/Service#process()."
+    },
+    {
+      "from": "scip-typescript npm fixture 1.0.0 src/pkg/`handler.ts`/Handler#handle().",
+      "to": "scip-typescript npm fixture 1.0.0 src/internal/`util.ts`/FormatOutput()."
     }
   ],
   "nodes": [
+    {
+      "file": "src/pkg/service.ts",
+      "id": "scip-typescript npm fixture 1.0.0 src/pkg/`service.ts`/CachingService#`\u003cconstructor\u003e`().",
+      "name": "CachingService#\u003cconstructor\u003e",
+      "role": "transitive"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "id": "scip-typescript npm fixture 1.0.0 src/pkg/`service.ts`/DefaultService#`\u003cconstructor\u003e`().",
+      "name": "DefaultService#\u003cconstructor\u003e",
+      "role": "transitive"
+    },
+    {
+      "file": "src/internal/util.ts",
+      "id": "scip-typescript npm fixture 1.0.0 src/internal/`util.ts`/FormatOutput().",
+      "name": "FormatOutput",
+      "role": "callee"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "id": "scip-typescript npm fixture 1.0.0 src/pkg/`handler.ts`/Handler#`\u003cconstructor\u003e`().",
+      "name": "Handler#\u003cconstructor\u003e",
+      "role": "transitive"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "id": "scip-typescript npm fixture 1.0.0 src/pkg/`handler.ts`/Handler#handle().",
+      "name": "Handler#handle",
+      "role": "callee"
+    },
+    {
+      "file": "src/pkg/model.ts",
+      "id": "scip-typescript npm fixture 1.0.0 src/pkg/`model.ts`/Model#`\u003cconstructor\u003e`().",
+      "name": "Model#\u003cconstructor\u003e",
+      "role": "transitive"
+    },
+    {
+      "file": "src/pkg/model.ts",
+      "id": "scip-typescript npm fixture 1.0.0 src/pkg/`model.ts`/Model#setConfig().",
+      "name": "Model#setConfig",
+      "role": "callee"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "id": "scip-typescript npm fixture 1.0.0 src/pkg/`service.ts`/Service#process().",
+      "name": "Service#process",
+      "role": "transitive"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "id": "scip-typescript npm fixture 1.0.0 src/pkg/`handler.ts`/handler().",
+      "name": "handler",
+      "role": "callee"
+    },
     {
       "file": ".",
       "id": "scip-typescript npm fixture 1.0.0 src/`main.ts`/main().",
@@ -13,10 +119,28 @@
       "role": "root"
     },
     {
-      "file": "src/main.ts",
-      "id": "scip-typescript npm fixture 1.0.0 src/`main.ts`/runServer().",
-      "name": "ts`/runServer",
-      "role": "caller"
+      "file": "src/pkg/service.ts",
+      "id": "scip-typescript npm fixture 1.0.0 src/pkg/`service.ts`/newCachingService().",
+      "name": "newCachingService",
+      "role": "callee"
+    },
+    {
+      "file": "src/pkg/service.ts",
+      "id": "scip-typescript npm fixture 1.0.0 src/pkg/`service.ts`/newDefaultService().",
+      "name": "newDefaultService",
+      "role": "callee"
+    },
+    {
+      "file": "src/pkg/handler.ts",
+      "id": "scip-typescript npm fixture 1.0.0 src/pkg/`handler.ts`/newHandler().",
+      "name": "newHandler",
+      "role": "callee"
+    },
+    {
+      "file": "src/pkg/model.ts",
+      "id": "scip-typescript npm fixture 1.0.0 src/pkg/`model.ts`/newModel().",
+      "name": "newModel",
+      "role": "callee"
     }
   ],
   "root": "scip-typescript npm fixture 1.0.0 src/`main.ts`/main()."

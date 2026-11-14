@@ -4,8 +4,11 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/SimplyLiz/CodeMCP/internal/update"
 )
@@ -19,9 +22,13 @@ func main() {
 	// Skip for mcp/serve commands to avoid breaking protocol
 	var refreshWg sync.WaitGroup
 	if !isMCPCommand() {
+		// Before the refresh below: that creates the file the notice reads as
+		// the mark of an earlier install.
+		update.ShowPostUpdateNotice(os.Stderr, isTerminal(os.Stderr) && !isCompletionCommand(os.Args[1:]))
+
 		checker := update.NewChecker()
 		// Show cached update notification (instant, no HTTP)
-		if info := checker.CheckCached(); info != nil {
+		if info := checker.CheckCached(); info != nil && isTerminal(os.Stderr) {
 			_, _ = os.Stderr.WriteString(info.FormatUpdateMessage())
 		}
 		// Refresh cache in background for next run
@@ -58,12 +65,51 @@ func waitWithTimeout(wg *sync.WaitGroup, timeout time.Duration) {
 	}
 }
 
-// isMCPCommand checks if the current command is 'mcp' or 'serve'
-// These commands should not show update notifications as it would break protocols
+// isTerminal reports whether f is a terminal. The update box and notice are for
+// a person: agents and scripts capture stderr together with the result and
+// otherwise have to filter them out of every call. A character-device check is
+// not enough, /dev/null is one too.
+func isTerminal(f *os.File) bool {
+	return term.IsTerminal(int(f.Fd())) // #nosec G115 -- a file descriptor fits in int
+}
+
+// isMCPCommand checks if the current command is 'mcp', 'serve' or 'hook'. These
+// must not show update notifications as it would break protocols. 'hook' also
+// skips the update check, whose refresh main waits up to 500 ms for: Claude's
+// first response waits for a SessionStart hook. It resolves the
+// command through cobra so a flag in front (`ckb -v mcp`) cannot hide it.
 func isMCPCommand() bool {
-	if len(os.Args) < 2 {
-		return false
+	return isMCPCommandArgs(os.Args[1:])
+}
+
+func isMCPCommandArgs(args []string) bool {
+	name := commandName(args)
+	return name == "mcp" || name == "serve" || name == "hook"
+}
+
+// isCompletionCommand reports shell completion: `ckb completion zsh` runs from
+// a shell's startup file and `__complete` on every TAB, so the notice there
+// would greet a person opening a shell or be swallowed. cobra adds both
+// only once Execute runs, so Find does not know them yet.
+func isCompletionCommand(args []string) bool {
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		return a == "completion" || strings.HasPrefix(a, "__complete")
 	}
-	cmd := os.Args[1]
-	return cmd == "mcp" || cmd == "serve"
+	return false
+}
+
+// commandName resolves args to the top-level command they run, flags in front
+// included; "" when there is none.
+func commandName(args []string) string {
+	cmd, _, err := rootCmd.Find(args)
+	if err != nil || cmd == nil || cmd == rootCmd {
+		return ""
+	}
+	for cmd.Parent() != nil && cmd.Parent() != rootCmd {
+		cmd = cmd.Parent()
+	}
+	return cmd.Name()
 }

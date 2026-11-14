@@ -59,6 +59,15 @@ type Engine struct {
 	// concurrent use. All tree-sitter calls must hold this lock.
 	tsMu sync.Mutex
 
+	// scipReloadMu serialises SCIP reloads so that concurrent queries that
+	// all notice a changed index file share one reload instead of each
+	// parsing the index (see EnsureSCIPLoaded).
+	scipReloadMu sync.Mutex
+
+	// ftsPopMu serialises FTS rebuilds (background start-up task, SCIP reload,
+	// stale-content repair on first query).
+	ftsPopMu sync.Mutex
+
 	// Cached repo state
 	repoStateMu     sync.RWMutex
 	cachedState     *RepoState
@@ -106,6 +115,7 @@ type RepoState struct {
 
 // NewEngine creates a new query engine.
 func NewEngine(repoRoot string, db *storage.DB, logger *slog.Logger, cfg *config.Config) (*Engine, error) {
+	cfg = anchorConfigToRepo(cfg, repoRoot)
 	// Create compressor
 	budget := compression.NewBudgetFromConfig(cfg)
 	limits := compression.NewLimitsFromConfig(cfg)
@@ -455,6 +465,11 @@ func (e *Engine) DB() *storage.DB {
 	return e.db
 }
 
+// Config returns the engine's loaded configuration.
+func (e *Engine) Config() *config.Config {
+	return e.config
+}
+
 // Close shuts down the query engine.
 func (e *Engine) Close() error {
 	var lastErr error
@@ -585,13 +600,69 @@ func (e *Engine) GetDB() *storage.DB {
 // deterministic FTS state should call PopulateFTSFromSCIP synchronously instead.
 func (e *Engine) StartBgTasks() {
 	if e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
+		e.invalidateStaleCaches(context.Background())
 		go func() {
 			ctx := context.Background()
-			if err := e.PopulateFTSFromSCIP(ctx); err != nil {
+			if err := e.EnsureFTSCurrent(ctx); err != nil {
 				e.logger.Warn("Failed to populate FTS from SCIP", "error", err.Error())
 			}
 		}()
 	}
+}
+
+// ReloadSCIP re-reads the SCIP index from disk into the running engine. The
+// adapter loads its index exactly once, at engine construction, so a
+// long-lived server that rebuilds the index (ckb mcp --watch) has to call
+// this afterwards — otherwise it keeps serving whatever it loaded at
+// startup, which for a fresh project is no index at all.
+//
+// On a failed load the previously loaded index (if any) stays in place.
+func (e *Engine) ReloadSCIP(ctx context.Context) error {
+	if e.scipAdapter == nil {
+		return nil
+	}
+	e.scipReloadMu.Lock()
+	defer e.scipReloadMu.Unlock()
+	return e.reloadSCIPLocked(ctx)
+}
+
+// EnsureSCIPLoaded reloads the SCIP index when the file on disk is not the
+// one the engine loaded — the state a long-running 'ckb mcp' or 'ckb serve'
+// is in after 'ckb index' ran in a terminal (#134). Costs one os.Stat when
+// nothing changed, so it is called before every MCP tool call and in
+// GetStatus. Concurrent callers that all see the change share one reload:
+// the mutex serialises them and the re-check after acquiring it turns the
+// late ones into no-ops. Returns true when a reload happened.
+func (e *Engine) EnsureSCIPLoaded(ctx context.Context) (bool, error) {
+	if e.scipAdapter == nil || !e.scipAdapter.IndexFileChanged() {
+		return false, nil
+	}
+	e.scipReloadMu.Lock()
+	defer e.scipReloadMu.Unlock()
+	if !e.scipAdapter.IndexFileChanged() {
+		return false, nil
+	}
+	e.logger.Info("SCIP index file changed on disk, reloading")
+	if err := e.reloadSCIPLocked(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// reloadSCIPLocked is ReloadSCIP's body; the caller holds scipReloadMu.
+func (e *Engine) reloadSCIPLocked(ctx context.Context) error {
+	if err := e.scipAdapter.Reload(); err != nil {
+		return err
+	}
+	e.tierDetector.SetScipAvailable(e.scipAdapter.IsAvailable())
+
+	// Cached answers were computed against the old index (or none) —
+	// negative-cache entries in particular would keep hiding symbols the
+	// new index now has.
+	if err := e.ClearAllCache(); err != nil {
+		e.logger.Warn("Failed to clear caches after SCIP reload", "error", err.Error())
+	}
+	return e.PopulateFTSFromSCIP(ctx)
 }
 
 // DisableBgFTS is now a no-op kept for backward compatibility. Background tasks
@@ -678,4 +749,23 @@ func (e *Engine) GetReferenceCount(symbolId string) (int, error) {
 	}
 
 	return e.scipAdapter.GetReferenceCount(symbolId), nil
+}
+
+// anchorConfigToRepo makes cfg.RepoRoot absolute against repoRoot. 'ckb init'
+// writes "." and the default config says "." too, and the SCIP, git and LSP
+// backends read cfg.RepoRoot, so "." meant the process's working directory.
+// That is the repo only when CKB was started inside it: an engine built for
+// another repo (switchProject, switchRepo, a file path from another repo, the
+// MCP repo argument) looked for that repo's index.scip in the start directory
+// and ran git there. cfg is copied, not changed, because callers may share it.
+func anchorConfigToRepo(cfg *config.Config, repoRoot string) *config.Config {
+	if cfg == nil || repoRoot == "" || filepath.IsAbs(cfg.RepoRoot) {
+		return cfg
+	}
+	anchored := *cfg
+	anchored.RepoRoot = filepath.Join(repoRoot, cfg.RepoRoot)
+	if abs, err := filepath.Abs(anchored.RepoRoot); err == nil {
+		anchored.RepoRoot = abs
+	}
+	return &anchored
 }

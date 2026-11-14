@@ -2,14 +2,18 @@
 // It detects which files historically change together based on git commit history.
 package coupling
 
-import "time"
+import (
+	"time"
+
+	"github.com/SimplyLiz/CodeMCP/internal/pathclass"
+)
 
 // Correlation represents a correlation between two files
 type Correlation struct {
 	// What changes with the target
 	Symbol   string `json:"symbol,omitempty"`
-	File     string `json:"file"`
-	FilePath string `json:"filePath,omitempty"` // Full path
+	File     string `json:"file"`               // Repo-relative path
+	FilePath string `json:"filePath,omitempty"` // Same as File, kept for existing consumers
 
 	// Correlation strength
 	Correlation   float64 `json:"correlation"`   // 0-1
@@ -38,6 +42,9 @@ type CouplingAnalysis struct {
 	Correlations    []Correlation `json:"correlations"`
 	Insights        []string      `json:"insights"`
 	Recommendations []string      `json:"recommendations"`
+	// LeftOut counts the co-changed files in generated or data paths that were
+	// not correlated; nil when none were.
+	LeftOut *pathclass.Tally `json:"leftOut,omitempty"`
 }
 
 // AnalyzeOptions configures the coupling analysis

@@ -98,14 +98,13 @@ func runBreakingChanges(cmd *cobra.Command, args []string) {
 
 // BreakingResponseCLI is the CLI response format for breaking changes
 type BreakingResponseCLI struct {
-	BaseRef            string              `json:"baseRef"`
-	TargetRef          string              `json:"targetRef"`
-	Changes            []BreakingChangeCLI `json:"changes"`
-	Summary            *BreakingSummaryCLI `json:"summary"`
-	SemverAdvice       string              `json:"semverAdvice,omitempty"`
-	TotalBaseSymbols   int                 `json:"totalBaseSymbols"`
-	TotalTargetSymbols int                 `json:"totalTargetSymbols"`
-	Provenance         *ProvenanceCLI      `json:"provenance,omitempty"`
+	BaseRef      string              `json:"baseRef"`
+	TargetRef    string              `json:"targetRef"`
+	Changes      []BreakingChangeCLI `json:"changes"`
+	Summary      *BreakingSummaryCLI `json:"summary"`
+	SemverAdvice string              `json:"semverAdvice,omitempty"`
+	NotCompared  []string            `json:"notCompared,omitempty"`
+	Provenance   *ProvenanceCLI      `json:"provenance,omitempty"`
 }
 
 // BreakingChangeCLI represents a single breaking change
@@ -136,11 +135,10 @@ type BreakingSummaryCLI struct {
 
 func convertBreakingResponse(resp *query.CompareAPIResponse) *BreakingResponseCLI {
 	cli := &BreakingResponseCLI{
-		BaseRef:            resp.BaseRef,
-		TargetRef:          resp.TargetRef,
-		SemverAdvice:       resp.SemverAdvice,
-		TotalBaseSymbols:   resp.TotalBaseSymbols,
-		TotalTargetSymbols: resp.TotalTargetSymbols,
+		BaseRef:      resp.BaseRef,
+		TargetRef:    resp.TargetRef,
+		SemverAdvice: resp.SemverAdvice,
+		NotCompared:  resp.NotCompared,
 	}
 
 	// Convert changes
@@ -196,8 +194,14 @@ func formatBreakingHuman(resp *BreakingResponseCLI) string {
 	sb.WriteString(fmt.Sprintf("Comparing: %s → %s\n\n", resp.BaseRef, resp.TargetRef))
 
 	if len(resp.Changes) == 0 {
-		sb.WriteString("No API changes detected.\n")
-		sb.WriteString(fmt.Sprintf("\nAnalyzed %d symbols in target.\n", resp.TotalTargetSymbols))
+		if len(resp.NotCompared) > 0 {
+			sb.WriteString(fmt.Sprintf("Not assessed: public declarations changed in %d file(s) whose language isn't compared:\n", len(resp.NotCompared)))
+			for _, f := range resp.NotCompared {
+				sb.WriteString("  " + f + "\n")
+			}
+		} else {
+			sb.WriteString("No API changes detected.\n")
+		}
 		return sb.String()
 	}
 
@@ -243,6 +247,14 @@ func formatBreakingHuman(resp *BreakingResponseCLI) string {
 			sb.WriteString(fmt.Sprintf("    %s\n", c.Description))
 			sb.WriteString("\n")
 		}
+	}
+
+	if len(resp.NotCompared) > 0 {
+		sb.WriteString(fmt.Sprintf("Not assessed (%d file(s), language not compared):\n", len(resp.NotCompared)))
+		for _, f := range resp.NotCompared {
+			sb.WriteString("  " + f + "\n")
+		}
+		sb.WriteString("\n")
 	}
 
 	// Additions (only if include-minor)

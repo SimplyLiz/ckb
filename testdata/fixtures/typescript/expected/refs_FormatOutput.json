@@ -2,35 +2,35 @@
   "references": [
     {
       "column": 17,
-      "context": "// Context at src/internal/util.ts:38:16",
+      "context": "export function FormatOutput(value: string, prefix?: string): string {",
       "file": "src/internal/util.ts",
       "kind": "definition",
       "line": 39
     },
     {
       "column": 10,
-      "context": "// Context at src/main.ts:9:9",
+      "context": "import { FormatOutput } from \"./internal/util\";",
       "file": "src/main.ts",
       "kind": "reference",
       "line": 10
     },
     {
       "column": 10,
-      "context": "// Context at src/main.ts:38:9",
+      "context": "return FormatOutput(`${result} | ${standaloneResult}`, \"main\");",
       "file": "src/main.ts",
       "kind": "reference",
       "line": 39
     },
     {
       "column": 10,
-      "context": "// Context at src/pkg/handler.ts:5:9",
+      "context": "import { FormatOutput } from \"../internal/util\";",
       "file": "src/pkg/handler.ts",
       "kind": "reference",
       "line": 6
     },
     {
       "column": 12,
-      "context": "// Context at src/pkg/handler.ts:24:11",
+      "context": "return FormatOutput(result);",
       "file": "src/pkg/handler.ts",
       "kind": "reference",
       "line": 25

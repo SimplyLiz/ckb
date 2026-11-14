@@ -4,19 +4,27 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 )
 
 // FindReferences finds all references to a symbol
 // Uses RefIndex for O(1) lookup when available, falls back to O(n*m) scan otherwise
 func (idx *SCIPIndex) FindReferences(symbolId string, options ReferenceOptions) ([]*SCIPReference, error) {
+	references := idx.occurrenceReferences(symbolId, options)
+	return idx.appendConstructorCalls(references, symbolId, options), nil
+}
+
+// occurrenceReferences returns the occurrences of exactly this symbol.
+func (idx *SCIPIndex) occurrenceReferences(symbolId string, options ReferenceOptions) []*SCIPReference {
 	references := make([]*SCIPReference, 0)
 
 	// Use inverted index for O(1) lookup if available
 	if idx.RefIndex != nil {
 		occRefs, ok := idx.RefIndex[symbolId]
 		if !ok {
-			return references, nil // No references found
+			return references // No references found
 		}
 
 		for _, occRef := range occRefs {
@@ -24,11 +32,11 @@ func (idx *SCIPIndex) FindReferences(symbolId string, options ReferenceOptions) 
 			if ref != nil {
 				references = append(references, ref)
 				if options.MaxResults > 0 && len(references) >= options.MaxResults {
-					return references, nil
+					return references
 				}
 			}
 		}
-		return references, nil
+		return references
 	}
 
 	// Fallback: O(n*m) scan through all documents (for backwards compatibility)
@@ -39,14 +47,80 @@ func (idx *SCIPIndex) FindReferences(symbolId string, options ReferenceOptions) 
 				if ref != nil {
 					references = append(references, ref)
 					if options.MaxResults > 0 && len(references) >= options.MaxResults {
-						return references, nil
+						return references
 					}
 				}
 			}
 		}
 	}
 
-	return references, nil
+	return references
+}
+
+// compilerNamedConstructors are the names indexers give a constructor that has
+// no name in the source: `Foo(x)` then resolves to that member and leaves no
+// occurrence of the class itself (scip-dart "`<constructor>`", scip-java
+// "`<init>`"). A named one (`Foo.parse(x)`) mentions the class and needs no help.
+var compilerNamedConstructors = []string{"`<constructor>`", "`<init>`"}
+
+// appendConstructorCalls adds the calls of a type's unnamed constructors to the
+// references of that type: asked who uses a class, the places that instantiate
+// it are the first answer.
+func (idx *SCIPIndex) appendConstructorCalls(references []*SCIPReference, typeId string, options ReferenceOptions) []*SCIPReference {
+	calls := idx.constructorCalls(typeId)
+	if len(calls) == 0 {
+		return references
+	}
+	type position struct {
+		file         string
+		line, column int
+	}
+	seen := make(map[position]bool, len(references))
+	for _, ref := range references {
+		seen[position{ref.Location.FileId, ref.Location.StartLine, ref.Location.StartColumn}] = true
+	}
+	for _, occRef := range calls {
+		if options.MaxResults > 0 && len(references) >= options.MaxResults {
+			break
+		}
+		ref := idx.processOccurrence(typeId, occRef.Doc, occRef.Occ, options)
+		if ref == nil {
+			continue
+		}
+		pos := position{ref.Location.FileId, ref.Location.StartLine, ref.Location.StartColumn}
+		if !seen[pos] {
+			seen[pos] = true
+			references = append(references, ref)
+		}
+	}
+	return references
+}
+
+// constructorCalls returns the occurrences of a type's unnamed constructors,
+// without their definitions: those are not usages.
+func (idx *SCIPIndex) constructorCalls(typeId string) []*OccurrenceRef {
+	if idx.RefIndex == nil || !strings.HasSuffix(typeId, "#") {
+		return nil
+	}
+	var calls []*OccurrenceRef
+	for _, name := range compilerNamedConstructors {
+		for overload := 0; ; overload++ {
+			disambiguator := ""
+			if overload > 0 {
+				disambiguator = fmt.Sprintf("+%d", overload)
+			}
+			occRefs, ok := idx.RefIndex[typeId+name+"("+disambiguator+")."]
+			if !ok {
+				break
+			}
+			for _, occRef := range occRefs {
+				if occRef.Occ.SymbolRoles&SymbolRoleDefinition == 0 {
+					calls = append(calls, occRef)
+				}
+			}
+		}
+	}
+	return calls
 }
 
 // processOccurrence converts an occurrence to a reference, applying filters
@@ -65,12 +139,6 @@ func (idx *SCIPIndex) processOccurrence(symbolId string, doc *Document, occ *Occ
 		return nil
 	}
 
-	// Get context if file path is available
-	context := ""
-	if options.IncludeContext {
-		context = extractContext(doc.RelativePath, location, idx)
-	}
-
 	// Determine the containing symbol (O(1) with ContainerIndex)
 	fromSymbol := findContainingSymbolFast(doc, occ, idx)
 
@@ -79,7 +147,6 @@ func (idx *SCIPIndex) processOccurrence(symbolId string, doc *Document, occ *Occ
 		Location:   location,
 		Kind:       kind,
 		FromSymbol: fromSymbol,
-		Context:    context,
 	}
 }
 
@@ -88,7 +155,6 @@ type ReferenceOptions struct {
 	MaxResults          int
 	IncludeDefinition   bool
 	IncludeTests        bool
-	IncludeContext      bool
 	Scope               []string
 	ReferenceKindFilter []ReferenceKind
 }
@@ -186,15 +252,76 @@ func isWithinRange(inner, outer []int32) bool {
 	return innerStart >= outerStart && innerEnd <= outerEnd
 }
 
-// extractContext extracts code context around a location
-func extractContext(relativePath string, location *Location, idx *SCIPIndex) string {
-	// This is a simplified version - in production, you'd want to:
-	// 1. Read the actual file from disk (relativePath relative to repo root)
-	// 2. Extract the line(s) around the location
-	// 3. Handle edge cases (file not found, etc.)
+// maxContextFileSize keeps a generated or minified file from being read for one line.
+const maxContextFileSize = 2 << 20
 
-	// For now, return a placeholder
-	return fmt.Sprintf("// Context at %s:%d:%d", relativePath, location.StartLine, location.StartColumn)
+// maxContextLength bounds the line returned for one reference.
+const maxContextLength = 200
+
+// contextReader reads the source lines of references, each file once per call.
+type contextReader struct {
+	repoRoot string
+	files    map[string][]string
+}
+
+func newContextReader(repoRoot string) *contextReader {
+	return &contextReader{repoRoot: repoRoot, files: make(map[string][]string)}
+}
+
+// line returns a reference's source line, 0-indexed like an occurrence's location, or
+// nothing if the file can't be read or no longer has the name on that line. The index
+// can be older than the file, and a wrong line is worse than none.
+func (c *contextReader) line(relativePath string, line int, names []string) string {
+	if c.repoRoot == "" || !filepath.IsLocal(relativePath) {
+		return ""
+	}
+	lines, read := c.files[relativePath]
+	if !read {
+		lines = readContextLines(filepath.Join(c.repoRoot, relativePath))
+		c.files[relativePath] = lines
+	}
+	if line < 0 || line >= len(lines) {
+		return ""
+	}
+	text := lines[line]
+	if len(names) > 0 && !slices.ContainsFunc(names, func(name string) bool { return containsWord(text, name) }) {
+		return ""
+	}
+	text = strings.TrimSpace(text)
+	if len(text) > maxContextLength {
+		text = strings.ToValidUTF8(text[:maxContextLength], "") + "…"
+	}
+	return text
+}
+
+func readContextLines(path string) []string {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Size() > maxContextFileSize {
+		return nil
+	}
+	content, err := os.ReadFile(path) // #nosec G304 //nolint:gosec // repo-relative path, checked by the caller
+	if err != nil {
+		return nil
+	}
+	return strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
+}
+
+func containsWord(text, word string) bool {
+	isWord := func(b byte) bool {
+		return b == '_' || b == '$' || b >= 0x80 || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+	}
+	for offset := 0; offset+len(word) <= len(text); {
+		i := strings.Index(text[offset:], word)
+		if i < 0 {
+			return false
+		}
+		start, end := offset+i, offset+i+len(word)
+		if (start == 0 || !isWord(text[start-1])) && (end == len(text) || !isWord(text[end])) {
+			return true
+		}
+		offset = start + 1
+	}
+	return false
 }
 
 // ExtractContextFromFile extracts code context from a file
@@ -257,7 +384,6 @@ func (idx *SCIPIndex) FindReferencesByLocation(filePath string, line, column int
 	return idx.FindReferences(targetOcc.Symbol, ReferenceOptions{
 		IncludeDefinition: true,
 		IncludeTests:      true,
-		IncludeContext:    false,
 	})
 }
 
@@ -413,4 +539,47 @@ func (idx *SCIPIndex) FindTypeReferences(symbolId string) ([]*SCIPReference, err
 	}
 
 	return typeRefs, nil
+}
+
+// CountReferences returns the number of distinct reference locations that
+// FindReferences would return for symbolId if it were not capped by
+// options.MaxResults. It applies the same filters as FindReferences (definition
+// handling) and skips context extraction and containing-symbol lookup, so it is
+// a cheap full count. MaxResults is ignored.
+func (idx *SCIPIndex) CountReferences(symbolId string, options ReferenceOptions) int {
+	type locKey struct {
+		path      string
+		line, col int
+	}
+	seen := make(map[locKey]struct{})
+
+	visit := func(doc *Document, occ *Occurrence) {
+		if determineReferenceKind(occ) == RefDefinition && !options.IncludeDefinition {
+			return
+		}
+		location := parseOccurrenceRange(occ, doc.RelativePath)
+		if location == nil {
+			return
+		}
+		seen[locKey{location.FileId, location.StartLine, location.StartColumn}] = struct{}{}
+	}
+
+	if idx.RefIndex != nil {
+		for _, occRef := range idx.RefIndex[symbolId] {
+			visit(occRef.Doc, occRef.Occ)
+		}
+		for _, occRef := range idx.constructorCalls(symbolId) {
+			visit(occRef.Doc, occRef.Occ)
+		}
+	} else {
+		for _, doc := range idx.Documents {
+			for _, occ := range doc.Occurrences {
+				if occ.Symbol == symbolId {
+					visit(doc, occ)
+				}
+			}
+		}
+	}
+
+	return len(seen)
 }

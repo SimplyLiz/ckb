@@ -1,0 +1,73 @@
+#!/bin/sh
+# ckb for the CKB Claude Code plugin. Skills call it as
+# "${CLAUDE_PLUGIN_ROOT}/scripts/ckb", .mcp.json and hooks/hooks.json the same
+# way, so MCP server, skills and hook all resolve ckb by one rule.
+#
+# It lives in scripts/, not bin/: claude.ai and org-wide plugin distribution
+# reject a plugin with a top-level bin/ directory.
+#
+# Order:
+#   1. a ckb on PATH whose version has the plugin's major and at least its
+#      minor (the skills depend on CLI flags of that release)
+#   2. the copy scripts/ckb-install (async SessionStart hook) put into the
+#      plugin's data directory
+#   3. npx -y @tastehub/ckb@<pin>
+# With CKB_SHIM_NO_NPX=1 step 3 exits 0 silently instead: the SessionStart
+# hook must not wait for a package download.
+
+pin=9.4.0
+
+# compatible VERSION: same major as the pin, minor at least the pin's.
+compatible() {
+	pin_major=${pin%%.*}
+	pin_rest=${pin#*.}
+	pin_minor=${pin_rest%%.*}
+	got_major=${1%%.*}
+	got_rest=${1#*.}
+	got_minor=${got_rest%%.*}
+	case "$got_major$got_minor" in
+	'' | *[!0-9]*) return 1 ;;
+	esac
+	[ "$got_major" -eq "$pin_major" ] && [ "$got_minor" -ge "$pin_minor" ]
+}
+
+# 1. ckb on PATH. `ckb --version` prints "CKB version X.Y.Z".
+if local_ckb=$(command -v ckb 2>/dev/null) && [ -n "$local_ckb" ]; then
+	version=$("$local_ckb" --version 2>/dev/null | sed -n 's/^CKB version \([0-9][0-9.]*\).*/\1/p' | head -n 1)
+	if compatible "$version"; then
+		exec "$local_ckb" "$@"
+	fi
+fi
+
+# 2. The data directory copy. Hooks and the MCP server get CLAUDE_PLUGIN_DATA
+# in their environment; commands Claude runs from a skill do not, so derive it
+# from where the plugin is cached: <plugins>/cache/<marketplace>/<plugin>/<version>/
+# has its data in <plugins>/data/<plugin@marketplace, non-[A-Za-z0-9_-] as ->/.
+data_dir=${CLAUDE_PLUGIN_DATA:-}
+if [ -z "$data_dir" ]; then
+	root=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd -P)
+	marketplace_dir=$(dirname "$(dirname "$root")")
+	if [ "$(basename "$(dirname "$marketplace_dir")")" = cache ]; then
+		plugin=$(basename "$(dirname "$root")")
+		marketplace=$(basename "$marketplace_dir")
+		id=$(printf '%s@%s' "$plugin" "$marketplace" | tr -c 'A-Za-z0-9_\n-' '-')
+		data_dir="$(dirname "$(dirname "$marketplace_dir")")/data/$id"
+	fi
+fi
+# The plugin updates steps 2 and 3, so ckb's own "npm update -g" advice and
+# its registry check do not apply to them.
+if [ -n "$data_dir" ]; then
+	for bin in "$data_dir/ckb-$pin"/node_modules/@tastehub/ckb-*/bin/ckb "$data_dir/ckb-$pin"/node_modules/@tastehub/ckb-*/bin/ckb.exe; do
+		[ -x "$bin" ] && CKB_NO_UPDATE_CHECK=1 exec "$bin" "$@"
+	done
+fi
+
+# 3. npx.
+if [ "${CKB_SHIM_NO_NPX:-}" = 1 ]; then
+	exit 0
+fi
+if command -v npx >/dev/null 2>&1; then
+	CKB_NO_UPDATE_CHECK=1 exec npx -y "@tastehub/ckb@$pin" "$@"
+fi
+echo "ckb: not installed, and npx is not on PATH to fetch it. Install one: npm install -g @tastehub/ckb, or brew install simplyliz/ckb/ckb" >&2
+exit 127

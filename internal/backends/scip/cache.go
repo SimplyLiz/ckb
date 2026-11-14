@@ -6,6 +6,17 @@ import (
 	"time"
 )
 
+// DerivedCacheVersion identifies the derivation logic behind everything
+// stored in the derived cache and in the FTS content (symbol kind, container
+// name, alias, display name). Bump it whenever the way those are computed from
+// a SCIP index changes, so installs upgrading in place rebuild them
+// automatically. History: 1 = first versioned release (container-qualified
+// Alias in NameIndex, descriptor-aware kinds, rust-analyzer impl blocks).
+// 2 = local variables and parameters no longer count as containers in
+// ContainerIndex. 3 = functions with inferred extents count as containers for
+// indexers without EnclosingRange.
+const DerivedCacheVersion = 3
+
 // derivedCache is the on-disk representation of the expensive derived indexes.
 // It is keyed by the .scip file's mtime+size so it is invalidated automatically
 // whenever the index file changes.
@@ -14,6 +25,13 @@ import (
 // Not cached: Documents, Symbols, RefIndex, DefinitionIndex — these are rebuilt
 // in the parallel streaming phase and are needed for pointer-based queries.
 type derivedCache struct {
+	// Version is DerivedCacheVersion at write time. A file written by a
+	// release with different derivation logic (gob leaves the field zero for
+	// files that predate it) is discarded and rebuilt instead of being
+	// trusted: the cache is keyed on the .scip file's mtime+size only, which
+	// does not change when ckb is upgraded.
+	Version int
+
 	ScipModTime int64 // UnixNano
 	ScipSize    int64
 
@@ -69,6 +87,9 @@ func loadDerivedCache(cachePath, scipPath string) *derivedCache {
 	if err := gob.NewDecoder(f).Decode(&c); err != nil {
 		return nil // corrupt
 	}
+	if c.Version != DerivedCacheVersion {
+		return nil // written by a release with different derivation logic
+	}
 	if c.ScipModTime != scipMtime || c.ScipSize != scipSize {
 		return nil // stale
 	}
@@ -107,6 +128,7 @@ func saveDerivedCache(cachePath string, idx *SCIPIndex, scipPath string) {
 	}
 
 	c := derivedCache{
+		Version:        DerivedCacheVersion,
 		ScipModTime:    fi.ModTime().UnixNano(),
 		ScipSize:       fi.Size(),
 		FlatSymbols:    flat,

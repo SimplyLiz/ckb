@@ -6,14 +6,21 @@ import (
 	"strings"
 	"time"
 
+	bindingscip "github.com/sourcegraph/scip/bindings/go/scip"
 	"github.com/spf13/cobra"
 
 	"github.com/SimplyLiz/CodeMCP/internal/query"
 )
 
-// looksLikeSCIPID returns true if the string looks like a SCIP symbol ID
+// looksLikeSCIPID returns true if the string looks like a SCIP symbol ID, from
+// any indexer. Parsing is what tells them apart from a name to search for; the
+// scheme is free-form: rust-analyzer, semanticdb and cxx all have their own.
 func looksLikeSCIPID(s string) bool {
-	return strings.HasPrefix(s, "scip-") || strings.HasPrefix(s, "local ")
+	if strings.HasPrefix(s, "local ") {
+		return true
+	}
+	sym, err := bindingscip.ParseSymbol(s)
+	return err == nil && len(sym.Descriptors) > 0
 }
 
 var (
@@ -21,6 +28,8 @@ var (
 	refsIncludeTest bool
 	refsLimit       int
 	refsFormat      string
+	refsCompact     bool
+	refsBySymbol    bool
 )
 
 var refsCmd = &cobra.Command{
@@ -28,20 +37,32 @@ var refsCmd = &cobra.Command{
 	Short: "Find all references to a symbol",
 	Long: `Find all references to a symbol across the codebase.
 
+Prints one line per reference, the way grep does, with what the line does
+with the symbol: def, call, literal, write, type or read. Lines that only
+import it are counted, not listed. --by-symbol puts each under the definition
+it sits in.
+
+References in tests are always included. Past --limit, every file's first
+reference comes before any file's second, so a cut drops repeats, not files.
+In JSON, totalReferences is the uncapped count (findReferences over MCP calls it
+totalCount) and truncated says whether references were left out.
+
 Examples:
   ckb refs symbol-123
   ckb refs symbol-123 --scope=api-module
-  ckb refs symbol-123 --include-tests
-  ckb refs symbol-123 --limit=100`,
+  ckb refs symbol-123 --limit=300
+  ckb refs NewEngine --by-symbol`,
 	Args: cobra.ExactArgs(1),
 	Run:  runRefs,
 }
 
 func init() {
 	refsCmd.Flags().StringVar(&refsScope, "scope", "", "Limit search to module ID")
-	refsCmd.Flags().BoolVar(&refsIncludeTest, "include-tests", false, "Include test file references")
+	refsCmd.Flags().BoolVar(&refsIncludeTest, "include-tests", false, "No effect: test references are always included")
 	refsCmd.Flags().IntVar(&refsLimit, "limit", 100, "Maximum number of references")
 	refsCmd.Flags().StringVar(&refsFormat, "format", "human", "Output format (human, json)")
+	refsCmd.Flags().BoolVar(&refsCompact, "compact", false, "One entry per file with its lines, instead of one per reference")
+	refsCmd.Flags().BoolVar(&refsBySymbol, "by-symbol", false, "Group the lines by the definition each reference sits in")
 	rootCmd.AddCommand(refsCmd)
 }
 
@@ -71,6 +92,8 @@ func runRefs(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	symbolID = remapSymbolID(engine, symbolID)
+
 	// Find references using Query Engine
 	opts := query.FindReferencesOptions{
 		SymbolId:     symbolID,
@@ -84,8 +107,28 @@ func runRefs(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	// What the index never saw, grep still finds: tell the reader which files.
+	outside := engine.FilesOutsideIndex(symbolID)
+	if refsFormat == "human" && !refsCompact {
+		lines := query.BuildReferenceLines(repoRoot, symbolID, response)
+		lines.OutsideIndex = outside
+		fmt.Print(lines.Text(refsBySymbol))
+		return
+	}
+
 	// Convert to CLI response format
-	cliResponse := convertRefsResponse(symbolID, response)
+	full := convertRefsResponse(symbolID, response)
+	full.OutsideIndex = outside
+	var cliResponse interface{} = full
+	if refsCompact {
+		cliResponse = &CompactReferencesResponseCLI{
+			SymbolID:        symbolID,
+			TotalReferences: response.TotalCount,
+			Truncated:       response.Truncated,
+			Files:           query.GroupReferencesByFile(response.References),
+			OutsideIndex:    outside,
+		}
+	}
 
 	// Format and output
 	output, err := FormatResponse(cliResponse, OutputFormat(refsFormat))
@@ -107,9 +150,22 @@ func runRefs(cmd *cobra.Command, args []string) {
 type ReferencesResponseCLI struct {
 	SymbolID        string                `json:"symbolId"`
 	TotalReferences int                   `json:"totalReferences"`
+	Truncated       bool                  `json:"truncated,omitempty"`
 	References      []ReferenceCLI        `json:"references"`
 	ByModule        []ModuleReferencesCLI `json:"byModule,omitempty"`
 	Provenance      *ProvenanceCLI        `json:"provenance,omitempty"`
+	// OutsideIndex are files of the symbol's language the index doesn't cover that
+	// spell its name.
+	OutsideIndex []string `json:"outsideIndex,omitempty"`
+}
+
+// CompactReferencesResponseCLI is the --compact form: one entry per file.
+type CompactReferencesResponseCLI struct {
+	SymbolID        string                 `json:"symbolId"`
+	TotalReferences int                    `json:"totalReferences"`
+	Truncated       bool                   `json:"truncated,omitempty"`
+	Files           []query.FileReferences `json:"files"`
+	OutsideIndex    []string               `json:"outsideIndex,omitempty"`
 }
 
 // ReferenceCLI represents a single reference to a symbol
@@ -170,6 +226,7 @@ func convertRefsResponse(symbolID string, resp *query.FindReferencesResponse) *R
 	result := &ReferencesResponseCLI{
 		SymbolID:        symbolID,
 		TotalReferences: resp.TotalCount,
+		Truncated:       resp.Truncated,
 		References:      refs,
 		ByModule:        byModule,
 	}
