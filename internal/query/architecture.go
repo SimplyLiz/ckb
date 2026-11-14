@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/architecture"
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/compression"
+	"github.com/SimplyLiz/CodeMCP/internal/cycles"
 	"github.com/SimplyLiz/CodeMCP/internal/errors"
 	"github.com/SimplyLiz/CodeMCP/internal/jobs"
 	"github.com/SimplyLiz/CodeMCP/internal/modules"
@@ -31,14 +31,14 @@ type GetArchitectureOptions struct {
 	IncludeMetrics bool   // Include aggregate metrics per directory (complexity, churn)
 }
 
-// CartographerHealthSummary contains architectural health metrics from Cartographer.
-// Included in getArchitecture when the binary is built with -tags cartographer.
-type CartographerHealthSummary struct {
-	HealthScore         float64 `json:"healthScore"`
-	BridgeCount         int     `json:"bridgeCount"`
-	CycleCount          int     `json:"cycleCount"`
-	GodModuleCount      int     `json:"godModuleCount"`
-	LayerViolationCount int     `json:"layerViolationCount"`
+// ArchHealthSummary counts the structural findings of the whole repo, from the
+// SCIP index: runtime import cycles (TS/JS and Python, see import_graph.go),
+// god modules (god_modules.go) and bridges (bridges.go).
+type ArchHealthSummary struct {
+	BridgeCount    int      `json:"bridgeCount"`
+	CycleCount     int      `json:"cycleCount"`
+	GodModuleCount int      `json:"godModuleCount"`
+	CycleLanguages []string `json:"cycleLanguages,omitempty"` // languages whose imports were checked for cycles
 }
 
 // GetArchitectureResponse is the response for getArchitecture.
@@ -60,11 +60,11 @@ type GetArchitectureResponse struct {
 	Granularity     string `json:"granularity"`     // "module", "directory", "file"
 	DetectionMethod string `json:"detectionMethod"` // "manifest", "convention", "inferred", "fallback", "import-scan"
 
-	// Optional Cartographer-augmented data (only when built with -tags cartographer)
-	ArchHealth      *CartographerHealthSummary   `json:"archHealth,omitempty"`
-	ArchCycles      []cartographer.CycleInfo     `json:"archCycles,omitempty"`
-	ArchGodModules  []cartographer.GodModuleInfo `json:"archGodModules,omitempty"`
-	ArchBridgeNodes []string                     `json:"archBridgeNodes,omitempty"` // files whose removal cuts off >= 3 files
+	// Structural findings from the SCIP index (only with one)
+	ArchHealth      *ArchHealthSummary `json:"archHealth,omitempty"`
+	ArchCycles      []cycles.Cycle     `json:"archCycles,omitempty"`
+	ArchGodModules  []GodModule        `json:"archGodModules,omitempty"`
+	ArchBridgeNodes []string           `json:"archBridgeNodes,omitempty"` // files whose removal cuts off >= 3 files
 
 	// Standard envelope fields
 	Truncated       bool                  `json:"truncated,omitempty"`
@@ -234,35 +234,26 @@ func (e *Engine) GetArchitecture(ctx context.Context, opts GetArchitectureOption
 		return nil, err
 	}
 
-	// Augment with Cartographer architectural graph (graceful degradation when unavailable).
-	// MapProject returns the fast regex-based dependency graph with bridge detection,
-	// individual cycle paths, and god-module details not available from SCIP.
-	if cartographer.Available() {
-		if graph := usableGraph(cartographer.MapProject(e.repoRoot)); graph != nil {
-			health := CartographerHealthSummary{
-				CycleCount:     len(graph.Cycles),
-				GodModuleCount: len(graph.GodModules),
-			}
-			health.HealthScore = *graph.Metadata.HealthScore // usableGraph checked it
-			if graph.Metadata.LayerViolationCount != nil {
-				health.LayerViolationCount = *graph.Metadata.LayerViolationCount
-			}
-			resp.ArchHealth = &health
-			// Surface individual structural findings
-			resp.ArchCycles = graph.Cycles
-			resp.ArchGodModules = graph.GodModules
-		}
-	}
-	// Bridge files: removing one cuts off at least bridgeMinCut files.
+	// Structural findings of the whole repo from the SCIP index.
 	if e.hasConsumerGraph() {
-		bridges := codeBridges(e.scipAdapter.GetIndex(), e.repoRoot, pathclass.FromConfig(e.repoRoot, e.config))
+		idx := e.scipAdapter.GetIndex()
+		classes := pathclass.FromConfig(e.repoRoot, e.config)
+		health := &ArchHealthSummary{}
+		if g := fileImportGraph(idx, e.repoRoot); g != nil && len(g.languages) > 0 {
+			resp.ArchCycles = g.runtimeCycles()
+			health.CycleCount = len(resp.ArchCycles)
+			health.CycleLanguages = g.checkedLanguages()
+		}
+		resp.ArchGodModules = godModules(idx, structuralNoise(classes))
+		health.GodModuleCount = len(resp.ArchGodModules)
+		// Bridge files: removing one cuts off at least bridgeMinCut files.
+		bridges := codeBridges(idx, e.repoRoot, classes)
 		for f := range bridges {
 			resp.ArchBridgeNodes = append(resp.ArchBridgeNodes, f)
 		}
 		sort.Strings(resp.ArchBridgeNodes)
-		if resp.ArchHealth != nil {
-			resp.ArchHealth.BridgeCount = len(bridges)
-		}
+		health.BridgeCount = len(bridges)
+		resp.ArchHealth = health
 	}
 	return resp, nil
 }

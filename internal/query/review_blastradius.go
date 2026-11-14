@@ -81,8 +81,6 @@ func (e *Engine) checkBlastRadius(ctx context.Context, changedFiles []string, op
 		impactResp, err := e.AnalyzeImpact(ctx, AnalyzeImpactOptions{
 			SymbolId: sym.stableId,
 			Depth:    1,
-
-			skipArchImpact: true,
 		})
 		if err != nil || impactResp == nil || impactResp.BlastRadius == nil {
 			continue
