@@ -146,3 +146,30 @@ func TestFilesLinkedGoPackage(t *testing.T) {
 		}
 	}
 }
+
+// A reload replaces the index object; the package cache must not answer for
+// the new index with the old one's references.
+func TestFilesLinkedGoPackageCacheResetsOnNewIndex(t *testing.T) {
+	const sym = "scip-go gomod example.com/m . `example.com/m/internal/diff`/MapSymbols()."
+	build := func(uses bool) *scip.SCIPIndex {
+		def := &scip.Document{RelativePath: "internal/diff/symbolmap.go", Occurrences: []*scip.Occurrence{{Symbol: sym, SymbolRoles: scip.SymbolRoleDefinition}}}
+		user := &scip.Document{RelativePath: "internal/query/donecheck.go"}
+		if uses {
+			user.Occurrences = []*scip.Occurrence{{Symbol: sym}}
+		}
+		return &scip.SCIPIndex{
+			DocumentsByPath: map[string]*scip.Document{def.RelativePath: def, user.RelativePath: user},
+			DefinitionIndex: map[string]*scip.OccurrenceRef{sym: {Doc: def, Occ: def.Occurrences[0]}},
+		}
+	}
+	const a, b = "internal/query/donecheck.go", "internal/diff/symbolmap.go"
+	if !filesLinked(build(true), a, b) {
+		t.Fatal("first index: donecheck.go uses diff, want linked")
+	}
+	if filesLinked(build(false), a, b) {
+		t.Error("reloaded index without the reference: still linked from the old index's cache")
+	}
+	if !filesLinked(build(true), a, b) {
+		t.Error("third index with the reference: want linked")
+	}
+}
