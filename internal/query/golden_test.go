@@ -62,11 +62,8 @@ func setupGoldenEngine(t *testing.T, fixture *testutil.FixtureContext) (*Engine,
 	engine.DisableBgFTS()
 
 	// Ensure SCIP backend is loaded with fixture index.
-	// Redirect the derived-index cache to tmpDir so concurrent tests don't
-	// race on the shared fixture/.ckb/scip_derived.gob file.
 	scipBackend := engine.GetScipBackend()
 	if scipBackend != nil {
-		scipBackend.SetCacheRoot(tmpDir)
 		if loadErr := scipBackend.LoadIndex(); loadErr != nil {
 			t.Logf("Warning: Failed to load SCIP index: %v", loadErr)
 		}

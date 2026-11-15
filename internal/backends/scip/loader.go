@@ -90,12 +90,26 @@ type SCIPIndex struct {
 
 // LoadSCIPIndex loads a SCIP index from the specified path.
 func LoadSCIPIndex(path string) (*SCIPIndex, error) {
-	return loadSCIPIndexInternal(path, "")
+	return loadSCIPIndexInternal(path)
 }
 
-// loadSCIPIndexInternal is the implementation shared by LoadSCIPIndex and the
-// cache-aware path used by SCIPAdapter.
-func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
+// DerivationVersion identifies the derivation logic behind the FTS content
+// (symbol kind, container name, alias, display name). Bump it whenever the way
+// those are computed from a SCIP index changes: IndexStamp carries it, so
+// installs upgrading in place rebuild the FTS content automatically.
+// History: 1 = first versioned release (container-qualified Alias in
+// NameIndex, descriptor-aware kinds, rust-analyzer impl blocks). 2 = local
+// variables and parameters no longer count as containers in ContainerIndex.
+// 3 = functions with inferred extents count as containers for indexers without
+// EnclosingRange. 4 = Dart extents follow scip_dart's occurrence order and
+// top-level variables are containers (orderedBounds).
+const DerivationVersion = 4
+
+// loadSCIPIndexInternal parses the index and builds every derived structure.
+// There is no on-disk cache of the derived indexes: measured on 15–50 MB
+// indexes it was 20–150 ms slower than rebuilding and held more heap, because
+// the protobuf parse it could not skip dominates the load.
+func loadSCIPIndexInternal(path string) (*SCIPIndex, error) {
 	// Verify the file exists before mmap'ing.
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil, errors.NewCkbError(
@@ -348,20 +362,9 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 	}
 
 	// ------------------------------------------------------------------ //
-	// Phase 3: ConvertedSymbols + NameIndex.                              //
-	// Check the derived cache first — if valid, skip the expensive        //
-	// parallel symbol-conversion pass.                                    //
+	// Phase 3: ConvertedSymbols + NameIndex (parallel symbol conversion). //
 	// ------------------------------------------------------------------ //
-	var cached *derivedCache
-	if cachePath != "" {
-		cached = loadDerivedCache(cachePath, path)
-	}
-
-	if cached != nil {
-		// Fast path: restore from cache.
-		applyCachedDerived(scipIndex, cached)
-	} else {
-		// Slow path: parallel symbol conversion.
+	{
 		type symResult struct {
 			id  string
 			sym *SCIPSymbol
@@ -420,11 +423,6 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 			return nameIdx[a].ID < nameIdx[b].ID
 		})
 		scipIndex.NameIndex = nameIdx
-
-		// Persist to cache for next startup.
-		if cachePath != "" {
-			go saveDerivedCache(cachePath, scipIndex, path)
-		}
 	}
 
 	// Phase 4 (CallerIndex) is built lazily on the first FindCallers call.

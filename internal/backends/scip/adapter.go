@@ -25,7 +25,6 @@ type SCIPAdapter struct {
 	logger       *slog.Logger
 	queryTimeout time.Duration
 	repoRoot     string
-	cacheRoot    string // optional override for the derived-cache directory
 	cfg          *config.Config
 
 	// Mutex for thread-safe access to index
@@ -155,7 +154,7 @@ func (s *SCIPAdapter) IndexStamp() string {
 	if s.index == nil || !s.loadedStamp.exists {
 		return ""
 	}
-	return fmt.Sprintf("d%d:%d:%d", DerivedCacheVersion, s.loadedStamp.size, s.loadedStamp.modTime.UnixNano())
+	return fmt.Sprintf("d%d:%d:%d", DerivationVersion, s.loadedStamp.size, s.loadedStamp.modTime.UnixNano())
 }
 
 // Capabilities returns the capabilities supported by SCIP
@@ -174,20 +173,17 @@ func (s *SCIPAdapter) Priority() int {
 	return 1 // SCIP has highest priority
 }
 
-// derivedCachePath returns the path for the derived-index cache file.
-// It lives alongside the .ckb database in <repoRoot>/.ckb/.
-func (s *SCIPAdapter) derivedCachePath() string {
-	root := s.repoRoot
-	if s.cacheRoot != "" {
-		root = s.cacheRoot
+// removeObsoleteDerivedCache deletes the derived-index cache earlier releases
+// wrote to .ckb/scip_derived.gob, including the .tmp files a CLI process left
+// behind when it exited before the background write finished. Best effort.
+func (s *SCIPAdapter) removeObsoleteDerivedCache() {
+	if s.repoRoot == "" {
+		return
 	}
-	return filepath.Join(root, ".ckb", "scip_derived.gob")
-}
-
-// SetCacheRoot overrides the directory used for the derived-index cache.
-// Useful in tests to isolate cache state per test instead of sharing the fixture dir.
-func (s *SCIPAdapter) SetCacheRoot(dir string) {
-	s.cacheRoot = dir
+	matches, _ := filepath.Glob(filepath.Join(s.repoRoot, ".ckb", "scip_derived.gob*"))
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
 }
 
 // LoadIndex loads or reloads the SCIP index
@@ -204,7 +200,7 @@ func (s *SCIPAdapter) LoadIndex() error {
 	// IndexFileChanged check triggers another load.
 	stamp := statFile(s.indexPath)
 
-	index, err := loadSCIPIndexInternal(s.indexPath, s.derivedCachePath())
+	index, err := loadSCIPIndexInternal(s.indexPath)
 	if err != nil {
 		s.failedStamp = stamp
 		return err
@@ -222,6 +218,7 @@ func (s *SCIPAdapter) LoadIndex() error {
 	}
 
 	s.index = index
+	s.removeObsoleteDerivedCache()
 	s.loadedStamp = stamp
 	s.failedStamp = fileStamp{}
 
