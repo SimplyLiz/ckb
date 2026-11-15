@@ -37,6 +37,15 @@ type ExternalBlastRadius struct {
 	EdgesSource string
 }
 
+// ExternalSource is the ImpactItem.Source of an item LIP contributed:
+// "lip:<edgesSource>", or "lip" when the daemon reported no edge source.
+func ExternalSource(edgesSource string) string {
+	if edgesSource == "" {
+		return "lip"
+	}
+	return "lip:" + edgesSource
+}
+
 // Edge-source values for ExternalBlastRadius.EdgesSource.
 const (
 	EdgesSourceTier1              = "tier1"
@@ -196,6 +205,7 @@ func foldExternalItemsWithKinds(
 	if external == nil || external.EdgesSource == EdgesSourceEmpty {
 		return direct, transitive
 	}
+	source := ExternalSource(external.EdgesSource)
 
 	seen := make(map[string]struct{}, len(direct)+len(transitive))
 	for _, it := range direct {
@@ -213,6 +223,7 @@ func foldExternalItemsWithKinds(
 		if !ok {
 			continue
 		}
+		item.Source = source
 		if _, dup := seen[key]; dup {
 			continue
 		}
@@ -224,6 +235,7 @@ func foldExternalItemsWithKinds(
 		if !ok {
 			continue
 		}
+		item.Source = source
 		if _, dup := seen[key]; dup {
 			continue
 		}

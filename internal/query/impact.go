@@ -208,6 +208,10 @@ type ImpactItem struct {
 	Location   *LocationInfo   `json:"location,omitempty"`
 	Confidence float64         `json:"confidence"`
 	Visibility *VisibilityInfo `json:"visibility,omitempty"`
+	// Source is absent for items from the SCIP index. An item the LIP daemon
+	// contributed says so: "lip:tier1" (tree-sitter, cross-file links by name
+	// only), "lip:scip_with_tier1_edges", "lip:scip_only", or "lip".
+	Source string `json:"source,omitempty"`
 }
 
 // ModuleImpact describes the impact on a module.
@@ -1151,6 +1155,7 @@ func convertImpactItems(items []impact.ImpactItem) []ImpactItem {
 			Distance:   item.Distance,
 			ModuleId:   item.ModuleId,
 			Confidence: item.Confidence,
+			Source:     item.Source,
 		}
 		if item.Location != nil {
 			ri.Location = &LocationInfo{

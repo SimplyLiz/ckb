@@ -666,7 +666,7 @@ CKB orchestrates multiple code intelligence backends, using whatever is availabl
 
 Results are merged intelligently and compressed for LLM context limits. Every backend except Git is optional; CKB degrades gracefully to whatever is present.
 
-> **LIP enhances semantic search, PR novelty detection, test discovery, file boundary analysis, and architecture coupling signals.** When LIP is running alongside CKB, search quality improves significantly — especially for natural-language queries that don't match symbol names literally. See [Hybrid Retrieval](https://github.com/SimplyLiz/CodeMCP/wiki/Hybrid-Retrieval) for details, or the [LIP documentation](https://lip-sigma.vercel.app/docs).
+> **LIP is experimental.** With the daemon running and an embedding endpoint configured (`LIP_EMBEDDING_URL`), CKB uses it for query expansion and a semantic fallback in symbol search, re-ranking when there is no SCIP index, `related` files in explainFile, and extra callers in impact analysis. Whether it improves results has not been measured yet; SCIP stays the source of truth. See the [LIP documentation](https://lip-sigma.vercel.app/docs).
 
 Persistent knowledge survives across sessions:
 - **Module Registry** — Boundaries, responsibilities, tags
@@ -735,7 +735,7 @@ See the **[Full Documentation Wiki](https://github.com/SimplyLiz/CodeMCP/wiki)**
 
 **Optional (for enhanced analysis):**
 - SCIP indexer for your language (scip-go, scip-typescript, etc.) — run `ckb index` to auto-install
-- [LIP v2.3+](https://lip-sigma.vercel.app) semantic embedding daemon (requires Rust/cargo) — strongly recommended for best search quality ([docs](https://lip-sigma.vercel.app/docs), [crates.io](https://crates.io/crates/lip-cli)):
+- [LIP v2.3+](https://lip-sigma.vercel.app) semantic embedding daemon (requires Rust/cargo) — experimental, its effect on results is not measured yet; the semantic features need an embedding endpoint in `LIP_EMBEDDING_URL` ([docs](https://lip-sigma.vercel.app/docs), [crates.io](https://crates.io/crates/lip-cli)):
   ```bash
   cargo install lip-cli
   lip daemon --socket ~/.local/share/lip/lip.sock
