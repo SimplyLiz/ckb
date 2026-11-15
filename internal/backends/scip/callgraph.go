@@ -273,6 +273,12 @@ func buildFunctionRanges(doc *Document) map[string]lineRange {
 	for _, b := range functionBounds(doc) {
 		ranges[b.Symbol] = lineRange{start: b.Start, end: b.End}
 	}
+	// A top-level variable whose extent is known depends on what its
+	// initializer references, like a function on what it calls: Riverpod's
+	// generated syncServiceProvider on the SyncService it creates.
+	for _, b := range holderBounds(doc) {
+		ranges[b.Symbol] = lineRange{start: b.Start, end: b.End}
+	}
 	return ranges
 }
 
@@ -311,6 +317,9 @@ func DefinitionBounds(doc *Document) []DefinitionBound {
 	}
 	functions := make(map[string]DefinitionBound)
 	for _, b := range functionBounds(doc) {
+		functions[b.Symbol] = b
+	}
+	for _, b := range holderBounds(doc) {
 		functions[b.Symbol] = b
 	}
 
@@ -454,6 +463,11 @@ func FunctionBounds(doc *Document) []DefinitionBound {
 // next function. A local function is not one of them: what it calls is called by
 // the function around it, and it must not end that function's inferred range.
 func functionBounds(doc *Document) []DefinitionBound {
+	if usesOrderedBounds(doc) {
+		funcs, _ := orderedBounds(doc)
+		sort.Slice(funcs, func(i, j int) bool { return funcs[i].DefLine < funcs[j].DefLine })
+		return funcs
+	}
 	callable := make(map[string]bool, len(doc.Symbols))
 	kinds := make(map[string]int32, len(doc.Symbols))
 	for _, sym := range doc.Symbols {

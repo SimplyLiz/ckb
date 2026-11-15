@@ -684,6 +684,7 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 
 	// Apply ranking
 	rankSearchResults(results, opts.Query)
+	results = dropUnnamedParameters(results)
 
 	// Sort by score descending; break ties by StableId to get a total order
 	// across runs (sort.Slice is not stable, and equal-score results would
@@ -791,6 +792,21 @@ func isTypeLikeKind(kind string) bool {
 	default:
 		return false
 	}
+}
+
+// dropUnnamedParameters removes parameters whose own name doesn't match the
+// query: they come in through their container's name, and a search for
+// "SyncService" filled its five slots with the class, one method and the
+// parameters versionReason and stateRows. A parameter the query names stays.
+func dropUnnamedParameters(results []SearchResultItem) []SearchResultItem {
+	kept := results[:0]
+	for _, r := range results {
+		if r.Kind == "parameter" && r.Ranking != nil && r.Ranking.Signals["matchType"] == "fuzzy" {
+			continue
+		}
+		kept = append(kept, r)
+	}
+	return kept
 }
 
 // rankSearchResults applies ranking to search results with v5.2 signals.

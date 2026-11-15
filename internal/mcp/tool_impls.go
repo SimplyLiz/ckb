@@ -29,6 +29,13 @@ func (s *MCPServer) toolGetStatus(params map[string]interface{}) (*envelope.Resp
 	if err != nil {
 		return nil, errors.NewOperationError("get status", err)
 	}
+	// The first index 'ckb mcp' starts: telling the agent to run 'ckb index'
+	// while the index_building warning says one is being built sent it off
+	// to build a second one.
+	building := false
+	if root := s.engine().GetRepoRoot(); root != "" {
+		building = index.BuildRunning(filepath.Join(root, ".ckb"))
+	}
 
 	// v8.0: Track health tiers and collect suggestions
 	availableCount := 0
@@ -63,8 +70,12 @@ func (s *MCPServer) toolGetStatus(params map[string]interface{}) (*envelope.Resp
 
 		// v8.0: Add remediation for unavailable/degraded backends
 		if healthTier != "available" {
-			backendInfo["remediation"] = getBackendRemediation(b.Id)
-			suggestions = append(suggestions, getBackendRemediation(b.Id))
+			remediation := getBackendRemediation(b.Id)
+			if b.Id == "scip" && building {
+				remediation = "A SCIP index is being built; this server loads it when the build finishes. Nothing to run."
+			}
+			backendInfo["remediation"] = remediation
+			suggestions = append(suggestions, remediation)
 		}
 
 		backends = append(backends, backendInfo)
@@ -99,7 +110,7 @@ func (s *MCPServer) toolGetStatus(params map[string]interface{}) (*envelope.Resp
 	indexInfo := s.getIndexStaleness()
 
 	// v8.0: Add index-related suggestions
-	if fresh, ok := indexInfo["fresh"].(bool); ok && !fresh {
+	if fresh, ok := indexInfo["fresh"].(bool); ok && !fresh && !building {
 		if commitsBehind, ok := indexInfo["commitsBehind"].(int); ok && commitsBehind > 0 {
 			suggestions = append(suggestions, fmt.Sprintf("Index is %d commits behind. Run 'ckb index' to refresh.", commitsBehind))
 		} else if reason, ok := indexInfo["reason"].(string); ok && reason != "" {

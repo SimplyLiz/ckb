@@ -1165,3 +1165,21 @@ func TestModifyRiskBasis(t *testing.T) {
 		})
 	}
 }
+
+// The files only callers' callers reach, without the direct ones and tests.
+func TestSummarizeTransitive_TransitiveFiles(t *testing.T) {
+	at := func(f string) *LocationInfo { return &LocationInfo{FileId: f} }
+	got := summarizeTransitive(&AnalyzeImpactResponse{
+		DirectImpact: []ImpactItem{{StableId: "p", Location: at("lib/a.g.dart")}},
+		TransitiveImpact: []ImpactItem{
+			{StableId: "x", Location: at("lib/main.dart")},
+			{StableId: "y", Location: at("lib/main.dart")},
+			{StableId: "z", Location: at("lib/a.g.dart")},
+			{StableId: "t", Location: at("test/unit/a_test.dart")},
+			{StableId: "w", Location: at("lib/tile.dart")},
+		},
+	})
+	if strings.Join(got.TransitiveFiles, ",") != "lib/main.dart,lib/tile.dart" {
+		t.Errorf("TransitiveFiles = %v", got.TransitiveFiles)
+	}
+}

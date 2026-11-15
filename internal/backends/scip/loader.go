@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/errors"
@@ -147,6 +148,11 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 
 	var pbMeta *scippb.Metadata
 	var parseErr error
+	// Where the documents' sources are, for nameDartPrivates: the indexer's
+	// project root once the metadata says so, else the index's directory.
+	var sourceRoot atomic.Pointer[string]
+	defaultRoot := filepath.Dir(path)
+	sourceRoot.Store(&defaultRoot)
 
 	go func() {
 		defer close(jobs)
@@ -169,6 +175,9 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 				var m scippb.Metadata
 				if discardUnknownOpts.Unmarshal(v, &m) == nil {
 					pbMeta = &m
+					if r := projectRootDir(m.ProjectRoot); r != "" {
+						sourceRoot.Store(&r)
+					}
 				}
 				b = b[n:]
 
@@ -214,6 +223,7 @@ func loadSCIPIndexInternal(path, cachePath string) (*SCIPIndex, error) {
 					continue
 				}
 				doc := convertDocument(pbDoc)
+				nameDartPrivates(doc, *sourceRoot.Load())
 
 				r := docResult{
 					doc:        doc,
@@ -637,7 +647,7 @@ func containerEntries(doc *Document) map[string]string {
 	if len(defScopes) == 0 {
 		// scip-dart gives no EnclosingRange at all. Infer the functions' extents
 		// the way the caller index does, or no reference has a caller.
-		for _, b := range functionBounds(doc) {
+		for _, b := range append(functionBounds(doc), holderBounds(doc)...) {
 			defScopes = append(defScopes, defScope{b.Symbol, int32(b.Start), int32(b.End)}) // #nosec G115 -- lines came from int32 SCIP ranges
 		}
 	}
