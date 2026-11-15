@@ -233,9 +233,11 @@ func buildCompactPrepareChange(target string, r *query.PrepareChangeResponse, ac
 		if i >= 5 {
 			break
 		}
+		// The file always: a name alone says nothing to run, and every
+		// Dart test file's test function is main.
 		name := t.File
-		if t.Name != "" {
-			name = t.Name
+		if t.Name != "" && t.Name != "main" {
+			name = t.File + ": " + t.Name
 		}
 		testsNeeded = append(testsNeeded, name)
 	}
