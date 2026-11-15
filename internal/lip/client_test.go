@@ -3,6 +3,7 @@ package lip
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -1155,5 +1156,44 @@ func TestEncodeFrame(t *testing.T) {
 	}
 	if _, err := encodeFrame(make([]byte, maxFrameBytes+1)); err == nil {
 		t.Error("frame over the limit accepted")
+	}
+}
+
+// A daemon that refuses a request answers with an `error` or `unknown_message`
+// frame. Before DaemonError, lipRPC decoded that frame as the expected
+// response, so a refusal came back as an empty success with a nil error.
+func TestWireProtocol_DaemonRefusal(t *testing.T) {
+	cases := []struct {
+		name     string
+		response map[string]any
+		want     DaemonError
+	}{
+		{
+			name:     "unknown message type",
+			response: map[string]any{"type": "unknown_message", "message_type": "index_status", "supported": []string{"query_index_status"}},
+			want:     DaemonError{Type: "unknown_message", MessageType: "index_status"},
+		},
+		{
+			name:     "error",
+			response: map[string]any{"type": "error", "message": "db locked", "code": "internal"},
+			want:     DaemonError{Type: "error", Message: "db locked"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDaemon(t, tc.response)
+			got, err := IndexStatus()
+			d.waitHandled(t)
+			if got != nil {
+				t.Errorf("IndexStatus() = %+v, want nil on a refusal", got)
+			}
+			var derr *DaemonError
+			if !errors.As(err, &derr) {
+				t.Fatalf("err = %v, want *DaemonError", err)
+			}
+			if *derr != tc.want {
+				t.Errorf("DaemonError = %+v, want %+v", *derr, tc.want)
+			}
+		})
 	}
 }

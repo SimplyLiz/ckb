@@ -35,6 +35,21 @@ All notable changes to CKB will be documented in this file.
   .json/.jsonl/.csv/.tsv files of 256 KiB or more count too. `getHotspots`, `analyzeCoupling`,
   `auditRisk` and `assessChange`'s co-change check leave them out and say how many in `leftOut`.
 
+### Fixed — the LIP health check never succeeded
+
+- **The LIP subscriber's health ping used a type tag the daemon does not know.** It sent
+  `index_status` and waited for `index_status`; the daemon expects `query_index_status` and
+  answers `index_status_result`. Every ping got `unknown_message`, so the semantic features
+  gated on LIP health (query expansion and the semantic fallback in searchSymbols, the LIP
+  rerank, `related` in explainFile) never ran. The test daemon answered with the same wrong
+  tag; it now answers like the real one, `unknown_message` included. Checked against a running
+  `lip` 2.3.5.
+- **A refusal from the LIP daemon is an error, not an empty result.** An `error` or
+  `unknown_message` reply used to be decoded as the expected response and returned with a nil
+  error. It now returns a `lip.DaemonError` with the daemon's text: `ckb doctor` shows it instead
+  of "daemon not running", and the outgoing call graph in analyzeImpact names it in its
+  warnings. An unreachable daemon still counts as LIP being unavailable.
+
 ### Changed — no derived-index cache
 
 - **The SCIP index loads without `.ckb/scip_derived.gob`.** The cache was slower than

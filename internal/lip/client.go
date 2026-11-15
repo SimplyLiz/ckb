@@ -264,12 +264,12 @@ func GetEmbeddingsBatch(uris []string, model string) ([][]float32, error) {
 	if model != "" {
 		req["model"] = model
 	}
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		req, timeout, 64<<20,
 		func(r embeddingBatchResp) *embeddingBatchResp { return &r },
 	)
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	out := make([][]float32, len(uris))
 	for i, v := range result.Vectors {
@@ -307,10 +307,10 @@ func NearestByFileFiltered(uri string, topK int, filter string, minScore float32
 	if minScore > 0 {
 		req["min_score"] = minScore
 	}
-	result, _ := lipRPC(req, 500*time.Millisecond, 4<<20,
+	result, err := lipRPC(req, 500*time.Millisecond, 4<<20,
 		func(r nearestResp) *[]NearestResult { return &r.Results })
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	return *result, nil
 }
@@ -333,10 +333,10 @@ func NearestByTextFiltered(text string, topK int, filter string, minScore float3
 	if model != "" {
 		req["model"] = model
 	}
-	result, _ := lipRPC(req, 500*time.Millisecond, 4<<20,
+	result, err := lipRPC(req, 500*time.Millisecond, 4<<20,
 		func(r nearestResp) *[]NearestResult { return &r.Results })
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	return *result, nil
 }
@@ -358,22 +358,22 @@ func BatchNearestByText(queries []string, topK int, filter, model string, minSco
 		req["model"] = model
 	}
 	timeout := time.Duration(len(queries)+1) * 300 * time.Millisecond
-	result, _ := lipRPC(req, timeout, 32<<20,
+	result, err := lipRPC(req, timeout, 32<<20,
 		func(r batchNearestResp) *[][]NearestResult { return &r.Results })
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	return *result, nil
 }
 
 // NearestBySymbol finds the top-k symbols most similar to the given symbol URI.
 func NearestBySymbol(symbolURI string, topK int) ([]NearestResult, error) {
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "query_nearest_by_symbol", "symbol_uri": symbolURI, "top_k": topK},
 		500*time.Millisecond, 4<<20,
 		func(r nearestResp) *[]NearestResult { return &r.Results })
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	return *result, nil
 }
@@ -381,12 +381,12 @@ func NearestBySymbol(symbolURI string, topK int) ([]NearestResult, error) {
 // NearestByContrast performs contrastive nearest-neighbour: finds files nearest
 // to normalize(embed(likeURI) − embed(unlikeURI)).
 func NearestByContrast(likeURI, unlikeURI string, topK int) ([]NearestResult, error) {
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "query_nearest_by_contrast", "like_uri": likeURI, "unlike_uri": unlikeURI, "top_k": topK},
 		500*time.Millisecond, 4<<20,
 		func(r nearestResp) *[]NearestResult { return &r.Results })
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	return *result, nil
 }
@@ -394,12 +394,12 @@ func NearestByContrast(likeURI, unlikeURI string, topK int) ([]NearestResult, er
 // FindSemanticCounterpart finds the top-k candidates most semantically similar
 // to the source URI. Useful for finding test files that cover an implementation.
 func FindSemanticCounterpart(uri string, candidates []string, topK int) ([]NearestResult, error) {
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "find_semantic_counterpart", "uri": uri, "candidates": candidates, "top_k": topK},
 		500*time.Millisecond, 4<<20,
 		func(r nearestResp) *[]NearestResult { return &r.Results })
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	return *result, nil
 }
@@ -407,12 +407,12 @@ func FindSemanticCounterpart(uri string, candidates []string, topK int) ([]Neare
 // NearestInStore performs nearest-neighbour against a caller-provided embedding
 // map (keyed by URI). Enables cross-repo federation via ExportEmbeddings.
 func NearestInStore(uri string, store map[string][]float32, topK int) ([]NearestResult, error) {
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "query_nearest_in_store", "uri": uri, "store": store, "top_k": topK},
 		2*time.Second, 32<<20,
 		func(r nearestResp) *[]NearestResult { return &r.Results })
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	return *result, nil
 }
@@ -423,12 +423,12 @@ func Outliers(uris []string, topK int) ([]NearestResult, error) {
 	if len(uris) == 0 {
 		return nil, nil
 	}
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "query_outliers", "uris": uris, "top_k": topK},
 		500*time.Millisecond, 4<<20,
 		func(r outliersResp) *[]NearestResult { return &r.Outliers })
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	return *result, nil
 }
@@ -440,12 +440,12 @@ func Outliers(uris []string, topK int) ([]NearestResult, error) {
 // Similarity returns the cosine similarity between two stored embeddings.
 // ok is false when either URI has no cached embedding or LIP is unavailable.
 func Similarity(uriA, uriB string) (float32, bool, error) {
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "similarity", "uri_a": uriA, "uri_b": uriB},
 		500*time.Millisecond, 4<<10,
 		func(r similarityResp) *float32 { return r.Score })
 	if result == nil {
-		return 0, false, nil
+		return 0, false, err
 	}
 	return *result, true, nil
 }
@@ -453,12 +453,12 @@ func Similarity(uriA, uriB string) (float32, bool, error) {
 // SemanticDrift returns the cosine distance (1 − similarity, range [0, 2]) between
 // two stored embeddings. ok is false when either URI has no embedding.
 func SemanticDrift(uriA, uriB string) (float32, bool, error) {
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "query_semantic_drift", "uri_a": uriA, "uri_b": uriB},
 		500*time.Millisecond, 4<<10,
 		func(r semanticDriftResp) *float32 { return r.Distance })
 	if result == nil {
-		return 0, false, nil
+		return 0, false, err
 	}
 	return *result, true, nil
 }
@@ -469,12 +469,12 @@ func SimilarityMatrix(uris []string) ([]string, [][]float32, error) {
 	if len(uris) < 2 {
 		return nil, nil, nil
 	}
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "similarity_matrix", "uris": uris},
 		2*time.Second, 32<<20,
 		func(r similarityMatrixResp) *similarityMatrixResp { return &r })
 	if result == nil {
-		return nil, nil, nil
+		return nil, nil, err
 	}
 	return result.URIs, result.Matrix, nil
 }
@@ -490,11 +490,10 @@ func SemanticDiff(contentA, contentB string, topK int, model string) (*SemanticD
 	if model != "" {
 		req["model"] = model
 	}
-	result, _ := lipRPC(req, 5*time.Second, 4<<20,
+	return lipRPC(req, 5*time.Second, 4<<20,
 		func(r semanticDiffResp) *SemanticDiffInfo {
 			return &SemanticDiffInfo{Distance: r.Distance, MovingToward: r.MovingToward}
 		})
-	return result, nil
 }
 
 // =============================================================================
@@ -507,12 +506,12 @@ func GetCentroid(uris []string) ([]float32, int, error) {
 	if len(uris) == 0 {
 		return nil, 0, nil
 	}
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "get_centroid", "uris": uris},
 		2*time.Second, 4<<20,
 		func(r centroidResp) *centroidResp { return &r })
 	if result == nil {
-		return nil, 0, nil
+		return nil, 0, err
 	}
 	return result.Vector, result.Included, nil
 }
@@ -555,12 +554,12 @@ func ExportEmbeddings(uris []string) (map[string][]float32, error) {
 	if len(uris) == 0 {
 		return nil, nil
 	}
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "export_embeddings", "uris": uris},
 		2*time.Second, 64<<20,
 		func(r exportEmbeddingsResp) *map[string][]float32 { return &r.Embeddings })
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	return *result, nil
 }
@@ -571,12 +570,12 @@ func Cluster(uris []string, radius float32) ([][]string, error) {
 	if len(uris) == 0 {
 		return nil, nil
 	}
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "cluster", "uris": uris, "radius": radius},
 		5*time.Second, 4<<20,
 		func(r clusterResp) *[][]string { return &r.Groups })
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	return *result, nil
 }
@@ -599,10 +598,10 @@ func FindBoundaries(uri string, chunkLines int, threshold float32, model string)
 	if model != "" {
 		req["model"] = model
 	}
-	result, _ := lipRPC(req, 5*time.Second, 1<<20,
+	result, err := lipRPC(req, 5*time.Second, 1<<20,
 		func(r boundariesResp) *[]BoundaryRange { return &r.Boundaries })
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	return *result, nil
 }
@@ -621,10 +620,10 @@ func ExplainMatch(query, resultURI string, topK, chunkLines int, model string) (
 	if model != "" {
 		req["model"] = model
 	}
-	result, _ := lipRPC(req, 5*time.Second, 4<<20,
+	result, err := lipRPC(req, 5*time.Second, 4<<20,
 		func(r explainMatchResp) *explainMatchResp { return &r })
 	if result == nil {
-		return nil, "", nil
+		return nil, "", err
 	}
 	return result.Chunks, result.QueryModel, nil
 }
@@ -636,12 +635,12 @@ func ExtractTerminology(uris []string, topK int) ([]TermItem, error) {
 	if len(uris) == 0 {
 		return nil, nil
 	}
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "extract_terminology", "uris": uris, "top_k": topK},
 		3*time.Second, 1<<20,
 		func(r terminologyResp) *[]TermItem { return &r.Terms })
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	return *result, nil
 }
@@ -649,12 +648,12 @@ func ExtractTerminology(uris []string, topK int) ([]TermItem, error) {
 // QueryExpansion embeds query, finds top-k nearest symbols, and returns their
 // display names as expansion terms. Requires LIP_EMBEDDING_URL to be configured.
 func QueryExpansion(query string, topK int) ([]string, error) {
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "query_expansion", "query": query, "top_k": topK},
 		5*time.Second, 1<<20,
 		func(r queryExpansionResp) *[]string { return &r.Terms })
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	return *result, nil
 }
@@ -704,12 +703,12 @@ func FileStatus(uri string) (*FileStatusInfo, error) {
 // their current filesystem mtime. Files with no index timestamp are conservatively
 // included.
 func StaleEmbeddings(root string) ([]string, error) {
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "query_stale_embeddings", "root": root},
 		500*time.Millisecond, 1<<20,
 		func(r staleEmbeddingsResp) *[]string { return &r.URIs })
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	return *result, nil
 }
@@ -730,12 +729,12 @@ func ReindexFiles(uris []string) {
 // PruneDeleted removes index entries for files that no longer exist on disk.
 // Fires IndexChanged after removal. Returns (checked, removed, err).
 func PruneDeleted() (int, int, error) {
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "prune_deleted"},
 		10*time.Second, 4<<10,
 		func(r pruneDeletedResp) *pruneDeletedResp { return &r })
 	if result == nil {
-		return 0, 0, nil
+		return 0, 0, err
 	}
 	return result.Checked, len(result.Removed), nil
 }
@@ -810,10 +809,10 @@ func QueryBlastRadiusBatch(changedFileURIs []string, minScore float32) (*BlastRa
 	}
 	// Budget: generous timeout — LIP needs to resolve symbols + compute embeddings
 	timeout := max(time.Duration(len(changedFileURIs)+1)*200*time.Millisecond, 3*time.Second)
-	raw, _ := lipRPC(req, timeout, 8<<20,
+	raw, err := lipRPC(req, timeout, 8<<20,
 		func(r blastRadiusBatchResp) *blastRadiusBatchResp { return &r })
 	if raw == nil {
-		return nil, nil
+		return nil, err
 	}
 	// Index by symbol_uri for O(1) lookup in the merge path
 	entries := make(map[string]BlastRadiusEntry, len(raw.Results))
@@ -849,10 +848,10 @@ func QueryBlastRadiusSymbol(symbolURI string, minScore float32) (*BlastRadiusEnt
 	if minScore > 0 {
 		req["min_score"] = minScore
 	}
-	raw, _ := lipRPC(req, 2*time.Second, 2<<20,
+	raw, err := lipRPC(req, 2*time.Second, 2<<20,
 		func(r blastRadiusSymbolResp) *blastRadiusSymbolResp { return &r })
 	if raw == nil {
-		return nil, nil
+		return nil, err
 	}
 	return raw.Result, nil
 }
@@ -906,10 +905,10 @@ func QueryOutgoingImpact(symbolURI string, minScore float32) (*OutgoingImpactEnt
 	if minScore > 0 {
 		req["min_score"] = minScore
 	}
-	raw, _ := lipRPC(req, 2*time.Second, 2<<20,
+	raw, err := lipRPC(req, 2*time.Second, 2<<20,
 		func(r outgoingImpactResp) *outgoingImpactResp { return &r })
 	if raw == nil {
-		return nil, nil
+		return nil, err
 	}
 	return raw.Result, nil
 }
@@ -922,12 +921,12 @@ func QueryOutgoingImpact(symbolURI string, minScore float32) (*OutgoingImpactEnt
 // Returns (value, true, nil) when found, ("", false, nil) when absent or LIP is
 // unavailable.
 func GetAnnotation(lipURI, key string) (string, bool, error) {
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "annotation_get", "symbol_uri": lipURI, "key": key},
 		200*time.Millisecond, 1<<20,
 		func(r annotationGetResp) *string { return r.Value })
 	if result == nil {
-		return "", false, nil
+		return "", false, err
 	}
 	return *result, true, nil
 }
@@ -939,7 +938,7 @@ func BatchAnnotationGet(uris []string, key string) (map[string]string, error) {
 		return nil, nil
 	}
 	timeout := time.Duration(len(uris)+1) * 100 * time.Millisecond
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "batch_annotation_get", "uris": uris, "key": key},
 		timeout, 4<<20,
 		func(r batchAnnotationResp) *map[string]string {
@@ -952,7 +951,7 @@ func BatchAnnotationGet(uris []string, key string) (map[string]string, error) {
 			return &out
 		})
 	if result == nil {
-		return nil, nil
+		return nil, err
 	}
 	return *result, nil
 }
@@ -984,12 +983,12 @@ func RegisterProjectRoot(root string) (bool, error) {
 	if root == "" {
 		return false, nil
 	}
-	result, _ := lipRPC(
+	result, err := lipRPC(
 		map[string]any{"type": "register_project_root", "root": root},
 		500*time.Millisecond, 4<<10,
 		func(r deltaAckResp) *deltaAckResp { return &r })
 	if result == nil {
-		return false, nil
+		return false, err
 	}
 	return result.Accepted, nil
 }
@@ -1029,9 +1028,52 @@ func encodeFrame(payload []byte) ([]byte, error) {
 	return append(frame, payload...), nil
 }
 
+// DaemonError is a reply in which the daemon refused the request: an `error`
+// frame, or `unknown_message` for a type tag it does not know (a client newer
+// than the daemon, or a wrong tag).
+type DaemonError struct {
+	Type        string // "error" or "unknown_message"
+	Message     string // the daemon's message, for "error"
+	MessageType string // the unknown tag, for "unknown_message"
+}
+
+func (e *DaemonError) Error() string {
+	if e.Type == "unknown_message" {
+		return fmt.Sprintf("lip: daemon does not know message type %q", e.MessageType)
+	}
+	return "lip: daemon error: " + e.Message
+}
+
+// daemonError returns the refusal in a reply frame, or nil for any other
+// reply. The daemon writes ServerMessage frames bare, tagged by `type`.
+func daemonError(resp []byte) *DaemonError {
+	var head struct {
+		Type        string  `json:"type"`
+		Message     string  `json:"message"`
+		MessageType *string `json:"message_type"`
+	}
+	if json.Unmarshal(resp, &head) != nil {
+		return nil
+	}
+	switch head.Type {
+	case "error":
+		return &DaemonError{Type: head.Type, Message: head.Message}
+	case "unknown_message":
+		e := &DaemonError{Type: head.Type}
+		if head.MessageType != nil {
+			e.MessageType = *head.MessageType
+		}
+		return e
+	}
+	return nil
+}
+
 // lipRPC is the shared transport for request→response LIP calls.
 // T is the JSON response type; U is the public return type.
-// Returns (nil, nil) on any error — callers treat nil as "LIP unavailable".
+// Returns (nil, nil) when the daemon cannot be reached or the reply cannot be
+// read — callers treat nil as "LIP unavailable". A reply in which the daemon
+// refused the request returns (nil, *DaemonError), so it is not mistaken for
+// an empty result.
 func lipRPC[T any, U any](req any, timeout time.Duration, maxRespBytes uint32, convert func(T) *U) (*U, error) {
 	conn, err := net.DialTimeout("unix", SocketPath(), 100*time.Millisecond)
 	if err != nil {
@@ -1062,6 +1104,9 @@ func lipRPC[T any, U any](req any, timeout time.Duration, maxRespBytes uint32, c
 		return nil, nil
 	}
 
+	if derr := daemonError(respBuf); derr != nil {
+		return nil, derr
+	}
 	var r T
 	if err := json.Unmarshal(respBuf, &r); err != nil {
 		return nil, nil

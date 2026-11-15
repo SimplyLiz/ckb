@@ -108,7 +108,7 @@ func runSession(ctx context.Context, h SubscribeHandler) error {
 	ping := func() error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		return writeFrame(conn, map[string]any{"type": "index_status"})
+		return writeFrame(conn, map[string]any{"type": "query_index_status"})
 	}
 	if err = ping(); err != nil {
 		return err
@@ -175,7 +175,7 @@ func dispatchFrame(frame map[string]json.RawMessage, h SubscribeHandler) {
 			IndexedFiles: ev.IndexedFiles,
 			AffectedURIs: ev.AffectedURIs,
 		})
-	case "index_status":
+	case "index_status_result":
 		var s indexStatusResp
 		if b, ok := marshalInner(inner); ok {
 			_ = json.Unmarshal(b, &s)
