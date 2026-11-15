@@ -431,6 +431,9 @@ func performIndex(repoRoot string) indexResult {
 			prefix = project.LanguageDisplayName(plan.Lang) + " "
 		}
 		fmt.Printf("%sIndexer: %s\n", prefix, plan.Indexer.CheckCommand)
+		if deps := indexplan.DepsCommand(plan); deps != "" {
+			fmt.Printf("%sFirst:   %s (no .dart_tool/package_config.json yet)\n", prefix, deps)
+		}
 		fmt.Printf("%sCommand: %s\n", prefix, plan.Command)
 	}
 	if len(lp.Skipped) > 0 {
@@ -469,6 +472,18 @@ func performIndex(repoRoot string) indexResult {
 		return indexResult{Outcome: indexOutcomeError, Message: fmt.Sprintf("could not acquire index lock: %v", err), Err: err, Lang: lang}
 	}
 	defer lock.Release()
+
+	// Fetch what an indexer needs first (pub get on a fresh Dart clone), with
+	// a line saying so: it can take a while. runOne does it too, for the
+	// background paths, and finds nothing left to do here.
+	for _, plan := range lp.Plans {
+		if deps := indexplan.DepsCommand(plan); deps != "" {
+			fmt.Printf("\nFetching %s dependencies: %s\n", project.LanguageDisplayName(plan.Lang), deps)
+			if _, err := indexplan.FetchDeps(plan); err != nil {
+				fmt.Fprintf(os.Stderr, "  %v\n", err)
+			}
+		}
+	}
 
 	fmt.Println()
 	fmt.Println("Generating SCIP index...")

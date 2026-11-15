@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -155,31 +156,36 @@ func DetectAllLanguages(root string) (Language, string, []Language) {
 		return LangUnknown, "", nil
 	}
 
-	// Build list preserving priority order
+	// A manifest at the root names the primary language before any nested
+	// one, priority order deciding within each group: a Flutter app's root
+	// pubspec.yaml beats the package.json of the web/basic/blog it carries
+	// along, which priority alone made the primary language of the repo.
+	// Between nested manifests depth says little (services/api/go.mod vs
+	// scripts/pyproject.toml), so there priority alone decides.
+	atRoot := func(manifest string) bool { return !strings.Contains(filepath.ToSlash(manifest), "/") }
+	anyAtRoot := false
+	for _, manifest := range detected {
+		anyAtRoot = anyAtRoot || atRoot(manifest)
+	}
+
+	// Build list preserving priority order, the primary first
 	var allLangs []Language
 	var primaryLang Language
 	var primaryManifest string
 
 	for _, m := range manifests {
+		if manifest, ok := detected[m.lang]; ok && (!anyAtRoot || atRoot(manifest)) {
+			primaryLang = refineLang(root, m, manifest)
+			primaryManifest = manifest
+			allLangs = append(allLangs, primaryLang)
+			break
+		}
+	}
+
+	for _, m := range manifests {
 		if manifest, ok := detected[m.lang]; ok {
-			if primaryLang == "" {
-				primaryLang = m.lang
-				primaryManifest = manifest
-				// Refine TypeScript vs JavaScript
-				if m.pattern == "package.json" {
-					primaryLang = detectJSorTS(root)
-				}
-			}
-			// Add to list if not already there
-			found := false
-			for _, l := range allLangs {
-				if l == m.lang {
-					found = true
-					break
-				}
-			}
-			if !found {
-				allLangs = append(allLangs, m.lang)
+			if lang := refineLang(root, m, manifest); !slices.Contains(allLangs, lang) {
+				allLangs = append(allLangs, lang)
 			}
 		}
 	}
@@ -322,6 +328,9 @@ func findManifestIn(root, filename string, filter *dirFilter) string {
 // Used when --lang is specified to locate the module directory for indexing.
 func FindManifestForLanguage(root string, lang Language) string {
 	filter := newDirFilter(root)
+	if lang == LangJavaScript {
+		lang = LangTypeScript // one package.json entry stands for both
+	}
 	for _, m := range manifests {
 		if m.lang != lang {
 			continue
@@ -391,6 +400,20 @@ func findWithDepth(root, pattern string, filter *dirFilter) []string {
 		return nil
 	})
 	return results
+}
+
+// refineLang is the language manifest m found at manifest stands for: a
+// package.json is TypeScript or JavaScript by what its own directory holds,
+// or the root's, so web/basic/blog/package.json beside four .js files is
+// JavaScript, not the TypeScript a count of .ts files found nothing for.
+func refineLang(root string, m manifestInfo, manifest string) Language {
+	if m.pattern != "package.json" {
+		return m.lang
+	}
+	if detectJSorTS(filepath.Join(root, filepath.Dir(manifest))) == LangTypeScript {
+		return LangTypeScript
+	}
+	return detectJSorTS(root) // a root tsconfig.json covers a nested package
 }
 
 // detectJSorTS checks if a project is TypeScript or JavaScript.

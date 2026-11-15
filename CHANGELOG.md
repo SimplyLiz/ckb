@@ -96,6 +96,32 @@ for the tree-sitter parsers, so the glibc floor check stays.
   the npm package and the Homebrew prefix, where LICENSE §4 says it is. Before, only README
   and LICENSE went out.
 
+### Fixed — a Flutter app indexes on the first try
+
+Found on a fresh clone of a Flutter app (817 Dart files), where `ckb index` indexed a
+four-file blog and called it done.
+
+- **A root manifest names the primary language.** Manifest priority alone made the app's
+  `web/basic/blog/package.json` beat the root `pubspec.yaml`, so the repo counted as
+  JavaScript: the coverage hint said `npm test -- --coverage`, and Dart ran second. A
+  manifest at the root now wins over nested ones; between nested ones priority still decides.
+  A nested `package.json` is TypeScript or JavaScript by its own directory (or a root
+  tsconfig.json), not by the repo root, where it came out as "TypeScript: 0 files".
+- **CKB runs `flutter pub get` (or `dart pub get`) itself** when a Dart project has no
+  `.dart_tool/package_config.json`, as an IDE does on opening it. scip_dart failed on every
+  fresh clone with "Unable to locate packageConfig". `ckb index` says it does it; watch mode,
+  the first index `ckb mcp` starts and the daemon do it too.
+- **Dart shows its real tier.** scip_dart lives in `~/.pub-cache/bin` (or `$PUB_CACHE/bin`),
+  which `dart pub global activate` doesn't put on PATH; CKB runs it through `dart pub global
+  run` and needs no PATH entry, but the tier check looked only there and reported Dart as
+  basic, without references or call graph.
+- **A language with fewer than 5 tracked source files beside the primary one is not
+  indexed or asked for.** The app's `android/app/build.gradle` stands for one generated
+  `MainActivity.kt`; it made CKB ask for scip-java in `ckb index`, `ckb status` and an
+  `index_partial` warning on every MCP response. Python scripts already had this floor.
+- **prepareChange's compact `tests_needed` names the test file.** It showed the test names
+  instead of the file, so a Dart change listed `main`, `main`.
+
 ### Fixed — planRefactor and co-change
 
 - **planRefactor takes seconds, not minutes.** It ran auditRisk over every file of the repo

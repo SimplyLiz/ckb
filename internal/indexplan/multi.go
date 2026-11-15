@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,28 +49,52 @@ func DetectTargets(repoRoot string) []Target {
 		if lang == project.LangTypeScript || lang == project.LangJavaScript {
 			seen[project.LangJavaScript], seen[project.LangTypeScript] = true, true
 		}
+		if n := trackedSources(repoRoot, sourceExtensions(lang)); n >= 0 && n < minScriptFiles {
+			continue
+		}
 		targets = append(targets, Target{Lang: lang, Manifest: project.FindManifestForLanguage(repoRoot, lang)})
 	}
 	if !seen[project.LangPython] {
-		if n := trackedScripts(repoRoot); n >= minScriptFiles {
+		if n := trackedSources(repoRoot, []string{".py"}); n >= minScriptFiles {
 			targets = append(targets, Target{Lang: project.LangPython, Manifest: fmt.Sprintf("%d tracked .py files, no manifest", n)})
 		}
 	}
 	return targets
 }
 
-// trackedScripts counts git-tracked .py files outside dependency and fixture
-// directories.
-func trackedScripts(repoRoot string) int {
-	cmd := exec.Command("git", "ls-files", "-z", "--", "*.py")
+// sourceExtensions are the files that make lang worth indexing beside the
+// primary language, nil when CKB has no list for it (then it always counts).
+// scip-java indexes Java and Kotlin alike.
+func sourceExtensions(lang project.Language) []string {
+	switch lang {
+	case project.LangJava, project.LangKotlin:
+		return []string{".java", ".kt"}
+	}
+	if cfg := project.GetIndexerConfig(lang); cfg != nil {
+		return cfg.Extensions
+	}
+	return nil
+}
+
+// trackedSources counts git-tracked files with one of exts outside dependency
+// and fixture directories, -1 when it can't tell (no extensions, no git).
+//
+// A secondary language with fewer than minScriptFiles of them is no target: a
+// Flutter app's android/app/build.gradle stands for one generated
+// MainActivity.kt, and asking for scip-java on every response for it is noise.
+func trackedSources(repoRoot string, exts []string) int {
+	if len(exts) == 0 {
+		return -1
+	}
+	cmd := exec.Command("git", "ls-files", "-z")
 	cmd.Dir = repoRoot
 	out, err := cmd.Output()
 	if err != nil {
-		return 0
+		return -1
 	}
 	n := 0
 	for _, path := range strings.Split(string(out), "\x00") {
-		if !strings.HasSuffix(path, ".py") {
+		if !slices.Contains(exts, filepath.Ext(path)) {
 			continue
 		}
 		p := "/" + path
@@ -199,7 +224,9 @@ func runOne(repoRoot string, plan *Plan, run func(*Plan) error) LangResult {
 	start := time.Now()
 	res := LangResult{Plan: plan}
 	defer project.UndoInferredTSConfig(plan.IndexerDir, plan.Command)()
-	if err := run(plan); err != nil {
+	if _, err := FetchDeps(plan); err != nil {
+		res.Err = err
+	} else if err := run(plan); err != nil {
 		res.Err = err
 	} else if err := Finalize(repoRoot, plan); err != nil {
 		res.Err = err

@@ -274,3 +274,28 @@ func TestFinalize_FixedOutputMovesToCustomPath(t *testing.T) {
 		t.Errorf("after a run that wrote nothing: %v", got)
 	}
 }
+
+// TasteHub's layout: a root pubspec.yaml, android/app/build.gradle with one
+// generated MainActivity.kt, and a web package with real sources. Dart is the
+// primary language; Java is no language of the repo for one Kotlin file.
+func TestDetectTargets_FlutterApp(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"pubspec.yaml":             "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n",
+		"lib/main.dart":            "void main() {}\n",
+		"android/app/build.gradle": "apply plugin: 'com.android.application'\n",
+		"android/app/src/main/kotlin/com/x/MainActivity.kt": "class MainActivity\n",
+		"web/site/package.json":                             "{}\n",
+	}
+	for i := 0; i < minScriptFiles; i++ {
+		files[fmt.Sprintf("web/site/js/m%d.js", i)] = "export const x = 1\n"
+	}
+	writeFiles(t, dir, files)
+	gitAddAll(t, dir)
+
+	got := langsOf(DetectTargets(dir))
+	want := []project.Language{project.LangDart, project.LangJavaScript}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("targets = %v, want %v", got, want)
+	}
+}

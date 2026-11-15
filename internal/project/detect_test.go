@@ -718,6 +718,19 @@ func TestDetectAllLanguages_MultiLanguageMonorepo(t *testing.T) {
 			wantAll:      []Language{LangGo, LangPython},
 		},
 		{
+			// TasteHub: a root pubspec.yaml and a small blog's package.json
+			// three levels down. Priority alone made it a JavaScript repo.
+			name: "Flutter app with a nested web package",
+			files: []string{
+				"pubspec.yaml",
+				"lib/main.dart",
+				"web/basic/blog/package.json",
+			},
+			wantPrimary:  LangDart,
+			wantAllCount: 2,
+			wantAll:      []Language{LangDart, LangJavaScript},
+		},
+		{
 			name: "Single language in subdir",
 			files: []string{
 				"src/cli/go.mod",

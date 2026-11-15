@@ -3,6 +3,8 @@ package tier
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -79,6 +81,12 @@ func (d *ToolDetector) CheckTool(ctx context.Context, req IndexerRequirement) To
 
 	// Check if binary exists
 	path, err := d.runner.LookPath(req.Binary)
+	binary := req.Binary
+	if err != nil {
+		if alt := findAltPath(req.AltPaths); alt != "" {
+			path, binary, err = alt, alt, nil
+		}
+	}
 	if err != nil {
 		status.Found = false
 		status.Error = "not found in PATH"
@@ -94,7 +102,7 @@ func (d *ToolDetector) CheckTool(ctx context.Context, req IndexerRequirement) To
 		timeoutCtx, cancel := context.WithTimeout(ctx, d.timeout)
 		defer cancel()
 
-		stdout, stderr, err := d.runner.Run(timeoutCtx, req.Binary, req.VersionArgs...)
+		stdout, stderr, err := d.runner.Run(timeoutCtx, binary, req.VersionArgs...)
 		if err != nil {
 			// Tool exists but version check failed - still usable
 			status.Error = "version check failed"
@@ -326,4 +334,30 @@ func SortedTools(tools []ToolStatus) []ToolStatus {
 		return sorted[i].Name < sorted[j].Name
 	})
 	return sorted
+}
+
+// findAltPath returns the first of paths (see IndexerRequirement.AltPaths)
+// that is an executable file, or "".
+func findAltPath(paths []string) string {
+	home, _ := os.UserHomeDir()
+	for _, p := range paths {
+		switch {
+		case strings.HasPrefix(p, "~/"):
+			if home == "" {
+				continue
+			}
+			p = filepath.Join(home, p[2:])
+		case strings.HasPrefix(p, "$"):
+			name, rest, _ := strings.Cut(p[1:], "/")
+			v := os.Getenv(name)
+			if v == "" {
+				continue
+			}
+			p = filepath.Join(v, rest)
+		}
+		if info, err := os.Stat(p); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return p
+		}
+	}
+	return ""
 }
