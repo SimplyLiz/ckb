@@ -14,21 +14,29 @@ import (
 )
 
 // startLipHealthDaemon launches a test LIP socket that speaks the subscriber
-// wire format: each connection is handled in a read/write loop — for every
-// request frame it writes back an `index_status`-shaped response reflecting
-// the supplied `mixedModels` flag. The returned counter records how many
+// wire format the way the real daemon does: each connection is handled in a
+// read/write loop; a `query_index_status` request gets an
+// `index_status_result` reflecting the supplied `mixedModels` flag, any other
+// type an `unknown_message`. The returned counter records how many
 // request frames were served across all connections, so tests can verify
 // ping-driven behaviour. Points LIP_SOCKET at the spawned socket.
 func startLipHealthDaemon(t *testing.T, mixedModels bool) *int64 {
 	t.Helper()
 
 	payload, err := json.Marshal(map[string]any{
-		"type":                    "index_status",
+		"type":                    "index_status_result",
 		"indexed_files":           1,
 		"pending_embedding_files": 0,
 		"last_updated_ms":         nil,
 		"mixed_models":            mixedModels,
 		"models_in_index":         []string{"model-a"},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	unknown, err := json.Marshal(map[string]any{
+		"type":      "unknown_message",
+		"supported": []string{"query_index_status"},
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -62,17 +70,25 @@ func startLipHealthDaemon(t *testing.T, mixedModels bool) *int64 {
 					if _, err := io.ReadFull(c, lenBuf[:]); err != nil {
 						return
 					}
-					reqLen := binary.BigEndian.Uint32(lenBuf[:])
-					if _, err := io.CopyN(io.Discard, c, int64(reqLen)); err != nil {
+					reqBuf := make([]byte, binary.BigEndian.Uint32(lenBuf[:]))
+					if _, err := io.ReadFull(c, reqBuf); err != nil {
 						return
 					}
-					atomic.AddInt64(&reqs, 1)
+					var req struct {
+						Type string `json:"type"`
+					}
+					_ = json.Unmarshal(reqBuf, &req)
+					resp := unknown
+					if req.Type == "query_index_status" {
+						atomic.AddInt64(&reqs, 1)
+						resp = payload
+					}
 					var out [4]byte
-					binary.BigEndian.PutUint32(out[:], uint32(len(payload)))
+					binary.BigEndian.PutUint32(out[:], uint32(len(resp)))
 					if _, err := c.Write(out[:]); err != nil {
 						return
 					}
-					if _, err := c.Write(payload); err != nil {
+					if _, err := c.Write(resp); err != nil {
 						return
 					}
 				}

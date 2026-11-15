@@ -748,7 +748,13 @@ func (e *Engine) checkLIP(_ context.Context) DoctorCheck {
 	check := DoctorCheck{Name: "lip"}
 
 	status, err := lip.IndexStatus()
-	if err != nil || status == nil {
+	if err != nil {
+		// The daemon is running but refused the request.
+		check.Status = "warn"
+		check.Message = fmt.Sprintf("LIP daemon refused the index status request: %v", err)
+		return check
+	}
+	if status == nil {
 		check.Status = "warn"
 		check.Message = "LIP daemon not running — semantic search and re-ranking disabled"
 		check.SuggestedFixes = []FixAction{
