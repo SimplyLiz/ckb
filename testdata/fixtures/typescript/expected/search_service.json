@@ -113,69 +113,6 @@
       "name": "service.ts"
     },
     {
-      "file": "src/pkg/service.ts",
-      "kind": "parameter",
-      "line": 64,
-      "moduleId": "src/pkg",
-      "name": "inner"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "parameter",
-      "line": 89,
-      "moduleId": "src/pkg",
-      "name": "inner"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "parameter",
-      "line": 17,
-      "moduleId": "src/pkg",
-      "name": "input"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "parameter",
-      "line": 24,
-      "moduleId": "src/pkg",
-      "name": "input"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "parameter",
-      "line": 37,
-      "moduleId": "src/pkg",
-      "name": "input"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "parameter",
-      "line": 41,
-      "moduleId": "src/pkg",
-      "name": "input"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "parameter",
-      "line": 69,
-      "moduleId": "src/pkg",
-      "name": "input"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "parameter",
-      "line": 73,
-      "moduleId": "src/pkg",
-      "name": "input"
-    },
-    {
-      "file": "src/pkg/service.ts",
-      "kind": "parameter",
-      "line": 33,
-      "moduleId": "src/pkg",
-      "name": "model"
-    },
-    {
       "file": "src/pkg/handler.ts",
       "kind": "parameter",
       "line": 14,
@@ -218,5 +155,5 @@
       "name": "service"
     }
   ],
-  "total": 31
+  "total": 22
 }

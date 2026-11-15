@@ -877,3 +877,21 @@ func TestInferFTSVisibility_PythonAndTS(t *testing.T) {
 		}
 	}
 }
+
+// A search for a class must not fill its slots with that class's parameters.
+func TestDropUnnamedParameters(t *testing.T) {
+	results := []SearchResultItem{
+		{StableId: "a", Name: "SyncService", Kind: "class"},
+		{StableId: "b", Name: "versionReason", Kind: "parameter"},
+		{StableId: "c", Name: "syncService", Kind: "parameter"},
+		{StableId: "d", Name: "build", Kind: "method"},
+	}
+	rankSearchResults(results, "SyncService")
+	var got []string
+	for _, r := range dropUnnamedParameters(results) {
+		got = append(got, r.Name)
+	}
+	if strings.Join(got, ",") != "SyncService,syncService,build" {
+		t.Errorf("kept %v, want the class, the parameter the query names, and the method", got)
+	}
+}

@@ -48,8 +48,25 @@ func buildMCPCompactPrepareChange(target string, r *query.PrepareChangeResponse,
 	// TotalCallers already counts the direct callers, and counts them all:
 	// DirectDependents is cut to the response budget.
 	affectedCount := len(r.DirectDependents)
+	directFiles := len(affectedFiles)
 	if r.TransitiveImpact != nil {
 		affectedCount = r.TransitiveImpact.TotalCallers
+		// Then the files only callers' callers reach: a Riverpod Notifier's
+		// users all sit behind its generated provider, and listing the
+		// direct files alone called a widely used service a 3-file change.
+		for _, f := range r.TransitiveImpact.TransitiveFiles {
+			if len(affectedFiles) >= 10 {
+				break
+			}
+			if !seen[f] {
+				seen[f] = true
+				affectedFiles = append(affectedFiles, f)
+			}
+		}
+	}
+	totalFiles := directFiles
+	if r.TransitiveImpact != nil {
+		totalFiles += len(r.TransitiveImpact.TransitiveFiles)
 	}
 
 	var testsNeeded []string
@@ -78,7 +95,11 @@ func buildMCPCompactPrepareChange(target string, r *query.PrepareChangeResponse,
 				"For what one change reaches, pass the symbol's ID from searchSymbols."
 		}
 	}
-	summary := fmt.Sprintf("Changing %s affects %d files with %s risk.", label, len(affectedFiles), risk)
+	summary := fmt.Sprintf("Changing %s affects %d files with %s risk.", label, totalFiles, risk)
+	if totalFiles > directFiles {
+		summary = fmt.Sprintf("Changing %s affects %d files (%d directly, %d through their callers) with %s risk.",
+			label, totalFiles, directFiles, totalFiles-directFiles, risk)
+	}
 	if risk == query.RiskLevelNotAssessed {
 		summary = fmt.Sprintf("Changing %s: what depends on it was not assessed (no SCIP index).", label)
 	}

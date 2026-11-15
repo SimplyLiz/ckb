@@ -1509,7 +1509,14 @@ type PrepareTransitive struct {
 	TotalCallers             int `json:"totalCallers"`
 	ModuleSpread             int `json:"moduleSpread"`
 	MaxDepth                 int `json:"maxDepth"`
+	// TransitiveFiles are the production files reached only through other
+	// callers, none of directDependents' files, at most maxTransitiveFiles.
+	// A Riverpod Notifier's real users sit here, behind its generated provider.
+	TransitiveFiles []string `json:"transitiveFiles,omitempty"`
 }
+
+// maxTransitiveFiles bounds PrepareTransitive.TransitiveFiles.
+const maxTransitiveFiles = 20
 
 // PrepareTest describes a test that may need updating.
 type PrepareTest struct {
@@ -2591,7 +2598,24 @@ func summarizeTransitive(resp *AnalyzeImpactResponse) *PrepareTransitive {
 			}
 		}
 	}
+	directFiles := make(map[string]bool)
+	for _, imp := range resp.DirectImpact {
+		if imp.Location != nil {
+			directFiles[imp.Location.FileId] = true
+		}
+	}
+	var files []string
+	for _, imp := range resp.TransitiveImpact {
+		if imp.Location == nil || imp.Location.FileId == "" || directFiles[imp.Location.FileId] || isTestFilePath(imp.Location.FileId) {
+			continue
+		}
+		directFiles[imp.Location.FileId] = true
+		if len(files) < maxTransitiveFiles {
+			files = append(files, imp.Location.FileId)
+		}
+	}
 	return &PrepareTransitive{
+		TransitiveFiles:          files,
 		DirectCallers:            len(resp.DirectImpact) - impls,
 		Implementations:          impls,
 		NameMatchImplementations: len(resp.NameMatchImplementations),

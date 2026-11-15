@@ -99,27 +99,6 @@
       "name": "handler"
     },
     {
-      "file": "src/pkg/handler.ts",
-      "kind": "parameter",
-      "line": 23,
-      "moduleId": "src/pkg",
-      "name": "input"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "parameter",
-      "line": 33,
-      "moduleId": "src/pkg",
-      "name": "inputs"
-    },
-    {
-      "file": "src/pkg/handler.ts",
-      "kind": "parameter",
-      "line": 14,
-      "moduleId": "src/pkg",
-      "name": "service"
-    },
-    {
       "file": "src/pkg/server.ts",
       "kind": "property",
       "line": 11,
@@ -134,5 +113,5 @@
       "name": "service"
     }
   ],
-  "total": 19
+  "total": 16
 }

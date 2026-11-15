@@ -71,13 +71,6 @@
       "name": "model.ts"
     },
     {
-      "file": "src/pkg/model.ts",
-      "kind": "parameter",
-      "line": 54,
-      "moduleId": "src/pkg",
-      "name": "cfg"
-    },
-    {
       "file": "src/pkg/service.ts",
       "kind": "parameter",
       "line": 33,
@@ -90,20 +83,6 @@
       "line": 53,
       "moduleId": "src/pkg",
       "name": "model"
-    },
-    {
-      "file": "src/pkg/model.ts",
-      "kind": "parameter",
-      "line": 35,
-      "moduleId": "src/pkg",
-      "name": "name"
-    },
-    {
-      "file": "src/pkg/model.ts",
-      "kind": "parameter",
-      "line": 79,
-      "moduleId": "src/pkg",
-      "name": "name"
     },
     {
       "file": "src/pkg/model.ts",
@@ -127,5 +106,5 @@
       "name": "name"
     }
   ],
-  "total": 18
+  "total": 15
 }

@@ -14,8 +14,9 @@ import (
 // Alias in NameIndex, descriptor-aware kinds, rust-analyzer impl blocks).
 // 2 = local variables and parameters no longer count as containers in
 // ContainerIndex. 3 = functions with inferred extents count as containers for
-// indexers without EnclosingRange.
-const DerivedCacheVersion = 3
+// indexers without EnclosingRange. 4 = Dart extents follow scip_dart's
+// occurrence order and top-level variables are containers (orderedBounds).
+const DerivedCacheVersion = 4
 
 // derivedCache is the on-disk representation of the expensive derived indexes.
 // It is keyed by the .scip file's mtime+size so it is invalidated automatically
