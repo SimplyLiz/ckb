@@ -151,14 +151,20 @@ four-file blog and called it done.
   missing from searchSymbols and nothing they called had a caller. On load they get the
   ID their public neighbours have (`…/_SyncSettingsTileState#_syncNow().`), the name read
   from the source at the definition; a file changed since indexing keeps the local IDs.
+  References between a library and its part files (`_$CookingSessionFromJson` from the
+  `.freezed.dart`, `_CookingSession` from the `.g.dart`) get the declaration's ID too,
+  unless two declarations of the library share the name. Columns are read as UTF-16, as
+  scip_dart writes them, so `'½' + _unit` names `_unit`.
 - **A Riverpod Notifier's users count as its callers.** With no EnclosingRange from
   scip_dart, a function ran up to the next function, so `final syncRoundTimeoutProvider =
   Provider((ref) => SyncService.roundTimeout)` below a method counted as that method
   calling SyncService, and `@ProviderFor(SyncService)` above the generated
   `syncServiceProvider` belonged to nothing. Dart extents now follow scip_dart's occurrence
   order (a method's annotations follow its name, a top-level variable's precede it), and a
-  top-level variable is a caller of what its initializer and annotations use. Changing
-  SyncService on the Flutter app went from "affects 3 files with low risk" to 9 files, 6 of
+  top-level variable is a caller of what its initializer and annotations use; where its
+  doc comment and annotations start is read from the source, so a doc line without a
+  reference or a multi-line initializer above doesn't move references between variables.
+  Changing SyncService on the Flutter app went from "affects 3 files with low risk" to 9 files, 6 of
   them behind the provider. The derived cache rebuilds once (version 4).
 - **prepareChange lists the files only callers' callers reach** (`transitiveImpact.
   transitiveFiles`), and the compact form's `affected_files` and summary count them: "affects

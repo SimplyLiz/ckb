@@ -174,3 +174,144 @@ func TestNameDartPrivates_StaleSource(t *testing.T) {
 		t.Errorf("renamed to %q from a source that doesn't hold the name", doc.Occurrences[1].Symbol)
 	}
 }
+
+func TestDartLeadStart(t *testing.T) {
+	lines := []string{
+		"final a = Provider(", // 0
+		"  (ref) => X.y);",    // 1: the tail of a
+		"/// Uses [Y].",       // 2
+		"/// More text.",      // 3
+		"@Riverpod(",          // 4
+		"  keepAlive: true,",  // 5
+		")",                   // 6
+		"final b = 1;",        // 7
+		"",                    // 8
+		"/// [Z]",             // 9
+		"final c = 2;",        // 10
+		"final d = 3;",        // 11
+	}
+	for _, tc := range []struct{ def, want int }{
+		{7, 2},   // doc comment and multi-line annotation, not a's tail
+		{10, 9},  // after a blank line
+		{11, 11}, // right below a declaration: nothing leads it
+		{1, 1},
+	} {
+		if got := dartLeadStart(lines, tc.def); got != tc.want {
+			t.Errorf("dartLeadStart(%d) = %d, want %d", tc.def, got, tc.want)
+		}
+	}
+}
+
+// With the source read, a variable's doc comment belongs to it even past a
+// line without occurrences, and the tail of the variable before stays there.
+func TestOrderedBounds_DartLeadsFromSource(t *testing.T) {
+	file := dartPkg + "`a.dart`/"
+	a, b, x, y := file+"a.", file+"b.", file+"X#", file+"Y#"
+	doc := &Document{
+		RelativePath: "lib/a.dart",
+		Symbols: []*SymbolInformation{
+			{Symbol: a, Kind: kindOf(bindingscip.SymbolInformation_Variable)},
+			{Symbol: b, Kind: kindOf(bindingscip.SymbolInformation_Variable)},
+		},
+		Occurrences: []*Occurrence{
+			{Range: []int32{0, 6, 7}, Symbol: a, SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{1, 12, 13}, Symbol: x}, // a's initializer
+			{Range: []int32{2, 10, 11}, Symbol: y}, // b's doc comment
+			// line 3: more doc text, no occurrence
+			{Range: []int32{4, 6, 7}, Symbol: b, SymbolRoles: SymbolRoleDefinition},
+		},
+		dartLeads: map[int]int{0: 0, 4: 2},
+	}
+	callers := buildCallerIndex([]*Document{doc})
+	if got := callers[x]; !slices.Equal(got, []string{a}) {
+		t.Errorf("callers of X = %v, want a, whose initializer uses it", got)
+	}
+	if got := callers[y]; !slices.Equal(got, []string{b}) {
+		t.Errorf("callers of Y = %v, want b, whose doc comment names it", got)
+	}
+}
+
+// scip_dart counts columns in UTF-16 code units.
+func TestIdentifierAt_UTF16(t *testing.T) {
+	lines := []string{"x = '½' + _unit;", "s = '😀' + _emoji;"}
+	if got := identifierAt(lines, []int32{0, 10, 15}); got != "_unit" {
+		t.Errorf("after ½: %q, want _unit", got)
+	}
+	if got := identifierAt(lines, []int32{1, 11, 17}); got != "_emoji" {
+		t.Errorf("after an emoji (two code units): %q, want _emoji", got)
+	}
+	if got := identifierAt(lines, []int32{1, 6, 8}); got != "" {
+		t.Errorf("a range inside a surrogate pair gave %q", got)
+	}
+}
+
+// The shape of a freezed model: the library references the generated
+// part's private function, the part the library's private class, each
+// through a local ID of its own document.
+func TestLinkDartParts(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lib := "part 'm.g.dart';\n" + // 0
+		"class _M {}\n" + // 1
+		"M fromJson(j) => _$MFromJson(j);\n" // 2
+	part := "part of 'm.dart';\n" + // 0
+		"_M _$MFromJson(j) => _M();\n" // 1
+	for name, src := range map[string]string{"m.dart": lib, "m.g.dart": part} {
+		if err := os.WriteFile(filepath.Join(root, "lib", name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mFile, gFile := dartPkg+"`m.dart`/", dartPkg+"`m.g.dart`/"
+	k := kindOf
+	libDoc := &Document{
+		RelativePath: "lib/m.dart",
+		Symbols: []*SymbolInformation{
+			{Symbol: "local 0", Kind: k(bindingscip.SymbolInformation_Class)},
+			{Symbol: mFile + "fromJson().", Kind: k(bindingscip.SymbolInformation_Function)},
+		},
+		Occurrences: []*Occurrence{
+			{Range: []int32{0, 0, 0}, Symbol: mFile, SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{1, 6, 8}, Symbol: "local 0", SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{2, 2, 10}, Symbol: mFile + "fromJson().", SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{2, 17, 28}, Symbol: "local 1"},
+		},
+	}
+	partDoc := &Document{
+		RelativePath: "lib/m.g.dart",
+		Symbols:      []*SymbolInformation{{Symbol: "local 0", Kind: k(bindingscip.SymbolInformation_Function)}},
+		Occurrences: []*Occurrence{
+			{Range: []int32{0, 0, 0}, Symbol: gFile, SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{1, 3, 14}, Symbol: "local 0", SymbolRoles: SymbolRoleDefinition},
+			{Range: []int32{1, 0, 2}, Symbol: "local 1"},
+			{Range: []int32{1, 21, 23}, Symbol: "local 1"},
+		},
+	}
+	files := []*dartFile{nameDartPrivates(libDoc, root), nameDartPrivates(partDoc, root)}
+	changed := linkDartParts(files)
+	if len(changed) != 2 {
+		t.Errorf("changed %d documents, want both", len(changed))
+	}
+	if got := libDoc.Occurrences[3].Symbol; got != gFile+"_$MFromJson()." {
+		t.Errorf("library's reference = %q, want the part's function", got)
+	}
+	for _, i := range []int{2, 3} {
+		if got := partDoc.Occurrences[i].Symbol; got != mFile+"_M#" {
+			t.Errorf("part's reference %d = %q, want the library's class", i, got)
+		}
+	}
+}
+
+// A name two classes of the library declare stays local: the reference
+// could mean either.
+func TestLinkDartParts_AmbiguousName(t *testing.T) {
+	doc := &Document{RelativePath: "lib/a.dart", Occurrences: []*Occurrence{{Symbol: "local 3"}}}
+	files := []*dartFile{
+		{doc: &Document{RelativePath: "lib/b.dart"}, parts: []string{"lib/a.dart"}, decls: map[string]string{"_x": ""}},
+		{doc: doc, partOf: "lib/b.dart", refs: map[string]string{"local 3": "_x"}},
+	}
+	if changed := linkDartParts(files); len(changed) != 0 || doc.Occurrences[0].Symbol != "local 3" {
+		t.Errorf("an ambiguous name was linked: %q", doc.Occurrences[0].Symbol)
+	}
+}
