@@ -142,8 +142,8 @@ func TestFoldExternalStaticItems_SkipsEmptySymbolURI(t *testing.T) {
 	if gotD[0].Name != "Ok" {
 		t.Errorf("kept item name = %q, want Ok", gotD[0].Name)
 	}
-	if gotD[0].Location == nil || gotD[0].Location.FileId != "/repo/ok.go" {
-		t.Errorf("kept item FileId = %v, want /repo/ok.go", gotD[0].Location)
+	if gotD[0].Location == nil || gotD[0].Location.FileId != "ok.go" {
+		t.Errorf("kept item FileId = %v, want ok.go (repo-relative like SCIP)", gotD[0].Location)
 	}
 }
 
@@ -346,5 +346,32 @@ func TestFoldExternalItems_MarksSource(t *testing.T) {
 		if len(calleeD) != 1 || calleeD[0].Source != tc.want {
 			t.Errorf("edges %q: callee Source = %+v, want %q", tc.edges, calleeD, tc.want)
 		}
+	}
+}
+
+func TestFoldExternalStaticItems_FileCountOnePerFile(t *testing.T) {
+	// SCIP has a caller in a.go (relative); LIP adds another caller in the
+	// same file (absolute) and one outside the repo. FileCount must see a.go once.
+	direct := []ImpactItem{{StableId: "scip-a", Name: "A", Kind: DirectCaller, Distance: 1,
+		Location: &Location{FileId: "pkg/a.go"}}}
+	external := &ExternalBlastRadius{
+		EdgesSource: EdgesSourceTier1,
+		DirectItems: []ExternalItem{
+			{SymbolURI: "lip://local//repo/pkg/a.go#B", Distance: 1, Confidence: 0.6},
+			{SymbolURI: "lip://local//other/c.go#C", Distance: 1, Confidence: 0.6},
+		},
+	}
+	gotD, _ := FoldExternalStaticItems(direct, nil, external, "/repo")
+	if len(gotD) != 3 {
+		t.Fatalf("want 3 items, got %d", len(gotD))
+	}
+	if got := gotD[1].Location.FileId; got != "pkg/a.go" {
+		t.Errorf("in-repo LIP FileId = %q, want pkg/a.go", got)
+	}
+	if got := gotD[2].Location.FileId; got != "/other/c.go" {
+		t.Errorf("out-of-repo LIP FileId = %q, want /other/c.go", got)
+	}
+	if br := RecomputeBlastRadius(gotD); br.FileCount != 2 {
+		t.Errorf("FileCount = %d, want 2", br.FileCount)
 	}
 }
