@@ -35,6 +35,15 @@ All notable changes to CKB will be documented in this file.
   .json/.jsonl/.csv/.tsv files of 256 KiB or more count too. `getHotspots`, `analyzeCoupling`,
   `auditRisk` and `assessChange`'s co-change check leave them out and say how many in `leftOut`.
 
+### Changed — no derived-index cache
+
+- **The SCIP index loads without `.ckb/scip_derived.gob`.** The cache was slower than
+  rebuilding: measured on four repos with 15–50 MB indexes, loading with it took 20–150 ms
+  longer and, on CKB's own index, 64 MB more heap, because the protobuf parse it could not skip
+  is most of the load. It was written in the background, so CLI processes that exited first
+  left `scip_derived.gob.tmp.*` files of 40–70 MB behind. The cache, and any of those files,
+  are deleted from `.ckb/` on the next index load.
+
 ### Changed — Cartographer removed
 
 CKB no longer links the Cartographer library: no `-tags cartographer`, no prebuilt static
