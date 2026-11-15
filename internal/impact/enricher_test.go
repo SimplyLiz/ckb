@@ -316,3 +316,35 @@ func TestMergeBlastRadius_DedupByFile(t *testing.T) {
 		t.Errorf("SemanticCallerCount = %d, want 2 (deduped)", got.SemanticCallerCount)
 	}
 }
+
+// Folded LIP items carry their origin; the SCIP items they are merged into
+// stay unmarked, so a consumer can tell them apart.
+func TestFoldExternalItems_MarksSource(t *testing.T) {
+	scip := []ImpactItem{{StableId: "scip-sym", Name: "A", Kind: DirectCaller, Distance: 1,
+		Location: &Location{FileId: "a.go"}}}
+	for _, tc := range []struct{ edges, want string }{
+		{EdgesSourceTier1, "lip:tier1"},
+		{EdgesSourceScipOnly, "lip:scip_only"},
+		{"", "lip"},
+	} {
+		external := &ExternalBlastRadius{
+			EdgesSource:     tc.edges,
+			DirectItems:     []ExternalItem{{FileURI: "lip://local//repo/b.go", SymbolURI: "lip://local//repo/b.go#B"}},
+			TransitiveItems: []ExternalItem{{FileURI: "lip://local//repo/c.go", SymbolURI: "lip://local//repo/c.go#C"}},
+		}
+		gotD, gotT := FoldExternalStaticItems(scip, nil, external, "/repo")
+		if len(gotD) != 2 || len(gotT) != 1 {
+			t.Fatalf("edges %q: got %d direct, %d transitive; want 2, 1", tc.edges, len(gotD), len(gotT))
+		}
+		if gotD[0].Source != "" {
+			t.Errorf("edges %q: SCIP item Source = %q, want empty", tc.edges, gotD[0].Source)
+		}
+		if gotD[1].Source != tc.want || gotT[0].Source != tc.want {
+			t.Errorf("edges %q: LIP Source = %q / %q, want %q", tc.edges, gotD[1].Source, gotT[0].Source, tc.want)
+		}
+		calleeD, _ := FoldExternalCalleeItems(nil, nil, external, "/repo")
+		if len(calleeD) != 1 || calleeD[0].Source != tc.want {
+			t.Errorf("edges %q: callee Source = %+v, want %q", tc.edges, calleeD, tc.want)
+		}
+	}
+}

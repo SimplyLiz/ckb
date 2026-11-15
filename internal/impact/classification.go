@@ -25,6 +25,10 @@ type ImpactItem struct {
 	Location   *Location       // Location of the impact
 	Visibility *VisibilityInfo // Visibility of the impacted symbol
 	Distance   int             // Distance from original symbol (1 = direct, 2+ = transitive)
+	// Source is empty for items from CKB's own graph (SCIP). Items folded in
+	// from an enricher carry their origin, e.g. "lip:tier1" (see
+	// ExternalSource), so a caller LIP found is never mistaken for a SCIP one.
+	Source string
 }
 
 // ClassifyImpact determines the impact kind based on reference type and context

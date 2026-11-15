@@ -49,6 +49,15 @@ All notable changes to CKB will be documented in this file.
   error. It now returns a `lip.DaemonError` with the daemon's text: `ckb doctor` shows it instead
   of "daemon not running", and the outgoing call graph in analyzeImpact names it in its
   warnings. An unreachable daemon still counts as LIP being unavailable.
+- **Callers from LIP say so.** analyzeImpact folds the LIP daemon's callers into
+  `directImpact`/`transitiveImpact`, and they looked exactly like callers from the SCIP index. A
+  folded item now carries `source`: `lip:tier1` (tree-sitter; LIP links across files by name
+  only), `lip:scip_with_tier1_edges`, `lip:scip_only` or `lip`. Items from the SCIP index have no
+  `source`, so existing output is unchanged. The outgoing call graph, which comes from LIP
+  alone, is marked the same way.
+- **The README no longer calls LIP "strongly recommended".** No measurement backs a quality
+  gain yet; it is described as experimental, with the embedding endpoint its semantic features
+  need.
 
 ### Changed — no derived-index cache
 
