@@ -27,7 +27,8 @@ type ScanOptions struct {
 
 // HiddenCouplingPair represents two source files that co-change without any
 // static link CKB sees in the SCIP index: neither references a symbol the
-// other defines, and they are not files of one Go package.
+// other defines (between Go files: one of the other's package), and they are
+// not files of one Go package.
 type HiddenCouplingPair struct {
 	// FileA and FileB are repo-relative paths of the coupled files.
 	FileA string `json:"fileA"`
