@@ -81,8 +81,18 @@ func orderedBounds(doc *Document) (funcs, holders []DefinitionBound) {
 				// lines right above it from the declaration before.
 				// dart format puts a closing brace on a line of its own,
 				// which holds no occurrence and ends the run.
+				// With the source read on load, dartLeads says where that
+				// run starts; without it the lines with occurrences have to.
 				keep, next := len(cur.lines), line-1
-				for keep > 0 {
+				lead, haveLead := doc.dartLeads[line]
+				for haveLead && keep > 0 {
+					l := cur.lines[keep-1]
+					if l < lead || l > line || l == cur.defLine || (cur.symbol != "" && l < cur.defLine) {
+						break
+					}
+					keep--
+				}
+				for !haveLead && keep > 0 {
 					l := cur.lines[keep-1]
 					if l == next+1 || (l == next && l != cur.defLine && (cur.symbol == "" || l > cur.defLine)) {
 						next = min(next, l-1)

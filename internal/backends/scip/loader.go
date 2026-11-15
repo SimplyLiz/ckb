@@ -156,6 +156,49 @@ func loadSCIPIndexInternal(path string) (*SCIPIndex, error) {
 		containerEntries map[string]string
 	}
 
+	// indexDocument builds one document's share of the indexes.
+	indexDocument := func(doc *Document) docResult {
+		r := docResult{
+			doc:        doc,
+			symbols:    make(map[string]*SymbolInformation, len(doc.Symbols)),
+			refEntries: make(map[string][]*OccurrenceRef, len(doc.Occurrences)/4+1),
+			defEntries: make(map[string]*OccurrenceRef),
+		}
+
+		for _, sym := range doc.Symbols {
+			r.symbols[sym.Symbol] = sym
+		}
+
+		// Pre-allocate one backing slice for all OccurrenceRefs in this
+		// document. Taking pointers into a pre-sized slice replaces the
+		// previous pattern of one heap allocation per occurrence, cutting
+		// allocations from O(total_occs) — 68M at 50k docs — down to
+		// O(docs) — 50k. The slice stays alive because the map values
+		// hold pointers into it.
+		backing := make([]OccurrenceRef, 0, len(doc.Occurrences))
+		for i := range doc.Occurrences {
+			occ := doc.Occurrences[i]
+			if occ.Symbol == "" {
+				continue
+			}
+			backing = append(backing, OccurrenceRef{Doc: doc, Occ: occ})
+		}
+		for i := range backing {
+			ref := &backing[i]
+			r.refEntries[ref.Occ.Symbol] = append(r.refEntries[ref.Occ.Symbol], ref)
+
+			// Capture first definition occurrence for DefinitionIndex.
+			if ref.Occ.SymbolRoles&SymbolRoleDefinition != 0 {
+				if _, exists := r.defEntries[ref.Occ.Symbol]; !exists {
+					r.defEntries[ref.Occ.Symbol] = ref
+				}
+			}
+		}
+
+		r.containerEntries = containerEntries(doc)
+		return r
+	}
+
 	// Producer: parses the outer Index message and sends each document to workers.
 	type pbDocMsg struct{ doc *scippb.Document }
 	jobs := make(chan pbDocMsg, nWorkers*2)
@@ -221,6 +264,7 @@ func loadSCIPIndexInternal(path string) (*SCIPIndex, error) {
 	// Consumers: convert each document and build per-doc indexes.
 	var (
 		results   []docResult
+		dartFiles []*dartFile
 		resultsMu sync.Mutex
 		wg        sync.WaitGroup
 	)
@@ -237,49 +281,14 @@ func loadSCIPIndexInternal(path string) (*SCIPIndex, error) {
 					continue
 				}
 				doc := convertDocument(pbDoc)
-				nameDartPrivates(doc, *sourceRoot.Load())
-
-				r := docResult{
-					doc:        doc,
-					symbols:    make(map[string]*SymbolInformation, len(doc.Symbols)),
-					refEntries: make(map[string][]*OccurrenceRef, len(doc.Occurrences)/4+1),
-					defEntries: make(map[string]*OccurrenceRef),
-				}
-
-				for _, sym := range doc.Symbols {
-					r.symbols[sym.Symbol] = sym
-				}
-
-				// Pre-allocate one backing slice for all OccurrenceRefs in this
-				// document. Taking pointers into a pre-sized slice replaces the
-				// previous pattern of one heap allocation per occurrence, cutting
-				// allocations from O(total_occs) — 68M at 50k docs — down to
-				// O(docs) — 50k. The slice stays alive because the map values
-				// hold pointers into it.
-				backing := make([]OccurrenceRef, 0, len(doc.Occurrences))
-				for i := range doc.Occurrences {
-					occ := doc.Occurrences[i]
-					if occ.Symbol == "" {
-						continue
-					}
-					backing = append(backing, OccurrenceRef{Doc: doc, Occ: occ})
-				}
-				for i := range backing {
-					ref := &backing[i]
-					r.refEntries[ref.Occ.Symbol] = append(r.refEntries[ref.Occ.Symbol], ref)
-
-					// Capture first definition occurrence for DefinitionIndex.
-					if ref.Occ.SymbolRoles&SymbolRoleDefinition != 0 {
-						if _, exists := r.defEntries[ref.Occ.Symbol]; !exists {
-							r.defEntries[ref.Occ.Symbol] = ref
-						}
-					}
-				}
-
-				r.containerEntries = containerEntries(doc)
+				dart := nameDartPrivates(doc, *sourceRoot.Load())
+				r := indexDocument(doc)
 
 				resultsMu.Lock()
 				results = append(results, r)
+				if dart != nil {
+					dartFiles = append(dartFiles, dart)
+				}
 				resultsMu.Unlock()
 			}
 		}()
@@ -301,6 +310,20 @@ func loadSCIPIndexInternal(path string) (*SCIPIndex, error) {
 			},
 			nil,
 		)
+	}
+
+	// A part file's references to its library's private declarations, and
+	// the library's to the part's, carry the referencing document's local IDs.
+	if changed := linkDartParts(dartFiles); len(changed) > 0 {
+		redo := make(map[*Document]bool, len(changed))
+		for _, doc := range changed {
+			redo[doc] = true
+		}
+		for i := range results {
+			if redo[results[i].doc] {
+				results[i] = indexDocument(results[i].doc)
+			}
+		}
 	}
 
 	// ------------------------------------------------------------------ //

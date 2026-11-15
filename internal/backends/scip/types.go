@@ -137,6 +137,11 @@ type Document struct {
 
 	// Symbols are symbol definitions in this document
 	Symbols []*SymbolInformation
+
+	// dartLeads maps the definition line of a Dart top-level variable to the
+	// first line of the doc comment and annotations above it, read from the
+	// source on load (dartLeadStart). Nil when the source wasn't read.
+	dartLeads map[int]int
 }
 
 // Occurrence represents a single occurrence of a symbol in a document
