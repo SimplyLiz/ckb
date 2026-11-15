@@ -679,24 +679,14 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 		}
 	}
 
-	// Fetch LIP enrichment up-front so tier-1 static callers can be folded
-	// into result.DirectImpact/TransitiveImpact before budget truncation and
-	// item sorting. `ext` is also used later to populate semantic callers on
-	// the BlastRadius summary via MergeBlastRadius.
+	// LIP's static callers are not folded into the items or the counts. LIP
+	// links callers across files by bare name, so on this repo (31 Go
+	// symbols, 2026-11-15, checked against a go/types call graph) 2.4% of the
+	// callers only LIP reported were real and none within depth 2; at the
+	// default budget they pushed SCIP's callers out of the list for 14 of the
+	// 31. `ext` still feeds the semantic (embedding) callers in
+	// MergeBlastRadius, which are reported apart from the static counts.
 	ext := e.fetchLIPEnrichment(symbolInfo)
-	if ext != nil {
-		result.DirectImpact, result.TransitiveImpact = impact.FoldExternalStaticItems(
-			result.DirectImpact, result.TransitiveImpact, ext, e.repoRoot)
-		// Recompute the blast-radius summary from the unioned item set so
-		// UniqueCallerCount / FileCount / RiskLevel reflect LIP's static
-		// contribution. Skipped when EdgesSource=="empty" because the fold
-		// no-ops in that case and the original summary is already correct.
-		if ext.EdgesSource != impact.EdgesSourceEmpty && result.BlastRadius != nil {
-			all := append([]impact.ImpactItem{}, result.DirectImpact...)
-			all = append(all, result.TransitiveImpact...)
-			result.BlastRadius = impact.RecomputeBlastRadius(all)
-		}
-	}
 
 	// Convert results
 	directImpact := convertImpactItems(result.DirectImpact)
