@@ -49,8 +49,9 @@ var perfCouplingCmd = &cobra.Command{
 	Use:   "coupling",
 	Short: "Find hidden coupling (co-change without a static link)",
 	Long: `Find source file pairs that co-changed in the last 500 commits but have no
-link in the SCIP index: neither references a symbol the other defines, and they
-are not files of one Go package. This is the primary hidden-complexity signal:
+link in the SCIP index: neither references a symbol the other defines (between
+Go files: a symbol of the other's package), and they are not files of one Go
+package. This is the primary hidden-complexity signal:
 files that look unrelated in the dependency graph but are implicitly coupled
 through shared state, side effects, or a third party. Needs an index
 ('ckb index'); without one no pair is called hidden.

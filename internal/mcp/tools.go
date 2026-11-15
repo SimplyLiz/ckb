@@ -2607,7 +2607,7 @@ func (s *MCPServer) GetToolDefinitions() []Tool {
 		// v8.4 Performance scan
 		{
 			Name:        "scanPerformance",
-			Description: "Detect hidden coupling (despite the name, this does not measure performance): file pairs that co-changed in the last 500 commits but have no link in the SCIP index (neither file references a symbol the other defines, not one Go package). Needs an index: without one, summary.notAssessed says so and no pair is reported. Hidden coupling indicates implicit shared state or behavioral coupling that the dependency graph cannot see, and is the highest-signal structural risk for refactoring and maintenance cost.",
+			Description: "Detect hidden coupling (despite the name, this does not measure performance): file pairs that co-changed in the last 500 commits but have no link in the SCIP index (neither file references a symbol the other defines, or for two Go files a symbol of the other's package; not one Go package). Needs an index: without one, summary.notAssessed says so and no pair is reported. Hidden coupling indicates implicit shared state or behavioral coupling that the dependency graph cannot see, and is the highest-signal structural risk for refactoring and maintenance cost.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
