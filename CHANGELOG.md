@@ -49,12 +49,16 @@ All notable changes to CKB will be documented in this file.
   error. It now returns a `lip.DaemonError` with the daemon's text: `ckb doctor` shows it instead
   of "daemon not running", and the outgoing call graph in analyzeImpact names it in its
   warnings. An unreachable daemon still counts as LIP being unavailable.
-- **Callers from LIP say so.** analyzeImpact folds the LIP daemon's callers into
-  `directImpact`/`transitiveImpact`, and they looked exactly like callers from the SCIP index. A
-  folded item now carries `source`: `lip:tier1` (tree-sitter; LIP links across files by name
-  only), `lip:scip_with_tier1_edges`, `lip:scip_only` or `lip`. Items from the SCIP index have no
-  `source`, so existing output is unchanged. The outgoing call graph, which comes from LIP
-  alone, is marked the same way.
+- **analyzeImpact no longer adds LIP's callers to the SCIP ones.** With a LIP daemon running,
+  its callers went into `directImpact`/`transitiveImpact` and the caller count, looking exactly
+  like callers from the index. LIP links callers across files by bare name, and that showed:
+  on this repo, 31 Go symbols checked against a go/types call graph, 2.4% of the callers only
+  LIP reported were real, none of them within depth 2, and `TaskStore.Close` went from 2 callers
+  to 259. Its items had no file or line, and at the default budget of 20 they pushed SCIP's
+  callers out of the list for 14 of the 31 symbols. Callers and counts now come from the index
+  alone; the semantic callers LIP finds through embeddings still appear apart, under
+  `semanticCallers`. The outgoing call graph, which comes from LIP alone, marks its items with
+  `source` (`lip:tier1`, `lip:scip_with_tier1_edges`, `lip:scip_only` or `lip`).
 - **The README no longer calls LIP "strongly recommended".** No measurement backs a quality
   gain yet; it is described as experimental, with the embedding endpoint its semantic features
   need.

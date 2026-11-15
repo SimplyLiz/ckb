@@ -666,7 +666,7 @@ CKB orchestrates multiple code intelligence backends, using whatever is availabl
 
 Results are merged intelligently and compressed for LLM context limits. Every backend except Git is optional; CKB degrades gracefully to whatever is present.
 
-> **LIP is experimental.** With the daemon running and an embedding endpoint configured (`LIP_EMBEDDING_URL`), CKB uses it for query expansion and a semantic fallback in symbol search, re-ranking when there is no SCIP index, `related` files in explainFile, and extra callers in impact analysis. Whether it improves results has not been measured yet; SCIP stays the source of truth. See the [LIP documentation](https://lip-sigma.vercel.app/docs).
+> **LIP is experimental.** With the daemon running and an embedding endpoint configured (`LIP_EMBEDDING_URL`), CKB uses it for query expansion and a semantic fallback in symbol search, re-ranking when there is no SCIP index, `related` files in explainFile, semantic callers next to the static ones in impact analysis, and the outgoing call graph. Its name-linked static callers are not added to impact analysis: measured against a type-checked call graph they were almost all wrong. Whether the semantic features improve results has not been measured yet; SCIP stays the source of truth. See the [LIP documentation](https://lip-sigma.vercel.app/docs).
 
 Persistent knowledge survives across sessions:
 - **Module Registry** — Boundaries, responsibilities, tags
