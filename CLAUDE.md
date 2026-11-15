@@ -27,6 +27,8 @@ go test -cover ./...
 golangci-lint run
 ```
 
+`bin/ckb` (and `./ckb`, a symlink to it) is the working build; rebuild it freely. The `ckb` on PATH, which every MCP config and hook on the maintainer's machine starts, is `~/.local/bin/ckb` → `~/.local/share/ckb/ckb-<commit>`, and only `make deploy [REV=…]` (`scripts/deploy-local.sh`) changes it: built from the committed tree, never the working tree. Don't deploy unasked.
+
 ## Running the Application
 
 ```bash
