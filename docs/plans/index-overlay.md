@@ -223,14 +223,24 @@ Each phase ships on its own; Phase 1 is useful without the rest.
   That is the done check's job, and it already gets the old references.
 - LIP. No overlay feature builds on it.
 
+## Decisions (2026-11-16)
+
+1. **Rebuild trigger is the overlay's own uncertainty, not a file count.**
+   Five changed files can already make the overlay inexact if they hold
+   much-used symbols. The overlay knows what it could not do, so it decides:
+   rebuild in the background when unresolved Layer 2 sites pass a threshold,
+   when a changed declaration has callers in unchanged files and its signature
+   changed, when a file fell back to Layer 0 (parse error in a hunk), or on a
+   HEAD change. Thresholds come from the replay measurement.
+2. **`--watch` becomes the default**, with the HEAD/uncertainty-driven
+   semantics above, built together with the overlay.
+
 ## Open questions
 
-1. Rebuild threshold: how many changed files before a background full reindex
-   (proposal: 50 files or 5 %, whichever comes first)?
-2. Should `--watch` become the default once the overlay exists, with the new
-   HEAD-driven semantics?
 3. Do scip-go, scip-typescript and rust-analyzer produce an index for code that
    does not compile, and how much of it? This decides how large the second
    gain is, and needs checking before Phase 4.
-4. Does `internal/incremental` stay? Its indexer half is replaced by the overlay,
-   its write half serves only the SQLite tables.
+4. Does `internal/incremental` stay? Its indexer half is replaced by the overlay.
+   Whether anything outside the package reads the SQLite tables it writes
+   (file symbols, file deps, call edges, rescan queue) has not been checked;
+   if nothing does, it goes.
