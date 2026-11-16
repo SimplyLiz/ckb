@@ -33,10 +33,13 @@ All notable changes to CKB will be documented in this file.
   imports, enum and static members and constructors, and members of a spelled type: `x.m` for
   `x: T` (also `T | undefined`, `(v as T).m`), JSX attributes through the component's first
   parameter, keys of `const x: T = { … }`, a type literal's members under the number the index
-  has. Checked on Lebenslauf: 6,138 of 6,138
+  has. A type literal's members on new lines (of a parameter, return type, constraint or alias)
+  are defined with the number the base gave the same owner, else a placeholder until the next
+  reindex, and destructured parameters point at them. Checked on Lebenslauf: 6,138 of 6,138
   comparable definitions identical to scip-typescript's at HEAD; over its last 30 small commits
-  1,303 of 1,303 overlay references and 556 of 556 impact items they bring identical to a fresh
-  index, 77 % of the changed symbols' references found, overlay built in 51 ms (median). A file
+  1,386 of 1,386 overlay references identical to a fresh index (counter numbers normalized),
+  761 of 784 impact items they bring too and the other 23 the same symbols reached transitively,
+  82 % of the changed symbols' references found, overlay built in 52 ms (median). A file
   with a syntax error (or a construct the bundled grammar lacks) and a renamed TS file stay at
   the line remap and ask for a rebuild.
 - **`indexFreshness`, `getStatus` and the session-start hook say what the overlay serves**:

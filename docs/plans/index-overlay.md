@@ -428,6 +428,35 @@ declaration line the commit changed. Layer 0 drops the old number with the line,
 cannot know the new one. Two commits that need a rebuild (86 % and 43 % recall) now sit at 27
 unresolved sites, two above the threshold.
 
+#### New type-literal members: placeholder numbers (2026-11-16, Lisa's go)
+
+Layer 1 now defines a type literal's members on new lines under scip-typescript's owner form
+(`T#`, `f().(p)`, ``f().(`{ a, b }`)``, `f().` for the return type, `f().[E]` for a
+constraint): the number is the one the owner has among the base document's and the overlay's
+definitions when that is exactly one (the uses Layer 0 kept, also in unchanged files, carry
+it), else a placeholder above the file's highest. scip-typescript writes no definition for a
+destructured parameter itself, only for its type's members, so neither does Layer 1. Layer 2
+points destructured parameter names (`{ a }: T`, `{ a }: { a: X }`) and members of a parameter
+with an object type (`l: { url }` → `l.url`) at them. A generic of a global or package type over
+a repository type (`Record<K, { … }>`, `Partial<T>`) counts as unresolved instead of outside.
+
+| Measure | 0e34443 | now |
+|---|---|---|
+| Overlay references identical to fresh (counters normalized) | 1,303/1,303 | 1,386/1,386 |
+| Impact items only Layer 2 brings, identical | 556/556 | 761/784, the 23 others the same symbol fresh reaches directly |
+| References of the changed symbols found | 1,424/1,846 (77 %) | 1,506/1,846 (82 %) |
+| Callers found | 518/749 | 586/749 |
+| Commits without rebuild, all 100 % recall | 11 | 11 |
+| Overlay build, median | 51 ms | 52 ms |
+
+First try reused only numbers Layer 0 had kept: where the commit rewrote a literal's line, the
+new definition got a placeholder while the uses elsewhere kept the old number, splitting the
+symbol (d795b9d7: 84 → 63 references). Reading the base document's numbers fixed it. The
+`Record` rule came from 3664d533: 75 missing references to a new `Record<…, { Icon; label }>`
+constant's members, 23 unresolved sites, no rebuild at 49 % recall; with the rule it rebuilds.
+Definition places of counter IDs move by ±30 between runs of the same code (the replay
+compares them normalized), stable definitions stay at 0 moved.
+
 ### What the build changed in the design
 
 - **Go's Layers 1–2 use go/parser, not tree-sitter.** Exact for Go, positions in scip-go's byte
@@ -462,7 +491,7 @@ unresolved sites, two above the threshold.
 
 ### Open
 
-- TypeScript: new counter-numbered declarations (type-literal members, destructured
-  parameters on a changed line) — 383 of the 422 missing references; inherited members; a newer tree-sitter grammar for the 2 % of files that
+- TypeScript: object keys typed only by context (an argument, `create<T>()(…)`, nested objects),
+  members of call results and untyped callback parameters, inherited members; a newer tree-sitter grammar for the 2 % of files that
   do not parse; `extends` in tsconfig; monorepos with several tsconfigs.
 - Replays on other repos (Lebenslauf, Rubik, Hollow-Keep) once their languages have layers.

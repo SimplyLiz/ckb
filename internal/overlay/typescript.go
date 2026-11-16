@@ -5,6 +5,7 @@ package overlay
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -24,8 +25,9 @@ import (
 // variables, and the parameters and type parameters of those. scip-typescript
 // numbers object-literal properties ("experience0:") and the members of type
 // literals ("T#typeLiteral40:x.") with counters that depend on the order the
-// checker visits symbols, also from other files; those are left out, as are
-// destructured variables and parameters.
+// checker visits symbols, also from other files. Object-literal properties
+// and destructured variables are left out; type-literal members on new lines
+// get the owner's old number or a placeholder (tsNumberLiterals).
 
 // tsDecl is one declaration scip-typescript writes a definition for.
 type tsDecl struct {
@@ -99,6 +101,51 @@ type tsWalker struct {
 	src   []byte
 	cols  *utf16Cols
 	decls []tsDecl
+	// lits are the members of type literals, numbered later: scip-typescript
+	// numbers them with a counter no parse reproduces (tsNumberLiterals).
+	lits   []tsLit
+	groups int
+}
+
+// tsLit is a type literal's member: owner is the descriptor its ID starts
+// with ("T#", "f().(p)", "f().", "f().[E]"), group the literal it is in, and
+// decl.suffix the member's own descriptor ("x.", "m().").
+type tsLit struct {
+	owner string
+	group int
+	decl  tsDecl
+}
+
+// literal records the members of t when it is an object type (directly or
+// in a type annotation), under owner.
+func (w *tsWalker) literal(t *sitter.Node, owner string) {
+	if t != nil && t.Type() == "type_annotation" && t.NamedChildCount() == 1 {
+		t = t.NamedChild(0)
+	}
+	if t == nil || t.Type() != "object_type" {
+		return
+	}
+	g := w.groups
+	w.groups++
+	for i := 0; i < int(t.NamedChildCount()); i++ {
+		m := t.NamedChild(i)
+		name := m.ChildByFieldName("name")
+		if name == nil || !tsSimpleMemberName(name) {
+			continue
+		}
+		tail := ""
+		switch m.Type() {
+		case "property_signature":
+			tail = tsTerm(w.text(name))
+		case "method_signature":
+			tail = tsMethod(w.text(name))
+		default:
+			continue
+		}
+		l, c := w.cols.pos(name.StartByte())
+		_, e := w.cols.pos(name.EndByte())
+		w.lits = append(w.lits, tsLit{owner: owner, group: g, decl: tsDecl{suffix: tail, line: l, col: c, end: e}})
+	}
 }
 
 func (w *tsWalker) text(n *sitter.Node) string { return n.Content(w.src) }
@@ -201,6 +248,7 @@ func (w *tsWalker) statement(n *sitter.Node, owner string, outer *sitter.Node) {
 		s := owner + tsType(w.text(name))
 		w.add(name, s, whole)
 		w.typeParams(n, s)
+		w.literal(n.ChildByFieldName("value"), s)
 	case "enum_declaration":
 		name := n.ChildByFieldName("name")
 		if name == nil {
@@ -258,6 +306,7 @@ func (w *tsWalker) statement(n *sitter.Node, owner string, outer *sitter.Node) {
 // a function-like declaration whose symbol is s.
 func (w *tsWalker) signature(n *sitter.Node, s string) {
 	w.typeParams(n, s)
+	w.literal(n.ChildByFieldName("return_type"), s)
 	params := n.ChildByFieldName("parameters")
 	if params == nil {
 		return
@@ -268,6 +317,9 @@ func (w *tsWalker) signature(n *sitter.Node, s string) {
 			continue
 		}
 		pat := p.ChildByFieldName("pattern")
+		if pat != nil {
+			w.literal(p.ChildByFieldName("type"), s+"("+tsEscape(w.text(pat))+")")
+		}
 		if pat != nil && pat.Type() == "rest_pattern" && pat.NamedChildCount() == 1 {
 			pat = pat.NamedChild(0)
 		}
@@ -290,6 +342,9 @@ func (w *tsWalker) typeParams(n *sitter.Node, s string) {
 		}
 		if name := p.ChildByFieldName("name"); name != nil {
 			w.add(name, s+"["+tsEscape(w.text(name))+"]", nil)
+			if c := p.ChildByFieldName("constraint"); c != nil && c.NamedChildCount() == 1 {
+				w.literal(c.NamedChild(0), s+"["+tsEscape(w.text(name))+"]")
+			}
 		}
 	}
 }
@@ -487,7 +542,9 @@ func tsLayer1(doc *scip.Document, base *scip.SCIPIndex, oldDoc *scip.Document, s
 	defer tree.Close()
 	w := &tsWalker{src: src, cols: newUTF16Cols(src)}
 	w.statements(root, "")
-	added := tsApplyDecls(doc, base, oldDoc, prefix, w.decls, addedLines(lm))
+	newLines := addedLines(lm)
+	decls := append(w.decls, tsNumberLiterals(doc, oldDoc, prefix, w.lits, newLines)...)
+	added := tsApplyDecls(doc, base, oldDoc, prefix, decls, newLines)
 	for _, o := range doc.Occurrences {
 		if o.Symbol == prefix && o.SymbolRoles&scip.SymbolRoleDefinition != 0 {
 			o.EnclosingRange = tsFileRange(root, src)
@@ -568,6 +625,76 @@ func tsApplyDecls(doc *scip.Document, base *scip.SCIPIndex, oldDoc *scip.Documen
 	return added
 }
 
+// tsNumberLiterals gives the type-literal members that start on new lines
+// (all when newLines is nil) the ID scip-typescript writes, up to the
+// number: a literal whose owner has exactly one number among the
+// definitions of the base document and the overlay's keeps it (the uses
+// Layer 0 kept, also in unchanged files, carry it), any other gets a
+// placeholder above every number the file has. A fresh index renumbers them; until then a new member is
+// defined and found under one ID in the overlay.
+func tsNumberLiterals(doc, oldDoc *scip.Document, prefix string, lits []tsLit, newLines map[int32]bool) []tsDecl {
+	if len(lits) == 0 {
+		return nil
+	}
+	maxN := -1
+	byOwner := map[string]map[int]bool{}
+	occs := doc.Occurrences
+	if oldDoc != nil {
+		occs = append(append([]*scip.Occurrence(nil), occs...), oldDoc.Occurrences...)
+	}
+	for _, o := range occs {
+		rest, ok := strings.CutPrefix(o.Symbol, prefix)
+		if !ok {
+			continue
+		}
+		for i := strings.Index(rest, "typeLiteral"); i >= 0; {
+			j := i + len("typeLiteral")
+			k := j
+			for k < len(rest) && rest[k] >= '0' && rest[k] <= '9' {
+				k++
+			}
+			if k > j && k < len(rest) && rest[k] == ':' {
+				n, _ := strconv.Atoi(rest[j:k])
+				maxN = max(maxN, n)
+				if o.SymbolRoles&scip.SymbolRoleDefinition != 0 {
+					if byOwner[rest[:i]] == nil {
+						byOwner[rest[:i]] = map[int]bool{}
+					}
+					byOwner[rest[:i]][n] = true
+				}
+			}
+			next := strings.Index(rest[k:], "typeLiteral")
+			if next < 0 {
+				break
+			}
+			i = k + next
+		}
+	}
+	num := map[int]int{}
+	var out []tsDecl
+	for _, l := range lits {
+		if newLines != nil && !newLines[l.decl.line] {
+			continue
+		}
+		n, ok := num[l.group]
+		if !ok {
+			if ns := byOwner[l.owner]; len(ns) == 1 {
+				for k := range ns {
+					n = k
+				}
+			} else {
+				maxN++
+				n = maxN
+			}
+			num[l.group] = n
+		}
+		d := l.decl
+		d.suffix = l.owner + "typeLiteral" + strconv.Itoa(n) + ":" + d.suffix
+		out = append(out, d)
+	}
+	return out
+}
+
 // tsSynthesized reports whether Layer 1 would synthesize a declaration of
 // sym (a descriptor without counters or destructuring), so its absence from
 // the parse means it is gone.
@@ -598,7 +725,7 @@ func tsNewDocument(base *scip.SCIPIndex, newPath string, src []byte) (*scip.Docu
 	doc := &scip.Document{RelativePath: newPath, Language: lang}
 	doc.Occurrences = append(doc.Occurrences, &scip.Occurrence{Range: []int32{0, 0, 0}, Symbol: prefix, SymbolRoles: scip.SymbolRoleDefinition, EnclosingRange: tsFileRange(root, src)})
 	doc.Symbols = append(doc.Symbols, &scip.SymbolInformation{Symbol: prefix})
-	tsApplyDecls(doc, base, nil, prefix, w.decls, nil)
+	tsApplyDecls(doc, base, nil, prefix, append(w.decls, tsNumberLiterals(doc, nil, prefix, w.lits, nil)...), nil)
 	return doc, prefix
 }
 
