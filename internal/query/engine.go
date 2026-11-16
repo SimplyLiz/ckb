@@ -64,6 +64,10 @@ type Engine struct {
 	// parsing the index (see EnsureSCIPLoaded).
 	scipReloadMu sync.Mutex
 
+	// overlay patches the working tree's changes into the loaded SCIP index
+	// (see overlay.go).
+	overlay overlayState
+
 	// ftsPopMu serialises FTS rebuilds (background start-up task, SCIP reload,
 	// stale-content repair on first query).
 	ftsPopMu sync.Mutex
@@ -258,6 +262,7 @@ func (e *Engine) initializeBackends(cfg *config.Config) error {
 			// Update tier detector
 			if scipAdapter.IsAvailable() {
 				e.tierDetector.SetScipAvailable(true)
+				e.RefreshOverlay(context.Background())
 
 				// Background FTS population is started via StartBgTasks(), which is
 				// called by production entry points after engine init. Tests skip
@@ -634,7 +639,11 @@ func (e *Engine) ReloadSCIP(ctx context.Context) error {
 // the mutex serialises them and the re-check after acquiring it turns the
 // late ones into no-ops. Returns true when a reload happened.
 func (e *Engine) EnsureSCIPLoaded(ctx context.Context) (bool, error) {
-	if e.scipAdapter == nil || !e.scipAdapter.IndexFileChanged() {
+	if e.scipAdapter == nil {
+		return false, nil
+	}
+	defer e.RefreshOverlay(ctx)
+	if !e.scipAdapter.IndexFileChanged() {
 		return false, nil
 	}
 	e.scipReloadMu.Lock()
@@ -655,6 +664,7 @@ func (e *Engine) reloadSCIPLocked(ctx context.Context) error {
 		return err
 	}
 	e.tierDetector.SetScipAvailable(e.scipAdapter.IsAvailable())
+	e.RefreshOverlay(ctx)
 
 	// Cached answers were computed against the old index (or none) —
 	// negative-cache entries in particular would keep hiding symbols the

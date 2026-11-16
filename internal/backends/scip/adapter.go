@@ -20,8 +20,18 @@ import (
 
 // SCIPAdapter implements the Backend and SymbolBackend interfaces for SCIP
 type SCIPAdapter struct {
-	indexPath    string
-	index        *SCIPIndex
+	indexPath string
+	// index is what every query reads: the base index, or the base with the
+	// working tree's changes patched in (SetOverlay). base is the index as
+	// loaded from disk, which an overlay never modifies; overlay is the latest
+	// patched index (or base). While a diff-driven analysis has the base
+	// pinned (PinBase), index is base; otherwise it is overlay.
+	index   *SCIPIndex
+	base    *SCIPIndex
+	overlay *SCIPIndex
+	pins    int
+	// overlayGen counts SetOverlay calls, for ServingTag.
+	overlayGen   uint64
 	logger       *slog.Logger
 	queryTimeout time.Duration
 	repoRoot     string
@@ -218,6 +228,8 @@ func (s *SCIPAdapter) LoadIndex() error {
 	}
 
 	s.index = index
+	s.base = index
+	s.overlay = index
 	s.removeObsoleteDerivedCache()
 	s.loadedStamp = stamp
 	s.failedStamp = fileStamp{}
@@ -816,6 +828,8 @@ func (s *SCIPAdapter) Close() error {
 	defer s.mu.Unlock()
 
 	s.index = nil
+	s.base = nil
+	s.overlay = nil
 	s.freshness = nil
 
 	s.logger.Info("SCIP adapter closed")
@@ -910,6 +924,77 @@ func (s *SCIPAdapter) IsCallable(symbolId string) bool {
 		return false
 	}
 	return s.index.IsCallable(symbolId)
+}
+
+// BaseIndex returns the index as loaded from disk, without an overlay.
+func (s *SCIPAdapter) BaseIndex() *SCIPIndex {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.base
+}
+
+// SetOverlay makes idx the index every query reads, provided base is still
+// the loaded base index (a reload in between makes the overlay obsolete; the
+// call then returns false and changes nothing). A nil idx goes back to the
+// base. The overlay must have been built from base with PatchIndex. While the
+// base is pinned, the overlay is kept and takes effect at the last Unpin.
+func (s *SCIPAdapter) SetOverlay(base, idx *SCIPIndex) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if base == nil || base != s.base {
+		return false
+	}
+	if idx == nil {
+		idx = s.base
+	}
+	s.overlay = idx
+	s.overlayGen++
+	if s.pins == 0 {
+		s.index = idx
+	}
+	if idx != s.base {
+		go func() {
+			idx.callerIndexOnce.Do(func() {
+				idx.CallerIndex = buildCallerIndex(idx.Documents)
+			})
+		}()
+	}
+	return true
+}
+
+// ServingTag identifies which index queries read right now: "" for the
+// base, "overlay-N" for the N-th overlay. Anything cached from a query result
+// adds it to its key, so base and overlay answers never mix.
+func (s *SCIPAdapter) ServingTag() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.index == nil || s.index == s.base {
+		return ""
+	}
+	return fmt.Sprintf("overlay-%d", s.overlayGen)
+}
+
+// PinBase makes every query read the base index until the returned function
+// is called. Analyses that interpret a diff against the index (the change
+// set's symbol mapping and done check) need the index on one side of that
+// diff, which the base is and an overlay is not. Pins nest; queries running
+// alongside see the base too, as they would without an overlay.
+func (s *SCIPAdapter) PinBase() (unpin func()) {
+	s.mu.Lock()
+	s.pins++
+	s.index = s.base
+	s.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			s.pins--
+			if s.pins == 0 {
+				s.index = s.overlay
+			}
+			s.mu.Unlock()
+		})
+	}
 }
 
 // GetIndex returns the underlying SCIP index for direct access.

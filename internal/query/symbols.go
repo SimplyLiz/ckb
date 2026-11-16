@@ -399,6 +399,11 @@ func (e *Engine) SearchSymbols(ctx context.Context, opts SearchSymbolsOptions) (
 
 	// Check cache first
 	cacheKey := generateSearchCacheKey(opts)
+	if e.scipAdapter != nil {
+		if tag := e.scipAdapter.ServingTag(); tag != "" {
+			cacheKey += "|" + tag
+		}
+	}
 	if e.cache != nil && repoState.HeadCommit != "" {
 		cachedJSON, found, err := e.cache.GetQueryCache(cacheKey, repoState.HeadCommit)
 		if err == nil && found {
