@@ -54,6 +54,12 @@ func overlayEngine(t *testing.T) (*Engine, string) {
 	}
 
 	lib := fixtureDoc("lib/lib.go", []fixtureFunc{{symTarget, 2, 4}, {symOther, 6, 8}}, []fixtureRef{{symTarget, 7}})
+	// The package clause's definition, as scip-go writes it in every file:
+	// Layer 1 takes the package prefix from it.
+	lib.Occurrences = append(lib.Occurrences, &scippb.Occurrence{
+		Symbol: "scip-go gomod example.com/m v1 `example.com/m/lib`/", Range: []int32{0, 8, 11}, SymbolRoles: int32(scippb.SymbolRole_Definition),
+	})
+	lib.Symbols = append(lib.Symbols, &scippb.SymbolInformation{Symbol: "scip-go gomod example.com/m v1 `example.com/m/lib`/", DisplayName: "lib"})
 	app := fixtureDoc("app/app.go", []fixtureFunc{{symRun, 2, 4}}, []fixtureRef{{symTarget, 3}})
 	data, err := proto.Marshal(&scippb.Index{
 		Metadata: &scippb.Metadata{ProjectRoot: "file://" + root, ToolInfo: &scippb.ToolInfo{
@@ -208,5 +214,46 @@ func TestOverlay_FreshnessSaysWhatItServes(t *testing.T) {
 	defer unpin()
 	if f := e.IndexFreshnessFor(context.Background(), []string{"lib/lib.go"}); f.Overlay != nil || strings.Contains(f.Hint, "overlay") {
 		t.Errorf("pinned base still reports the overlay: %+v", f)
+	}
+}
+
+func TestOverlay_NewCallerIsMarked(t *testing.T) {
+	e, root := overlayEngine(t)
+	edited := overlayLib + "\nfunc Extra() int {\n\treturn Target(3)\n}\n"
+	if err := os.WriteFile(filepath.Join(root, "lib/lib.go"), []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.overlay.checkedAt = e.overlay.checkedAt.Add(-overlayCheckInterval)
+	e.RefreshOverlay(context.Background())
+
+	info := e.OverlayInfo()
+	if info == nil || len(info.Files) != 1 {
+		t.Fatalf("overlay info %+v", info)
+	}
+	if f := info.Files[0]; f.Declared != 1 || f.Referenced != 1 || f.Unresolved != 0 {
+		t.Errorf("lib/lib.go: declared %d, referenced %d, unresolved %d; want 1, 1, 0", f.Declared, f.Referenced, f.Unresolved)
+	}
+	const symExtra = "scip-go gomod example.com/m v1 `example.com/m/lib`/Extra()."
+	if got := defLine(t, e, symExtra); got != 10 {
+		t.Errorf("Extra defined at %d, want 10", got)
+	}
+
+	resp, err := e.AnalyzeImpact(context.Background(), AnalyzeImpactOptions{SymbolId: symTarget, IncludeTests: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marked, unmarked []string
+	for _, it := range resp.DirectImpact {
+		if it.Source == "overlay" {
+			marked = append(marked, it.StableId)
+		} else {
+			unmarked = append(unmarked, it.StableId)
+		}
+	}
+	if len(marked) != 1 || marked[0] != symExtra {
+		t.Errorf("overlay callers %v, want [Extra]", marked)
+	}
+	if len(unmarked) != 2 {
+		t.Errorf("indexer callers %v, want Other and Run", unmarked)
 	}
 }

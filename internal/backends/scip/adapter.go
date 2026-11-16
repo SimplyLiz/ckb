@@ -753,6 +753,7 @@ func (s *SCIPAdapter) convertToReference(scipRef *SCIPReference) backends.Refere
 		Context:        scipRef.Context,
 		FromSymbol:     fromSymbol,
 		FromSymbolName: fromSymbolName,
+		Source:         scipRef.Source,
 	}
 }
 

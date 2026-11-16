@@ -608,6 +608,7 @@ func (e *Engine) AnalyzeImpact(ctx context.Context, opts AnalyzeImpactOptions) (
 					// function.
 					FromSymbol: ref.FromSymbol,
 					FromName:   ref.FromSymbolName,
+					Source:     ref.Source,
 					// FromModule is derived from the reference's own file path,
 					// the same way resolvePrepareTarget derives ModuleId for a
 					// symbol-based prepareChange target: the backend doesn't

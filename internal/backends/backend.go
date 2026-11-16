@@ -156,6 +156,10 @@ type Reference struct {
 	// Context is surrounding code snippet
 	Context string
 
+	// Source is empty for a reference the indexer recorded and "overlay"
+	// for one the index overlay resolved on a line changed since indexing.
+	Source string
+
 	// FromSymbol is the stable ID of the symbol that encloses this
 	// reference (e.g. the caller function containing the call site).
 	// Empty when the backend can't resolve an enclosing symbol (e.g.

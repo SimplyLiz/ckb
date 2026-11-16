@@ -113,7 +113,7 @@ type OverlayFreshness struct {
 	// overlay removed and could not replace.
 	DroppedOccurrences int `json:"droppedOccurrences"`
 	// UnresolvedSites counts uses on changed lines the overlay could not
-	// resolve to a declaration (0 until the reference layer exists).
+	// resolve to a declaration and left without an edge.
 	UnresolvedSites int `json:"unresolvedSites"`
 	// BuildMs is how long the last overlay build took.
 	BuildMs float64 `json:"buildMs"`
@@ -125,7 +125,7 @@ func (e *Engine) OverlayFreshness() *OverlayFreshness {
 	if info == nil {
 		return nil
 	}
-	f := &OverlayFreshness{Files: len(info.Files), Covered: info.Covered(), Layers: info.Layers(), BuildMs: info.BuildMs}
+	f := &OverlayFreshness{Files: len(info.Files), Covered: info.Covered(), Layers: info.Layers(), BuildMs: info.BuildMs, UnresolvedSites: info.UnresolvedSites()}
 	for _, fi := range info.Files {
 		f.DroppedOccurrences += fi.Dropped
 		if fi.State == overlay.StateUncovered {

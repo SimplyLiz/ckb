@@ -147,6 +147,7 @@ func (idx *SCIPIndex) processOccurrence(symbolId string, doc *Document, occ *Occ
 		Location:   location,
 		Kind:       kind,
 		FromSymbol: fromSymbol,
+		Source:     occ.Source,
 	}
 }
 
