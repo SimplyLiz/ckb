@@ -111,6 +111,13 @@ var goUniverse = map[string]bool{
 // how many it added and how many sites it could not resolve. prefix is the
 // file's package prefix.
 func goLayer2(doc *scip.Document, src []byte, prefix string, lines map[int32]bool, g *goSymbols) (added, unresolved int) {
+	return goLayer2Typed(doc, src, prefix, lines, g, newGoTypes(g, ""))
+}
+
+// goLayer2Typed is goLayer2 with a type reader for what the file does not
+// spell itself (fields, results and embedded members of types declared
+// elsewhere).
+func goLayer2Typed(doc *scip.Document, src []byte, prefix string, lines map[int32]bool, g *goSymbols, types *goTypes) (added, unresolved int) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "", src, 0) // with object resolution
 	if err != nil || f == nil {
@@ -206,57 +213,6 @@ func goLayer2(doc *scip.Document, src []byte, prefix string, lines map[int32]boo
 		}
 		return ""
 	}
-	// typeOfValue names the type of a value expression when it is spelled
-	// out: T{…}, &T{…}.
-	typeOfValue := func(e ast.Expr) string {
-		if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
-			e = u.X
-		}
-		if lit, ok := e.(*ast.CompositeLit); ok && lit.Type != nil {
-			return typeOf(lit.Type)
-		}
-		return ""
-	}
-	// localType is the type symbol of a local variable, when written next
-	// to its declaration.
-	localType := func(id *ast.Ident) string {
-		if id.Obj == nil || id.Obj.Kind != ast.Var {
-			return ""
-		}
-		switch d := id.Obj.Decl.(type) {
-		case *ast.Field:
-			return typeOf(d.Type)
-		case *ast.ValueSpec:
-			if d.Type != nil {
-				return typeOf(d.Type)
-			}
-			for i, n := range d.Names {
-				if n.Name == id.Name && i < len(d.Values) {
-					return typeOfValue(d.Values[i])
-				}
-			}
-		case *ast.AssignStmt:
-			if len(d.Lhs) != len(d.Rhs) {
-				return ""
-			}
-			for i, l := range d.Lhs {
-				if li, ok := l.(*ast.Ident); ok && li.Name == id.Name {
-					return typeOfValue(d.Rhs[i])
-				}
-			}
-		}
-		return ""
-	}
-	// member resolves T's member name: method or field.
-	member := func(typeSym, name string) string {
-		base := strings.TrimSuffix(typeSym, "#")
-		for _, sym := range []string{base + "#" + name + "().", base + "#" + name + "."} {
-			if g.has(sym) {
-				return sym
-			}
-		}
-		return ""
-	}
 	isTopLevel := func(o *ast.Object) bool {
 		switch d := o.Decl.(type) {
 		case *ast.FuncDecl:
@@ -278,6 +234,125 @@ func goLayer2(doc *scip.Document, src []byte, prefix string, lines map[int32]boo
 		return false
 	}
 
+	// exprType is the type symbol of an expression when the source spells
+	// it: a typed local, a package-level variable, a field, what a call
+	// returns, a literal, a type assertion. "" when it does not.
+	var exprType func(e ast.Expr, depth int) string
+	var calleeOf func(fun ast.Expr, depth int) string
+	localType := func(id *ast.Ident, depth int) string {
+		if id.Obj == nil || id.Obj.Kind != ast.Var {
+			return ""
+		}
+		switch d := id.Obj.Decl.(type) {
+		case *ast.Field:
+			return typeOf(d.Type)
+		case *ast.ValueSpec:
+			if d.Type != nil {
+				return typeOf(d.Type)
+			}
+			for i, n := range d.Names {
+				if n.Name == id.Name && i < len(d.Values) {
+					return exprType(d.Values[i], depth-1)
+				}
+			}
+		case *ast.AssignStmt:
+			if len(d.Lhs) == len(d.Rhs) {
+				for i, l := range d.Lhs {
+					if li, ok := l.(*ast.Ident); ok && li.Name == id.Name {
+						return exprType(d.Rhs[i], depth-1)
+					}
+				}
+			}
+			// x, err := f(): f returns (T, error).
+			if len(d.Lhs) == 2 && len(d.Rhs) == 1 {
+				if li, ok := d.Lhs[0].(*ast.Ident); ok && li.Name == id.Name {
+					if _, isCall := d.Rhs[0].(*ast.CallExpr); isCall {
+						return exprType(d.Rhs[0], depth-1)
+					}
+				}
+			}
+		}
+		return ""
+	}
+	exprType = func(e ast.Expr, depth int) string {
+		if depth <= 0 {
+			return ""
+		}
+		switch x := e.(type) {
+		case *ast.ParenExpr:
+			return exprType(x.X, depth)
+		case *ast.StarExpr:
+			return exprType(x.X, depth)
+		case *ast.UnaryExpr:
+			if x.Op == token.AND {
+				return exprType(x.X, depth)
+			}
+		case *ast.CompositeLit:
+			if x.Type != nil {
+				return typeOf(x.Type)
+			}
+		case *ast.TypeAssertExpr:
+			if x.Type != nil {
+				return typeOf(x.Type)
+			}
+		case *ast.Ident:
+			if x.Obj != nil && x.Obj.Kind == ast.Var && !isTopLevel(x.Obj) {
+				return localType(x, depth)
+			}
+			if sym := samePackage(x.Name); strings.HasSuffix(sym, ".") && !strings.HasSuffix(sym, "().") {
+				return types.varType(sym)
+			}
+		case *ast.SelectorExpr:
+			if pkg, ok := x.X.(*ast.Ident); ok && pkg.Obj == nil {
+				if p, isImport := imports[pkg.Name]; isImport {
+					if pfx := pkgSym(p); pfx != "" && g.has(pfx+x.Sel.Name+".") {
+						return types.varType(pfx + x.Sel.Name + ".")
+					}
+					return ""
+				}
+			}
+			if xt := exprType(x.X, depth-1); xt != "" {
+				return types.fieldType(xt, x.Sel.Name, 3)
+			}
+		case *ast.CallExpr:
+			if callee := calleeOf(x.Fun, depth-1); callee != "" {
+				return types.resultType(callee)
+			}
+		}
+		return ""
+	}
+	calleeOf = func(fun ast.Expr, depth int) string {
+		switch f := fun.(type) {
+		case *ast.ParenExpr:
+			return calleeOf(f.X, depth)
+		case *ast.Ident:
+			if f.Obj != nil && !isTopLevel(f.Obj) {
+				return "" // a local func value
+			}
+			if sym := samePackage(f.Name); strings.HasSuffix(sym, "().") {
+				return sym
+			}
+		case *ast.SelectorExpr:
+			if pkg, ok := f.X.(*ast.Ident); ok && pkg.Obj == nil {
+				if p, isImport := imports[pkg.Name]; isImport {
+					if pfx := pkgSym(p); pfx != "" && g.has(pfx+f.Sel.Name+"().") {
+						return pfx + f.Sel.Name + "()."
+					}
+					return ""
+				}
+			}
+			if xt := exprType(f.X, depth); xt != "" {
+				if sym := types.member(xt, f.Sel.Name, 3); strings.HasSuffix(sym, "().") {
+					return sym
+				}
+			}
+		}
+		return ""
+	}
+	// member resolves T's member name: method or field, own or promoted.
+	member := func(typeSym, name string) string {
+		return types.member(typeSym, name, 3)
+	}
 	// Identifiers already handled as part of a selector or a literal key,
 	// and the ones that are names, not references.
 	done := map[*ast.Ident]bool{}
@@ -290,9 +365,15 @@ func goLayer2(doc *scip.Document, src []byte, prefix string, lines map[int32]boo
 			}
 			x, ok := n.X.(*ast.Ident)
 			if !ok {
-				// A chain or a call result: the receiver's type is not
-				// visible.
+				// A chain or a call result: resolved when the source
+				// spells every type along it.
 				done[n.Sel] = true
+				if xt := exprType(n.X, 6); xt != "" {
+					if sym := member(xt, n.Sel.Name); sym != "" {
+						emit(n.Sel, sym)
+						return true
+					}
+				}
 				unresolved++
 				return true
 			}
@@ -322,10 +403,7 @@ func goLayer2(doc *scip.Document, src []byte, prefix string, lines map[int32]boo
 					return true
 				}
 			}
-			var typeSym string
-			if x.Obj != nil {
-				typeSym = localType(x)
-			}
+			typeSym := exprType(x, 6)
 			if typeSym == "" {
 				unresolved++
 				return true

@@ -396,6 +396,9 @@ type ImpactItemCLI struct {
 	ModuleID   string       `json:"moduleId"`
 	Location   *LocationCLI `json:"location,omitempty"`
 	Confidence float64      `json:"confidence"`
+	// Source is "overlay" for a use the index overlay resolved on a line
+	// changed since indexing (see query.ImpactItem.Source).
+	Source string `json:"source,omitempty"`
 }
 
 // ModuleImpactCLI shows impact on a specific module
@@ -416,6 +419,7 @@ func impactItemsCLI(items []query.ImpactItem) []ImpactItemCLI {
 			Distance:   item.Distance,
 			ModuleID:   item.ModuleId,
 			Confidence: item.Confidence,
+			Source:     item.Source,
 		}
 		if item.Location != nil {
 			impactItem.Location = &LocationCLI{
@@ -712,6 +716,7 @@ func convertChangeSetResponse(resp *query.AnalyzeChangeSetResponse) *ChangeSetRe
 			Distance:   item.Distance,
 			ModuleID:   item.ModuleId,
 			Confidence: item.Confidence,
+			Source:     item.Source,
 		}
 		if item.Location != nil {
 			impactItem.Location = &LocationCLI{
@@ -1190,6 +1195,7 @@ func impactItemToCLI(item query.ImpactItem) ImpactItemCLI {
 		Distance:   item.Distance,
 		ModuleID:   item.ModuleId,
 		Confidence: item.Confidence,
+		Source:     item.Source,
 	}
 	if item.Location != nil {
 		cli.Location = &LocationCLI{
