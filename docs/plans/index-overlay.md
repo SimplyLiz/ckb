@@ -1,6 +1,6 @@
 # Index overlay: fresh answers between full reindexes
 
-Status: Phases 1–3 (Go) and 5 built 2026-11-16 (93b9b24..d38e7ed on develop); Phase 4 (TypeScript) open. Results below.
+Status: Phases 1–3 (Go) and 5 built 2026-11-16 (93b9b24..d38e7ed on develop), Phase 4 (TypeScript) d436fc8. Results below.
 
 ## Problem
 
@@ -398,6 +398,36 @@ Design facts:
   unresolved: members of values whose type is not spelled, JSX attributes of repository
   components, import aliases. Not counted: locals, globals, names from packages.
 
+#### Members of spelled types (2026-11-16, after Phase 4)
+
+The open point "members of typed locals" was framed by the 1,614 unresolved sites. The 432
+references Layer 2 missed are a different set: 372 of them name a counter-numbered symbol
+(`typeLiteralN`), 4 a plain member of a typed binding. Layer 0 keeps a type literal's old
+numbers, so a use on an added line can point at the number the declaring file's document has
+(unique match on `owner#typeLiteral<digits>:name.`). Built: `x.m` for a parameter or local
+declared `T`, `T<…>`, `T | undefined | null` (through `!`, `?.`, parentheses), `(v as T).m`;
+JSX attributes through the component's first parameter (an object type in place, under the
+parameter's ID, or a named type); keys of `const x: T = { … }` and `{ … } as T`. Only own
+members of an interface, class or object-type alias; inherited members, unions of two
+repository types and type parameters stay unresolved. Members of primitives and package types
+no longer count as unresolved.
+
+| Measure | d436fc8 | now |
+|---|---|---|
+| Overlay references identical to fresh | 1,147/1,147 | 1,303/1,303 |
+| Impact items only Layer 2 brings, identical | 543/543 | 556/556 |
+| References of the changed symbols found | 1,414/1,846 | 1,424/1,846 |
+| Callers found | 511/749 | 518/749 |
+| Unresolved sites | 1,614 | 1,421 |
+| Commits without rebuild (threshold 25), all 100 % recall | 10 | 11 |
+| Overlay build, median | 47 ms | 51 ms |
+
+Small on recall because 383 of the 422 references still missing belong to symbols that have no
+definition in the overlay at all: type-literal members and destructured parameters whose
+declaration line the commit changed. Layer 0 drops the old number with the line, and Layer 1
+cannot know the new one. Two commits that need a rebuild (86 % and 43 % recall) now sit at 27
+unresolved sites, two above the threshold.
+
 ### What the build changed in the design
 
 - **Go's Layers 1–2 use go/parser, not tree-sitter.** Exact for Go, positions in scip-go's byte
@@ -432,7 +462,7 @@ Design facts:
 
 ### Open
 
-- TypeScript: members of locals and parameters with a spelled type (`p: I` → `I#q.`), the
-  largest share of the unresolved sites; a newer tree-sitter grammar for the 2 % of files that
+- TypeScript: new counter-numbered declarations (type-literal members, destructured
+  parameters on a changed line) — 383 of the 422 missing references; inherited members; a newer tree-sitter grammar for the 2 % of files that
   do not parse; `extends` in tsconfig; monorepos with several tsconfigs.
 - Replays on other repos (Lebenslauf, Rubik, Hollow-Keep) once their languages have layers.

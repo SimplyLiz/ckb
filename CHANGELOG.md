@@ -30,10 +30,13 @@ All notable changes to CKB will be documented in this file.
   them): declarations under scip-typescript's IDs, except the counter-numbered ones (object
   literal properties, type-literal members), which keep their old IDs at definition and uses;
   references through same-file names, imports, re-exports and `tsconfig` paths, namespace
-  imports, enum and static members and constructors. Checked on Lebenslauf: 6,138 of 6,138
+  imports, enum and static members and constructors, and members of a spelled type: `x.m` for
+  `x: T` (also `T | undefined`, `(v as T).m`), JSX attributes through the component's first
+  parameter, keys of `const x: T = { … }`, a type literal's members under the number the index
+  has. Checked on Lebenslauf: 6,138 of 6,138
   comparable definitions identical to scip-typescript's at HEAD; over its last 30 small commits
-  1,147 of 1,147 overlay references and 543 of 543 impact items they bring identical to a fresh
-  index, 77 % of the changed symbols' references found, overlay built in 47 ms (median). A file
+  1,303 of 1,303 overlay references and 556 of 556 impact items they bring identical to a fresh
+  index, 77 % of the changed symbols' references found, overlay built in 51 ms (median). A file
   with a syntax error (or a construct the bundled grammar lacks) and a renamed TS file stay at
   the line remap and ask for a rebuild.
 - **`indexFreshness`, `getStatus` and the session-start hook say what the overlay serves**:

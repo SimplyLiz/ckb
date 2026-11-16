@@ -288,6 +288,28 @@ type tsModule struct {
 	all     map[string]bool // every synthesized suffix: "C#m().", "E#A."
 	imports map[string]tsImport
 	tsExports
+	// types and params are the shapes Layer 2 looks members up in: the
+	// top-level interfaces, classes and object-type aliases, and the first
+	// parameter of each top-level function.
+	types  map[string]tsTypeShape
+	params map[string]tsParamShape
+	defs   map[string]bool // definition suffixes in the file's document, read once
+}
+
+// tsTypeShape says where a type's members are found.
+type tsTypeShape int
+
+const (
+	tsShapeMembers tsTypeShape = iota + 1 // interface or class: "T#m." from the parse
+	tsShapeLiteral                        // type T = { … }: "T#typeLiteralN:m." from the document
+)
+
+// tsParamShape is a function's first parameter, what JSX attributes of a
+// component name: an object type spelled in place (literal, the owner of its
+// members' IDs) or a named type (typeName, resolved in the declaring file).
+type tsParamShape struct {
+	literal  string
+	typeName string
 }
 
 // tsTopDecls indexes the top-level declarations among decls by name.
@@ -420,6 +442,7 @@ func (r *tsResolver) module(file string) *tsModule {
 	}
 	m.named = map[string]tsExportRef{}
 	tsReadExports(root, src, &m.tsExports)
+	m.types, m.params = tsReadShapes(root, src)
 	r.modules[file] = m
 	r.byPrefix[prefix] = file
 	return m
@@ -513,12 +536,19 @@ func tsLayer2(doc *scip.Document, file string, src []byte, lines map[int32]bool,
 	if self == nil {
 		return 0, 0
 	}
-	l := &tsRefs{r: r, file: file, src: src, self: self, cols: newUTF16Cols(src), lines: lines, doc: doc, taken: map[[2]int32]bool{}}
+	l := &tsRefs{r: r, file: file, src: src, self: self, cols: newUTF16Cols(src), lines: lines, doc: doc, taken: map[tsTaken]bool{}}
 	for _, o := range doc.Occurrences {
-		l.taken[[2]int32{o.Range[0], o.Range[1]}] = true
+		l.taken[tsTaken{o.Range[0], o.Range[1], o.Symbol}] = true
 	}
 	l.visit(root)
 	return l.added, l.unresolved
+}
+
+// tsTaken is an occurrence already in the document: a position and a symbol
+// (a shorthand property names both the property and the value).
+type tsTaken struct {
+	line, col int32
+	sym       string
 }
 
 type tsRefs struct {
@@ -529,7 +559,7 @@ type tsRefs struct {
 	cols  *utf16Cols
 	lines map[int32]bool
 	doc   *scip.Document
-	taken map[[2]int32]bool
+	taken map[tsTaken]bool
 
 	added, unresolved int
 }
@@ -543,7 +573,7 @@ func (l *tsRefs) onAdded(n *sitter.Node) bool {
 func (l *tsRefs) emit(n *sitter.Node, sym string) {
 	sl, sc := l.cols.pos(n.StartByte())
 	el, ec := l.cols.pos(n.EndByte())
-	k := [2]int32{sl, sc}
+	k := tsTaken{sl, sc, sym}
 	if l.taken[k] {
 		return
 	}
@@ -587,6 +617,14 @@ func (l *tsRefs) visit(n *sitter.Node) {
 			l.visit(n.NamedChild(i))
 		}
 		return
+	case "variable_declarator":
+		if t, v := n.ChildByFieldName("type"), n.ChildByFieldName("value"); t != nil && v != nil && v.Type() == "object" {
+			l.objectKeys(v, t)
+		}
+	case "as_expression":
+		if n.NamedChildCount() == 2 && n.NamedChild(0).Type() == "object" {
+			l.objectKeys(n.NamedChild(0), n.NamedChild(1))
+		}
 	case "identifier", "type_identifier", "shorthand_property_identifier":
 		l.ident(n)
 	}
@@ -604,19 +642,29 @@ type tsResolved struct {
 
 // resolveName resolves a free name of this file in namespace ns.
 func (l *tsRefs) resolveName(name string, ns tsNS) (tsResolved, bool) {
-	if imp, ok := l.self.imports[name]; ok {
-		target := l.r.resolveModule(l.file, imp.spec)
+	return l.r.resolveIn(l.file, name, ns)
+}
+
+// resolveIn resolves a free name of file in namespace ns: an import, a
+// top-level declaration, or (false) a global.
+func (r *tsResolver) resolveIn(file, name string, ns tsNS) (tsResolved, bool) {
+	m := r.module(file)
+	if m == nil {
+		return tsResolved{}, false
+	}
+	if imp, ok := m.imports[name]; ok {
+		target := r.resolveModule(file, imp.spec)
 		if target == "" {
 			return tsResolved{external: true}, true
 		}
 		if imp.name == "*" {
 			return tsResolved{namespace: target}, true
 		}
-		sym := l.r.importTarget(l.file, imp, ns, 0)
-		return tsResolved{sym: sym, file: l.r.byPrefix[tsSymPrefix(sym)]}, true
+		sym := r.importTarget(file, imp, ns, 0)
+		return tsResolved{sym: sym, file: r.byPrefix[tsSymPrefix(sym)]}, true
 	}
-	if tops := l.self.decls[name]; len(tops) > 0 {
-		return tsResolved{sym: pickTop(l.self.prefix, tops, ns), file: l.file}, true
+	if tops := m.decls[name]; len(tops) > 0 {
+		return tsResolved{sym: pickTop(m.prefix, tops, ns), file: file}, true
 	}
 	return tsResolved{}, false // a global
 }
@@ -675,6 +723,20 @@ func (l *tsRefs) member(n *sitter.Node) {
 		return
 	}
 	pname := l.text(prop)
+	switch sym, file, st := l.receiverType(obj); st {
+	case tsTypeRepo:
+		if s := l.r.typeMember(file, sym, pname); s != "" {
+			l.emit(prop, s)
+		} else {
+			l.unresolved++ // inherited, or a member the parse does not see
+		}
+		return
+	case tsTypeUnknown:
+		l.unresolved++
+		return
+	case tsTypeOutside:
+		return // a member of a global or a package's type
+	}
 	root := obj
 	for root.Type() == "member_expression" || root.Type() == "call_expression" || root.Type() == "non_null_expression" || root.Type() == "parenthesized_expression" {
 		next := root.ChildByFieldName("object")
@@ -741,6 +803,45 @@ func (l *tsRefs) member(n *sitter.Node) {
 	l.emit(prop, hit)
 }
 
+// objectKeys points the keys of an object literal whose type is spelled
+// (const x: T = { … }, { … } as T) at T's members. Nested objects and
+// spreads are left alone.
+func (l *tsRefs) objectKeys(obj, typ *sitter.Node) {
+	var keys []*sitter.Node
+	for i := 0; i < int(obj.NamedChildCount()); i++ {
+		var k *sitter.Node
+		switch c := obj.NamedChild(i); c.Type() {
+		case "pair", "method_definition":
+			field := "key"
+			if c.Type() == "method_definition" {
+				field = "name"
+			}
+			k = c.ChildByFieldName(field)
+		case "shorthand_property_identifier":
+			k = c
+		}
+		if k != nil && (k.Type() == "property_identifier" || k.Type() == "shorthand_property_identifier") && l.onAdded(k) {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return
+	}
+	sym, file, st := l.typeRef(typ)
+	for _, k := range keys {
+		switch st {
+		case tsTypeRepo:
+			if s := l.r.typeMember(file, sym, l.text(k)); s != "" {
+				l.emit(k, s)
+				continue
+			}
+			l.unresolved++
+		case tsTypeUnknown:
+			l.unresolved++
+		}
+	}
+}
+
 // qualifiedType handles ns.T in a type: the module part resolved like a
 // value, the name looked up in it.
 func (l *tsRefs) qualifiedType(n *sitter.Node) {
@@ -794,9 +895,259 @@ func (l *tsRefs) jsxAttribute(n *sitter.Node) {
 	if tag == nil || tag.Type() != "identifier" {
 		return
 	}
-	if res, ok := l.resolveName(l.text(tag), tsValue); ok && !res.external {
-		l.unresolved++
+	res, ok := l.resolveName(l.text(tag), tsValue)
+	if !ok || res.external {
+		return
 	}
+	if name := n.NamedChild(0); name.Type() == "property_identifier" && strings.HasSuffix(res.sym, "().") {
+		if s := l.r.propMember(res.file, res.sym, l.text(name)); s != "" {
+			l.emit(name, s)
+			return
+		}
+	}
+	l.unresolved++
+}
+
+// tsTypeState is what Layer 2 knows about the type of an expression.
+type tsTypeState int
+
+const (
+	tsTypeNone    tsTypeState = iota // no spelled type: the caller's own rules apply
+	tsTypeRepo                       // a type declared in the repository
+	tsTypeOutside                    // a primitive, a global or a package's type
+	tsTypeUnknown                    // spelled, but not one Layer 2 follows
+)
+
+// receiverType is the spelled type of a member expression's object: a local
+// or parameter declared with a type, or an "as" expression.
+func (l *tsRefs) receiverType(obj *sitter.Node) (string, string, tsTypeState) {
+	for obj.Type() == "non_null_expression" || obj.Type() == "parenthesized_expression" {
+		if obj.NamedChildCount() != 1 {
+			return "", "", tsTypeNone
+		}
+		obj = obj.NamedChild(0)
+	}
+	switch obj.Type() {
+	case "as_expression":
+		if obj.NamedChildCount() != 2 {
+			return "", "", tsTypeUnknown
+		}
+		return l.typeRef(obj.NamedChild(1))
+	case "identifier":
+		id, bound := tsLocalBinding(obj, l.text(obj), l.src)
+		if !bound {
+			return "", "", tsTypeNone
+		}
+		if t := tsBindingType(id); t != nil {
+			return l.typeRef(t)
+		}
+	}
+	return "", "", tsTypeNone
+}
+
+// typeRef resolves a type node of this file to the repository type it names.
+// T, T<…>, (T) and T | undefined | null are followed; anything else is
+// unknown.
+func (l *tsRefs) typeRef(t *sitter.Node) (string, string, tsTypeState) {
+	for {
+		switch t.Type() {
+		case "type_annotation", "parenthesized_type":
+			if t.NamedChildCount() != 1 {
+				return "", "", tsTypeUnknown
+			}
+			t = t.NamedChild(0)
+			continue
+		case "union_type":
+			var keep *sitter.Node
+			for i := 0; i < int(t.NamedChildCount()); i++ {
+				c := t.NamedChild(i)
+				if c.Type() == "literal_type" && (l.text(c) == "undefined" || l.text(c) == "null") {
+					continue
+				}
+				if keep != nil {
+					return "", "", tsTypeUnknown
+				}
+				keep = c
+			}
+			if keep == nil {
+				return "", "", tsTypeOutside
+			}
+			t = keep
+			continue
+		case "generic_type":
+			n := t.ChildByFieldName("name")
+			if n == nil {
+				return "", "", tsTypeUnknown
+			}
+			t = n
+			continue
+		case "predefined_type":
+			return "", "", tsTypeOutside
+		case "type_identifier":
+			name := l.text(t)
+			if tsBoundLocally(t, name, l.src) {
+				return "", "", tsTypeUnknown // a type parameter or a local type
+			}
+			res, ok := l.resolveName(name, tsTypeNS)
+			switch {
+			case !ok || res.external:
+				return "", "", tsTypeOutside
+			case res.sym == "" || !strings.HasSuffix(res.sym, "#"):
+				return "", "", tsTypeUnknown
+			}
+			return res.sym, res.file, tsTypeRepo
+		}
+		return "", "", tsTypeUnknown
+	}
+}
+
+// typeMember finds the member name of the repository type typeSym declared
+// in file: an interface's or class's own member, or a property of an
+// object-type alias under the number the document has for it. Empty when
+// it is inherited, declared elsewhere, or not exactly one symbol.
+func (r *tsResolver) typeMember(file, typeSym, name string) string {
+	m := r.module(file)
+	if m == nil || !strings.HasPrefix(typeSym, m.prefix) {
+		return ""
+	}
+	owner := strings.TrimPrefix(typeSym, m.prefix)
+	switch m.types[owner] {
+	case tsShapeMembers:
+		hit := ""
+		for _, k := range []string{".", "()."} {
+			if s := owner + tsEscape(name) + k; m.all[s] {
+				if hit != "" {
+					return ""
+				}
+				hit = m.prefix + s
+			}
+		}
+		return hit
+	case tsShapeLiteral:
+		return r.literalMember(file, owner, name)
+	}
+	return ""
+}
+
+// literalMember finds owner + "typeLiteralN:" + name among the file's
+// definitions: a type literal's member, numbered by scip-typescript's
+// counter, which only the document knows.
+func (r *tsResolver) literalMember(file, owner, name string) string {
+	m := r.module(file)
+	if m == nil {
+		return ""
+	}
+	if m.defs == nil {
+		m.defs = map[string]bool{}
+		if d := r.docs(file); d != nil {
+			for _, o := range d.Occurrences {
+				if o.SymbolRoles&scip.SymbolRoleDefinition != 0 && strings.HasPrefix(o.Symbol, m.prefix) {
+					m.defs[strings.TrimPrefix(o.Symbol, m.prefix)] = true
+				}
+			}
+		}
+	}
+	esc := tsEscape(name)
+	hit := ""
+	for s := range m.defs {
+		rest, ok := strings.CutPrefix(s, owner+"typeLiteral")
+		if !ok {
+			continue
+		}
+		i := 0
+		for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+			i++
+		}
+		if i == 0 || !strings.HasPrefix(rest[i:], ":") {
+			continue
+		}
+		if tail := rest[i+1:]; tail != esc+"." && tail != esc+"()." {
+			continue
+		}
+		if hit != "" {
+			return ""
+		}
+		hit = m.prefix + s
+	}
+	return hit
+}
+
+// propMember finds what a JSX attribute name of the component fn (a
+// top-level function of file) points at: the member of its first
+// parameter's type.
+func (r *tsResolver) propMember(file, fn, name string) string {
+	m := r.module(file)
+	if m == nil || !strings.HasPrefix(fn, m.prefix) {
+		return ""
+	}
+	ps, ok := m.params[strings.TrimPrefix(fn, m.prefix)]
+	switch {
+	case !ok:
+		return ""
+	case ps.literal != "":
+		return r.literalMember(file, ps.literal, name)
+	}
+	res, ok := r.resolveIn(file, ps.typeName, tsTypeNS)
+	if !ok || res.external || !strings.HasSuffix(res.sym, "#") {
+		return ""
+	}
+	return r.typeMember(res.file, res.sym, name)
+}
+
+// tsReadShapes reads the top-level types whose members Layer 2 can look up
+// and the first parameter of each top-level function.
+func tsReadShapes(root *sitter.Node, src []byte) (map[string]tsTypeShape, map[string]tsParamShape) {
+	types := map[string]tsTypeShape{}
+	params := map[string]tsParamShape{}
+	for i := 0; i < int(root.NamedChildCount()); i++ {
+		st := root.NamedChild(i)
+		if st.Type() == "export_statement" {
+			if d := st.ChildByFieldName("declaration"); d != nil {
+				st = d
+			} else {
+				for j := 0; j < int(st.NamedChildCount()); j++ {
+					if c := st.NamedChild(j); c.Type() == "function_declaration" || c.Type() == "class_declaration" {
+						st = c
+					}
+				}
+			}
+		}
+		name := st.ChildByFieldName("name")
+		if name == nil {
+			continue
+		}
+		switch st.Type() {
+		case "interface_declaration", "class_declaration", "abstract_class_declaration":
+			types[tsType(name.Content(src))] = tsShapeMembers
+		case "type_alias_declaration":
+			if v := st.ChildByFieldName("value"); v != nil && v.Type() == "object_type" {
+				types[tsType(name.Content(src))] = tsShapeLiteral
+			}
+		case "function_declaration":
+			fn := tsMethod(name.Content(src))
+			ps := st.ChildByFieldName("parameters")
+			if ps == nil || ps.NamedChildCount() == 0 {
+				continue
+			}
+			p := ps.NamedChild(0)
+			if p.Type() != "required_parameter" && p.Type() != "optional_parameter" {
+				continue
+			}
+			pat, typ := p.ChildByFieldName("pattern"), p.ChildByFieldName("type")
+			if pat == nil || typ == nil || typ.NamedChildCount() != 1 {
+				continue
+			}
+			switch t := typ.NamedChild(0); t.Type() {
+			case "object_type":
+				params[fn] = tsParamShape{literal: fn + "(" + tsEscape(pat.Content(src)) + ")"}
+			case "type_identifier":
+				if !tsTypeParamsBind(st, t.Content(src), src) {
+					params[fn] = tsParamShape{typeName: t.Content(src)}
+				}
+			}
+		}
+	}
+	return types, params
 }
 
 // importOrExportFrom handles import … from "spec" and export … from "spec":
@@ -910,64 +1261,108 @@ func tsIsDeclarationName(n *sitter.Node) bool {
 // Conservative: any binding of the name in any namespace counts, so a
 // shadowed name never gets the top-level symbol's edge.
 func tsBoundLocally(n *sitter.Node, name string, src []byte) bool {
+	_, ok := tsLocalBinding(n, name, src)
+	return ok
+}
+
+// tsLocalBinding is tsBoundLocally that also returns the innermost binding's
+// identifier where there is one (nil for a type variable, a function
+// expression's own name, a namespace member).
+func tsLocalBinding(n *sitter.Node, name string, src []byte) (*sitter.Node, bool) {
 	for a := n.Parent(); a != nil && a.Type() != "program"; a = a.Parent() {
 		switch a.Type() {
 		case "function_declaration", "generator_function_declaration", "function_expression", "function",
 			"generator_function", "arrow_function", "method_definition", "function_signature", "method_signature",
 			"abstract_method_signature", "call_signature", "construct_signature", "function_type", "constructor_type":
-			if params := a.ChildByFieldName("parameters"); params != nil && tsPatternBinds(params, name, src) {
-				return true
+			if params := a.ChildByFieldName("parameters"); params != nil {
+				if id := tsPatternBinding(params, name, src); id != nil {
+					return id, true
+				}
 			}
 			if p := a.ChildByFieldName("parameter"); p != nil && p.Content(src) == name {
-				return true
+				return p, true
 			}
 			if tsTypeParamsBind(a, name, src) {
-				return true
+				return nil, true
 			}
 			if a.Type() == "function_expression" || a.Type() == "function" {
 				if fn := a.ChildByFieldName("name"); fn != nil && fn.Content(src) == name {
-					return true
+					return nil, true
 				}
 			}
-			if body := a.ChildByFieldName("body"); body != nil && tsVarBinds(body, name, src) {
-				return true
+			if body := a.ChildByFieldName("body"); body != nil {
+				if id := tsVarBinding(body, name, src); id != nil {
+					return id, true
+				}
 			}
 		case "statement_block", "switch_body", "class_body":
 			if p := a.Parent(); p != nil && (p.Type() == "internal_module" || p.Type() == "module") {
-				return true // inside a namespace: its members are not file-level names
+				return nil, true // inside a namespace: its members are not file-level names
 			}
-			if tsBlockBinds(a, name, src) {
-				return true
+			if id := tsBlockBinding(a, name, src); id != nil {
+				return id, true
 			}
 		case "for_statement":
-			if init := a.ChildByFieldName("initializer"); init != nil && tsPatternBinds(init, name, src) {
-				return true
+			if init := a.ChildByFieldName("initializer"); init != nil {
+				if id := tsPatternBinding(init, name, src); id != nil {
+					return id, true
+				}
 			}
 		case "for_in_statement":
-			if left := a.ChildByFieldName("left"); left != nil && tsPatternBinds(left, name, src) {
-				return true
+			if left := a.ChildByFieldName("left"); left != nil {
+				if id := tsPatternBinding(left, name, src); id != nil {
+					return id, true
+				}
 			}
 		case "catch_clause":
-			if p := a.ChildByFieldName("parameter"); p != nil && tsPatternBinds(p, name, src) {
-				return true
+			if p := a.ChildByFieldName("parameter"); p != nil {
+				if id := tsPatternBinding(p, name, src); id != nil {
+					return id, true
+				}
 			}
 		case "class_declaration", "abstract_class_declaration", "class", "interface_declaration", "type_alias_declaration":
 			if tsTypeParamsBind(a, name, src) {
-				return true
+				return nil, true
 			}
 			if a.Type() == "class" {
 				if cn := a.ChildByFieldName("name"); cn != nil && cn.Content(src) == name {
-					return true
+					return nil, true
 				}
 			}
 			if a.Type() == "type_alias_declaration" || a.Type() == "interface_declaration" {
 				if tsTypeVarBinds(a, name, src) {
-					return true
+					return nil, true
 				}
 			}
 		}
 	}
-	return false
+	return nil, false
+}
+
+// tsBindingType is the spelled type of a binding identifier: the annotation
+// of a plain parameter or variable declarator. Nil for a destructured or an
+// unannotated binding.
+func tsBindingType(id *sitter.Node) *sitter.Node {
+	if id == nil || id.Type() != "identifier" {
+		return nil
+	}
+	p := id.Parent()
+	if p == nil {
+		return nil
+	}
+	field := ""
+	switch p.Type() {
+	case "required_parameter", "optional_parameter":
+		field = "pattern"
+	case "variable_declarator":
+		field = "name"
+	default:
+		return nil
+	}
+	if b := p.ChildByFieldName(field); b == nil || b.StartByte() != id.StartByte() {
+		return nil
+	}
+	return p.ChildByFieldName("type")
 }
 
 func tsTypeParamsBind(a *sitter.Node, name string, src []byte) bool {
@@ -1012,78 +1407,89 @@ func tsTypeVarBinds(a *sitter.Node, name string, src []byte) bool {
 // tsPatternBinds reports whether a parameter list, declaration or pattern
 // binds name.
 func tsPatternBinds(n *sitter.Node, name string, src []byte) bool {
+	return tsPatternBinding(n, name, src) != nil
+}
+
+// tsPatternBinding returns the identifier in a parameter list, declaration
+// or pattern that binds name.
+func tsPatternBinding(n *sitter.Node, name string, src []byte) *sitter.Node {
 	switch n.Type() {
 	case "identifier", "shorthand_property_identifier_pattern":
-		return n.Content(src) == name
+		if n.Content(src) == name {
+			return n
+		}
+		return nil
 	case "pair_pattern":
 		if v := n.ChildByFieldName("value"); v != nil {
-			return tsPatternBinds(v, name, src)
+			return tsPatternBinding(v, name, src)
 		}
-		return false
+		return nil
 	case "assignment_pattern", "object_assignment_pattern":
 		if left := n.ChildByFieldName("left"); left != nil {
-			return tsPatternBinds(left, name, src)
+			return tsPatternBinding(left, name, src)
 		}
-		return false
+		return nil
 	case "variable_declarator":
 		if v := n.ChildByFieldName("name"); v != nil {
-			return tsPatternBinds(v, name, src)
+			return tsPatternBinding(v, name, src)
 		}
-		return false
+		return nil
 	case "required_parameter", "optional_parameter":
 		if v := n.ChildByFieldName("pattern"); v != nil {
-			return tsPatternBinds(v, name, src)
+			return tsPatternBinding(v, name, src)
 		}
-		return false
+		return nil
 	case "type_annotation", "string", "number", "call_expression", "arrow_function", "function_expression":
-		return false
+		return nil
 	}
 	for i := 0; i < int(n.NamedChildCount()); i++ {
-		if tsPatternBinds(n.NamedChild(i), name, src) {
-			return true
+		if id := tsPatternBinding(n.NamedChild(i), name, src); id != nil {
+			return id
 		}
 	}
-	return false
+	return nil
 }
 
-// tsBlockBinds checks the declarations directly in a block.
-func tsBlockBinds(b *sitter.Node, name string, src []byte) bool {
+// tsBlockBinding checks the declarations directly in a block.
+func tsBlockBinding(b *sitter.Node, name string, src []byte) *sitter.Node {
 	for i := 0; i < int(b.NamedChildCount()); i++ {
-		if tsStatementBinds(b.NamedChild(i), name, src) {
-			return true
+		if id := tsStatementBinding(b.NamedChild(i), name, src); id != nil {
+			return id
 		}
 	}
-	return false
+	return nil
 }
 
-func tsStatementBinds(st *sitter.Node, name string, src []byte) bool {
+func tsStatementBinding(st *sitter.Node, name string, src []byte) *sitter.Node {
 	switch st.Type() {
 	case "lexical_declaration", "variable_declaration":
 		for j := 0; j < int(st.NamedChildCount()); j++ {
-			if d := st.NamedChild(j); d.Type() == "variable_declarator" && tsPatternBinds(d, name, src) {
-				return true
+			if d := st.NamedChild(j); d.Type() == "variable_declarator" {
+				if id := tsPatternBinding(d, name, src); id != nil {
+					return id
+				}
 			}
 		}
 	case "function_declaration", "generator_function_declaration", "class_declaration", "abstract_class_declaration",
 		"interface_declaration", "type_alias_declaration", "enum_declaration":
 		if n := st.ChildByFieldName("name"); n != nil && n.Content(src) == name {
-			return true
+			return n
 		}
 	case "export_statement":
 		if d := st.ChildByFieldName("declaration"); d != nil {
-			return tsStatementBinds(d, name, src)
+			return tsStatementBinding(d, name, src)
 		}
 	}
-	return false
+	return nil
 }
 
-// tsVarBinds finds var declarations of name anywhere in a function body
+// tsVarBinding finds a var declaration of name anywhere in a function body
 // (they are function-scoped), not entering nested functions.
-func tsVarBinds(body *sitter.Node, name string, src []byte) bool {
-	found := false
+func tsVarBinding(body *sitter.Node, name string, src []byte) *sitter.Node {
+	var found *sitter.Node
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
-		if found {
+		if found != nil {
 			return
 		}
 		switch n.Type() {
@@ -1091,9 +1497,11 @@ func tsVarBinds(body *sitter.Node, name string, src []byte) bool {
 			return
 		case "variable_declaration":
 			for j := 0; j < int(n.NamedChildCount()); j++ {
-				if d := n.NamedChild(j); d.Type() == "variable_declarator" && tsPatternBinds(d, name, src) {
-					found = true
-					return
+				if d := n.NamedChild(j); d.Type() == "variable_declarator" {
+					if id := tsPatternBinding(d, name, src); id != nil {
+						found = id
+						return
+					}
 				}
 			}
 		}
