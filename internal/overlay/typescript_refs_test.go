@@ -310,9 +310,10 @@ func TestTSLayer2Literals(t *testing.T) {
 	}
 }
 
-// TestTSConfigPaths: the nearest tsconfig.json governs a file, extends is
-// followed (paths relative to the config that sets them, baseUrl to its
-// own), and a solution config takes its references' paths.
+// TestTSConfigPaths: the root tsconfig.json's project and the projects it
+// references govern, as when ckb index runs scip-typescript at the root;
+// extends is followed (paths relative to the config that sets them, baseUrl
+// to its own), and a package's tsconfig nothing references is not read.
 func TestTSConfigPaths(t *testing.T) {
 	root := t.TempDir()
 	write := func(rel, text string) {
@@ -325,15 +326,17 @@ func TestTSConfigPaths(t *testing.T) {
 		}
 	}
 	write("configs/base.json", `{ "compilerOptions": { "paths": { "@lib/*": ["../lib/*"] } } }`)
-	write("tsconfig.json", `{ "extends": "./configs/base.json" }`)
+	write("tsconfig.json", `{ "extends": "./configs/base.json", "references": [{ "path": "./packages/api" }, { "path": "./apps/vite" }] }`)
 	write("lib/a.ts", "export const a = 1;\n")
-	write("packages/web/tsconfig.json", `{ "extends": "../../configs/base", "compilerOptions": { "baseUrl": "src", "paths": { "~/*": ["*"] } } }`)
-	write("packages/web/src/b.ts", "export const b = 1;\n")
+	write("packages/api/tsconfig.json", `{ "extends": "../../configs/base", "compilerOptions": { "baseUrl": "src", "paths": { "~/*": ["*"] } } }`)
+	write("packages/api/src/b.ts", "export const b = 1;\n")
+	write("packages/web/tsconfig.json", `{ "compilerOptions": { "paths": { "#/*": ["./src/*"] } } }`) // not referenced
+	write("packages/web/src/w.ts", "export const w = 1;\n")
 	write("apps/vite/tsconfig.json", `{ "files": [], "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }] }`)
 	write("apps/vite/tsconfig.app.json", `{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }`)
 	write("apps/vite/tsconfig.node.json", `{ "include": ["vite.config.ts"] }`)
 	write("apps/vite/src/c.ts", "export const c = 1;\n")
-	indexed := map[string]bool{"lib/a.ts": true, "packages/web/src/b.ts": true, "apps/vite/src/c.ts": true}
+	indexed := map[string]bool{"lib/a.ts": true, "packages/api/src/b.ts": true, "packages/web/src/w.ts": true, "apps/vite/src/c.ts": true}
 	r := newTSResolver(root, func(p string) *scip.Document {
 		if indexed[p] {
 			return &scip.Document{RelativePath: p}
@@ -341,14 +344,62 @@ func TestTSConfigPaths(t *testing.T) {
 		return nil
 	})
 	for _, c := range []struct{ from, spec, want string }{
-		{"src/x.ts", "@lib/a", "lib/a.ts"},                        // root config, paths from the extended file
-		{"packages/web/src/x.ts", "~/b", "packages/web/src/b.ts"}, // own paths against own baseUrl
-		{"packages/web/src/x.ts", "@lib/a", ""},                   // its paths replace the parent's
-		{"apps/vite/src/x.ts", "@/c", "apps/vite/src/c.ts"},       // a solution config's reference
+		{"src/x.ts", "@lib/a", "lib/a.ts"},                        // the root's paths, from the extended file
+		{"packages/api/src/x.ts", "~/b", "packages/api/src/b.ts"}, // a referenced project: own paths, own baseUrl
+		{"packages/api/src/x.ts", "@lib/a", ""},                   // its paths replace the parent's
+		{"packages/web/src/x.ts", "#/w", ""},                      // not referenced: the root's paths
+		{"packages/web/src/x.ts", "@lib/a", "lib/a.ts"},
+		{"apps/vite/src/x.ts", "@/c", "apps/vite/src/c.ts"}, // a solution config's references
 		{"apps/vite/src/x.ts", "@lib/a", ""},
 	} {
 		if got := r.resolveModule(c.from, c.spec); got != c.want {
 			t.Errorf("%s from %s: got %q, want %q", c.spec, c.from, got, c.want)
+		}
+	}
+}
+
+// TestTSWorkspaces: a workspace package's specifier resolves to its file
+// through exports, types or main, as the package manager's symlink lets
+// TypeScript see it.
+func TestTSWorkspaces(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, text string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("package.json", `{ "workspaces": ["packages/*"] }`)
+	write("pnpm-workspace.yaml", "packages:\n  - 'apps/*' # the apps\n  - '!apps/old'\n")
+	write("packages/spur/package.json", `{ "name": "@m/spur", "exports": "./src/index.ts" }`)
+	write("packages/spur/src/index.ts", "export const a = 1;\n")
+	write("packages/kern/package.json", `{ "name": "@m/kern", "exports": { ".": { "types": "./src/main.ts", "default": "./dist/main.js" }, "./util/*": "./src/util/*.ts" } }`)
+	write("packages/kern/src/main.ts", "export const b = 1;\n")
+	write("packages/kern/src/util/x.ts", "export const x = 1;\n")
+	write("apps/web/package.json", `{ "name": "web", "types": "lib/entry.ts" }`)
+	write("apps/web/lib/entry.ts", "export const c = 1;\n")
+	write("apps/web/lib/other.ts", "export const d = 1;\n")
+	indexed := map[string]bool{"packages/spur/src/index.ts": true, "packages/kern/src/main.ts": true, "packages/kern/src/util/x.ts": true, "apps/web/lib/entry.ts": true, "apps/web/lib/other.ts": true}
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if indexed[p] {
+			return &scip.Document{RelativePath: p}
+		}
+		return nil
+	})
+	for spec, want := range map[string]string{
+		"@m/spur":        "packages/spur/src/index.ts",
+		"@m/kern":        "packages/kern/src/main.ts",
+		"@m/kern/util/x": "packages/kern/src/util/x.ts",
+		"@m/kern/other":  "", // not in exports
+		"web":            "apps/web/lib/entry.ts",
+		"web/lib/other":  "apps/web/lib/other.ts",
+		"react":          "",
+	} {
+		if got := r.resolveModule("apps/web/src/a.ts", spec); got != want {
+			t.Errorf("%s: got %q, want %q", spec, got, want)
 		}
 	}
 }
