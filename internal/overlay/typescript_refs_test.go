@@ -93,6 +93,10 @@ func TestTSLayer2(t *testing.T) {
 		"f().@5 5 6",   // ns.f
 		"f().@9 9 10",  // f()
 		"T#n.@9 17 18", // x.n, x: T
+		// Parameters of top-level functions have global symbols; h's f
+		// is its parameter, not the imported f.
+		"scip-typescript npm app 1.0.0 src/`use.ts`/g().(x)@9 15 16",
+		"scip-typescript npm app 1.0.0 src/`use.ts`/h().(f)@11 31 32",
 	}
 	sort.Strings(want)
 	if strings.Join(got, " ") != strings.Join(want, " ") {
@@ -101,7 +105,7 @@ func TestTSLayer2(t *testing.T) {
 	if added != len(want) {
 		t.Errorf("added %d, want %d", added, len(want))
 	}
-	// h's f is its parameter, ext a package: neither is counted.
+	// ext is a package: not counted.
 	if unresolved != 0 {
 		t.Errorf("unresolved %d, want 0", unresolved)
 	}
@@ -189,6 +193,7 @@ func TestTSLayer2TypedMembers(t *testing.T) {
 		"Sep().(`{ text, quiet = false }`)typeLiteral9:quiet.@11 24 29",
 		"I#q.@11 49 50",   // <Field q>, props: I
 		"Base#b.@2 16 17", // x.b: inherited from Base
+		"Base#b.@4 4 5",   // u.b: both parts' b is Base's
 	} {
 		if !got[w] {
 			t.Errorf("missing %s", w)
@@ -200,11 +205,10 @@ func TestTSLayer2TypedMembers(t *testing.T) {
 			t.Errorf("unexpected %s", k)
 		}
 	}
-	// u.b (a union of two types), key on Sep, h's x.q (I is h's type
-	// parameter). s.length is a primitive's member, a Record's keys have no
-	// declaration.
-	if unresolved != 3 {
-		t.Errorf("unresolved %d, want 3", unresolved)
+	// key on Sep, h's x.q (I is h's type parameter). s.length is a
+	// primitive's member, a Record's keys have no declaration.
+	if unresolved != 2 {
+		t.Errorf("unresolved %d, want 2", unresolved)
 	}
 }
 

@@ -41,6 +41,7 @@ const (
 	tyFn                       // a function: node has parameters and a return type
 	tyCallback                 // a function known by params and its result elem
 	tyStore                    // a zustand store whose state is elem
+	tyPick                     // Pick, Omit, Partial, Readonly of elem: keys, omit, optional
 )
 
 type tsTy struct {
@@ -50,6 +51,15 @@ type tsTy struct {
 	sym    string // tyDecl: the type's suffix in m; tyLit: the members' owner in m
 	elem   *tsTy
 	params []tsTy
+	// tyPick: the keys Pick keeps (nil: all) or Omit drops, and Partial's
+	// optional members.
+	keys     map[string]bool
+	omit     bool
+	optional bool
+	// parts of a union (k stays tyUnknown, so every rule that does not ask
+	// for them treats it as before) or, inter set, of an intersection.
+	parts []tsTy
+	inter bool
 	// nullable: the type came out of a union with undefined or null. A
 	// member access looks through it, an object literal's keys do not:
 	// scip-typescript asks the contextual type for the property, and a
@@ -73,7 +83,9 @@ func (t tsTy) of() tsTy {
 func tsWrap(k tsTyKind, elem tsTy) tsTy {
 	switch elem.k {
 	case tyUnknown:
-		return tsUnknownTy
+		if elem.parts == nil {
+			return tsUnknownTy
+		}
 	}
 	return tsTy{k: k, elem: &elem}
 }
@@ -107,7 +119,7 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 				continue
 			}
 			if keep != nil {
-				return r.unionTy(m, t)
+				return r.unionTy(m, t, depth)
 			}
 			keep = c
 		}
@@ -142,6 +154,8 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 					return r.typeOfNode(m, args.NamedChild(i), depth+1)
 				}
 				switch n {
+				case "Pick", "Omit", "Partial", "Readonly":
+					return r.mappedTy(m, n, args, depth)
 				case "Array", "ReadonlyArray":
 					return tsWrap(tyArray, arg(0))
 				case "Promise", "PromiseLike":
@@ -178,10 +192,14 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 		switch {
 		case local:
 			return tsOutsideTy // its members are local symbols
+		case owner == "" && tsInUnionOrIntersection(t):
+			return tsTy{k: tyLit, m: m, node: t} // members by the declaring document
 		case owner == "":
 			return tsUnknownTy
 		}
 		return tsTy{k: tyLit, m: m, node: t, sym: owner}
+	case "intersection_type":
+		return r.unionTy(m, t, depth)
 	case "function_type":
 		return tsTy{k: tyFn, m: m, node: t}
 	case "predefined_type", "literal_type", "template_literal_type", "string", "number", "true", "false", "null", "undefined":
@@ -190,13 +208,67 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 	return tsUnknownTy
 }
 
-// unionTy is a union of two or more non-nullish types: outside when none of
-// them can have repository members, else unknown.
-func (r *tsResolver) unionTy(m *tsModule, t *sitter.Node) tsTy {
-	if r.mentionsRepoIn(m, t) {
+// mappedTy is a homomorphic utility type of a repository type: its members
+// are the base's (TypeScript keeps their declarations, so scip-typescript
+// names the base's symbols). Pick and Omit need their keys spelled as string
+// literals.
+func (r *tsResolver) mappedTy(m *tsModule, n string, args *sitter.Node, depth int) tsTy {
+	want := 1
+	if n == "Pick" || n == "Omit" {
+		want = 2
+	}
+	if int(args.NamedChildCount()) != want {
 		return tsUnknownTy
 	}
-	return tsOutsideTy
+	base := r.typeOfNode(m, args.NamedChild(0), depth+1)
+	switch base.k {
+	case tyDecl, tyLit, tyPick:
+	case tyOutside:
+		return tsOutsideTy
+	default:
+		return tsUnknownTy
+	}
+	out := tsTy{k: tyPick, elem: &base, optional: n == "Partial"}
+	if want == 2 {
+		keys := map[string]bool{}
+		if !tsStringLiterals(args.NamedChild(1), m.src, keys) {
+			return tsUnknownTy
+		}
+		out.keys, out.omit = keys, n == "Omit"
+	}
+	return out
+}
+
+// tsStringLiterals collects a string literal type or a union of them.
+func tsStringLiterals(t *sitter.Node, src []byte, into map[string]bool) bool {
+	switch t.Type() {
+	case "union_type", "parenthesized_type":
+		for i := 0; i < int(t.NamedChildCount()); i++ {
+			if !tsStringLiterals(t.NamedChild(i), src, into) {
+				return false
+			}
+		}
+		return t.NamedChildCount() > 0
+	case "literal_type":
+		if t.NamedChildCount() == 1 && t.NamedChild(0).Type() == "string" {
+			into[tsStringValue(t.NamedChild(0).Content(src))] = true
+			return true
+		}
+	}
+	return false
+}
+
+// unionTy is a union of two or more non-nullish types: outside when none of
+// them can have repository members, else unknown.
+func (r *tsResolver) unionTy(m *tsModule, t *sitter.Node, depth int) tsTy {
+	if !r.mentionsRepoIn(m, t) {
+		return tsOutsideTy
+	}
+	parts, nullable, ok := r.tsUnionParts(m, t, depth)
+	if !ok {
+		return tsUnknownTy
+	}
+	return tsTy{k: tyUnknown, parts: parts, nullable: nullable, inter: t.Type() == "intersection_type"}
 }
 
 func tsNullish(c *sitter.Node, src []byte) bool {
@@ -413,9 +485,10 @@ func tsPosOwner(t *sitter.Node, src []byte) string {
 
 // tsMember is what a member lookup found.
 type tsMember struct {
-	sym string // the member's symbol, when found
-	typ tsTy   // its type
-	k   tsTyKind
+	sym  string   // the member's symbol, when found
+	more []string // a union's: the other parts' declarations
+	typ  tsTy     // its type
+	k    tsTyKind
 }
 
 // memberOf looks name up in t: a found member has k tyDecl; tyOutside means
@@ -426,17 +499,35 @@ func (r *tsResolver) memberOf(t tsTy, name string, depth int) tsMember {
 	case tyNone:
 		return tsMember{k: tyNone}
 	case tyUnknown:
+		if t.inter {
+			return r.interMember(t, name, depth)
+		}
 		return tsMember{k: tyUnknown}
 	case tyDecl:
 		return r.declMember(t, name, depth)
 	case tyLit:
+		if t.sym == "" {
+			return r.posLitMember(t, name, depth)
+		}
 		sym := r.literalMember(t.m.file, t.sym, name)
 		if sym == "" {
 			return tsMember{k: tyUnknown}
 		}
 		mn := tsFindMember(t.node, name, t.m.src)
 		return tsMember{sym: sym, typ: r.memberType(t.m, mn, depth), k: tyDecl}
+	case tyPick:
+		if t.keys != nil && t.keys[name] == t.omit {
+			return tsMember{k: tyUnknown} // not a member: a type error, or a key Layer 2 misread
+		}
+		mb := r.memberOf(t.of(), name, depth+1)
+		if t.optional && mb.k == tyDecl {
+			mb.typ.nullable = true // Partial: a?: T
+		}
+		return mb
 	case tyStore:
+		if tsReactBox(t) {
+			return tsMember{k: tyOutside}
+		}
 		switch name {
 		case "getState", "getInitialState":
 			return tsMember{typ: tsTy{k: tyCallback, elem: t.elem}, k: tyOutside}
@@ -591,10 +682,9 @@ func (r *tsResolver) memberType(m *tsModule, mn *sitter.Node, depth int) tsTy {
 func (r *tsResolver) returnOf(m *tsModule, t tsTy, args *sitter.Node, depth int) tsTy {
 	switch t.k {
 	case tyFn:
+		// A generic function's type parameters are local names: a result
+		// that mentions one is unknown, one that does not is exact.
 		fn := t.node
-		if fn.ChildByFieldName("type_parameters") != nil {
-			return tsUnknownTy // a generic function: its result depends on the call
-		}
 		if rt := fn.ChildByFieldName("return_type"); rt != nil {
 			if rt.Type() == "asserts" || rt.Type() == "type_predicate_annotation" || rt.Type() == "type_predicate" {
 				return tsOutsideTy
@@ -616,6 +706,9 @@ func (r *tsResolver) returnOf(m *tsModule, t tsTy, args *sitter.Node, depth int)
 	case tyCallback:
 		return t.of()
 	case tyStore:
+		if tsReactBox(t) {
+			return tsNoTy
+		}
 		// useStore() is the state, useStore(selector) the selector's result.
 		if args == nil || args.NamedChildCount() == 0 {
 			return t.of()
@@ -629,9 +722,47 @@ func (r *tsResolver) returnOf(m *tsModule, t tsTy, args *sitter.Node, depth int)
 	case tyUnknown:
 		return tsUnknownTy
 	case tyOutside:
+		// A package's or a global's function: its result has no repository
+		// members unless it is generic over what the call passes it
+		// (useContext(ctx), useState<T>(), structuredClone(x)).
+		if args != nil && r.passesRepo(m, args, depth) {
+			return tsUnknownTy
+		}
 		return tsOutsideTy
 	}
 	return tsNoTy
+}
+
+// passesRepo reports whether a call (given by its arguments) passes a
+// value or a type argument that may carry repository members.
+func (r *tsResolver) passesRepo(m *tsModule, args *sitter.Node, depth int) bool {
+	if call := args.Parent(); call != nil {
+		if ta := call.ChildByFieldName("type_arguments"); ta != nil && r.mentionsRepoIn(m, ta) {
+			return true
+		}
+	}
+	for i := 0; i < int(args.NamedChildCount()); i++ {
+		if a := args.NamedChild(i); a.Type() != "comment" && r.carriesRepo(r.exprType(m, a, depth+1), depth) {
+			return true
+		}
+	}
+	return false
+}
+
+// carriesRepo reports a type that has, holds or returns repository members.
+func (r *tsResolver) carriesRepo(t tsTy, depth int) bool {
+	if depth > tsMaxDepth {
+		return true
+	}
+	switch t.k {
+	case tyDecl, tyLit, tyPick, tyStore, tyUnknown:
+		return true
+	case tyArray, tyPromise, tyRecord, tyMap, tyCallback:
+		return r.carriesRepo(t.of(), depth+1)
+	case tyFn:
+		return r.carriesRepo(r.returnOf(t.m, t, nil, depth+1), depth+1)
+	}
+	return false
 }
 
 func tsIsAsync(fn *sitter.Node) bool {
@@ -753,7 +884,13 @@ func (r *tsResolver) exprType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 		if ot.k == tyRecord {
 			return ot.of() // rec.key: the value type
 		}
-		mb := r.memberOf(ot, prop.Content(m.src), depth+1)
+		if tsReactBox(ot) {
+			if ot.sym == tsReactRef && prop.Content(m.src) == "current" {
+				return ot.of()
+			}
+			return tsOutsideTy // a context's Provider: React's
+		}
+		mb := r.memberOfRef(m, ot, prop.Content(m.src), obj, depth+1)
 		switch mb.k {
 		case tyDecl:
 			return mb.typ
@@ -790,6 +927,9 @@ func (r *tsResolver) exprType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 		}
 		if st, ok := r.zustandStore(m, e, depth); ok {
 			return st
+		}
+		if t, ok := r.reactCall(m, e, depth); ok {
+			return t
 		}
 		ft := r.exprType(m, fn, depth+1)
 		if (ft.k == tyArray || ft.k == tyMap) && strings.HasPrefix(ft.sym, "method:") {
@@ -1021,12 +1161,68 @@ func (r *tsResolver) topValueType(sym string, depth int) tsTy {
 
 // bindingType is the type of a local binding's identifier.
 func (r *tsResolver) bindingType(m *tsModule, id *sitter.Node, depth int) tsTy {
-	if t := tsBindingType(id); t != nil {
-		return r.typeOfNode(m, t, depth+1)
-	}
 	p := id.Parent()
+	if t := tsBindingType(id); t != nil {
+		res := r.typeOfNode(m, t, depth+1)
+		if tsIsUnion(res) && p != nil && p.ChildByFieldName("value") != nil {
+			return tsUnknownTy // initialized or defaulted: narrowed by the assignment
+		}
+		return res
+	}
 	if p == nil {
 		return tsNoTy
+	}
+	if p.Type() == "object_assignment_pattern" || p.Type() == "assignment_pattern" {
+		if t := r.bindingType1(m, id, depth); tsIsUnion(t) {
+			return tsUnknownTy // { a = d }: narrowed by the default
+		}
+	}
+	return r.bindingType1(m, id, depth)
+}
+
+// arrayElemType is the type of a name in an array pattern of a
+// declaration: [state, setState] = useState(…), [a, b] = xs.
+func (r *tsResolver) arrayElemType(m *tsModule, pat, id *sitter.Node, depth int) tsTy {
+	d := pat.Parent()
+	if d == nil || d.Type() != "variable_declarator" {
+		return tsNoTy
+	}
+	if n := d.ChildByFieldName("name"); n == nil || !tsSame(n, pat) {
+		return tsNoTy
+	}
+	v := d.ChildByFieldName("value")
+	if v == nil {
+		return tsNoTy
+	}
+	idx := -1
+	for i := 0; i < int(pat.NamedChildCount()); i++ {
+		if c := pat.NamedChild(i); tsSame(c, id) {
+			idx = i
+		}
+	}
+	switch t := r.exprType(m, v, depth+1); {
+	case t.k == tyStore && t.sym == tsReactState:
+		switch idx {
+		case 0:
+			return t.of()
+		case 1:
+			return tsOutsideTy // the setter: React's
+		}
+	case t.k == tyArray && t.sym == "":
+		return t.of()
+	case t.k == tyUnknown:
+		return tsUnknownTy
+	}
+	return tsNoTy
+}
+
+// tsIsUnion reports a union whose parts Layer 2 knows.
+func tsIsUnion(t tsTy) bool { return t.k == tyUnknown && t.parts != nil && !t.inter }
+
+func (r *tsResolver) bindingType1(m *tsModule, id *sitter.Node, depth int) tsTy {
+	p := id.Parent()
+	if p != nil && p.Type() == "array_pattern" {
+		return r.arrayElemType(m, p, id, depth)
 	}
 	// A destructured name: the member of its pattern's type.
 	key, pat := tsPatternKeyOf(id, m.src)
@@ -1106,7 +1302,11 @@ func (r *tsResolver) forOfElem(m *tsModule, f *sitter.Node, depth int) tsTy {
 // initializer's.
 func (r *tsResolver) declaratorType(m *tsModule, d *sitter.Node, depth int) tsTy {
 	if t := d.ChildByFieldName("type"); t != nil {
-		return r.typeOfNode(m, t, depth+1)
+		res := r.typeOfNode(m, t, depth+1)
+		if tsIsUnion(res) && d.ChildByFieldName("value") != nil {
+			return tsUnknownTy // x: A | B = a is A where it is read: narrowed by the assignment
+		}
+		return res
 	}
 	if v := d.ChildByFieldName("value"); v != nil {
 		return r.exprType(m, v, depth+1)
@@ -1287,9 +1487,6 @@ func (r *tsResolver) resultContext(m *tsModule, fn *sitter.Node, depth int) tsTy
 			switch ct.k {
 			case tyFn:
 				t = r.returnOf(m, tsTy{k: tyFn, m: ct.m, node: ct.node}, nil, depth+1)
-				if ct.node.ChildByFieldName("type_parameters") != nil {
-					return tsUnknownTy
-				}
 			case tyCallback:
 				t = ct.of()
 			case tyUnknown:
@@ -1332,12 +1529,11 @@ func (r *tsResolver) argContext(m *tsModule, call *sitter.Node, i int, depth int
 	ft := r.exprType(m, fn, depth+1)
 	switch ft.k {
 	case tyFn:
-		if ft.node.ChildByFieldName("type_parameters") != nil {
-			return tsUnknownTy
-		}
+		// edit<T>(id, fn: (s: State) => T): fn's s is State whatever T is;
+		// a parameter type that mentions T is unknown (a local type name).
 		return r.paramOf(ft, i, depth+1)
 	case tyStore:
-		if i == 0 {
+		if i == 0 && !tsReactBox(ft) {
 			return tsTy{k: tyCallback, params: []tsTy{ft.of()}}
 		}
 		return tsNoTy

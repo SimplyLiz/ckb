@@ -700,6 +700,10 @@ type tsModule struct {
 	// for a variable's declarator); overloaded, the functions with overloads.
 	nodes      map[string]*sitter.Node
 	overloaded map[string]bool
+	// defPos are the document's definitions by start, cols its UTF-16
+	// columns: read once, for members whose owner Layer 1 does not name.
+	defPos map[[2]int32]string
+	cols   *utf16Cols
 }
 
 // tsParamShape is a function's first parameter, what JSX attributes of a
@@ -1017,11 +1021,35 @@ type tsRefs struct {
 	// the contextual type's member, or might: scip-typescript writes the
 	// member there, the value only when the context has no such property.
 	noValue map[uint32]bool
+	// defs are the document's non-local definitions by start position.
+	defs map[[2]int32]string
 
 	added, unresolved int
 }
 
 func (l *tsRefs) text(n *sitter.Node) string { return n.Content(l.src) }
+
+// defSymbolAt is the non-local symbol the document defines at a binding
+// identifier (a top-level function's or a method's parameter), else empty.
+func (l *tsRefs) defSymbolAt(id *sitter.Node) string {
+	if id == nil {
+		return ""
+	}
+	if l.defs == nil {
+		l.defs = map[[2]int32]string{}
+		for _, o := range l.doc.Occurrences {
+			if o.SymbolRoles&scip.SymbolRoleDefinition != 0 && !strings.HasPrefix(o.Symbol, "local ") {
+				l.defs[[2]int32{o.Range[0], o.Range[1]}] = o.Symbol
+			}
+		}
+	}
+	sl, sc := l.cols.pos(id.StartByte())
+	sym := l.defs[[2]int32{sl, sc}]
+	if !strings.HasSuffix(sym, ")") {
+		return "" // only parameters: f().(p)
+	}
+	return sym
+}
 
 func (l *tsRefs) onAdded(n *sitter.Node) bool {
 	return l.lines[int32(n.StartPoint().Row)] // #nosec G115 -- line numbers fit
@@ -1162,7 +1190,13 @@ func (l *tsRefs) ident(n *sitter.Node) {
 	if tsIntrinsicTag(n, name) {
 		return // <table>: JSX.IntrinsicElements' member, whatever value has the name
 	}
-	if tsBoundLocally(n, name, l.src) {
+	if id, local := tsLocalBinding(n, name, l.src); local {
+		// A parameter with a global symbol: f().(p), C#m().(p). As a
+		// shorthand property ({ p }) scip-typescript writes the property, a
+		// counter or a local there, never the parameter.
+		if sym := l.defSymbolAt(id); sym != "" && ns == tsValue && n.Type() != "shorthand_property_identifier" {
+			l.emit(n, sym)
+		}
 		return
 	}
 	res, ok := l.resolveName(name, ns)
@@ -1204,10 +1238,14 @@ func (l *tsRefs) member(n *sitter.Node) {
 	}
 	pname := l.text(prop)
 	switch t := l.r.exprType(l.self, obj, 0); t.k {
-	case tyDecl, tyLit:
-		l.memberEdge(prop, t)
+	case tyDecl, tyLit, tyPick:
+		l.memberEdgeRef(prop, obj, t)
 		return
 	case tyUnknown:
+		if t.parts != nil {
+			l.memberEdgeRef(prop, obj, t) // a union or an intersection
+			return
+		}
 		l.unresolved++
 		return
 	case tyNone:
@@ -1440,6 +1478,21 @@ func (l *tsRefs) keyEdge(k *sitter.Node, t tsTy) tsMember {
 		l.miss(k)
 	}
 	return mb
+}
+
+// memberEdgeRef is memberEdge for obj.prop: a union's member is every
+// remaining part's declaration of it.
+func (l *tsRefs) memberEdgeRef(prop, obj *sitter.Node, t tsTy) {
+	switch mb := l.r.memberOfRef(l.self, t, l.text(prop), obj, 0); mb.k {
+	case tyDecl:
+		l.emit(prop, mb.sym)
+		for _, s := range mb.more {
+			l.emit(prop, s)
+		}
+	case tyOutside:
+	default:
+		l.unresolved++
+	}
 }
 
 // memberEdge gives prop the edge to t's member of its name, or counts it.
