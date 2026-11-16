@@ -1,6 +1,6 @@
 # Index overlay: fresh answers between full reindexes
 
-Status: draft, 2026-11-15. No code yet.
+Status: draft, 2026-11-15. Open questions 3 and 4 checked 2026-11-16; Phase 1 in progress.
 
 ## Problem
 
@@ -240,7 +240,62 @@ Each phase ships on its own; Phase 1 is useful without the rest.
 3. Do scip-go, scip-typescript and rust-analyzer produce an index for code that
    does not compile, and how much of it? This decides how large the second
    gain is, and needs checking before Phase 4.
+
+   **Checked 2026-11-16** (one sample per indexer, one error site per run, raw
+   data in `~/Work/Projects/CKB/overlay-measure-2026-11-16/indexer-broken/`).
+   Versions: scip-go 0.2.3, scip-typescript 0.4.0, rust-analyzer 1.99.0.
+   Repos: SkeletonMapper (Go, 16 docs), ContextCompressionEngine (TS, 21 docs),
+   LIP (Rust, 62 docs). Type error = a string assigned to an int-typed local,
+   syntax error = an unclosed `if … {` in a function body.
+
+   | Run | Exit | Index written | Docs | Occurrences | Broken file occ. |
+   |---|---|---|---|---|---|
+   | scip-go clean / type / syntax | 0 / 0 / 0 | yes | 16 | 1,393 / 1,395 / 1,394 | 97 / 99 / 98 |
+   | scip-typescript clean / type / syntax | 0 / 0 / 0 | yes | 21 | 11,649 / 11,650 / 11,650 | 653 / 654 / 655 |
+   | rust-analyzer clean / type / syntax | 0 / 0 / 0 | yes | 62 | 57,637 / 57,638 / 56,239 | 2,146 / 2,147 / 748 |
+
+   None of the three refuses to index broken code; a type error costs nothing
+   in any of them. A syntax error costs what follows the unclosed brace:
+   nothing measurable in scip-go, two cross-file references in scip-typescript
+   (the function after the brace stopped being an export, so `compress.ts`'s
+   import and call of it became `local 0`), and 65 % of the broken file in
+   rust-analyzer (1,398 occurrences, 335 symbols; other files' counts
+   unchanged). So the "code does not compile" gain is small for Go and TS
+   (their indexers already cope) and real only for Rust syntax errors, which is
+   also where tree-sitter's error recovery is the alternative. One sample each;
+   good enough to order the work, not to quote as a rate.
+
 4. Does `internal/incremental` stay? Its indexer half is replaced by the overlay.
    Whether anything outside the package reads the SQLite tables it writes
    (file symbols, file deps, call edges, rescan queue) has not been checked;
    if nothing does, it goes.
+
+   **Checked 2026-11-16** (grep over SQL text in `cmd/` and `internal/`, CKB
+   `prepareChange` on `internal/incremental/store.go`: all 20 affected uses are
+   inside the package). Row counts in CKB's own `.ckb/ckb.db`: callgraph
+   59,285, indexed_files 1,014, file_symbols 22,449, file_deps 4,950,
+   rescan_queue 0.
+
+   - `file_symbols`, `file_deps`, `rescan_queue`: no reader outside
+     `internal/incremental`. Only the schema (`storage/schema.go`) names them.
+   - `indexed_files`, `callgraph`, `index_meta`: read by the remote index
+     server in `internal/api` (`index_repos.go:113` opens `.ckb/ckb.db`
+     read-only; `index_queries.go:266,337,434,602` serve
+     `/index/repos/:repo/files` and `/callgraph`, `index_repos.go:290–334` the
+     meta and counts). That server is what federation's remote client talks to
+     (`internal/federation/remote_client.go`).
+   - `ckb diff` (`internal/diff/generator.go:236`) also selects from
+     `callgraph`, but asks for `caller_file_id` and `language`, which neither
+     the local schema nor the upload schema (`index_processor.go:460`) has. On
+     a copy of CKB's own DB it fails: `failed to load new call graph: SQL logic
+     error: no such column: caller_file_id`. It reads nothing today.
+   - Writers outside the package: `ckb index` (`cmd/ckb/index.go:542`,
+     `populateIncrementalTracking` after every full index) and the daemon
+     (`internal/daemon/refresh.go:170,376`).
+
+   Proposal (Lisa's call, nothing removed): the incremental *indexer* path
+   (`IndexIncrementalWithLang`) and the three unread tables go once the
+   overlay is in; `indexed_files` + `callgraph` + `index_meta` stay as long as
+   the remote index server exists, filled by the populate step after a full
+   index, and federation is behind its preset with no new investment, so
+   dropping the server would let all of it go. `ckb diff` is broken either way.
