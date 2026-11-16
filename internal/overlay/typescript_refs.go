@@ -3,6 +3,7 @@
 package overlay
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path"
@@ -42,6 +43,7 @@ type tsResolver struct {
 	modules map[string]*tsModule
 	// byPrefix maps a file symbol to its path, for the modules loaded.
 	byPrefix map[string]string
+	tyCache  map[tsTyKey]tsTy
 }
 
 type tsPathRule struct {
@@ -63,9 +65,19 @@ type tsExportRef struct {
 }
 
 func newTSResolver(root string, docs tsSymbolDocs) *tsResolver {
-	r := &tsResolver{root: root, docs: docs, modules: map[string]*tsModule{}, byPrefix: map[string]string{}}
+	r := &tsResolver{root: root, docs: docs, modules: map[string]*tsModule{}, byPrefix: map[string]string{}, tyCache: map[tsTyKey]tsTy{}}
 	r.paths = readTSPaths(root)
 	return r
+}
+
+// close frees the parse trees of the modules loaded.
+func (r *tsResolver) close() {
+	for _, m := range r.modules {
+		if m != nil && m.tree != nil {
+			m.tree.Close()
+			m.tree = nil
+		}
+	}
 }
 
 var jsoncComment = regexp.MustCompile(`(?s)//[^\n]*|/\*.*?\*/`)
@@ -283,26 +295,24 @@ type tsTop struct {
 // tsModule is what Layer 2 needs to know about a file: its symbol prefix,
 // top-level declarations, imports and exports.
 type tsModule struct {
+	file    string
+	src     []byte
+	tree    *sitter.Tree
+	root    *sitter.Node
 	prefix  string
 	decls   map[string][]tsTop
 	all     map[string]bool // every synthesized suffix: "C#m().", "E#A."
 	imports map[string]tsImport
 	tsExports
-	// types and params are the shapes Layer 2 looks members up in: the
-	// top-level interfaces, classes and object-type aliases, and the first
-	// parameter of each top-level function.
-	types  map[string]tsTypeShape
+	// params is the first parameter of each top-level function, what a
+	// component's JSX attributes name.
 	params map[string]tsParamShape
 	defs   map[string]bool // definition suffixes in the file's document, read once
+	// nodes are the top-level declarations by suffix ("f().", "T#", "x."
+	// for a variable's declarator); overloaded, the functions with overloads.
+	nodes      map[string]*sitter.Node
+	overloaded map[string]bool
 }
-
-// tsTypeShape says where a type's members are found.
-type tsTypeShape int
-
-const (
-	tsShapeMembers tsTypeShape = iota + 1 // interface or class: "T#m." from the parse
-	tsShapeLiteral                        // type T = { … }: "T#typeLiteralN:m." from the document
-)
 
 // tsParamShape is a function's first parameter, what JSX attributes of a
 // component name: an object type spelled in place (literal, the owner of its
@@ -420,32 +430,92 @@ func (r *tsResolver) module(file string) *tsModule {
 	if m, ok := r.modules[file]; ok {
 		return m
 	}
+	src, err := os.ReadFile(filepath.Join(r.root, filepath.FromSlash(file))) // #nosec G304 -- a file in the repository
+	if err != nil {
+		r.modules[file] = nil
+		return nil
+	}
+	return r.load(file, src)
+}
+
+// load parses file's source (once) for module.
+func (r *tsResolver) load(file string, src []byte) *tsModule {
+	if m, ok := r.modules[file]; ok {
+		return m
+	}
 	r.modules[file] = nil
 	prefix := tsFileSymbol(r.docs(file))
 	if prefix == "" {
-		return nil
-	}
-	src, err := os.ReadFile(filepath.Join(r.root, filepath.FromSlash(file))) // #nosec G304 -- a file in the repository
-	if err != nil {
 		return nil
 	}
 	tree, root, _ := tsParse(file, src)
 	if tree == nil {
 		return nil
 	}
-	defer tree.Close()
 	w := &tsWalker{src: src, cols: newUTF16Cols(src)}
 	w.statements(root, "")
-	m := &tsModule{prefix: prefix, decls: tsTopDecls(w.decls), imports: tsImports(root, src), all: map[string]bool{}}
+	m := &tsModule{file: file, src: src, tree: tree, root: root, prefix: prefix, decls: tsTopDecls(w.decls), imports: tsImports(root, src), all: map[string]bool{}}
 	for _, d := range w.decls {
 		m.all[d.suffix] = true
 	}
 	m.named = map[string]tsExportRef{}
 	tsReadExports(root, src, &m.tsExports)
-	m.types, m.params = tsReadShapes(root, src)
+	m.params = tsReadShapes(root, src)
+	m.nodes, m.overloaded = tsTopNodes(root, src)
 	r.modules[file] = m
 	r.byPrefix[prefix] = file
 	return m
+}
+
+// tsTopNodes indexes a file's top-level declarations by suffix. A suffix
+// two declarations share (merged interfaces, a class and an interface) is
+// left out.
+func tsTopNodes(root *sitter.Node, src []byte) (map[string]*sitter.Node, map[string]bool) {
+	nodes := map[string]*sitter.Node{}
+	dup := map[string]bool{}
+	over := map[string]bool{}
+	put := func(s string, n *sitter.Node) {
+		if _, ok := nodes[s]; ok {
+			dup[s] = true
+		}
+		nodes[s] = n
+	}
+	for i := 0; i < int(root.NamedChildCount()); i++ {
+		st := root.NamedChild(i)
+		if st.Type() == "export_statement" {
+			d := st.ChildByFieldName("declaration")
+			if d == nil {
+				continue
+			}
+			st = d
+		}
+		name := st.ChildByFieldName("name")
+		switch st.Type() {
+		case "function_declaration":
+			if name != nil {
+				put(tsMethod(name.Content(src)), st)
+			}
+		case "function_signature":
+			if name != nil {
+				over[tsMethod(name.Content(src))] = true
+			}
+		case "class_declaration", "abstract_class_declaration", "interface_declaration", "type_alias_declaration", "enum_declaration":
+			if name != nil {
+				put(tsType(name.Content(src)), st)
+			}
+		case "lexical_declaration", "variable_declaration":
+			for j := 0; j < int(st.NamedChildCount()); j++ {
+				d := st.NamedChild(j)
+				if n := d.ChildByFieldName("name"); d.Type() == "variable_declarator" && n != nil && n.Type() == "identifier" {
+					put(tsTerm(n.Content(src)), d)
+				}
+			}
+		}
+	}
+	for s := range dup {
+		delete(nodes, s)
+	}
+	return nodes, over
 }
 
 // tsReadExports reads a module's re-exports and default export.
@@ -527,20 +597,15 @@ func tsStringValue(s string) string {
 // and adds them to doc. It returns how many it added and how many sites it
 // left without an edge.
 func tsLayer2(doc *scip.Document, file string, src []byte, lines map[int32]bool, r *tsResolver) (added, unresolved int) {
-	tree, root, _ := tsParse(file, src)
-	if tree == nil {
-		return 0, 0
-	}
-	defer tree.Close()
-	self := r.module(file)
-	if self == nil {
-		return 0, 0
+	self := r.load(file, src)
+	if self == nil || !bytes.Equal(self.src, src) {
+		return 0, 0 // no index document, a syntax error, or a source other than the module's
 	}
 	l := &tsRefs{r: r, file: file, src: src, self: self, cols: newUTF16Cols(src), lines: lines, doc: doc, taken: map[tsTaken]bool{}}
 	for _, o := range doc.Occurrences {
 		l.taken[tsTaken{o.Range[0], o.Range[1], o.Symbol}] = true
 	}
-	l.visit(root)
+	l.visit(self.root)
 	return l.added, l.unresolved
 }
 
@@ -617,14 +682,12 @@ func (l *tsRefs) visit(n *sitter.Node) {
 			l.visit(n.NamedChild(i))
 		}
 		return
+	case "object":
+		l.objectKeys(n)
 	case "variable_declarator":
-		if t, v := n.ChildByFieldName("type"), n.ChildByFieldName("value"); t != nil && v != nil && v.Type() == "object" {
-			l.objectKeys(v, t)
-		}
-	case "as_expression":
-		if n.NamedChildCount() == 2 && n.NamedChild(0).Type() == "object" {
-			l.objectKeys(n.NamedChild(0), n.NamedChild(1))
-		}
+		l.declPattern(n)
+	case "call_expression":
+		l.dynamicImport(n)
 	case "required_parameter", "optional_parameter":
 		l.paramPattern(n)
 	case "identifier", "type_identifier", "shorthand_property_identifier":
@@ -725,26 +788,17 @@ func (l *tsRefs) member(n *sitter.Node) {
 		return
 	}
 	pname := l.text(prop)
-	switch sym, file, st := l.receiverType(obj); st {
-	case tsTypeRepo:
-		if s := l.r.typeMember(file, sym, pname); s != "" {
-			l.emit(prop, s)
-		} else {
-			l.unresolved++ // inherited, or a member the parse does not see
-		}
+	switch t := l.r.exprType(l.self, obj, 0); t.k {
+	case tyDecl, tyLit:
+		l.memberEdge(prop, t)
 		return
-	case tsTypeLiteral:
-		if s := l.r.literalMember(file, sym, pname); s != "" {
-			l.emit(prop, s)
-		} else {
-			l.unresolved++
-		}
-		return
-	case tsTypeUnknown:
+	case tyUnknown:
 		l.unresolved++
 		return
-	case tsTypeOutside:
-		return // a member of a global or a package's type
+	case tyNone:
+		// No type: a namespace's, an enum's or a class's static member, below.
+	default:
+		return // a member of a primitive, a global's or a package's type, an array, a function
 	}
 	root := obj
 	for root.Type() == "member_expression" || root.Type() == "call_expression" || root.Type() == "non_null_expression" || root.Type() == "parenthesized_expression" {
@@ -812,14 +866,84 @@ func (l *tsRefs) member(n *sitter.Node) {
 	l.emit(prop, hit)
 }
 
-// paramPattern points the names a destructured parameter takes from its
-// spelled type ({ a }: T, { a }: { a: X }) at the type's members.
+// paramPattern points the names a destructured parameter takes at the
+// members of its type: the spelled one ({ a }: T, { a }: { a: X }), else the
+// one its function's context gives it (rows.map(({ label }) => …)).
 func (l *tsRefs) paramPattern(p *sitter.Node) {
-	pat, typ := p.ChildByFieldName("pattern"), p.ChildByFieldName("type")
-	if pat == nil || typ == nil || pat.Type() != "object_pattern" || typ.NamedChildCount() != 1 {
+	pat := p.ChildByFieldName("pattern")
+	if pat == nil || pat.Type() != "object_pattern" || !l.patternOnAdded(pat) {
 		return
 	}
-	var names []*sitter.Node
+	var t tsTy
+	if typ := p.ChildByFieldName("type"); typ != nil {
+		t = l.r.typeOfNode(l.self, typ, 0)
+	} else {
+		ps := p.Parent()
+		if ps == nil || ps.Type() != "formal_parameters" {
+			return
+		}
+		i := 0
+		for k := 0; k < int(ps.NamedChildCount()); k++ {
+			c := ps.NamedChild(k)
+			if c.StartByte() == p.StartByte() {
+				break
+			}
+			if c.Type() == "required_parameter" || c.Type() == "optional_parameter" {
+				i++
+			}
+		}
+		t = l.r.paramOf(l.r.contextType(l.self, ps.Parent(), 0), i, 0)
+	}
+	l.patternKeys(pat, t)
+}
+
+// declPattern handles const { a, b: c } = e: the names point at the members
+// of e's type, or at the exports of the module of await import("m").
+func (l *tsRefs) declPattern(d *sitter.Node) {
+	pat, v := d.ChildByFieldName("name"), d.ChildByFieldName("value")
+	if pat == nil || v == nil || pat.Type() != "object_pattern" || !l.patternOnAdded(pat) {
+		return
+	}
+	if v.Type() == "await_expression" && v.NamedChildCount() == 1 {
+		if target, ok := l.importCall(v.NamedChild(0)); ok {
+			if target == "" {
+				return // a package
+			}
+			for _, k := range tsPatternKeys(pat) {
+				if !l.onAdded(k) {
+					continue
+				}
+				if s := l.r.lookup(target, l.text(k), tsValue, 0); s != "" {
+					l.emit(k, s)
+				} else {
+					l.unresolved++
+				}
+			}
+			return
+		}
+	}
+	var t tsTy
+	if typ := d.ChildByFieldName("type"); typ != nil {
+		t = l.r.typeOfNode(l.self, typ, 0)
+	} else {
+		t = l.r.exprType(l.self, v, 0)
+	}
+	l.patternKeys(pat, t)
+}
+
+func (l *tsRefs) patternOnAdded(pat *sitter.Node) bool {
+	for _, k := range tsPatternKeys(pat) {
+		if l.onAdded(k) {
+			return true
+		}
+	}
+	return false
+}
+
+// tsPatternKeys are the property names an object pattern takes, nested
+// patterns' included.
+func tsPatternKeys(pat *sitter.Node) []*sitter.Node {
+	var out []*sitter.Node
 	for i := 0; i < int(pat.NamedChildCount()); i++ {
 		var k *sitter.Node
 		switch c := pat.NamedChild(i); c.Type() {
@@ -829,39 +953,108 @@ func (l *tsRefs) paramPattern(p *sitter.Node) {
 			k = c.ChildByFieldName("left")
 		case "pair_pattern":
 			k = c.ChildByFieldName("key")
+			if v := c.ChildByFieldName("value"); v != nil && v.Type() == "object_pattern" {
+				out = append(out, tsPatternKeys(v)...)
+			}
 		}
-		if k != nil && (k.Type() == "shorthand_property_identifier_pattern" || k.Type() == "property_identifier") && l.onAdded(k) {
-			names = append(names, k)
+		if k != nil && (k.Type() == "shorthand_property_identifier_pattern" || k.Type() == "property_identifier") {
+			out = append(out, k)
 		}
 	}
-	if len(names) == 0 {
+	return out
+}
+
+// patternKeys points the keys of an object pattern at the members of t,
+// descending into nested patterns ({ a: { b } }).
+func (l *tsRefs) patternKeys(pat *sitter.Node, t tsTy) {
+	for i := 0; i < int(pat.NamedChildCount()); i++ {
+		var k, nested *sitter.Node
+		switch c := pat.NamedChild(i); c.Type() {
+		case "shorthand_property_identifier_pattern":
+			k = c
+		case "object_assignment_pattern":
+			k = c.ChildByFieldName("left")
+		case "pair_pattern":
+			k = c.ChildByFieldName("key")
+			if v := c.ChildByFieldName("value"); v != nil {
+				if v.Type() == "assignment_pattern" {
+					v = v.ChildByFieldName("left")
+				}
+				if v != nil && v.Type() == "object_pattern" {
+					nested = v
+				}
+			}
+		}
+		if k == nil || k.Type() != "shorthand_property_identifier_pattern" && k.Type() != "property_identifier" {
+			continue
+		}
+		mb := l.keyEdge(k, t)
+		if nested != nil {
+			l.patternKeys(nested, mb.typ)
+		}
+	}
+}
+
+// keyEdge gives a key on an added line the edge to t's member of its name,
+// or counts it, and returns the member.
+func (l *tsRefs) keyEdge(k *sitter.Node, t tsTy) tsMember {
+	switch t.k {
+	case tyNone, tyOutside, tyArray, tyPromise, tyRecord, tyMap, tyFn, tyCallback, tyStore:
+		return tsMember{k: tyNone}
+	case tyUnknown:
+		l.miss(k)
+		return tsMember{k: tyUnknown}
+	}
+	mb := l.r.memberOf(t, l.text(k), 0)
+	switch mb.k {
+	case tyDecl:
+		if l.onAdded(k) {
+			l.emit(k, mb.sym)
+		}
+	case tyOutside, tyNone:
+	default:
+		l.miss(k)
+	}
+	return mb
+}
+
+// memberEdge gives prop the edge to t's member of its name, or counts it.
+func (l *tsRefs) memberEdge(prop *sitter.Node, t tsTy) {
+	switch mb := l.r.memberOf(t, l.text(prop), 0); mb.k {
+	case tyDecl:
+		l.emit(prop, mb.sym)
+	case tyOutside:
+	default:
+		l.unresolved++ // a member the parse does not see, or of a type not followed
+	}
+}
+
+// importCall reports whether e is import("m") (also typeof import("m"),
+// which tsParseText turned into a call), with m's file ("" for a package).
+func (l *tsRefs) importCall(e *sitter.Node) (string, bool) {
+	if e.Type() != "call_expression" {
+		return "", false
+	}
+	fn, args := e.ChildByFieldName("function"), e.ChildByFieldName("arguments")
+	if fn == nil || args == nil || l.text(fn) != "import" || args.NamedChildCount() != 1 || args.NamedChild(0).Type() != "string" {
+		return "", false
+	}
+	return l.r.resolveModule(l.file, tsStringValue(l.text(args.NamedChild(0)))), true
+}
+
+// dynamicImport points the module string of import("m") at m's file, as
+// scip-typescript does.
+func (l *tsRefs) dynamicImport(e *sitter.Node) {
+	target, ok := l.importCall(e)
+	if !ok || target == "" {
 		return
 	}
-	lookup := func(string) string { return "" }
-	st := tsTypeRepo
-	if typ.NamedChild(0).Type() == "object_type" {
-		fn, ok := tsParamOwner(p, l.src)
-		if !ok {
-			return // a local function's literal: local symbols
-		}
-		owner := fn + "(" + tsEscape(l.text(pat)) + ")"
-		lookup = func(n string) string { return l.r.literalMember(l.file, owner, n) }
-	} else {
-		var sym, file string
-		sym, file, st = l.typeRef(typ)
-		lookup = func(n string) string { return l.r.typeMember(file, sym, n) }
+	s := e.ChildByFieldName("arguments").NamedChild(0)
+	if !l.onAdded(s) {
+		return
 	}
-	for _, k := range names {
-		switch st {
-		case tsTypeRepo:
-			if s := lookup(l.text(k)); s != "" {
-				l.emit(k, s)
-				continue
-			}
-			l.unresolved++
-		case tsTypeUnknown:
-			l.unresolved++
-		}
+	if fs := tsFileSymbol(l.r.docs(target)); fs != "" {
+		l.emit(s, fs)
 	}
 }
 
@@ -918,10 +1111,10 @@ func tsParamOwner(p *sitter.Node, src []byte) (string, bool) {
 	return "", false
 }
 
-// objectKeys points the keys of an object literal whose type is spelled
-// (const x: T = { … }, { … } as T) at T's members. Nested objects and
-// spreads are left alone.
-func (l *tsRefs) objectKeys(obj, typ *sitter.Node) {
+// objectKeys points the keys of an object literal at the members of the
+// type its context gives it: a variable's annotation, as/satisfies, a
+// parameter, a return type, an enclosing key's member, an array's element.
+func (l *tsRefs) objectKeys(obj *sitter.Node) {
 	var keys []*sitter.Node
 	for i := 0; i < int(obj.NamedChildCount()); i++ {
 		var k *sitter.Node
@@ -942,18 +1135,12 @@ func (l *tsRefs) objectKeys(obj, typ *sitter.Node) {
 	if len(keys) == 0 {
 		return
 	}
-	sym, file, st := l.typeRef(typ)
+	t := l.r.contextType(l.self, obj, 0)
+	if t.nullable {
+		return // the literal's keys are its own properties
+	}
 	for _, k := range keys {
-		switch st {
-		case tsTypeRepo:
-			if s := l.r.typeMember(file, sym, l.text(k)); s != "" {
-				l.emit(k, s)
-				continue
-			}
-			l.unresolved++
-		case tsTypeUnknown:
-			l.unresolved++
-		}
+		l.keyEdge(k, t)
 	}
 }
 
@@ -1023,165 +1210,6 @@ func (l *tsRefs) jsxAttribute(n *sitter.Node) {
 	l.unresolved++
 }
 
-// tsTypeState is what Layer 2 knows about the type of an expression.
-type tsTypeState int
-
-const (
-	tsTypeNone    tsTypeState = iota // no spelled type: the caller's own rules apply
-	tsTypeRepo                       // a type declared in the repository
-	tsTypeOutside                    // a primitive, a global or a package's type
-	tsTypeUnknown                    // spelled, but not one Layer 2 follows
-	tsTypeLiteral                    // an object type in a parameter: sym is its members' owner in file
-)
-
-// receiverType is the spelled type of a member expression's object: a local
-// or parameter declared with a type, or an "as" expression.
-func (l *tsRefs) receiverType(obj *sitter.Node) (string, string, tsTypeState) {
-	for obj.Type() == "non_null_expression" || obj.Type() == "parenthesized_expression" {
-		if obj.NamedChildCount() != 1 {
-			return "", "", tsTypeNone
-		}
-		obj = obj.NamedChild(0)
-	}
-	switch obj.Type() {
-	case "as_expression":
-		if obj.NamedChildCount() != 2 {
-			return "", "", tsTypeUnknown
-		}
-		return l.typeRef(obj.NamedChild(1))
-	case "identifier":
-		id, bound := tsLocalBinding(obj, l.text(obj), l.src)
-		if !bound {
-			return "", "", tsTypeNone
-		}
-		if t := tsBindingType(id); t != nil {
-			if t.NamedChildCount() == 1 && t.NamedChild(0).Type() == "object_type" {
-				if fn, ok := tsParamOwner(id.Parent(), l.src); ok {
-					return fn + "(" + tsEscape(l.text(id)) + ")", l.file, tsTypeLiteral
-				}
-				return "", "", tsTypeOutside // a local type literal: local symbols
-			}
-			return l.typeRef(t)
-		}
-	}
-	return "", "", tsTypeNone
-}
-
-// typeRef resolves a type node of this file to the repository type it names.
-// T, T<…>, (T) and T | undefined | null are followed; anything else is
-// unknown.
-func (l *tsRefs) typeRef(t *sitter.Node) (string, string, tsTypeState) {
-	// A global or package generic over repository types (Record<K, T>,
-	// Partial<T>, Array<{ … }>) is not outside: its members can be T's.
-	var args *sitter.Node
-	outside := func() (string, string, tsTypeState) {
-		if args != nil && l.mentionsRepo(args) {
-			return "", "", tsTypeUnknown
-		}
-		return "", "", tsTypeOutside
-	}
-	for {
-		switch t.Type() {
-		case "type_annotation", "parenthesized_type":
-			if t.NamedChildCount() != 1 {
-				return "", "", tsTypeUnknown
-			}
-			t = t.NamedChild(0)
-			continue
-		case "union_type":
-			var keep *sitter.Node
-			for i := 0; i < int(t.NamedChildCount()); i++ {
-				c := t.NamedChild(i)
-				if c.Type() == "literal_type" && (l.text(c) == "undefined" || l.text(c) == "null") {
-					continue
-				}
-				if keep != nil {
-					return "", "", tsTypeUnknown
-				}
-				keep = c
-			}
-			if keep == nil {
-				return "", "", tsTypeOutside
-			}
-			t = keep
-			continue
-		case "generic_type":
-			n := t.ChildByFieldName("name")
-			if n == nil {
-				return "", "", tsTypeUnknown
-			}
-			args = t.ChildByFieldName("type_arguments")
-			t = n
-			continue
-		case "predefined_type":
-			return "", "", tsTypeOutside
-		case "type_identifier":
-			name := l.text(t)
-			if tsBoundLocally(t, name, l.src) {
-				return "", "", tsTypeUnknown // a type parameter or a local type
-			}
-			res, ok := l.resolveName(name, tsTypeNS)
-			switch {
-			case !ok || res.external:
-				return outside()
-			case res.sym == "" || !strings.HasSuffix(res.sym, "#"):
-				return "", "", tsTypeUnknown
-			}
-			return res.sym, res.file, tsTypeRepo
-		}
-		return "", "", tsTypeUnknown
-	}
-}
-
-// mentionsRepo reports whether a type node spells an object type or names a
-// type of the repository.
-func (l *tsRefs) mentionsRepo(n *sitter.Node) bool {
-	switch n.Type() {
-	case "object_type":
-		return true
-	case "type_identifier":
-		if tsBoundLocally(n, l.text(n), l.src) {
-			return false
-		}
-		res, ok := l.resolveName(l.text(n), tsTypeNS)
-		return ok && !res.external
-	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
-		if l.mentionsRepo(n.NamedChild(i)) {
-			return true
-		}
-	}
-	return false
-}
-
-// typeMember finds the member name of the repository type typeSym declared
-// in file: an interface's or class's own member, or a property of an
-// object-type alias under the number the document has for it. Empty when
-// it is inherited, declared elsewhere, or not exactly one symbol.
-func (r *tsResolver) typeMember(file, typeSym, name string) string {
-	m := r.module(file)
-	if m == nil || !strings.HasPrefix(typeSym, m.prefix) {
-		return ""
-	}
-	owner := strings.TrimPrefix(typeSym, m.prefix)
-	switch m.types[owner] {
-	case tsShapeMembers:
-		hit := ""
-		for _, k := range []string{".", "()."} {
-			if s := owner + tsEscape(name) + k; m.all[s] {
-				if hit != "" {
-					return ""
-				}
-				hit = m.prefix + s
-			}
-		}
-		return hit
-	case tsShapeLiteral:
-		return r.literalMember(file, owner, name)
-	}
-	return ""
-}
-
 // literalMember finds owner + "typeLiteralN:" + name among the file's
 // definitions: a type literal's member, numbered by scip-typescript's
 // counter, which only the document knows.
@@ -1244,13 +1272,18 @@ func (r *tsResolver) propMember(file, fn, name string) string {
 	if !ok || res.external || !strings.HasSuffix(res.sym, "#") {
 		return ""
 	}
-	return r.typeMember(res.file, res.sym, name)
+	t := r.typeBySymbol(res.sym, 0)
+	if t.k != tyDecl && t.k != tyLit {
+		return ""
+	}
+	if mb := r.memberOf(t, name, 0); mb.k == tyDecl {
+		return mb.sym
+	}
+	return ""
 }
 
-// tsReadShapes reads the top-level types whose members Layer 2 can look up
-// and the first parameter of each top-level function.
-func tsReadShapes(root *sitter.Node, src []byte) (map[string]tsTypeShape, map[string]tsParamShape) {
-	types := map[string]tsTypeShape{}
+// tsReadShapes reads the first parameter of each top-level function.
+func tsReadShapes(root *sitter.Node, src []byte) map[string]tsParamShape {
 	params := map[string]tsParamShape{}
 	for i := 0; i < int(root.NamedChildCount()); i++ {
 		st := root.NamedChild(i)
@@ -1270,12 +1303,6 @@ func tsReadShapes(root *sitter.Node, src []byte) (map[string]tsTypeShape, map[st
 			continue
 		}
 		switch st.Type() {
-		case "interface_declaration", "class_declaration", "abstract_class_declaration":
-			types[tsType(name.Content(src))] = tsShapeMembers
-		case "type_alias_declaration":
-			if v := st.ChildByFieldName("value"); v != nil && v.Type() == "object_type" {
-				types[tsType(name.Content(src))] = tsShapeLiteral
-			}
 		case "function_declaration":
 			fn := tsMethod(name.Content(src))
 			ps := st.ChildByFieldName("parameters")
@@ -1300,7 +1327,7 @@ func tsReadShapes(root *sitter.Node, src []byte) (map[string]tsTypeShape, map[st
 			}
 		}
 	}
-	return types, params
+	return params
 }
 
 // importOrExportFrom handles import … from "spec" and export … from "spec":

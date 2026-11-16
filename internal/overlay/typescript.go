@@ -51,13 +51,76 @@ func tsLanguage(path string) *sitter.Language {
 	return typescript.GetLanguage()
 }
 
+// tsParseText is the text tree-sitter parses for src: src with the two
+// constructs the grammar (v0.21.2; v0.23.2, the newest, still fails both)
+// rejects rewritten to tokens of the same length, so every offset stays the
+// same and every node's text is still read from src:
+//
+//   - "using" as an identifier (const using = …; using.length), which the
+//     grammar takes for the start of a using declaration, becomes "usin$";
+//     "using x" and "await using x" stay declarations;
+//   - typeof import("m") in a type becomes typeof $mport("m"), a type query
+//     of a call.
+//
+// src itself is returned when neither occurs.
+func tsParseText(src []byte) []byte {
+	var out []byte
+	set := func(at int, s string) {
+		if out == nil {
+			out = append([]byte(nil), src...)
+		}
+		copy(out[at:], s)
+	}
+	identByte := func(c byte) bool {
+		return c == '_' || c == '$' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
+	}
+	word := func(i int, w string) bool {
+		return i+len(w) <= len(src) && string(src[i:i+len(w)]) == w &&
+			(i == 0 || !identByte(src[i-1])) && (i+len(w) == len(src) || !identByte(src[i+len(w)]))
+	}
+	skipSpace := func(i int) int {
+		for i < len(src) && (src[i] == ' ' || src[i] == '\t' || src[i] == '\n' || src[i] == '\r') {
+			i++
+		}
+		return i
+	}
+	for i := 0; i < len(src); i++ {
+		switch src[i] {
+		case 'u':
+			if !word(i, "using") {
+				continue
+			}
+			j := skipSpace(i + len("using"))
+			if j > i+len("using") && j < len(src) && identByte(src[j]) && !(src[j] >= '0' && src[j] <= '9') &&
+				!word(j, "of") && !word(j, "in") && !word(j, "instanceof") && !word(j, "as") && !word(j, "satisfies") {
+				continue // using x = …: a declaration
+			}
+			set(i, "usin$")
+		case 't':
+			if !word(i, "typeof") {
+				continue
+			}
+			j := skipSpace(i + len("typeof"))
+			if j > i+len("typeof") && word(j, "import") {
+				if k := skipSpace(j + len("import")); k < len(src) && src[k] == '(' {
+					set(j, "$mport")
+				}
+			}
+		}
+	}
+	if out == nil {
+		return src
+	}
+	return out
+}
+
 // parseTSDecls parses src and returns its declarations and the lines a
 // syntax error touches (nil when it parses cleanly). Declarations inside an
 // error are not walked. ok is false when there is no tree at all.
 func parseTSDecls(path string, src []byte) (decls []tsDecl, errLines map[int32]bool, ok bool) {
 	p := sitter.NewParser()
 	p.SetLanguage(tsLanguage(path))
-	tree, err := p.ParseCtx(context.Background(), nil, src)
+	tree, err := p.ParseCtx(context.Background(), nil, tsParseText(src))
 	if err != nil || tree == nil {
 		return nil, nil, false
 	}
@@ -121,6 +184,20 @@ type tsLit struct {
 func (w *tsWalker) literal(t *sitter.Node, owner string) {
 	if t != nil && t.Type() == "type_annotation" && t.NamedChildCount() == 1 {
 		t = t.NamedChild(0)
+	}
+	if t != nil && t.Type() == "generic_type" {
+		// G<…, { … }>: the literal's owner is the position's, then "G:"
+		// (x.Record:, f().Promise:).
+		name, args := t.ChildByFieldName("name"), t.ChildByFieldName("type_arguments")
+		if name == nil || args == nil || name.Type() != "type_identifier" {
+			return
+		}
+		for i := 0; i < int(args.NamedChildCount()); i++ {
+			if a := args.NamedChild(i); a.Type() == "object_type" {
+				w.literal(a, owner+w.text(name)+":")
+			}
+		}
+		return
 	}
 	if t == nil || t.Type() != "object_type" {
 		return
@@ -298,6 +375,7 @@ func (w *tsWalker) statement(n *sitter.Node, owner string, outer *sitter.Node) {
 				}
 			}
 			w.add(name, owner+tsTerm(w.text(name)), encl)
+			w.literal(d.ChildByFieldName("type"), owner+tsTerm(w.text(name)))
 		}
 	}
 }
@@ -394,6 +472,7 @@ func (w *tsWalker) typeMembers(body *sitter.Node, owner string) {
 		switch m.Type() {
 		case "property_signature":
 			w.add(name, owner+tsTerm(w.text(name)), nil)
+			w.literal(m.ChildByFieldName("type"), owner+tsTerm(w.text(name)))
 		case "method_signature":
 			s := owner + tsMethod(w.text(name))
 			w.add(name, s, nil)
@@ -494,7 +573,7 @@ func tsFileStart(root *sitter.Node) uint32 {
 func tsParse(path string, src []byte) (*sitter.Tree, *sitter.Node, int32) {
 	p := sitter.NewParser()
 	p.SetLanguage(tsLanguage(path))
-	tree, err := p.ParseCtx(context.Background(), nil, src)
+	tree, err := p.ParseCtx(context.Background(), nil, tsParseText(src))
 	if err != nil || tree == nil {
 		return nil, nil, -1
 	}

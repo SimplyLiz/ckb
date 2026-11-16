@@ -29,19 +29,28 @@ All notable changes to CKB will be documented in this file.
 - **TypeScript has both layers too** (tree-sitter, UTF-16 columns as scip-typescript writes
   them): declarations under scip-typescript's IDs, except the counter-numbered ones (object
   literal properties, type-literal members), which keep their old IDs at definition and uses;
-  references through same-file names, imports, re-exports and `tsconfig` paths, namespace
-  imports, enum and static members and constructors, and members of a spelled type: `x.m` for
-  `x: T` (also `T | undefined`, `(v as T).m`), JSX attributes through the component's first
-  parameter, keys of `const x: T = { … }`, a type literal's members under the number the index
-  has. A type literal's members on new lines (of a parameter, return type, constraint or alias)
-  are defined with the number the base gave the same owner, else a placeholder until the next
-  reindex, and destructured parameters point at them. Checked on Lebenslauf: 6,138 of 6,138
-  comparable definitions identical to scip-typescript's at HEAD; over its last 30 small commits
-  1,386 of 1,386 overlay references identical to a fresh index (counter numbers normalized),
-  761 of 784 impact items they bring too and the other 23 the same symbols reached transitively,
-  82 % of the changed symbols' references found, overlay built in 52 ms (median). A file
-  with a syntax error (or a construct the bundled grammar lacks) and a renamed TS file stay at
-  the line remap and ask for a rebuild.
+  references through same-file names, imports, re-exports, dynamic `import("…")` and
+  `tsconfig` paths, namespace imports, enum and static members and constructors, and members
+  wherever the syntax pins the type: annotations, initializers (`const x = await load()`),
+  call results (also inferred from `return` statements and `??`), `this`, destructured
+  bindings, members inherited through `extends`, callback parameters of array methods and of
+  repository functions, and keys of object literals typed by their context (a variable's
+  annotation, an argument, a return type, an enclosing key, an array element, zustand's
+  `create<T>()`). Unions, intersections, type parameters and overloads are left unresolved. A
+  literal whose context is `T | undefined` (an optional parameter, a `T | null` return) gets no
+  edge, as in scip-typescript, where it defines its own properties. JSX attributes go through
+  the component's first parameter. A type literal's members on new lines (of a parameter,
+  return type, constraint, alias, variable, interface property or type argument) are defined
+  with the number the base gave the same owner, else a placeholder until the next reindex.
+  Checked on Lebenslauf: 6,138 of 6,138 comparable definitions identical to scip-typescript's
+  at HEAD; over its last 30 small commits 1,964 of 1,964 overlay references identical to a
+  fresh index (counter numbers normalized), 1,091 of 1,119 impact items they bring too (26 the
+  same symbols reached transitively, 2 from a renamed component's kept references), 96 % of
+  the changed symbols' references found, 19 of 30 commits without a rebuild (all at 100 %),
+  overlay built in 40 ms (median). The grammar's two gaps, `using` as an identifier and
+  `typeof import("…")`, are rewritten to same-length tokens before parsing (v0.23.2, the newest
+  grammar, still rejects both); all 547 Lebenslauf files parse. A file with a syntax error and a
+  renamed TS file stay at the line remap and ask for a rebuild.
 - **`indexFreshness`, `getStatus` and the session-start hook say what the overlay serves**:
   `overlay {files, covered, uncovered, layers, droppedOccurrences, unresolvedSites, rebuild}`,
   and the hint says a result's changed files are served from the overlay instead of asking for a

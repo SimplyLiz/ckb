@@ -17,3 +17,4 @@ type tsResolver struct{}
 func newTSResolver(string, func(string) *scip.Document) *tsResolver { return &tsResolver{} }
 
 func tsLayer2(*scip.Document, string, []byte, map[int32]bool, *tsResolver) (int, int) { return 0, 0 }
+func (*tsResolver) close()                                                            {}
