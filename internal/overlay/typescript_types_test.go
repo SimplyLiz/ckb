@@ -24,10 +24,13 @@ export function maybe(): L | null { return { a: 1, k() {} }; }
 export function make(): L { return { a: 1, k() {} }; }
 export const ICONS: Record<string, { z: number }> = { x: { z: 1 } };
 export class C { v: I = ITEMS[0]; get() { return this.v.q; } }
+export function takeDef(l: L = { a: 0, k() {} }) { return l; }
+export async function mkAsync(): Promise<L> { return { a: 1, k() {} }; }
+export class K { constructor(o: L) { o.k(); } }
 `
 
 const tsTypesUse = `import { create } from "zustand";
-import { I, ITEMS, first, load, takeL, takeOpt, ICONS } from "./lib";
+import { I, ITEMS, first, load, takeL, takeOpt, ICONS, takeDef, K } from "./lib";
 export const useS = create<I>()((set) => ({ q: 1, b: 2, m() {} }));
 export async function g() {
   first().q;
@@ -46,6 +49,11 @@ export async function g() {
 export function F({ card }: { card: I }) { return card.q + card.b; }
 const using = 1;
 export const n: typeof import("./lib") | number = using;
+export const a = 1;
+export const k = () => {};
+takeL({ a, k });
+takeDef({ a, k });
+new K({ a: 1, k() {} });
 `
 
 // TestTSLayer2Types: members reached through inferred and contextual types.
@@ -87,9 +95,14 @@ func TestTSLayer2Types(t *testing.T) {
 	digits := regexp.MustCompile(`typeLiteral\d+`)
 	memberRef := regexp.MustCompile(`[#.:][^@]+@`) // a member, not a type or a top-level name
 	got := map[string]bool{}
+	useSym := head + "src/`use.ts`/"
 	for _, o := range use.Occurrences {
-		if o.Source == scip.OccurrenceSourceOverlay && strings.HasPrefix(o.Symbol, libSym) {
+		switch {
+		case o.Source != scip.OccurrenceSourceOverlay:
+		case strings.HasPrefix(o.Symbol, libSym):
 			got[digits.ReplaceAllString(strings.TrimPrefix(o.Symbol, libSym), "typeLiteralN")+"@"+fmtRange(o)] = true
+		case strings.HasPrefix(o.Symbol, useSym) && o.Range[0] >= 22:
+			got["use:"+strings.TrimPrefix(o.Symbol, useSym)+"@"+fmtRange(o)] = true
 		}
 	}
 	for _, w := range []string{
@@ -105,11 +118,18 @@ func TestTSLayer2Types(t *testing.T) {
 		"I#q.@11 16 17",                         // useS((s) => s.q)
 		"I#m().@12 18 19",                       // useS.getState().m()
 		"ICONS.Record:typeLiteralN:z.@13 10 11", // a Record's value type
-		"load().@14 10 14",                      // const { load } = await import("./lib")
+		"load().@14 10 14",                      // const { load } = await import("./lib"): declared there
 		"@14 39 46",                             // the module string
 		"I#q.@17 55 56",                         // card.q: a destructured parameter's member
 		"Base#b.@17 64 65",
-		"@19 30 37", // typeof import("./lib")
+		"@19 30 37",                // typeof import("./lib")
+		"L#typeLiteralN:a.@22 8 9", // shorthand: the member, not the value
+		"L#typeLiteralN:k().@22 11 12",
+		"use:a.@23 10 11", // takeDef's parameter has a default: L | undefined, so the value
+		"use:k.@23 13 14",
+		"K#`<constructor>`().@24 4 5",
+		"L#typeLiteralN:a.@24 8 9", // new K({ a }): the constructor's parameter
+		"L#typeLiteralN:k().@24 14 15",
 	} {
 		if !got[w] {
 			t.Errorf("missing %s", w)
@@ -117,7 +137,7 @@ func TestTSLayer2Types(t *testing.T) {
 		delete(got, w)
 	}
 	for k := range got {
-		if memberRef.MatchString(k) {
+		if memberRef.MatchString(k) || strings.HasPrefix(k, "use:") {
 			t.Errorf("unexpected %s", k)
 		}
 	}
@@ -151,8 +171,9 @@ func TestTSLayer2Types(t *testing.T) {
 		}
 	}
 	for k := range got {
-		if strings.HasSuffix(k, "@8 47 48") {
-			t.Errorf("lib: maybe()'s key got an edge: %s", k)
+		// Line 12 is takeDef's default value, typed L: it has edges.
+		if strings.Contains(k, "typeLiteral") && (strings.Contains(k, "@8 ") || strings.Contains(k, "@13 ")) {
+			t.Errorf("lib: a literal in a nullable context got an edge: %s", k)
 		}
 	}
 }
@@ -177,5 +198,44 @@ func TestTSParseText(t *testing.T) {
 		if _, errLines, ok := parseTSDecls("a.ts", []byte(src)); !ok || errLines != nil {
 			t.Errorf("%q does not parse: %v", src, errLines)
 		}
+	}
+}
+
+// TestTSIntrinsicTag: a lower-case JSX tag is an intrinsic element even
+// when a value of the name is imported; the value in braces is the value.
+func TestTSIntrinsicTag(t *testing.T) {
+	root := t.TempDir()
+	lib, use := "export const table = { cls: \"t\" };\n", "import { table } from \"./lib\";\nexport const T = () => <table className={table.cls}></table>;\n"
+	for rel, text := range map[string]string{"src/lib.ts": lib, "src/t.tsx": use} {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	ld, _ := tsNewDocument(base, "src/lib.ts", []byte(lib))
+	base = scip.PatchIndex(base, map[string]*scip.Document{"src/lib.ts": ld})
+	doc, _ := tsNewDocument(base, "src/t.tsx", []byte(use))
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/t.tsx" {
+			return doc
+		}
+		return base.DocumentsByPath[p]
+	})
+	tsLayer2(doc, "src/t.tsx", []byte(use), allLines([]byte(use)), r)
+	r.close()
+	var got []string
+	for _, o := range doc.Occurrences {
+		if o.Source == scip.OccurrenceSourceOverlay && o.Range[0] == 1 {
+			got = append(got, strings.TrimPrefix(o.Symbol, head+"src/`lib.ts`/")+"@"+fmtRange(o))
+		}
+	}
+	if strings.Join(got, " ") != "table.@1 41 46" {
+		t.Errorf("got %v, want only the value in braces (table.@1 41 46)", got)
 	}
 }

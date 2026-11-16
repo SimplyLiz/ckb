@@ -671,8 +671,8 @@ func (r *tsResolver) paramOf(t tsTy, i int, depth int) tsTy {
 			if j == i {
 				if pt := p.ChildByFieldName("type"); pt != nil {
 					res := r.typeOfNode(t.m, pt, depth+1)
-					if p.Type() == "optional_parameter" {
-						res.nullable = true // p?: T is T | undefined
+					if p.Type() == "optional_parameter" || p.ChildByFieldName("value") != nil {
+						res.nullable = true // p?: T and p: T = d are T | undefined to a caller
 					}
 					return res
 				}
@@ -946,7 +946,14 @@ func (r *tsResolver) collectionCall(m *tsModule, ft tsTy, args *sitter.Node, dep
 	switch method {
 	case "find", "findLast", "at", "pop", "shift":
 		return ft.of()
-	case "filter", "slice", "concat", "sort", "reverse", "toSorted", "toReversed", "splice":
+	case "filter":
+		if args != nil && args.NamedChildCount() > 0 {
+			if cb := args.NamedChild(0); cb.ChildByFieldName("return_type") != nil {
+				return tsUnknownTy // (x): x is U => …: a narrowed element type
+			}
+		}
+		return coll
+	case "slice", "concat", "sort", "reverse", "toSorted", "toReversed", "splice":
 		return coll
 	case "map":
 		if args != nil && args.NamedChildCount() > 0 {
@@ -1217,6 +1224,16 @@ func (r *tsResolver) contextType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 		}
 	case "arguments":
 		call := p.Parent()
+		if call != nil && call.Type() == "new_expression" {
+			i := 0
+			for k := 0; k < int(p.NamedChildCount()); k++ {
+				if p.NamedChild(k).StartByte() == e.StartByte() {
+					break
+				}
+				i++
+			}
+			return r.paramOf(r.constructorOf(m, call, depth+1), i, depth+1)
+		}
 		if call == nil || call.Type() != "call_expression" {
 			return tsNoTy
 		}
@@ -1233,6 +1250,22 @@ func (r *tsResolver) contextType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 			if left := p.ChildByFieldName("left"); left != nil {
 				return r.exprType(m, left, depth+1)
 			}
+		}
+	case "required_parameter", "optional_parameter", "public_field_definition":
+		// A default value or a field's initializer: the declared type.
+		if v := p.ChildByFieldName("value"); v != nil && v.StartByte() == e.StartByte() {
+			if t := p.ChildByFieldName("type"); t != nil {
+				return r.typeOfNode(m, t, depth+1)
+			}
+		}
+	case "ternary_expression":
+		if c := p.ChildByFieldName("condition"); c != nil && c.StartByte() == e.StartByte() {
+			return tsNoTy
+		}
+		return r.contextType(m, p, depth+1)
+	case "binary_expression":
+		if op := p.ChildByFieldName("operator"); op != nil && (op.Type() == "??" || op.Type() == "||") {
+			return r.contextType(m, p, depth+1)
 		}
 	}
 	return tsNoTy
@@ -1258,15 +1291,26 @@ func (r *tsResolver) resultContext(m *tsModule, fn *sitter.Node, depth int) tsTy
 					return tsUnknownTy
 				}
 			case tyCallback:
-				return ct.of()
+				t = ct.of()
 			case tyUnknown:
 				return tsUnknownTy
 			}
 		}
+		if tsIsAsync(fn) {
+			if t.k == tyPromise {
+				t = t.of()
+			}
+			t.nullable = true
+		}
 		return t
 	}
-	if tsIsAsync(fn) && t.k == tyPromise {
-		return t.of()
+	if tsIsAsync(fn) {
+		// An async function's return expression is contextually typed
+		// T | PromiseLike<T>: a union, which has no property of T's.
+		if t.k == tyPromise {
+			t = t.of()
+		}
+		t.nullable = true
 	}
 	return t
 }
@@ -1510,4 +1554,47 @@ func (r *tsResolver) patternType(m *tsModule, pat *sitter.Node, depth int) tsTy 
 		}
 	}
 	return tsNoTy
+}
+
+// constructorOf is the constructor new C(…) calls, for a repository class
+// declaring one (an inherited one is not followed: unknown).
+func (r *tsResolver) constructorOf(m *tsModule, n *sitter.Node, depth int) tsTy {
+	c := n.ChildByFieldName("constructor")
+	if c == nil || c.Type() != "identifier" {
+		return tsNoTy
+	}
+	ct := r.classValueType(m, c, depth+1)
+	switch ct.k {
+	case tyDecl:
+	case tyOutside:
+		return tsOutsideTy
+	default:
+		return tsUnknownTy
+	}
+	if ct.node.Type() != "class_declaration" && ct.node.Type() != "abstract_class_declaration" {
+		return tsUnknownTy
+	}
+	if n.ChildByFieldName("type_arguments") != nil || ct.node.ChildByFieldName("type_parameters") != nil {
+		return tsUnknownTy
+	}
+	body := ct.node.ChildByFieldName("body")
+	if body == nil {
+		return tsUnknownTy
+	}
+	var found *sitter.Node
+	for i := 0; i < int(body.NamedChildCount()); i++ {
+		mm := body.NamedChild(i)
+		if mm.Type() == "method_definition" {
+			if nm := mm.ChildByFieldName("name"); nm != nil && nm.Content(ct.m.src) == "constructor" {
+				if found != nil {
+					return tsUnknownTy // overloads
+				}
+				found = mm
+			}
+		}
+	}
+	if found == nil {
+		return tsUnknownTy
+	}
+	return tsTy{k: tyFn, m: ct.m, node: found}
 }

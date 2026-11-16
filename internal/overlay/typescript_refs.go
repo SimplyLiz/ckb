@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
+	"gopkg.in/yaml.v3"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 )
@@ -41,9 +42,12 @@ type tsResolver struct {
 	root    string
 	docs    tsSymbolDocs
 	modules map[string]*tsModule
-	// configs is the tsconfig paths in effect per directory: the nearest
-	// tsconfig.json's, with what it extends.
-	configs map[string][]tsPathRule
+	// projects are the tsconfig projects scip-typescript indexes, the root
+	// first, read once.
+	projects []tsProject
+	// workspaces are the repository's own packages by name (package.json
+	// workspaces, pnpm-workspace.yaml), read once.
+	workspaces map[string]tsWorkspace
 	// byPrefix maps a file symbol to its path, for the modules loaded.
 	byPrefix map[string]string
 	tyCache  map[tsTyKey]tsTy
@@ -68,7 +72,7 @@ type tsExportRef struct {
 }
 
 func newTSResolver(root string, docs tsSymbolDocs) *tsResolver {
-	return &tsResolver{root: root, docs: docs, modules: map[string]*tsModule{}, byPrefix: map[string]string{}, tyCache: map[tsTyKey]tsTy{}, configs: map[string][]tsPathRule{}}
+	return &tsResolver{root: root, docs: docs, modules: map[string]*tsModule{}, byPrefix: map[string]string{}, tyCache: map[tsTyKey]tsTy{}}
 }
 
 // close frees the parse trees of the modules loaded.
@@ -84,36 +88,88 @@ func (r *tsResolver) close() {
 var jsoncComment = regexp.MustCompile(`(?s)//[^\n]*|/\*.*?\*/`)
 var jsoncTrailingComma = regexp.MustCompile(`,(\s*[}\]])`)
 
-// pathsFor is the compilerOptions.paths that govern file: those of the
-// nearest tsconfig.json in its directory or above (a monorepo's package has
-// its own), following extends.
+// pathsFor is the compilerOptions.paths that govern file the way ckb index
+// runs scip-typescript: once at the root, so the root tsconfig.json's
+// project and the projects it references (recursively). A file takes the
+// deepest referenced project whose directory holds it, else the root's. A
+// package's tsconfig that nothing references is not read: scip-typescript
+// does not see it either.
 func (r *tsResolver) pathsFor(file string) []tsPathRule {
-	var walked []string
+	if r.projects == nil {
+		r.projects = r.readProjects()
+	}
 	dir := path.Dir(file)
-	for {
-		if rules, ok := r.configs[dir]; ok {
-			for _, d := range walked {
-				r.configs[d] = rules
-			}
-			return rules
+	best := -1
+	var cands []tsProject
+	for _, p := range r.projects[1:] {
+		if p.dir != "." && dir != p.dir && !strings.HasPrefix(dir, p.dir+"/") {
+			continue
 		}
-		walked = append(walked, dir)
-		cfg := path.Join(dir, "tsconfig.json")
-		if _, err := os.Stat(filepath.Join(r.root, filepath.FromSlash(cfg))); err == nil {
-			rules := r.configPaths(cfg)
-			for _, d := range walked {
-				r.configs[d] = rules
-			}
-			return rules
+		d := 0
+		if p.dir != "." {
+			d = strings.Count(p.dir, "/") + 1
 		}
-		if dir == "." || dir == "/" || dir == "" {
-			for _, d := range walked {
-				r.configs[d] = nil
-			}
+		switch {
+		case d > best:
+			best, cands = d, []tsProject{p}
+		case d == best:
+			cands = append(cands, p)
+		}
+	}
+	if len(cands) == 0 {
+		return r.projects[0].rules
+	}
+	// Projects of one directory (tsconfig.app.json, tsconfig.node.json): the
+	// paths those with any agree on.
+	var agreed []tsPathRule
+	for _, p := range cands {
+		if p.rules == nil {
+			continue
+		}
+		if agreed != nil && !tsSameRules(agreed, p.rules) {
 			return nil
 		}
-		dir = path.Dir(dir)
+		agreed = p.rules
 	}
+	return agreed
+}
+
+// tsProject is a tsconfig project scip-typescript indexes: its directory
+// and paths rules.
+type tsProject struct {
+	dir   string
+	rules []tsPathRule
+}
+
+// readProjects reads the root tsconfig.json and the projects it references;
+// the root comes first.
+func (r *tsResolver) readProjects() []tsProject {
+	root, ok := r.readConfig("tsconfig.json", 0)
+	if !ok {
+		return []tsProject{{dir: "."}}
+	}
+	out := []tsProject{{dir: ".", rules: tsRules(root)}}
+	seen := map[string]bool{"tsconfig.json": true}
+	var walk func(refs []string, depth int)
+	walk = func(refs []string, depth int) {
+		if depth > 5 {
+			return
+		}
+		for _, ref := range refs {
+			if seen[ref] {
+				continue
+			}
+			seen[ref] = true
+			c, ok := r.readConfig(ref, 0)
+			if !ok {
+				continue
+			}
+			out = append(out, tsProject{dir: path.Dir(ref), rules: tsRules(c)})
+			walk(c.refs, depth+1)
+		}
+	}
+	walk(root.refs, 0)
+	return out
 }
 
 // tsConfigFile is what Layer 2 reads of a tsconfig: its paths and baseUrl,
@@ -125,33 +181,10 @@ type tsConfigFile struct {
 	refs     []string
 }
 
-// configPaths reads the paths rules of the config at cfg (repo-relative).
-// A config that sets none but references others (a solution tsconfig, as
-// Vite writes one) takes the rules its references agree on.
-func (r *tsResolver) configPaths(cfg string) []tsPathRule {
-	c, ok := r.readConfig(cfg, 0)
-	if !ok {
+func tsRules(c tsConfigFile) []tsPathRule {
+	if c.paths == nil {
 		return nil
 	}
-	if c.paths == nil && len(c.refs) > 0 {
-		var agreed []tsPathRule
-		for i, ref := range c.refs {
-			rc, ok := r.readConfig(ref, 0)
-			if !ok || rc.paths == nil {
-				continue
-			}
-			rules := tsRules(rc)
-			if i > 0 && agreed != nil && !tsSameRules(agreed, rules) {
-				return nil // the references disagree: no rule is certain
-			}
-			agreed = rules
-		}
-		return agreed
-	}
-	return tsRules(c)
-}
-
-func tsRules(c tsConfigFile) []tsPathRule {
 	base := c.baseURL
 	if base == "" {
 		base = c.pathsDir
@@ -338,7 +371,200 @@ func (r *tsResolver) resolveModule(from, spec string) string {
 			return p
 		}
 	}
+	if !strings.HasPrefix(spec, ".") && !strings.HasPrefix(spec, "/") {
+		return r.workspaceModule(spec)
+	}
 	return ""
+}
+
+// tsWorkspace is a package of the repository's workspace.
+type tsWorkspace struct {
+	dir string // repo-relative
+	pkg tsPackageJSON
+}
+
+type tsPackageJSON struct {
+	Name    string          `json:"name"`
+	Main    string          `json:"main"`
+	Types   string          `json:"types"`
+	Typings string          `json:"typings"`
+	Exports json.RawMessage `json:"exports"`
+}
+
+// workspaceModule resolves a package specifier to a file of a workspace
+// package, as TypeScript does through the package manager's symlink:
+// exports (types, import, default conditions), else types, typings, main.
+func (r *tsResolver) workspaceModule(spec string) string {
+	if r.workspaces == nil {
+		r.workspaces = r.readWorkspaces()
+	}
+	name, sub := spec, ""
+	parts := strings.SplitN(spec, "/", 3)
+	switch {
+	case strings.HasPrefix(spec, "@") && len(parts) >= 2:
+		name = parts[0] + "/" + parts[1]
+		if len(parts) == 3 {
+			sub = parts[2]
+		}
+	case len(parts) >= 2:
+		name = parts[0]
+		sub = strings.TrimPrefix(spec, name+"/")
+	}
+	ws, ok := r.workspaces[name]
+	if !ok {
+		return ""
+	}
+	key := "."
+	if sub != "" {
+		key = "./" + sub
+	}
+	var target string
+	if len(ws.pkg.Exports) > 0 {
+		target = tsExportTarget(ws.pkg.Exports, key)
+		if target == "" {
+			return "" // exports does not export the subpath
+		}
+	} else if sub != "" {
+		target = sub
+	} else {
+		for _, t := range []string{ws.pkg.Types, ws.pkg.Typings, ws.pkg.Main, "index"} {
+			if t != "" {
+				target = t
+				break
+			}
+		}
+	}
+	return r.indexedFile(path.Clean(path.Join(ws.dir, target)))
+}
+
+// tsExportTarget looks key ("." or "./sub") up in a package.json exports
+// field: a string, a subpath map (with "*" patterns) or conditions.
+func tsExportTarget(raw json.RawMessage, key string) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		if key == "." {
+			return s
+		}
+		return ""
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(raw, &m) != nil {
+		return ""
+	}
+	subpaths := false
+	for k := range m {
+		if strings.HasPrefix(k, ".") {
+			subpaths = true
+		}
+	}
+	if !subpaths {
+		if key != "." {
+			return ""
+		}
+		return tsCondition(raw)
+	}
+	if v, ok := m[key]; ok {
+		return tsCondition(v)
+	}
+	for k, v := range m {
+		i := strings.IndexByte(k, '*')
+		if i < 0 || !strings.HasPrefix(key, k[:i]) || !strings.HasSuffix(key, k[i+1:]) || len(key) < len(k)-1 {
+			continue
+		}
+		star := key[i : len(key)-len(k[i+1:])]
+		if t := tsCondition(v); t != "" {
+			return strings.ReplaceAll(t, "*", star)
+		}
+	}
+	return ""
+}
+
+// tsCondition picks a target from a string or a conditions object, in the
+// order TypeScript's bundler resolution prefers: types, import, default.
+func tsCondition(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(raw, &m) != nil {
+		return ""
+	}
+	for _, c := range []string{"types", "import", "default"} {
+		if v, ok := m[c]; ok {
+			if t := tsCondition(v); t != "" {
+				return t
+			}
+		}
+	}
+	return ""
+}
+
+// readWorkspaces lists the workspace packages: the globs of package.json's
+// workspaces (an array or {packages}) and of pnpm-workspace.yaml.
+func (r *tsResolver) readWorkspaces() map[string]tsWorkspace {
+	var globs []string
+	if data, err := os.ReadFile(filepath.Join(r.root, "package.json")); err == nil { // #nosec G304 -- the repository's package.json
+		var pj struct {
+			Workspaces json.RawMessage `json:"workspaces"`
+		}
+		if json.Unmarshal(data, &pj) == nil && len(pj.Workspaces) > 0 {
+			var list []string
+			if json.Unmarshal(pj.Workspaces, &list) != nil {
+				var obj struct {
+					Packages []string `json:"packages"`
+				}
+				if json.Unmarshal(pj.Workspaces, &obj) == nil {
+					list = obj.Packages
+				}
+			}
+			globs = append(globs, list...)
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(r.root, "pnpm-workspace.yaml")); err == nil { // #nosec G304 -- the repository's workspace file
+		var ws struct {
+			Packages []string `yaml:"packages"`
+		}
+		if yaml.Unmarshal(data, &ws) == nil {
+			globs = append(globs, ws.Packages...)
+		}
+	}
+	out := map[string]tsWorkspace{}
+	for _, g := range globs {
+		if strings.HasPrefix(g, "!") {
+			continue
+		}
+		g = strings.TrimSuffix(strings.TrimPrefix(path.Clean(g), "./"), "/")
+		if strings.Contains(g, "**") {
+			continue // deep globs: not followed
+		}
+		dirs, _ := filepath.Glob(filepath.Join(r.root, filepath.FromSlash(g)))
+		for _, d := range dirs {
+			data, err := os.ReadFile(filepath.Join(d, "package.json")) // #nosec G304 -- a workspace package.json
+			if err != nil {
+				continue
+			}
+			var pkg tsPackageJSON
+			if json.Unmarshal(data, &pkg) != nil || pkg.Name == "" {
+				continue
+			}
+			rel, err := filepath.Rel(r.root, d)
+			if err != nil {
+				continue
+			}
+			if _, dup := out[pkg.Name]; dup {
+				out[pkg.Name] = tsWorkspace{} // two packages of one name: neither
+				continue
+			}
+			out[pkg.Name] = tsWorkspace{dir: filepath.ToSlash(rel), pkg: pkg}
+		}
+	}
+	for n, w := range out {
+		if w.dir == "" {
+			delete(out, n)
+		}
+	}
+	return out
 }
 
 var tsResolveExts = []string{".ts", ".tsx", ".d.ts", ".mts", ".cts"}
@@ -763,7 +989,7 @@ func tsLayer2(doc *scip.Document, file string, src []byte, lines map[int32]bool,
 	if self == nil || !bytes.Equal(self.src, src) {
 		return 0, 0 // no index document, a syntax error, or a source other than the module's
 	}
-	l := &tsRefs{r: r, file: file, src: src, self: self, cols: newUTF16Cols(src), lines: lines, doc: doc, taken: map[tsTaken]bool{}}
+	l := &tsRefs{r: r, file: file, src: src, self: self, cols: newUTF16Cols(src), lines: lines, doc: doc, taken: map[tsTaken]bool{}, noValue: map[uint32]bool{}}
 	for _, o := range doc.Occurrences {
 		l.taken[tsTaken{o.Range[0], o.Range[1], o.Symbol}] = true
 	}
@@ -787,6 +1013,10 @@ type tsRefs struct {
 	lines map[int32]bool
 	doc   *scip.Document
 	taken map[tsTaken]bool
+	// noValue are the shorthand properties ({ a }) whose name stands for
+	// the contextual type's member, or might: scip-typescript writes the
+	// member there, the value only when the context has no such property.
+	noValue map[uint32]bool
 
 	added, unresolved int
 }
@@ -811,6 +1041,21 @@ func (l *tsRefs) emit(n *sitter.Node, sym string) {
 		Source: scip.OccurrenceSourceOverlay,
 	})
 	l.added++
+}
+
+// missValue counts a shorthand property whose value would be a repository
+// symbol.
+func (l *tsRefs) missValue(k *sitter.Node) {
+	if !l.onAdded(k) {
+		return
+	}
+	name := l.text(k)
+	if _, imported := l.self.imports[name]; imported || tsBoundLocally(k, name, l.src) {
+		return // a local, or an import (a local in the index either way)
+	}
+	if res, ok := l.resolveName(name, tsValue); ok && !res.external && res.sym != "" {
+		l.unresolved++
+	}
 }
 
 func (l *tsRefs) miss(n *sitter.Node) {
@@ -906,7 +1151,7 @@ func tsSymPrefix(sym string) string {
 }
 
 func (l *tsRefs) ident(n *sitter.Node) {
-	if !l.onAdded(n) || tsIsDeclarationName(n) {
+	if !l.onAdded(n) || tsIsDeclarationName(n) || l.noValue[n.StartByte()] {
 		return
 	}
 	name := l.text(n)
@@ -914,12 +1159,20 @@ func (l *tsRefs) ident(n *sitter.Node) {
 	if n.Type() == "type_identifier" {
 		ns = tsTypeNS
 	}
+	if tsIntrinsicTag(n, name) {
+		return // <table>: JSX.IntrinsicElements' member, whatever value has the name
+	}
 	if tsBoundLocally(n, name, l.src) {
 		return
 	}
 	res, ok := l.resolveName(name, ns)
 	if !ok || res.external || res.namespace != "" {
 		return
+	}
+	if n.Type() == "shorthand_property_identifier" {
+		if _, imported := l.self.imports[name]; imported {
+			return // { user } of an imported user: scip-typescript writes a local there
+		}
 	}
 	if res.sym == "" {
 		l.unresolved++
@@ -1071,13 +1324,22 @@ func (l *tsRefs) declPattern(d *sitter.Node) {
 			if target == "" {
 				return // a package
 			}
+			// A name the module declares points at it; one it re-exports
+			// (a barrel's export { a } from "./a") is a local in
+			// scip-typescript's index.
+			m := l.r.module(target)
 			for _, k := range tsPatternKeys(pat) {
-				if !l.onAdded(k) {
+				if !l.onAdded(k) || m == nil {
+					l.miss(k)
 					continue
 				}
-				if s := l.r.lookup(target, l.text(k), tsValue, 0); s != "" {
-					l.emit(k, s)
-				} else {
+				if tops := m.decls[l.text(k)]; len(tops) > 0 {
+					if s := pickTop(m.prefix, tops, tsValue); s != "" {
+						l.emit(k, s)
+						continue
+					}
+				}
+				if _, re := m.named[l.text(k)]; !re && len(m.stars) == 0 {
 					l.unresolved++
 				}
 			}
@@ -1302,7 +1564,21 @@ func (l *tsRefs) objectKeys(obj *sitter.Node) {
 		return // the literal's keys are its own properties
 	}
 	for _, k := range keys {
-		l.keyEdge(k, t)
+		mb := l.keyEdge(k, t)
+		if k.Type() != "shorthand_property_identifier" {
+			continue
+		}
+		switch {
+		case mb.k == tyDecl || mb.k == tyUnknown:
+			l.noValue[k.StartByte()] = true
+		case t.k == tyOutside && t.sym != "null":
+			// A package's or a global's type (RequestInit, a library's
+			// options): scip-typescript writes its member when it has the
+			// property, the value when it does not. Which, the parse cannot
+			// tell.
+			l.noValue[k.StartByte()] = true
+			l.missValue(k)
+		}
 	}
 }
 
@@ -1853,4 +2129,20 @@ func tsVarBinding(body *sitter.Node, name string, src []byte) *sitter.Node {
 	}
 	walk(body)
 	return found
+}
+
+// tsIntrinsicTag reports whether n is the name of a JSX element that starts
+// with a lower-case letter: TypeScript looks those up in
+// JSX.IntrinsicElements, never among values.
+func tsIntrinsicTag(n *sitter.Node, name string) bool {
+	p := n.Parent()
+	if p == nil || name == "" || !(name[0] >= 'a' && name[0] <= 'z') {
+		return false
+	}
+	switch p.Type() {
+	case "jsx_opening_element", "jsx_closing_element", "jsx_self_closing_element":
+		tag := p.ChildByFieldName("name")
+		return tag != nil && tag.StartByte() == n.StartByte()
+	}
+	return false
 }
