@@ -309,3 +309,46 @@ func TestTSLayer2Literals(t *testing.T) {
 		t.Errorf("unresolved %d, want 0", unresolved)
 	}
 }
+
+// TestTSConfigPaths: the nearest tsconfig.json governs a file, extends is
+// followed (paths relative to the config that sets them, baseUrl to its
+// own), and a solution config takes its references' paths.
+func TestTSConfigPaths(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, text string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("configs/base.json", `{ "compilerOptions": { "paths": { "@lib/*": ["../lib/*"] } } }`)
+	write("tsconfig.json", `{ "extends": "./configs/base.json" }`)
+	write("lib/a.ts", "export const a = 1;\n")
+	write("packages/web/tsconfig.json", `{ "extends": "../../configs/base", "compilerOptions": { "baseUrl": "src", "paths": { "~/*": ["*"] } } }`)
+	write("packages/web/src/b.ts", "export const b = 1;\n")
+	write("apps/vite/tsconfig.json", `{ "files": [], "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }] }`)
+	write("apps/vite/tsconfig.app.json", `{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }`)
+	write("apps/vite/tsconfig.node.json", `{ "include": ["vite.config.ts"] }`)
+	write("apps/vite/src/c.ts", "export const c = 1;\n")
+	indexed := map[string]bool{"lib/a.ts": true, "packages/web/src/b.ts": true, "apps/vite/src/c.ts": true}
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if indexed[p] {
+			return &scip.Document{RelativePath: p}
+		}
+		return nil
+	})
+	for _, c := range []struct{ from, spec, want string }{
+		{"src/x.ts", "@lib/a", "lib/a.ts"},                        // root config, paths from the extended file
+		{"packages/web/src/x.ts", "~/b", "packages/web/src/b.ts"}, // own paths against own baseUrl
+		{"packages/web/src/x.ts", "@lib/a", ""},                   // its paths replace the parent's
+		{"apps/vite/src/x.ts", "@/c", "apps/vite/src/c.ts"},       // a solution config's reference
+		{"apps/vite/src/x.ts", "@lib/a", ""},
+	} {
+		if got := r.resolveModule(c.from, c.spec); got != c.want {
+			t.Errorf("%s from %s: got %q, want %q", c.spec, c.from, got, c.want)
+		}
+	}
+}
