@@ -30,6 +30,9 @@ type IndexFreshness struct {
 	ChangedSinceIndexTruncated bool     `json:"changedSinceIndexTruncated,omitempty"`
 	AffectsResult              bool     `json:"affectsResult"`
 	Hint                       string   `json:"hint,omitempty"`
+	// Overlay says how much of the change since indexing the index overlay
+	// serves. Absent without an overlay.
+	Overlay *OverlayFreshness `json:"overlay,omitempty"`
 }
 
 type changedSet struct {
@@ -59,7 +62,52 @@ func (e *Engine) IndexFreshnessFor(ctx context.Context, files []string) *IndexFr
 	if info == nil || !info.Available {
 		return nil
 	}
-	return cachedIndexFreshness(e.repoRoot, info.IndexedCommit, files)
+	f := cachedIndexFreshness(e.repoRoot, info.IndexedCommit, files)
+	// Only when the overlay served this result: a diff-driven analysis pins
+	// the base (SCIPAdapter.PinBase).
+	if ov := e.OverlayFreshness(); ov != nil && ov.Files > 0 && e.scipAdapter.ServingTag() != "" {
+		f.Overlay = ov
+		applyOverlayHint(e.repoRoot, f, e.coveredByOverlay(), files)
+	}
+	return f
+}
+
+// applyOverlayHint rewrites the hint when the overlay serves the result's
+// changed files: their positions are current, and what is missing is what
+// sits on the changed lines themselves.
+func applyOverlayHint(repoRoot string, f *IndexFreshness, covered map[string]bool, resultFiles []string) {
+	if !f.AffectsResult || len(covered) == 0 {
+		if !f.AffectsResult && f.Overlay.Covered > 0 && f.Hint != "" {
+			f.Hint += fmt.Sprintf("; %d of them served from the overlay", f.Overlay.Covered)
+		}
+		return
+	}
+	served, other := 0, 0
+	changed := map[string]bool{}
+	for _, p := range f.ChangedSinceIndex {
+		changed[p] = true
+	}
+	for _, p := range resultFiles {
+		p = normalizeResultPath(repoRoot, p)
+		if !changed[p] {
+			continue
+		}
+		if covered[p] {
+			served++
+		} else {
+			other++
+		}
+	}
+	if served == 0 {
+		return
+	}
+	if other == 0 {
+		f.Hint = fmt.Sprintf("%d result file(s) changed since indexing, served from the overlay: positions are current; "+
+			"declarations and uses on the changed lines come in with a reindex", served)
+		return
+	}
+	f.Hint = fmt.Sprintf("%d result file(s) changed since indexing: %d served from the overlay (positions current, changed lines missing), "+
+		"%d not covered — call reindex for exact results", served+other, served, other)
 }
 
 func cachedIndexFreshness(repoRoot, indexedCommit string, resultFiles []string) *IndexFreshness {

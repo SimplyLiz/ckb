@@ -89,9 +89,14 @@ func TestSessionStartContext_IndexStates(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(repo, "README.md"), []byte("edited\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got = sessionStartContext(repo); !strings.Contains(got, "uncommitted changes are not in it") {
+	if got = sessionStartContext(repo); !strings.Contains(got, "uncommitted changes are served from an overlay") {
 		t.Errorf("uncommitted edits: got %q", got)
 	}
+	t.Setenv("CKB_OVERLAY", "0")
+	if got = sessionStartContext(repo); !strings.Contains(got, "uncommitted changes are not in it") {
+		t.Errorf("uncommitted edits, overlay off: got %q", got)
+	}
+	t.Setenv("CKB_OVERLAY", "")
 
 	commit("README.md", "edited\n")
 	got = sessionStartContext(repo)
