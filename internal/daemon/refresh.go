@@ -118,6 +118,7 @@ func (rm *RefreshManager) RunIncrementalRefreshWithTrigger(ctx context.Context, 
 		if metaErr == nil && meta != nil {
 			meta.CommitHash = rs.HeadCommit
 			meta.RepoStateID = rs.RepoStateID
+			meta.RecordWorktree(repoPath, rs.Dirty)
 			meta.LastRefresh = &index.LastRefresh{
 				At:          time.Now(),
 				Trigger:     trigger,
@@ -339,6 +340,7 @@ func (rm *RefreshManager) RunFullReindexWithTrigger(ctx context.Context, repoPat
 	if rs, rsErr := repostate.ComputeRepoState(repoPath); rsErr == nil {
 		meta.CommitHash = rs.HeadCommit
 		meta.RepoStateID = rs.RepoStateID
+		meta.RecordWorktree(repoPath, rs.Dirty)
 	}
 
 	if saveErr := meta.Save(ckbDir); saveErr != nil {

@@ -17,6 +17,7 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/diff"
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
+	"github.com/SimplyLiz/CodeMCP/internal/index"
 )
 
 // File states in Info.
@@ -112,10 +113,15 @@ type Changes struct {
 	Key string
 }
 
-// LoadChanges reads the working tree's changes since commit: tracked files
-// (committed since, staged or not) as a zero-context diff with renames, and
-// untracked files by name.
-func LoadChanges(ctx context.Context, repoRoot, commit string) (*Changes, error) {
+// LoadChanges reads the working tree's changes since the index was built:
+// since snapshotTree when the index was built from a dirty working tree
+// (index.SnapshotWorktree; untracked source files are part of the diff then),
+// else since commit: tracked files (committed since, staged or not) as a
+// zero-context diff with renames, and untracked files by name.
+func LoadChanges(ctx context.Context, repoRoot, commit, snapshotTree string) (*Changes, error) {
+	if snapshotTree != "" {
+		return loadChangesSinceSnapshot(ctx, repoRoot, snapshotTree)
+	}
 	if commit == "" {
 		return nil, fmt.Errorf("no indexed commit")
 	}
@@ -151,6 +157,24 @@ func LoadChanges(ctx context.Context, repoRoot, commit string) (*Changes, error)
 		}
 	}
 	return c, nil
+}
+
+func loadChangesSinceSnapshot(ctx context.Context, repoRoot, tree string) (*Changes, error) {
+	head, _ := git(ctx, repoRoot, "rev-parse", "HEAD")
+	text, err := index.DiffSinceSnapshot(ctx, repoRoot, tree)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := diff.ParseGitDiff(string(text))
+	if err != nil {
+		return nil, fmt.Errorf("parse diff: %w", err)
+	}
+	h := sha256.New()
+	h.Write([]byte("snapshot\x00" + tree + "\x00"))
+	h.Write(head)
+	h.Write([]byte{0})
+	h.Write(text)
+	return &Changes{Root: repoRoot, Head: strings.TrimSpace(string(head)), Diff: parsed, Key: hex.EncodeToString(h.Sum(nil))}, nil
 }
 
 func git(ctx context.Context, repoRoot string, args ...string) ([]byte, error) {
