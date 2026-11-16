@@ -74,6 +74,9 @@ type SCIPIndex struct {
 	// FindCallers is O(1) via this index instead of the former O(docs×syms×occs) scan.
 	CallerIndex     map[string][]string
 	callerIndexOnce sync.Once
+	// overlayCallerEdges holds the CallerIndex edges (callee, caller) that
+	// only references the index overlay resolved produce. Built with it.
+	overlayCallerEdges map[[2]string]bool
 
 	// versionlessIndex maps a SCIP ID with its package-version field removed
 	// to every ID in the index that has that shape. Built lazily on the first

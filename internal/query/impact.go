@@ -257,6 +257,17 @@ type scipCallerProvider struct {
 	separateTests bool
 	testCallers   map[string]int
 	nodeLimitHit  bool // The call graph stopped at transitiveCallerNodes
+	// overlayOnly holds the callers of the last GetTransitiveCallers that are
+	// reached within the depth only over an edge the index overlay resolved.
+	overlayOnly map[string]bool
+}
+
+// CallerSource implements impact.CallerSourcer.
+func (p *scipCallerProvider) CallerSource(callerId string) string {
+	if p.overlayOnly[callerId] {
+		return scip.OccurrenceSourceOverlay
+	}
+	return ""
 }
 
 // transitiveCallerNodes bounds the call graph walked per symbol, for performance.
@@ -279,6 +290,7 @@ func (p *scipCallerProvider) CallerLocation(callerId string) (string, *impact.Lo
 func (p *scipCallerProvider) GetTransitiveCallers(symbolId string, maxDepth int) (map[string]int, error) {
 	var result map[string]int
 	var err error
+	p.overlayOnly = nil
 	if p.constructions != nil && strings.HasPrefix(symbolId, "scip-python ") {
 		result, err = p.pythonCallers(symbolId, maxDepth)
 	} else {
@@ -425,7 +437,50 @@ func (p *scipCallerProvider) graphCallers(symbolId string, maxDepth int) (map[st
 		}
 	}
 
+	p.overlayOnly = overlayOnlyCallers(symbolId, graph.Edges, result, maxDepth)
 	return result, nil
+}
+
+// overlayOnlyCallers returns the callers in result that the edges written by
+// the indexer alone do not reach within maxDepth: they are there because of
+// an edge the index overlay resolved.
+func overlayOnlyCallers(root string, edges []scip.CallGraphEdge, result map[string]int, maxDepth int) map[string]bool {
+	callersOf := map[string][]string{}
+	anyOverlay := false
+	for _, e := range edges {
+		if e.Source == scip.OccurrenceSourceOverlay {
+			anyOverlay = true
+			continue
+		}
+		callersOf[e.To] = append(callersOf[e.To], e.From)
+	}
+	if !anyOverlay {
+		return nil
+	}
+	reached := map[string]bool{root: true}
+	frontier := []string{root}
+	for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
+		var next []string
+		for _, id := range frontier {
+			for _, c := range callersOf[id] {
+				if !reached[c] {
+					reached[c] = true
+					next = append(next, c)
+				}
+			}
+		}
+		frontier = next
+	}
+	var out map[string]bool
+	for id := range result {
+		if !reached[id] {
+			if out == nil {
+				out = map[string]bool{}
+			}
+			out[id] = true
+		}
+	}
+	return out
 }
 
 // testCallerItems describes the transitive callers GetTransitiveCallers set aside.
@@ -445,6 +500,7 @@ func (p *scipCallerProvider) testCallerItems() []ImpactItem {
 			ModuleId:   filepath.Dir(n.Location.FileId),
 			Location:   &LocationInfo{FileId: n.Location.FileId, StartLine: n.Location.StartLine + 1},
 			Confidence: 0.85,
+			Source:     p.CallerSource(id),
 		})
 	}
 	return items

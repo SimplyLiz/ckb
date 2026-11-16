@@ -259,6 +259,37 @@ func TestOverlay_NewCallerIsMarked(t *testing.T) {
 	}
 }
 
+// A transitive caller reached only over an overlay edge is marked too.
+func TestOverlay_TransitiveCallerIsMarked(t *testing.T) {
+	e, root := overlayEngine(t)
+	edited := overlayLib + "\nfunc Extra() int {\n\treturn Target(3)\n}\n\nfunc Outer() int {\n\treturn Extra()\n}\n"
+	if err := os.WriteFile(filepath.Join(root, "lib/lib.go"), []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.overlay.checkedAt = e.overlay.checkedAt.Add(-overlayCheckInterval)
+	e.RefreshOverlay(context.Background())
+
+	resp, err := e.AnalyzeImpact(context.Background(), AnalyzeImpactOptions{SymbolId: symTarget, IncludeTests: true, Depth: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const symOuter = "scip-go gomod example.com/m v1 `example.com/m/lib`/Outer()."
+	found := false
+	for _, it := range resp.TransitiveImpact {
+		if it.StableId == symOuter {
+			found = true
+			if it.Source != "overlay" {
+				t.Errorf("Outer reached over Extra's overlay edge, source %q", it.Source)
+			}
+		} else if it.Source != "" {
+			t.Errorf("%s marked %q", it.StableId, it.Source)
+		}
+	}
+	if !found {
+		t.Errorf("Outer not among the transitive items %+v", resp.TransitiveImpact)
+	}
+}
+
 // An index built from a dirty working tree already holds those edits: the
 // overlay must diff against the snapshot of that tree, not against the commit,
 // or it moves everything a second time.

@@ -30,6 +30,9 @@ type CallGraphEdge struct {
 	From string // caller symbol ID
 	To   string // callee symbol ID
 	Kind string // "call" or "reference"
+	// Source is OccurrenceSourceOverlay for a caller edge only references the
+	// index overlay resolved produce, else empty.
+	Source string
 }
 
 // CallGraph represents a call graph centered on a symbol
@@ -151,9 +154,7 @@ func (idx *SCIPIndex) FindCallees(symbolId string) ([]*CallGraphNode, error) {
 // FindCallers finds all functions that call the given symbol.
 // CallerIndex is built lazily on the first call and reused thereafter.
 func (idx *SCIPIndex) FindCallers(symbolId string) ([]*CallGraphNode, error) {
-	idx.callerIndexOnce.Do(func() {
-		idx.CallerIndex = buildCallerIndex(idx.Documents)
-	})
+	idx.ensureCallerIndex()
 	callerIDs := idx.CallerIndex[symbolId]
 	if len(callerIDs) == 0 {
 		return []*CallGraphNode{}, nil
@@ -180,13 +181,52 @@ func (idx *SCIPIndex) FindCallers(symbolId string) ([]*CallGraphNode, error) {
 	return callers, nil
 }
 
-// buildCallerIndex constructs the CallerIndex from all documents.
+// ensureCallerIndex builds CallerIndex and the overlay edge set once.
+func (idx *SCIPIndex) ensureCallerIndex() {
+	idx.callerIndexOnce.Do(func() {
+		idx.CallerIndex, idx.overlayCallerEdges = buildCallerIndexWithSources(idx.Documents)
+	})
+}
+
+// IsOverlayCallerEdge reports whether caller calls callee only through
+// references the index overlay resolved: without the overlay, the index has
+// no such edge.
+func (idx *SCIPIndex) IsOverlayCallerEdge(callee, caller string) bool {
+	idx.ensureCallerIndex()
+	return idx.overlayCallerEdges[[2]string{callee, caller}]
+}
+
+func buildCallerIndex(docs []*Document) map[string][]string {
+	idx, _ := buildCallerIndexWithSources(docs)
+	return idx
+}
+
+// buildCallerIndexWithSources constructs the CallerIndex from all documents.
 // For every non-definition occurrence of a symbol that falls within a function
 // body, records that function as a caller of that symbol.
 // Result: callee symbolID → []caller symbolIDs (deduplicated per document).
 // Called once during LoadIndex; FindCallers is O(1) via this map.
-func buildCallerIndex(docs []*Document) map[string][]string {
+// The second result holds the edges that only overlay references produce.
+func buildCallerIndexWithSources(docs []*Document) (map[string][]string, map[[2]string]bool) {
 	callerIdx := make(map[string][]string, len(docs))
+	// Sources are tracked only for the callees an overlay reference names:
+	// none without an overlay, a handful with one.
+	var overlayCallees map[string]bool
+	for _, doc := range docs {
+		for _, occ := range doc.Occurrences {
+			if occ.Source == OccurrenceSourceOverlay {
+				if overlayCallees == nil {
+					overlayCallees = map[string]bool{}
+				}
+				overlayCallees[occ.Symbol] = true
+			}
+		}
+	}
+	// Per edge to such a callee: whether an indexer-written occurrence produced it.
+	var fromIndexer, overlayOnly map[[2]string]bool
+	if overlayCallees != nil {
+		fromIndexer = map[[2]string]bool{}
+	}
 
 	// interval is declared outside the loop so ivs can be reused across docs.
 	type interval struct {
@@ -248,6 +288,19 @@ func buildCallerIndex(docs []*Document) map[string][]string {
 			if caller == "" || caller == occ.Symbol {
 				continue // outside any function, or a self-reference
 			}
+			if overlayCallees[occ.Symbol] {
+				k := [2]string{occ.Symbol, caller}
+				switch {
+				case occ.Source != OccurrenceSourceOverlay:
+					fromIndexer[k] = true
+					delete(overlayOnly, k)
+				case !fromIndexer[k]:
+					if overlayOnly == nil {
+						overlayOnly = map[[2]string]bool{}
+					}
+					overlayOnly[k] = true
+				}
+			}
 			e := edge{occ.Symbol, caller}
 			if docSeen[e] != gen {
 				docSeen[e] = gen
@@ -256,7 +309,7 @@ func buildCallerIndex(docs []*Document) map[string][]string {
 		}
 	}
 
-	return callerIdx
+	return callerIdx, overlayOnly
 }
 
 // lineRange represents a start and end line for a function
@@ -677,11 +730,15 @@ func (idx *SCIPIndex) BuildCallGraph(symbolId string, opts CallGraphOptions) (*C
 				edgeKey := caller.SymbolID + "->" + current.id
 				if !seenEdges[edgeKey] {
 					seenEdges[edgeKey] = true
-					graph.Edges = append(graph.Edges, CallGraphEdge{
+					ce := CallGraphEdge{
 						From: caller.SymbolID,
 						To:   current.id,
 						Kind: "call",
-					})
+					}
+					if idx.overlayCallerEdges[[2]string{current.id, caller.SymbolID}] {
+						ce.Source = OccurrenceSourceOverlay
+					}
+					graph.Edges = append(graph.Edges, ce)
 				}
 
 				// Add to direct callers list if at depth 1 from root
