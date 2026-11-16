@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
+	indexmeta "github.com/SimplyLiz/CodeMCP/internal/index"
 )
 
 const (
@@ -62,7 +63,7 @@ func (e *Engine) IndexFreshnessFor(ctx context.Context, files []string) *IndexFr
 	if info == nil || !info.Available {
 		return nil
 	}
-	f := cachedIndexFreshness(e.repoRoot, info.IndexedCommit, files)
+	f := cachedIndexFreshness(e.repoRoot, info.IndexedCommit, indexSnapshot(e.repoRoot, info.IndexedCommit), files)
 	// Only when the overlay served this result: a diff-driven analysis pins
 	// the base (SCIPAdapter.PinBase).
 	if ov := e.OverlayFreshness(); ov != nil && ov.Files > 0 && e.scipAdapter.ServingTag() != "" {
@@ -110,13 +111,24 @@ func applyOverlayHint(repoRoot string, f *IndexFreshness, covered map[string]boo
 		"%d not covered — call reindex for exact results", served+other, served, other)
 }
 
-func cachedIndexFreshness(repoRoot, indexedCommit string, resultFiles []string) *IndexFreshness {
-	key := repoRoot + "\x00" + indexedCommit
+// indexSnapshot is the working-tree snapshot the index at commit was built
+// from (index-meta.json worktreeTree), or "" for an index built from a clean
+// tree or without metadata.
+func indexSnapshot(repoRoot, commit string) string {
+	meta, err := indexmeta.LoadMeta(filepath.Join(repoRoot, ".ckb"))
+	if err != nil || meta == nil || commit == "" || meta.CommitHash != commit {
+		return ""
+	}
+	return meta.WorktreeTree
+}
+
+func cachedIndexFreshness(repoRoot, indexedCommit, snapshot string, resultFiles []string) *IndexFreshness {
+	key := repoRoot + "\x00" + indexedCommit + "\x00" + snapshot
 	freshnessCacheMu.Lock()
 	ent, ok := freshnessCache[key]
 	freshnessCacheMu.Unlock()
 	if !ok || time.Since(ent.at) > freshnessCacheTTL {
-		ent = freshnessCacheEntry{at: time.Now(), set: loadChangedSet(repoRoot, indexedCommit)}
+		ent = freshnessCacheEntry{at: time.Now(), set: loadChangedSet(repoRoot, indexedCommit, snapshot)}
 		freshnessCacheMu.Lock()
 		freshnessCache[key] = ent
 		freshnessCacheMu.Unlock()
@@ -126,7 +138,7 @@ func cachedIndexFreshness(repoRoot, indexedCommit string, resultFiles []string) 
 
 // computeIndexFreshness is the uncached pure computation (runs git).
 func computeIndexFreshness(repoRoot, indexedCommit string, resultFiles []string) *IndexFreshness {
-	return buildIndexFreshness(repoRoot, indexedCommit, loadChangedSet(repoRoot, indexedCommit), resultFiles)
+	return buildIndexFreshness(repoRoot, indexedCommit, loadChangedSet(repoRoot, indexedCommit, ""), resultFiles)
 }
 
 func gitOut(repoRoot string, args ...string) ([]byte, error) {
@@ -137,7 +149,11 @@ func gitOut(repoRoot string, args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
-func loadChangedSet(repoRoot, indexedCommit string) *changedSet {
+// loadChangedSet lists the files that differ from what the index was built
+// from: the indexed commit, or the working-tree snapshot when the index was
+// built from a dirty tree (then the uncommitted changes it already contains
+// are not listed again).
+func loadChangedSet(repoRoot, indexedCommit, snapshot string) *changedSet {
 	if indexedCommit == "" {
 		return &changedSet{}
 	}
@@ -147,6 +163,14 @@ func loadChangedSet(repoRoot, indexedCommit string) *changedSet {
 	set := &changedSet{known: true}
 	if n, err := scip.CountCommitsBetween(repoRoot, indexedCommit, "HEAD"); err == nil {
 		set.commitsBehind = n
+	}
+	if snapshot != "" {
+		if files, err := indexmeta.ChangedSinceSnapshot(context.Background(), repoRoot, snapshot); err == nil {
+			sort.Strings(files)
+			set.files = files
+			return set
+		}
+		// The snapshot tree is gone (gc): fall back to the commit.
 	}
 	seen := map[string]bool{}
 	add := func(out []byte) {

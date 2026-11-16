@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	indexmeta "github.com/SimplyLiz/CodeMCP/internal/index"
 )
 
 func gitT(t *testing.T, dir string, args ...string) string {
@@ -114,5 +116,38 @@ func TestIndexFreshnessForNoSCIP(t *testing.T) {
 	e := &Engine{}
 	if e.IndexFreshnessFor(context.Background(), []string{"a"}) != nil {
 		t.Fatal("expected nil without SCIP adapter")
+	}
+}
+
+// An index built from a dirty tree already contains the uncommitted edits;
+// only what changed after the snapshot is listed.
+func TestChangedSetSinceSnapshot(t *testing.T) {
+	dir, a := freshnessRepo(t)
+	write := func(p, s string) {
+		if err := os.WriteFile(filepath.Join(dir, p), []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("src/a.ts", "edited before indexing\n")
+	write("src/new.ts", "untracked before indexing\n")
+	tree, err := indexmeta.SnapshotWorktree(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loadChangedSet(dir, a, tree).files; len(got) != 0 {
+		t.Fatalf("right after the snapshot: %v, want none", got)
+	}
+	write("src/b.ts", "edited after indexing\n")
+	got := loadChangedSet(dir, a, tree).files
+	if strings.Join(got, ",") != "src/b.ts" {
+		t.Fatalf("got %v, want [src/b.ts]", got)
+	}
+	// Against the commit, all three differ.
+	if n := len(loadChangedSet(dir, a, "").files); n != 3 {
+		t.Fatalf("against the commit: %d files, want 3", n)
+	}
+	// A vanished snapshot falls back to the commit.
+	if n := len(loadChangedSet(dir, a, "0000000000000000000000000000000000000000").files); n != 3 {
+		t.Fatalf("missing snapshot: %d files, want 3", n)
 	}
 }
