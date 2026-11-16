@@ -3,10 +3,12 @@ package query
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
+	indexmeta "github.com/SimplyLiz/CodeMCP/internal/index"
 	"github.com/SimplyLiz/CodeMCP/internal/overlay"
 )
 
@@ -23,6 +25,9 @@ type overlayState struct {
 	info      *overlay.Info
 	checkedAt time.Time
 	err       string
+	// snapshot is the working-tree snapshot the base was built from, when
+	// it was built from uncommitted changes (index-meta.json worktreeTree).
+	snapshot string
 }
 
 // overlayDisabled reports whether CKB_OVERLAY=0 turned the overlay off
@@ -53,7 +58,14 @@ func (e *Engine) RefreshOverlay(ctx context.Context) bool {
 	}
 	st.checkedAt = time.Now()
 
-	ch, err := overlay.LoadChanges(ctx, e.repoRoot, base.IndexedCommit)
+	if st.base != base {
+		// A new base: what it was built from beyond its commit.
+		st.snapshot = ""
+		if meta, mErr := indexmeta.LoadMeta(filepath.Join(e.repoRoot, ".ckb")); mErr == nil && meta != nil && meta.CommitHash == base.IndexedCommit {
+			st.snapshot = meta.WorktreeTree
+		}
+	}
+	ch, err := overlay.LoadChanges(ctx, e.repoRoot, base.IndexedCommit, st.snapshot)
 	if err != nil {
 		// Without a known indexed commit there is nothing to diff against;
 		// serve the base as before.

@@ -160,6 +160,7 @@ func recordIndexBuild(repoRoot, ckbDir string, lp *languagePlan, results []index
 	if rs, err := repostate.ComputeRepoState(repoRoot); err == nil {
 		meta.CommitHash = rs.HeadCommit
 		meta.RepoStateID = rs.RepoStateID
+		meta.RecordWorktree(repoRoot, rs.Dirty)
 	}
 	if err := meta.Save(ckbDir); err != nil {
 		errs = append(errs, fmt.Errorf("could not save index metadata: %w", err))

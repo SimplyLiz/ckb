@@ -47,6 +47,10 @@ type IndexMeta struct {
 	CreatedAt   time.Time    `json:"createdAt"`
 	CommitHash  string       `json:"commitHash"`
 	RepoStateID string       `json:"repoStateId"`
+	// WorktreeTree is the git tree of the working tree the index was built
+	// from, when that had uncommitted changes (see SnapshotWorktree). The
+	// index overlay diffs against it instead of CommitHash.
+	WorktreeTree string `json:"worktreeTree,omitempty"`
 	FileCount   int          `json:"fileCount"`
 	Duration    string       `json:"duration"`
 	Indexer     string       `json:"indexer"`

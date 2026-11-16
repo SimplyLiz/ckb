@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/SimplyLiz/CodeMCP/internal/config"
+	indexmeta "github.com/SimplyLiz/CodeMCP/internal/index"
 	"github.com/SimplyLiz/CodeMCP/internal/overlay"
 	"github.com/SimplyLiz/CodeMCP/internal/storage"
 )
@@ -256,4 +257,51 @@ func TestOverlay_NewCallerIsMarked(t *testing.T) {
 	if len(unmarked) != 2 {
 		t.Errorf("indexer callers %v, want Other and Run", unmarked)
 	}
+}
+
+// An index built from a dirty working tree already holds those edits: the
+// overlay must diff against the snapshot of that tree, not against the commit,
+// or it moves everything a second time.
+func TestOverlay_IndexBuiltFromADirtyTree(t *testing.T) {
+	e, root := overlayEngine(t)
+	edited := strings.Replace(overlayLib, "package lib\n", "package lib\n\n// Doc.\n", 1)
+	if err := os.WriteFile(filepath.Join(root, "lib/lib.go"), []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Pretend the loaded index was built from this tree.
+	head := strings.TrimSpace(overlayGit(t, root, "rev-parse", "HEAD"))
+	meta := &indexmeta.IndexMeta{Version: indexmeta.MetadataVersion, CommitHash: head}
+	meta.RecordWorktree(root, true)
+	if meta.WorktreeTree == "" {
+		t.Fatal("no snapshot written")
+	}
+	if err := meta.Save(filepath.Join(root, ".ckb")); err != nil {
+		t.Fatal(err)
+	}
+	e.overlay.base = nil // a new base: re-read the metadata
+	e.overlay.checkedAt = e.overlay.checkedAt.Add(-overlayCheckInterval)
+	e.RefreshOverlay(context.Background())
+	if got := defLine(t, e, symOther); got != 6 {
+		t.Errorf("Other at %d, want the index's own 6 (nothing changed since it was built)", got)
+	}
+
+	// An edit after the build is applied once.
+	again := strings.Replace(edited, "// Doc.\n", "// Doc.\n// More.\n", 1)
+	if err := os.WriteFile(filepath.Join(root, "lib/lib.go"), []byte(again), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.overlay.checkedAt = e.overlay.checkedAt.Add(-overlayCheckInterval)
+	e.RefreshOverlay(context.Background())
+	if got := defLine(t, e, symOther); got != 7 {
+		t.Errorf("Other at %d, want 7 (one line added since the build)", got)
+	}
+}
+
+func overlayGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
 }

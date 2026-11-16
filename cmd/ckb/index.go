@@ -1015,6 +1015,7 @@ func tryIncrementalIndexTo(repoRoot, ckbDir string, lang project.Language, out i
 		if metaErr == nil && meta != nil {
 			meta.CommitHash = rs.HeadCommit
 			meta.RepoStateID = rs.RepoStateID
+			meta.RecordWorktree(repoRoot, rs.Dirty)
 			if saveErr := meta.Save(ckbDir); saveErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: Could not update index metadata: %v\n", saveErr)
 			}
