@@ -80,6 +80,9 @@ func remapExtent(r []int32, lm *LineMap) []int32 {
 			ne = ns
 		}
 		out[2] = int32(ne - 1) // #nosec G115 -- line numbers came from int32
+		if out[0] == out[2] {
+			return []int32{out[0], out[1], out[3]}
+		}
 	}
 	return out
 }
