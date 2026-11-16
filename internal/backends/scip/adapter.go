@@ -240,9 +240,7 @@ func (s *SCIPAdapter) LoadIndex() error {
 	// before this goroutine finishes.
 	idx := index
 	go func() {
-		idx.callerIndexOnce.Do(func() {
-			idx.CallerIndex = buildCallerIndex(idx.Documents)
-		})
+		idx.ensureCallerIndex()
 	}()
 
 	s.logger.Info("SCIP index loaded successfully",
@@ -955,9 +953,7 @@ func (s *SCIPAdapter) SetOverlay(base, idx *SCIPIndex) bool {
 	}
 	if idx != s.base {
 		go func() {
-			idx.callerIndexOnce.Do(func() {
-				idx.CallerIndex = buildCallerIndex(idx.Documents)
-			})
+			idx.ensureCallerIndex()
 		}()
 	}
 	return true

@@ -28,6 +28,13 @@ type CallerLocator interface {
 	CallerLocation(callerId string) (moduleId string, loc *Location, ok bool)
 }
 
+// CallerSourcer is an optional extension of TransitiveCallerProvider: after
+// GetTransitiveCallers it names where a caller's edge came from, "overlay"
+// when the caller is reached only over references the index overlay resolved.
+type CallerSourcer interface {
+	CallerSource(callerId string) string
+}
+
 // ImpactAnalyzer performs impact analysis on symbols
 type ImpactAnalyzer struct {
 	maxDepth   int                      // Maximum depth for transitive analysis (default 2)
@@ -362,6 +369,9 @@ func (a *ImpactAnalyzer) processTransitiveCallers(symbol *Symbol, vis *Visibilit
 				item.ModuleName = extractModuleNameFromId(mod)
 				item.Location = loc
 			}
+		}
+		if sourcer, ok := a.callerProv.(CallerSourcer); ok {
+			item.Source = sourcer.CallerSource(callerId)
 		}
 		items = append(items, item)
 	}

@@ -917,3 +917,34 @@ func TestContextReader_Constructor(t *testing.T) {
 		t.Errorf("a line that doesn't spell it: %q", got)
 	}
 }
+
+// An edge only overlay references produce is marked; one the indexer also
+// wrote (in the same or another file) is not.
+func TestCallerIndexOverlayEdges(t *testing.T) {
+	pkg := "scip-go gomod m v1 p/"
+	def := func(line int32, sym string) *Occurrence {
+		return &Occurrence{Range: []int32{line, 5, 8}, Symbol: pkg + sym, SymbolRoles: SymbolRoleDefinition, EnclosingRange: []int32{line, 0, line + 3, 1}}
+	}
+	ref := func(line int32, sym, source string) *Occurrence {
+		return &Occurrence{Range: []int32{line, 2, 5}, Symbol: pkg + sym, Source: source}
+	}
+	a := &Document{RelativePath: "a.go", Occurrences: []*Occurrence{
+		def(0, "f()."), ref(1, "g().", OccurrenceSourceOverlay), ref(2, "h().", OccurrenceSourceOverlay),
+	}, Symbols: []*SymbolInformation{{Symbol: pkg + "f()."}}}
+	b := &Document{RelativePath: "b.go", Occurrences: []*Occurrence{
+		def(0, "k()."), ref(1, "h().", ""),
+	}, Symbols: []*SymbolInformation{{Symbol: pkg + "k()."}}}
+	c := &Document{RelativePath: "c.go", Occurrences: []*Occurrence{
+		def(0, "f2()."), ref(1, "h().", ""), ref(2, "h().", OccurrenceSourceOverlay),
+	}, Symbols: []*SymbolInformation{{Symbol: pkg + "f2()."}}}
+	idx := &SCIPIndex{Documents: []*Document{a, b, c}}
+	if !idx.IsOverlayCallerEdge(pkg+"g().", pkg+"f().") {
+		t.Error("f -> g comes only from an overlay reference")
+	}
+	if !idx.IsOverlayCallerEdge(pkg+"h().", pkg+"f().") {
+		t.Error("f -> h comes only from an overlay reference (k -> h is another edge)")
+	}
+	if idx.IsOverlayCallerEdge(pkg+"h().", pkg+"k().") || idx.IsOverlayCallerEdge(pkg+"h().", pkg+"f2().") {
+		t.Error("an edge the indexer wrote is not an overlay edge, also with an overlay reference beside it")
+	}
+}
