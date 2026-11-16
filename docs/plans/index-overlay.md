@@ -340,6 +340,64 @@ changed file the overlay can only remap, a new file it lacks, or 25 or more unre
 Over the 30 commits (each as one overlay) 17 need no rebuild, all with ≥ 96 % of the changed
 symbols' references found; every commit under 95 % triggers one.
 
+### TypeScript (Phase 4, 2026-11-16)
+
+Harness: `~/Work/Projects/CKB/overlay-measure-2026-11-16/replay-ts/` (the Go harness with
+scip-typescript 0.4.0 `index --infer-tsconfig`, the main checkout's `node_modules` linked into
+every checkout). Lebenslauf, the last 30 first-parent commits with at most 10 files and at
+least one `.ts`/`.tsx` file (2026-11-12 to 16), 543 indexed files.
+
+scip-typescript numbers two kinds of IDs with counters: object-literal properties
+(`experience0:`) and type-literal members (`Caret#typeLiteral40:entry.`), the latter from the
+file's local counter. Any local added above them renumbers them, and the counter can be
+advanced by another file's indexing, so no per-file parser reproduces them. Layer 1 leaves them
+out; Layer 0 keeps their old numbers, consistently at the definition and at every use (also in
+unchanged files), so the graph stays connected under the old name. The replay compares symbols
+with those numbers normalized.
+
+| Measure | Result |
+|---|---|
+| Layer 1 alone against the index at HEAD (539 files that parse, every comparable definition) | 6,138/6,138 symbol, range and EnclosingRange identical; file ranges 539/539 |
+| Of all global definitions there, synthesized / counter IDs left out | 6,138 / 9,133 (7,621 object props, 1,512 type-literal members) |
+| Occurrences on unchanged lines that differ (of 107,916), counters normalized | 138: 120 counter IDs whose name changed with them, 15 locals and 3 parameters whose symbol changed because a declaration or type on another line changed |
+| Definitions with stable IDs in changed files at the fresh index's place | 4,045/4,057, 0 moved; the 12 are in the one changed file tree-sitter cannot parse |
+| Overlay references identical to fresh (symbol, range) | 1,147/1,147, 0 where fresh has nothing |
+| analyzeImpact items only Layer 2 brings, identical | 543/543 (3 lost) |
+| References to the changed symbols found | 1,414/1,846 (77 %) |
+| Callers of the changed symbols found | 511/749 (68 %) |
+| Unresolved sites (no edge) | 1,614 |
+| Overlay build, median / max | 47 / 92 ms |
+
+The 40 references and 67 impact items the overlay has beyond the fresh index all belong to one
+symbol in one commit, ``Sep().(`{ text, between }`)typeLiteralN:between.``: scip-typescript
+writes a destructured parameter's text into the ID, the commit changed that text, and the uses
+in unchanged files keep the old ID — the sites a done check needs, under the name the base had.
+
+Rebuild trigger with the Go thresholds: 10 of 30 commits need no rebuild, all with 100 % of the
+changed symbols' references found; every commit under 95 % triggers one (two of them under the
+unresolved threshold, through a file that got Layer 0 only). The edges count toward impact like
+Go's: precision 100 % on references and items.
+
+Design facts:
+- **tree-sitter, positions in UTF-16** (TypeScript's character offsets). The smacker grammar
+  in go.mod (2024-08) rejects `typeof import("x")` types and `using` as an identifier: 12 of
+  551 Lebenslauf files do not parse. A file with any syntax error stays at Layer 0, because the
+  grammar's error recovery reads a function body's locals as top-level declarations
+  (`Library.tsx`).
+- **Renamed TS files stay at Layer 0 and ask for a rebuild**: every ID carries the path.
+- **The file symbol is pinned at [0,0,0]**: Layer 0 moved it when a line was inserted above the
+  first one and dropped it when the first line changed.
+- **Layer 2 parses the files it resolves into** (exports, re-exports up to three levels,
+  default exports, which top-level names are values or types); the index alone cannot tell a
+  class from an interface. Module resolution: relative specifiers and `compilerOptions.paths`
+  of the root `tsconfig.json` (`extends` not followed), extensions and `index` as with
+  `moduleResolution: bundler`.
+- Resolved: same-file top-level names not shadowed by any enclosing binding (conservatively:
+  a local of the name in either namespace shadows), imported names and their module strings,
+  `ns.x`, enum members, static members, `new C()` → ``C#`<constructor>`().``. Counted as
+  unresolved: members of values whose type is not spelled, JSX attributes of repository
+  components, import aliases. Not counted: locals, globals, names from packages.
+
 ### What the build changed in the design
 
 - **Go's Layers 1–2 use go/parser, not tree-sitter.** Exact for Go, positions in scip-go's byte
@@ -374,6 +432,7 @@ symbols' references found; every commit under 95 % triggers one.
 
 ### Open
 
-- Phase 4: TypeScript Layers 1–2, replay on Lebenslauf. Until then a changed TS file is
-  Layer 0 only and asks for a rebuild when it has added lines.
+- TypeScript: members of locals and parameters with a spelled type (`p: I` → `I#q.`), the
+  largest share of the unresolved sites; a newer tree-sitter grammar for the 2 % of files that
+  do not parse; `extends` in tsconfig; monorepos with several tsconfigs.
 - Replays on other repos (Lebenslauf, Rubik, Hollow-Keep) once their languages have layers.
