@@ -309,7 +309,7 @@ func Build(base *scip.SCIPIndex, ch *Changes) (*scip.SCIPIndex, *Info) {
 			}
 		}
 	}
-	layer2(info, jobs, base)
+	layer2(info, jobs, base, ch.Root)
 	sort.Slice(info.Files, func(i, j int) bool { return info.Files[i].Path < info.Files[j].Path })
 	info.Uncertainty.UnresolvedSites = info.UnresolvedSites()
 	for _, fi := range info.Files {
@@ -383,7 +383,7 @@ func appendJob(jobs []*goJob, j *goJob) []*goJob {
 
 // layer2 resolves the references on the changed lines of every file that
 // passed Layer 1.
-func layer2(info *Info, jobs []*goJob, base *scip.SCIPIndex) {
+func layer2(info *Info, jobs []*goJob, base *scip.SCIPIndex, root string) {
 	if disabledLayer(2) || len(jobs) == 0 {
 		return
 	}
@@ -396,6 +396,10 @@ func layer2(info *Info, jobs []*goJob, base *scip.SCIPIndex) {
 			}
 		}
 	}
+	types := newGoTypes(g, root)
+	for _, j := range jobs {
+		types.noteDeclared(j.doc)
+	}
 	byPath := map[string]*FileInfo{}
 	for i := range info.Files {
 		byPath[info.Files[i].Path] = &info.Files[i]
@@ -405,7 +409,7 @@ func layer2(info *Info, jobs []*goJob, base *scip.SCIPIndex) {
 		if lines == nil {
 			lines = allLines(j.src)
 		}
-		added, unresolved := goLayer2(j.doc, j.src, j.prefix, lines, g)
+		added, unresolved := goLayer2Typed(j.doc, j.src, j.prefix, lines, g, types)
 		if fi := byPath[j.path]; fi != nil {
 			fi.Layers = append(fi.Layers, 2)
 			fi.Referenced = added
