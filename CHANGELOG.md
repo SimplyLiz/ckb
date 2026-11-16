@@ -11,13 +11,14 @@ All notable changes to CKB will be documented in this file.
   unchanged documents shared, changed ones remapped (occurrences on unchanged lines moved,
   those on changed lines dropped), deleted files removed, renames moved. Every query sees the
   patched index; the index on disk is never touched. For Go, declarations on changed lines and
-  in new files of a known package come in under the indexer's own IDs (go/parser), and
+  in new files come in under the indexer's own IDs (go/parser; a new package's import path from
+  the nearest `go.mod`), and
   references on changed lines are resolved exactly or left out: a package-level name, `pkg.Name`
   through the file's imports, `x.M`/`x.F` and longer chains where every type along them is
   spelled in the source (read from the declaring file: fields, promoted members, function
   results). No edge from a name alone, which is what made LIP's callers 2.4 % precise. Such references carry
   `source: "overlay"` on `analyzeImpact` items and `prepareChange` dependents (compact:
-  `from_overlay`). `assessChange` reads its diff against the base index, as before.
+  `from_overlay`), and so do transitive items the indexer's edges alone do not reach. `assessChange` reads its diff against the base index, as before.
   Replayed over CKB's last 30 small Go commits (index at the parent plus the overlay, against a
   fresh index at the commit): 0 differences on 130,951 occurrences on unchanged lines, 7,669 of
   7,669 definitions in changed files at the same place, 1,411 of 1,411 overlay references
@@ -39,7 +40,7 @@ All notable changes to CKB will be documented in this file.
 - **An index built from uncommitted changes records them** (`index-meta.json` `worktreeTree`, a
   git tree written through a temporary git index; HEAD, the index and the working tree are not
   touched, untracked non-source files stay out), and the overlay diffs against it, so those
-  edits are not applied a second time.
+  edits are not applied a second time. `changedSinceIndex` lists against it as well.
 
 ### Added — mixed repos, scripts and data
 

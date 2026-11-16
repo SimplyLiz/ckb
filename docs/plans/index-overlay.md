@@ -358,15 +358,21 @@ symbols' references found; every commit under 95 % triggers one.
 - **`--watch` by default** runs beside the startup paths in repos with `.ckb`; an explicit
   `--watch` keeps building a missing index anywhere.
 
+### Closed after the first build (2026-11-16)
+
+- Transitive impact items reached only over an overlay edge carry `source: overlay`: the
+  caller index records which edges only overlay references produce, and an item at depth 2+
+  is marked when the indexer's edges alone do not reach it within the depth.
+- A new Go package takes its import path from the nearest `go.mod` and the module's version
+  field from a package of that module in the index. Checked against scip-go on a scratch
+  module (a new library package and a new `package main`): definitions identical; scip-go
+  writes the imported package symbol twice per import (path and qualifier), the overlay once.
+  External test packages (`_test`) stay uncovered.
+- `changedSinceIndex` lists against the worktree snapshot of a dirty-built index.
+
 ### Open
 
 - Phase 4: TypeScript Layers 1–2, replay on Lebenslauf. Until then a changed TS file is
   Layer 0 only and asks for a rebuild when it has added lines.
-- Transitive impact items reached over an overlay edge are not marked `source: overlay`; only
-  direct items and prepareChange dependents are.
-- A new Go package (directory without indexed files) is uncovered: no module path to build IDs
-  from without go.mod parsing.
 - A modified file that gains a build constraint excluding it stays in the overlay.
-- `changedSinceIndex` in `indexFreshness` still lists files against the commit, also for an
-  index built from a dirty tree.
 - Replays on other repos (Lebenslauf, Rubik, Hollow-Keep) once their languages have layers.
