@@ -43,19 +43,19 @@ type LastRefresh struct {
 
 // IndexMeta contains metadata about the SCIP index.
 type IndexMeta struct {
-	Version     int          `json:"version"`
-	CreatedAt   time.Time    `json:"createdAt"`
-	CommitHash  string       `json:"commitHash"`
-	RepoStateID string       `json:"repoStateId"`
+	Version     int       `json:"version"`
+	CreatedAt   time.Time `json:"createdAt"`
+	CommitHash  string    `json:"commitHash"`
+	RepoStateID string    `json:"repoStateId"`
 	// WorktreeTree is the git tree of the working tree the index was built
 	// from, when that had uncommitted changes (see SnapshotWorktree). The
 	// index overlay diffs against it instead of CommitHash.
-	WorktreeTree string `json:"worktreeTree,omitempty"`
-	FileCount   int          `json:"fileCount"`
-	Duration    string       `json:"duration"`
-	Indexer     string       `json:"indexer"`
-	IndexerArgs []string     `json:"indexerArgs,omitempty"`
-	LastRefresh *LastRefresh `json:"lastRefresh,omitempty"`
+	WorktreeTree string       `json:"worktreeTree,omitempty"`
+	FileCount    int          `json:"fileCount"`
+	Duration     string       `json:"duration"`
+	Indexer      string       `json:"indexer"`
+	IndexerArgs  []string     `json:"indexerArgs,omitempty"`
+	LastRefresh  *LastRefresh `json:"lastRefresh,omitempty"`
 
 	// Languages are the languages whose indexer output is in the index, one
 	// entry each. Absent in metadata written before multi-language indexing:
