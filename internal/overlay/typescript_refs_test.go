@@ -5,6 +5,7 @@ package overlay
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -124,6 +125,7 @@ export function g(x: I, y: L | undefined, u: U, s: string) {
   const o: L = { a: 1, k() {} };
   const a = 1;
   const p = { a } as L;
+  const rec: Record<string, I> = { k: x }, n: Record<string, number> = { k: 1 };
   return [<Sep text="t" quiet key="k" />, <Field q={1} />];
 }
 function h<I>(x: I) { return x.q; }
@@ -148,8 +150,15 @@ func TestTSLayer2TypedMembers(t *testing.T) {
 	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
 	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
 	lib, _ := tsNewDocument(base, "src/lib.ts", []byte(tsShapesLib))
-	// The counter-numbered members scip-typescript writes and Layer 1 leaves
-	// out; the base index has them.
+	// The base index has the counter-numbered members under scip-typescript's
+	// numbers, not Layer 1's placeholders.
+	kept := lib.Occurrences[:0]
+	for _, o := range lib.Occurrences {
+		if !strings.Contains(o.Symbol, "typeLiteral") {
+			kept = append(kept, o)
+		}
+	}
+	lib.Occurrences = kept
 	for _, s := range []string{"L#typeLiteral7:a.", "L#typeLiteral7:k().", "Sep().(`{ text, quiet = false }`)typeLiteral9:quiet.", "Sep().(`{ text, quiet = false }`)typeLiteral9:text."} {
 		lib.Occurrences = append(lib.Occurrences, &scip.Occurrence{Range: []int32{9, 0, 1}, Symbol: libSym + s, SymbolRoles: scip.SymbolRoleDefinition})
 	}
@@ -176,9 +185,9 @@ func TestTSLayer2TypedMembers(t *testing.T) {
 		"L#typeLiteral7:a.@7 17 18",   // const o: L = { a: … }
 		"L#typeLiteral7:k().@7 23 24", // { k() {} }
 		"L#typeLiteral7:a.@9 14 15",   // { a } as L: the property beside the local
-		"Sep().(`{ text, quiet = false }`)typeLiteral9:text.@10 15 19",
-		"Sep().(`{ text, quiet = false }`)typeLiteral9:quiet.@10 24 29",
-		"I#q.@10 49 50", // <Field q>, props: I
+		"Sep().(`{ text, quiet = false }`)typeLiteral9:text.@11 15 19",
+		"Sep().(`{ text, quiet = false }`)typeLiteral9:quiet.@11 24 29",
+		"I#q.@11 49 50", // <Field q>, props: I
 	} {
 		if !got[w] {
 			t.Errorf("missing %s", w)
@@ -190,9 +199,112 @@ func TestTSLayer2TypedMembers(t *testing.T) {
 			t.Errorf("unexpected %s", k)
 		}
 	}
-	// x.b (inherited from Base), u.b (a union of two types), key on Sep,
-	// h's x.q (I is h's type parameter). s.length is a primitive's member.
-	if unresolved != 4 {
-		t.Errorf("unresolved %d, want 4", unresolved)
+	// x.b (inherited from Base), u.b (a union of two types), k of
+	// Record<string, I>, key on Sep, h's x.q (I is h's type parameter).
+	// s.length is a primitive's member, Record<string, number> outside.
+	if unresolved != 5 {
+		t.Errorf("unresolved %d, want 5", unresolved)
+	}
+}
+
+// TestTSNumberLiterals: a literal whose owner has one number keeps it, any
+// other gets one above the file's highest; old lines are left to Layer 0.
+func TestTSNumberLiterals(t *testing.T) {
+	prefix := "scip-typescript npm app 1.0.0 src/`a.ts`/"
+	doc := &scip.Document{Occurrences: []*scip.Occurrence{
+		{Range: []int32{1, 0, 1}, Symbol: prefix + "T#typeLiteral7:a.", SymbolRoles: scip.SymbolRoleDefinition},
+		{Range: []int32{9, 0, 1}, Symbol: prefix + "U#typeLiteral12:b.", SymbolRoles: 0}, // a reference still counts for the maximum
+	}}
+	// The base had V's literal on a line the change rewrote: Layer 0 dropped
+	// the definition, the uses elsewhere keep 3.
+	old := &scip.Document{Occurrences: []*scip.Occurrence{{Range: []int32{3, 0, 1}, Symbol: prefix + "V#typeLiteral3:c.", SymbolRoles: scip.SymbolRoleDefinition}}}
+	lits := []tsLit{
+		{owner: "V#", group: 3, decl: tsDecl{suffix: "c.", line: 3}},
+		{owner: "T#", group: 0, decl: tsDecl{suffix: "b.", line: 2}},
+		{owner: "T#", group: 0, decl: tsDecl{suffix: "a.", line: 1}}, // unchanged line
+		{owner: "f().(p)", group: 1, decl: tsDecl{suffix: "x.", line: 5}},
+		{owner: "f().(p)", group: 1, decl: tsDecl{suffix: "m().", line: 6}},
+		{owner: "g().", group: 2, decl: tsDecl{suffix: "y.", line: 7}},
+	}
+	var got []string
+	for _, d := range tsNumberLiterals(doc, old, prefix, lits, map[int32]bool{2: true, 3: true, 5: true, 6: true, 7: true}) {
+		got = append(got, d.suffix)
+	}
+	want := "V#typeLiteral3:c. T#typeLiteral7:b. f().(p)typeLiteral13:x. f().(p)typeLiteral13:m(). g().typeLiteral14:y."
+	if strings.Join(got, " ") != want {
+		t.Errorf("got  %v\nwant %s", got, want)
+	}
+}
+
+const tsLitFile = `import { I } from "./lib";
+export function Sep({ text, quiet = false }: { text: string; quiet?: boolean }) { return text; }
+export function linkText(l: { url: string }) { return l.url; }
+export function F({ q, ...rest }: I) { return rest; }
+export class K { m({ z }: { z: number }) { return z; } }
+`
+
+// TestTSLayer2Literals: Layer 1 defines a new literal's members (placeholder
+// number), and Layer 2 points destructured names and l.url at them.
+func TestTSLayer2Literals(t *testing.T) {
+	root := t.TempDir()
+	for rel, text := range map[string]string{"src/lib.ts": tsShapesLib, "src/s.ts": tsLitFile} {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	lib, _ := tsNewDocument(base, "src/lib.ts", []byte(tsShapesLib))
+	base = scip.PatchIndex(base, map[string]*scip.Document{"src/lib.ts": lib})
+	doc, _ := tsNewDocument(base, "src/s.ts", []byte(tsLitFile))
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/s.ts" {
+			return doc
+		}
+		return base.DocumentsByPath[p]
+	})
+	_, unresolved := tsLayer2(doc, "src/s.ts", []byte(tsLitFile), allLines([]byte(tsLitFile)), r)
+
+	sPrefix, libPrefix := head+"src/`s.ts`/", head+"src/`lib.ts`/"
+	digits := regexp.MustCompile(`typeLiteral\d+`)
+	got := map[string]bool{}
+	for _, o := range doc.Occurrences {
+		sym := strings.TrimPrefix(strings.TrimPrefix(o.Symbol, sPrefix), libPrefix)
+		if strings.Contains(sym, "typeLiteral") || strings.HasPrefix(sym, "I#") {
+			role := "ref"
+			if o.SymbolRoles&scip.SymbolRoleDefinition != 0 {
+				role = "def"
+			}
+			got[role+" "+digits.ReplaceAllString(sym, "typeLiteralN")+"@"+fmtRange(o)] = true
+		}
+	}
+	for _, w := range []string{
+		"def Sep().(`{ text, quiet = false }`)typeLiteralN:text.@1 47 51",
+		"def Sep().(`{ text, quiet = false }`)typeLiteralN:quiet.@1 61 66",
+		"ref Sep().(`{ text, quiet = false }`)typeLiteralN:text.@1 22 26",
+		"ref Sep().(`{ text, quiet = false }`)typeLiteralN:quiet.@1 28 33",
+		"def linkText().(l)typeLiteralN:url.@2 30 33",
+		"ref linkText().(l)typeLiteralN:url.@2 56 59",
+		"ref I#q.@3 20 21",
+		"def K#m().(`{ z }`)typeLiteralN:z.@4 28 29",
+		"ref K#m().(`{ z }`)typeLiteralN:z.@4 21 22",
+	} {
+		if !got[w] {
+			t.Errorf("missing %s", w)
+		}
+		delete(got, w)
+	}
+	for k := range got {
+		if strings.HasPrefix(k, "ref") && !strings.HasPrefix(k, "ref I#@") {
+			t.Errorf("unexpected %s", k)
+		}
+	}
+	if unresolved != 0 {
+		t.Errorf("unresolved %d, want 0", unresolved)
 	}
 }

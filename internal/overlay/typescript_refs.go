@@ -625,6 +625,8 @@ func (l *tsRefs) visit(n *sitter.Node) {
 		if n.NamedChildCount() == 2 && n.NamedChild(0).Type() == "object" {
 			l.objectKeys(n.NamedChild(0), n.NamedChild(1))
 		}
+	case "required_parameter", "optional_parameter":
+		l.paramPattern(n)
 	case "identifier", "type_identifier", "shorthand_property_identifier":
 		l.ident(n)
 	}
@@ -731,6 +733,13 @@ func (l *tsRefs) member(n *sitter.Node) {
 			l.unresolved++ // inherited, or a member the parse does not see
 		}
 		return
+	case tsTypeLiteral:
+		if s := l.r.literalMember(file, sym, pname); s != "" {
+			l.emit(prop, s)
+		} else {
+			l.unresolved++
+		}
+		return
 	case tsTypeUnknown:
 		l.unresolved++
 		return
@@ -801,6 +810,112 @@ func (l *tsRefs) member(n *sitter.Node) {
 		return
 	}
 	l.emit(prop, hit)
+}
+
+// paramPattern points the names a destructured parameter takes from its
+// spelled type ({ a }: T, { a }: { a: X }) at the type's members.
+func (l *tsRefs) paramPattern(p *sitter.Node) {
+	pat, typ := p.ChildByFieldName("pattern"), p.ChildByFieldName("type")
+	if pat == nil || typ == nil || pat.Type() != "object_pattern" || typ.NamedChildCount() != 1 {
+		return
+	}
+	var names []*sitter.Node
+	for i := 0; i < int(pat.NamedChildCount()); i++ {
+		var k *sitter.Node
+		switch c := pat.NamedChild(i); c.Type() {
+		case "shorthand_property_identifier_pattern":
+			k = c
+		case "object_assignment_pattern":
+			k = c.ChildByFieldName("left")
+		case "pair_pattern":
+			k = c.ChildByFieldName("key")
+		}
+		if k != nil && (k.Type() == "shorthand_property_identifier_pattern" || k.Type() == "property_identifier") && l.onAdded(k) {
+			names = append(names, k)
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	lookup := func(string) string { return "" }
+	st := tsTypeRepo
+	if typ.NamedChild(0).Type() == "object_type" {
+		fn, ok := tsParamOwner(p, l.src)
+		if !ok {
+			return // a local function's literal: local symbols
+		}
+		owner := fn + "(" + tsEscape(l.text(pat)) + ")"
+		lookup = func(n string) string { return l.r.literalMember(l.file, owner, n) }
+	} else {
+		var sym, file string
+		sym, file, st = l.typeRef(typ)
+		lookup = func(n string) string { return l.r.typeMember(file, sym, n) }
+	}
+	for _, k := range names {
+		switch st {
+		case tsTypeRepo:
+			if s := lookup(l.text(k)); s != "" {
+				l.emit(k, s)
+				continue
+			}
+			l.unresolved++
+		case tsTypeUnknown:
+			l.unresolved++
+		}
+	}
+}
+
+// tsParamOwner is the descriptor of the function a parameter belongs to,
+// when its parameters' IDs are global: a top-level function or a method of
+// a top-level class.
+func tsParamOwner(p *sitter.Node, src []byte) (string, bool) {
+	if p == nil || p.Type() != "required_parameter" && p.Type() != "optional_parameter" {
+		return "", false
+	}
+	ps := p.Parent()
+	if ps == nil || ps.Type() != "formal_parameters" {
+		return "", false
+	}
+	f := ps.Parent()
+	if f == nil {
+		return "", false
+	}
+	topLevel := func(n *sitter.Node) bool {
+		a := n.Parent()
+		if a != nil && a.Type() == "export_statement" {
+			a = a.Parent()
+		}
+		return a != nil && a.Type() == "program"
+	}
+	name := f.ChildByFieldName("name")
+	if name == nil {
+		return "", false
+	}
+	switch f.Type() {
+	case "function_declaration":
+		if topLevel(f) {
+			return tsMethod(name.Content(src)), true
+		}
+	case "method_definition":
+		body := f.Parent()
+		if body == nil || body.Type() != "class_body" || tsAccessor(f, name) != "" || !tsSimpleMemberName(name) {
+			return "", false
+		}
+		cls := body.Parent()
+		if cls == nil || cls.Type() != "class_declaration" && cls.Type() != "abstract_class_declaration" || !topLevel(cls) {
+			return "", false
+		}
+		cn := cls.ChildByFieldName("name")
+		if cn == nil {
+			return "", false
+		}
+		m := name.Content(src)
+		if m == "constructor" {
+			m = "<constructor>"
+		}
+		return tsType(cn.Content(src)) + tsMethod(m), true
+	}
+	return "", false
 }
 
 // objectKeys points the keys of an object literal whose type is spelled
@@ -916,6 +1031,7 @@ const (
 	tsTypeRepo                       // a type declared in the repository
 	tsTypeOutside                    // a primitive, a global or a package's type
 	tsTypeUnknown                    // spelled, but not one Layer 2 follows
+	tsTypeLiteral                    // an object type in a parameter: sym is its members' owner in file
 )
 
 // receiverType is the spelled type of a member expression's object: a local
@@ -939,6 +1055,12 @@ func (l *tsRefs) receiverType(obj *sitter.Node) (string, string, tsTypeState) {
 			return "", "", tsTypeNone
 		}
 		if t := tsBindingType(id); t != nil {
+			if t.NamedChildCount() == 1 && t.NamedChild(0).Type() == "object_type" {
+				if fn, ok := tsParamOwner(id.Parent(), l.src); ok {
+					return fn + "(" + tsEscape(l.text(id)) + ")", l.file, tsTypeLiteral
+				}
+				return "", "", tsTypeOutside // a local type literal: local symbols
+			}
 			return l.typeRef(t)
 		}
 	}
@@ -949,6 +1071,15 @@ func (l *tsRefs) receiverType(obj *sitter.Node) (string, string, tsTypeState) {
 // T, T<…>, (T) and T | undefined | null are followed; anything else is
 // unknown.
 func (l *tsRefs) typeRef(t *sitter.Node) (string, string, tsTypeState) {
+	// A global or package generic over repository types (Record<K, T>,
+	// Partial<T>, Array<{ … }>) is not outside: its members can be T's.
+	var args *sitter.Node
+	outside := func() (string, string, tsTypeState) {
+		if args != nil && l.mentionsRepo(args) {
+			return "", "", tsTypeUnknown
+		}
+		return "", "", tsTypeOutside
+	}
 	for {
 		switch t.Type() {
 		case "type_annotation", "parenthesized_type":
@@ -979,6 +1110,7 @@ func (l *tsRefs) typeRef(t *sitter.Node) (string, string, tsTypeState) {
 			if n == nil {
 				return "", "", tsTypeUnknown
 			}
+			args = t.ChildByFieldName("type_arguments")
 			t = n
 			continue
 		case "predefined_type":
@@ -991,7 +1123,7 @@ func (l *tsRefs) typeRef(t *sitter.Node) (string, string, tsTypeState) {
 			res, ok := l.resolveName(name, tsTypeNS)
 			switch {
 			case !ok || res.external:
-				return "", "", tsTypeOutside
+				return outside()
 			case res.sym == "" || !strings.HasSuffix(res.sym, "#"):
 				return "", "", tsTypeUnknown
 			}
@@ -999,6 +1131,27 @@ func (l *tsRefs) typeRef(t *sitter.Node) (string, string, tsTypeState) {
 		}
 		return "", "", tsTypeUnknown
 	}
+}
+
+// mentionsRepo reports whether a type node spells an object type or names a
+// type of the repository.
+func (l *tsRefs) mentionsRepo(n *sitter.Node) bool {
+	switch n.Type() {
+	case "object_type":
+		return true
+	case "type_identifier":
+		if tsBoundLocally(n, l.text(n), l.src) {
+			return false
+		}
+		res, ok := l.resolveName(l.text(n), tsTypeNS)
+		return ok && !res.external
+	}
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		if l.mentionsRepo(n.NamedChild(i)) {
+			return true
+		}
+	}
+	return false
 }
 
 // typeMember finds the member name of the repository type typeSym declared
