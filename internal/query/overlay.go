@@ -94,3 +94,61 @@ func (e *Engine) OverlayInfo() *overlay.Info {
 	}
 	return e.overlay.info
 }
+
+// OverlayFreshness is the overlay's part of IndexFreshness and getStatus:
+// how many files changed since the indexed commit, how many of them the
+// overlay serves, and what it could not do.
+type OverlayFreshness struct {
+	// Files counts the changed files in a language the index covers.
+	Files int `json:"files"`
+	// Covered counts those the overlay serves (remapped, moved or removed).
+	Covered int `json:"covered"`
+	// Uncovered lists the rest: new files, which only a reindex adds.
+	Uncovered []string `json:"uncovered,omitempty"`
+	// Layers lists the overlay layers in use: 0 is the line remap, exact for
+	// every unchanged line; declarations and uses on changed lines are missing
+	// until a reindex.
+	Layers []int `json:"layers,omitempty"`
+	// DroppedOccurrences counts the index entries on changed lines the
+	// overlay removed and could not replace.
+	DroppedOccurrences int `json:"droppedOccurrences"`
+	// UnresolvedSites counts uses on changed lines the overlay could not
+	// resolve to a declaration (0 until the reference layer exists).
+	UnresolvedSites int `json:"unresolvedSites"`
+	// BuildMs is how long the last overlay build took.
+	BuildMs float64 `json:"buildMs"`
+}
+
+// OverlayFreshness summarizes the current overlay, or nil when there is none.
+func (e *Engine) OverlayFreshness() *OverlayFreshness {
+	info := e.OverlayInfo()
+	if info == nil {
+		return nil
+	}
+	f := &OverlayFreshness{Files: len(info.Files), Covered: info.Covered(), Layers: info.Layers(), BuildMs: info.BuildMs}
+	for _, fi := range info.Files {
+		f.DroppedOccurrences += fi.Dropped
+		if fi.State == overlay.StateUncovered {
+			f.Uncovered = append(f.Uncovered, fi.Path)
+		}
+	}
+	return f
+}
+
+// coveredByOverlay returns the paths the current overlay serves.
+func (e *Engine) coveredByOverlay() map[string]bool {
+	info := e.OverlayInfo()
+	if info == nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, fi := range info.Files {
+		if fi.State != overlay.StateUncovered {
+			out[fi.Path] = true
+			if fi.OldPath != "" {
+				out[fi.OldPath] = true
+			}
+		}
+	}
+	return out
+}

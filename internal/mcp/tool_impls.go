@@ -262,6 +262,9 @@ func (s *MCPServer) getIndexStaleness() map[string]interface{} {
 	sb := s.engine().GetScipBackend()
 	loaded := sb != nil && sb.IsAvailable()
 	result["loaded"] = loaded
+	if ov := s.engine().OverlayFreshness(); loaded && ov != nil && ov.Files > 0 {
+		result["overlay"] = ov
+	}
 	if !loaded && !staleness.IsStale {
 		result["fresh"] = false
 		if sb == nil {

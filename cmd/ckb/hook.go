@@ -162,10 +162,21 @@ func indexFreshnessLine(root, ckbDir string, meta *index.IndexMeta) string {
 			"Until then, answers about code changed since %s can be out of date.", reason, orIndexBuild(shortCommit(f.IndexedCommit)))
 	}
 	if f.HasUncommitted && f.CommitsBehind == 0 {
+		if overlayEnabled() {
+			return fmt.Sprintf("CKB: the SCIP index matches commit %s; uncommitted changes are served from an overlay of the diff: "+
+				"positions in changed files are current, declarations and uses on the changed lines come in with a reindex.", orIndexBuild(shortCommit(f.IndexedCommit)))
+		}
 		return fmt.Sprintf("CKB: the SCIP index matches commit %s; uncommitted changes are not in it. "+
 			"Call the reindex tool after larger edits, before relying on impact or references for them.", orIndexBuild(shortCommit(f.IndexedCommit)))
 	}
 	return fmt.Sprintf("CKB: the SCIP index is out of date (%s). Call the reindex tool before relying on impact or references.", f.Reason)
+}
+
+// overlayEnabled mirrors the engine's switch (query.overlayDisabled):
+// CKB_OVERLAY=0 turns the index overlay off.
+func overlayEnabled() bool {
+	v := os.Getenv("CKB_OVERLAY")
+	return v != "0" && v != "false" && v != "off"
 }
 
 func shortCommit(c string) string {

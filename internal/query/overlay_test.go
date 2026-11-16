@@ -183,3 +183,30 @@ func TestOverlay_Disabled(t *testing.T) {
 		t.Error("CKB_OVERLAY=0 still patched the index")
 	}
 }
+
+func TestOverlay_FreshnessSaysWhatItServes(t *testing.T) {
+	e, root := overlayEngine(t)
+	edited := strings.Replace(overlayLib, "package lib\n", "package lib\n\n// Doc.\n", 1)
+	if err := os.WriteFile(filepath.Join(root, "lib/lib.go"), []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	freshnessCacheMu.Lock()
+	freshnessCache = map[string]freshnessCacheEntry{}
+	freshnessCacheMu.Unlock()
+	e.overlay.checkedAt = e.overlay.checkedAt.Add(-overlayCheckInterval)
+	e.RefreshOverlay(context.Background())
+
+	f := e.IndexFreshnessFor(context.Background(), []string{"lib/lib.go"})
+	if f == nil || f.Overlay == nil || f.Overlay.Covered != 1 || !f.AffectsResult {
+		t.Fatalf("freshness %+v, want lib/lib.go affected and covered", f)
+	}
+	if !strings.Contains(f.Hint, "served from the overlay") {
+		t.Errorf("hint %q", f.Hint)
+	}
+
+	unpin := e.scipAdapter.PinBase()
+	defer unpin()
+	if f := e.IndexFreshnessFor(context.Background(), []string{"lib/lib.go"}); f.Overlay != nil || strings.Contains(f.Hint, "overlay") {
+		t.Errorf("pinned base still reports the overlay: %+v", f)
+	}
+}
