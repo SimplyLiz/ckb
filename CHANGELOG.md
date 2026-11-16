@@ -38,8 +38,13 @@ All notable changes to CKB will be documented in this file.
   through `extends`, callback parameters of array methods and of repository functions, and keys
   of object literals typed by their context (a variable's annotation, an argument, a
   constructor's parameter, a return type, an enclosing key, an array element, zustand's
-  `create<T>()`). Unions, intersections, type parameters, overloads and type-predicate filters
-  are left unresolved. Where scip-typescript's contextual lookup finds no property, Layer 2
+  `create<T>()`). Uses of a parameter get its symbol. A union's member is every remaining part's
+  declaration after narrowing (discriminants, truthiness, `in`, `typeof`, type guards, `if`,
+  `switch`, an earlier `return`) of an identifier that is not reassigned; property chains,
+  conditions not modeled and overloads stay unresolved. `Pick`, `Omit`, `Partial`, `Readonly`
+  and intersections have their parts' members; React's `createContext`/`useContext`, `useState`,
+  `useRef`, `useMemo` and `useCallback` pass their types through, and any other package call
+  that passes a repository value counts as unresolved. Where scip-typescript's contextual lookup finds no property, Layer 2
   writes no edge either: a literal whose context is `T | undefined` (an optional or defaulted
   parameter, a `T | null` return, an async function's return), and the value of a shorthand
   property in a package's or a global's type. Lower-case JSX tags are intrinsic elements. JSX
@@ -47,13 +52,13 @@ All notable changes to CKB will be documented in this file.
   (of a parameter, return type, constraint, alias, variable, interface property or type
   argument) are defined with the number the base gave the same owner, else a placeholder until
   the next reindex. Checked on Lebenslauf: 6,138 of 6,138 comparable definitions identical to
-  scip-typescript's at HEAD; over its last 30 small commits 1,968 of 1,968 overlay references
-  identical to a fresh index (counter numbers normalized), 1,093 of 1,120 impact items they bring
+  scip-typescript's at HEAD; over its last 30 small commits 2,247 of 2,247 overlay references
+  identical to a fresh index (counter numbers normalized), 1,139 of 1,166 impact items they bring
   too (25 the same symbols reached transitively, 2 from a renamed component's kept
-  references), 1,765 of 1,846 changed symbols' references found (96 %), 19 of 30 commits without
-  a rebuild (all at 100 %), overlay built in 40 ms (median). Layer 2 run over every line of
+  references), 1,766 of 1,846 changed symbols' references found (96 %), 19 of 30 commits without
+  a rebuild (all at 100 %), overlay built in 52 ms (median). Layer 2 run over every line of
   eight TypeScript repositories against their indexes (files whose source is the indexed one):
-  90,395 edges, every one identical except 40 in two repositories whose files changed after
+  111,873 edges, every one identical except 41 in two repositories whose files changed after
   indexing. The grammar's two gaps, `using` as an identifier and `typeof import("…")`, are
   rewritten to same-length tokens before parsing (v0.23.2, the newest grammar, still rejects
   both); all 547 Lebenslauf files parse. A file with a syntax error and a renamed TS file stay at

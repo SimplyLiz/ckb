@@ -546,6 +546,64 @@ old one until the rebuild the changed signature asks for), discriminated unions
 (`target.kind === "fassung" && target.last`), generic callbacks (`edit(id, (s) => s.x)`), and
 members of values typed by a worker's or a parser's untyped result.
 
+#### Parameters, unions, package calls (2026-11-16, late)
+
+The oracle got a MISS listing (every reference to a repository symbol Layer 2 did not write).
+Over seven repositories the largest share was not unions or callbacks but uses of parameters:
+scip-typescript gives a top-level function's or a method's parameters global symbols
+(`f().(p)`), and Layer 2 skipped every locally bound name. Built:
+
+- **Parameters**: a locally bound name whose binding carries a non-local definition in the
+  document gets that symbol. A shorthand property (`{ p }`) never does: scip-typescript writes
+  the property, a counter or a local there (12 wrong edges in the first try, all shorthands).
+  Oracle: about +20,000 edges, 0 wrong.
+- **Generic functions**: their type parameters are local names, so a parameter or result type
+  that mentions one is unknown and the rest exact (`edit<T>(id, fn: (s: State) => T)`).
+- **Pick, Omit, Partial, Readonly** of a repository type: the base's members (TypeScript keeps
+  their declarations; checked on the oracle).
+- **Unions and intersections** keep their parts, as `tyUnknown` with `parts`, so every rule
+  that did not ask for them is unchanged. scip-typescript writes one occurrence per declaration
+  of a union property (`target.kind` on a three-part union: three locals; after `||` excluded one
+  part: two). A member access on an identifier's union gets every remaining part's member after
+  narrowing; the narrowing is a set over the parts, exact for `&&`, `||`, `!`, `?:`, `if`/`else`,
+  `switch` with fall-through, an earlier `if` that exits, `===`/`!==` on a discriminant,
+  truthiness of a discriminant, `in`, `typeof`, and type guards whose type is one of the parts.
+  TypeScript 5.9 (scip-typescript's) keeps narrowing in closures for bindings never reassigned,
+  not into function declarations; past a method it is not followed. Not narrowed, so unknown:
+  an identifier that may be reassigned (TypeScript narrows on assignment), an annotated union
+  with an initializer or default, a property chain (`o.t.kind` is a reference TypeScript narrows
+  too), and any condition or earlier statement that mentions the identifier in a way not modeled
+  (an aliased condition `const ok = r.ok; if (ok)`, `instanceof`, an assertion call, a `switch` on
+  something else that may return). Object types inside a union or intersection have local
+  members in the index; their symbol is read from the declaring document at the member's name.
+- **Package calls**: a call of a package's or a global's function was a package's type, also
+  when it passes a repository value (`useContext(DocContext)`): a silent miss, not counted. Found
+  because the commit with it (393c3c8c, `doc.manual`, 46 impact items) fell from 35 to 23
+  unresolved sites and would have skipped the rebuild at 167/168. Now unknown when an argument
+  or a type argument carries repository types. React's `createContext<T>`/`useContext`/`use`,
+  `useState`, `useRef` (`current`), `useMemo`, `useCallback` are followed as @types/react
+  declares them. tRPC's inferred hooks (nyxcore) stay counted.
+
+| Measure (Lebenslauf replay, 30 commits) | d7d25f6 | now |
+|---|---|---|
+| Overlay references identical to fresh | 1,968/1,968 | 2,247/2,247 |
+| Impact items only Layer 2 brings, identical | 1,093/1,120 | 1,139/1,166 |
+| References of the changed symbols found | 1,765/1,846 | 1,766/1,846 |
+| Unresolved sites | 648 | 584 |
+| Commits without a rebuild reason, all at 100 % | 19 | 19 |
+| Overlay build, median | 40 ms | 52 ms |
+
+Oracle (eight repositories): 111,873 edges, all identical except the 41 on lines changed after
+indexing (moltbot 3 + 31, FrugalRoute 7; the one new is moltbot's `download.ts:43`, a line the
+index has shorter). Unresolved sites rose where package calls carry repository types (nyxcore
+6,447 → 11,532, tRPC); in Lebenslauf the React hooks take back most of the rise (3,484 → 3,526,
+3,966 without them).
+
+The per-package tsconfig question closes without code: `ckb index` always runs
+scip-typescript once at the root (`--infer-tsconfig`, never `--pnpm-workspaces`) and records the
+arguments in `index-meta.json` (`indexerArgs`); only an index built outside CKB could be per
+package, and scip-typescript records nothing that tells.
+
 ### What the build changed in the design
 
 - **Go's Layers 1–2 use go/parser, not tree-sitter.** Exact for Go, positions in scip-go's byte
@@ -580,8 +638,7 @@ members of values typed by a worker's or a parser's untyped result.
 
 ### Open
 
-- TypeScript: discriminated-union narrowing, generic functions' callbacks, the owner rename of
-  a destructured parameter (rewriting unchanged documents' uses instead of a rebuild); repos
-  indexed per workspace package (`--pnpm-workspaces`) would need the nearest tsconfig again, and
-  the index does not say which way it was built.
+- TypeScript: the owner rename of a destructured parameter (rewriting unchanged documents' uses
+  instead of a rebuild; the commits that need it rebuild anyway for the changed signature);
+  narrowing of property chains; tRPC-style inferred package types.
 - Replays on other repos (Lebenslauf, Rubik, Hollow-Keep) once their languages have layers.
