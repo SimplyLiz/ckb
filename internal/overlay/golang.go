@@ -5,12 +5,14 @@ import (
 	"go/build"
 	"go/parser"
 	"go/token"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	scippb "github.com/sourcegraph/scip/bindings/go/scip"
+	"golang.org/x/mod/modfile"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 )
@@ -355,12 +357,15 @@ func scipRange(sl, sc, el, ec int32) []int32 {
 // not have, when its package is one the base index knows (a file added to an
 // existing package). Every declaration is new; references come from Layer 2.
 // Nil when the file does not parse or its package is not in the index.
-func goNewDocument(base *scip.SCIPIndex, newPath string, src []byte) (*scip.Document, string) {
+func goNewDocument(base *scip.SCIPIndex, root, newPath string, src []byte) (*scip.Document, string) {
 	decls, pkg, pkgAt, ok := parseGoFile(src)
 	if !ok {
 		return nil, ""
 	}
 	prefix := goPackagePrefix(base, nil, "", newPath, pkg)
+	if prefix == "" {
+		prefix = goNewPackagePrefix(base, root, newPath, pkg)
+	}
 	if prefix == "" {
 		return nil, ""
 	}
@@ -385,6 +390,90 @@ func goNewDocument(base *scip.SCIPIndex, newPath string, src []byte) (*scip.Docu
 	}
 	sortOccurrences(doc.Occurrences)
 	return doc, prefix
+}
+
+// goNewPackagePrefix builds the package symbol for a file in a directory the
+// index has no Go package in: the import path from the nearest go.mod, and
+// the module's version field from a package of the same module the index
+// has, as scip-go would write it. Empty for an external test package (scip-go
+// names those differently), a module the index has no package of, or a
+// go.mod outside the repository.
+func goNewPackagePrefix(base *scip.SCIPIndex, root, newPath, pkg string) string {
+	if root == "" || strings.HasSuffix(pkg, "_test") {
+		return ""
+	}
+	modDir, modPath := nearestGoMod(root, path.Dir(newPath))
+	if modPath == "" {
+		return ""
+	}
+	version := moduleVersion(base, modPath)
+	if version == "" {
+		return ""
+	}
+	importPath := modPath
+	if rel := strings.TrimPrefix(strings.TrimPrefix(path.Dir(newPath), modDir), "/"); rel != "" && rel != "." {
+		importPath = modPath + "/" + rel
+	}
+	return "scip-go gomod " + modPath + " " + version + " " + scipDescriptorName(importPath) + "/"
+}
+
+// nearestGoMod walks up from dir (repo-relative) to the repository root and
+// returns the first go.mod's directory (repo-relative, "" for the root) and
+// module path.
+func nearestGoMod(root, dir string) (string, string) {
+	for {
+		if dir == "." {
+			dir = ""
+		}
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(dir), "go.mod")) // #nosec G304 -- a go.mod inside the repository
+		if err == nil {
+			if mp := modfile.ModulePath(data); mp != "" {
+				return dir, mp
+			}
+			return "", ""
+		}
+		if dir == "" {
+			return "", ""
+		}
+		dir = path.Dir(dir)
+	}
+}
+
+// moduleVersion is the version field scip-go wrote for module modPath, read
+// from a package symbol of that module in the index.
+func moduleVersion(base *scip.SCIPIndex, modPath string) string {
+	head := "scip-go gomod " + modPath + " "
+	for _, d := range base.Documents {
+		if !strings.HasSuffix(d.RelativePath, ".go") {
+			continue
+		}
+		for _, o := range d.Occurrences {
+			if o.SymbolRoles&scip.SymbolRoleDefinition == 0 || !strings.HasPrefix(o.Symbol, head) || !strings.HasSuffix(o.Symbol, "/") {
+				continue
+			}
+			rest := o.Symbol[len(head):]
+			if i := strings.IndexByte(rest, ' '); i > 0 {
+				return rest[:i]
+			}
+		}
+	}
+	return ""
+}
+
+// scipDescriptorName writes a SCIP descriptor name: as is when it consists of
+// SCIP's simple identifier characters (ASCII), else in backticks with backticks doubled.
+func scipDescriptorName(name string) string {
+	simple := name != ""
+	for _, r := range name {
+		if !(r == '_' || r == '+' || r == '-' || r == '$' || 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9') {
+			simple = false
+			break
+		}
+	}
+	if simple {
+		return name
+	}
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 
 // goBuilds reports whether the go tool would build the file at abs under the

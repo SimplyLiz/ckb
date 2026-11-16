@@ -472,7 +472,7 @@ func newFile(p string, base *scip.SCIPIndex, root string, replace map[string]*sc
 	if err != nil {
 		return fi, nil
 	}
-	doc, prefix := goNewDocument(base, p, src)
+	doc, prefix := goNewDocument(base, root, p, src)
 	if doc == nil {
 		fi.Fallback = "does not parse, or a package the index does not have"
 		return fi, nil
