@@ -369,10 +369,11 @@ symbols' references found; every commit under 95 % triggers one.
   writes the imported package symbol twice per import (path and qualifier), the overlay once.
   External test packages (`_test`) stay uncovered.
 - `changedSinceIndex` lists against the worktree snapshot of a dirty-built index.
+- A modified Go file a build constraint now excludes leaves the index like a deleted file; its
+  symbols used in unchanged files count as changed declarations (a rebuild reason).
 
 ### Open
 
 - Phase 4: TypeScript Layers 1–2, replay on Lebenslauf. Until then a changed TS file is
   Layer 0 only and asks for a rebuild when it has added lines.
-- A modified file that gains a build constraint excluding it stays in the overlay.
 - Replays on other repos (Lebenslauf, Rubik, Hollow-Keep) once their languages have layers.
