@@ -457,6 +457,95 @@ constant's members, 23 unresolved sites, no rebuild at 49 % recall; with the rul
 Definition places of counter IDs move by ±30 between runs of the same code (the replay
 compares them normalized), stable definitions stay at 0 moved.
 
+#### Types from inference and context; eight repositories (2026-11-16, evening)
+
+The open points of the placeholder step (context-typed keys, call results, callback
+parameters, inherited members) shared one missing piece: the type of an expression the syntax
+does not annotate. Layer 2 now has a small type engine (`typescript_types.go`), exact or nothing:
+
+- **Expression types**: annotations; initializers (`const x = await load()`); calls of
+  repository functions with a spelled return type, or the join of their `return` statements
+  (`find(…) ?? xs[0]`); `await`, `new C()`, `this` in a top-level class; `x[i]` of an array or
+  record; destructured bindings (the member of the pattern's type); callback parameters (array
+  methods, parameters of repository functions, zustand selectors).
+- **Contexts** for object literals and function expressions: a variable's annotation,
+  `as`/`satisfies`, an argument (also of `new C()`), a default value or field initializer, a
+  return statement or arrow body, an enclosing key, an array element, `?:`/`??`/`||`, zustand's
+  `create<T>()(init)` through `persist`/`devtools`/`immer`.
+- **Members** in the declaring interface, class or object type, else in the types it
+  `extends` (an inherited member's symbol is the base's).
+- **Layer 1** names the members of a type literal of a top-level variable (`x.`), an interface
+  property (`T#m.`) and a type argument (`x.Record:`, `f().Promise:`), the owners the index
+  has and Layer 1 did not.
+- **Grammar**: `using` as an identifier and `typeof import("…")` are rewritten to same-length
+  tokens before parsing (`tsParseText`), so offsets and node texts stay those of the source.
+  Grammar v0.23.2 (the newest; upstream has not moved since) fails on both too, and breaks
+  tagged templates with type arguments. All 547 Lebenslauf files parse.
+- **tsconfig**: the root `tsconfig.json`'s project and the projects it references,
+  `extends` followed (relative, a package's config, TypeScript 5 arrays; paths resolve against
+  the config that sets them, `baseUrl` against its own). A package's tsconfig nothing references
+  is not read, because `ckb index` runs scip-typescript once at the root (`index
+  --infer-tsconfig`) and the indexer never reads it either. The index cannot say how it was
+  built: scip-typescript records no arguments.
+- **Workspace packages** (`package.json` workspaces, `pnpm-workspace.yaml`) resolve to their
+  files through `exports` (conditions `types`, `import`, `default`, `*` patterns), `types`,
+  `typings`, `main`; the document's own file symbol gives the package-named IDs
+  (`npm @madison/spur 0.1.0 src/…`).
+
+The replay alone was too narrow. Running Layer 2 over every line of eight TypeScript
+repositories against their own indexes (harness in
+`overlay-measure-2026-11-16/oracle-l2/`, files whose source is not the indexed one skipped)
+found rules that hold in scip-typescript and not in TypeScript's own checker:
+
+- scip-typescript resolves an object literal's key through the contextual type's
+  `getProperty`, and a union has none. So a literal whose context is `T | undefined` defines its
+  own properties: optional and defaulted parameters (`p: T = {}` is `T | undefined` to a caller),
+  `T | null` returns, every return of an async function (`T | PromiseLike<T>`), optional
+  members. A member access looks through the same unions.
+- A shorthand property (`{ a }`) is the contextual member when there is one, else the value,
+  and the value of an imported name is a local in the index (Lebenslauf `schema: { user }`,
+  nyxcore, moltbot). In a package's or a global's type the parse cannot tell whether the
+  property exists: no edge, counted.
+- A lower-case JSX tag is `JSX.IntrinsicElements`' member even when a value of that name is
+  imported (`<table>` beside `import { table }`), wrong since Phase 4.
+- `await import("m")` destructuring points at the module's declaration; a name the module
+  re-exports (a barrel) is a local in the index.
+- `filter((x): x is U => …)` narrows the element type: unknown.
+
+| Repository | Edges before (e7c4455) | wrong | Edges now (09fac5f) | wrong |
+|---|---|---|---|---|
+| Lebenslauf | 12,870 | 27 | 15,305 | 0 |
+| moltbot | 34,505 | 21 + 30 | 48,734 | 3 + 30 |
+| FrugalRoute | 1,104 | 4 | 2,072 | 7 |
+| ContextCompressionEngine | 40 | 0 | 75 | 0 |
+| CognitiveVault | 689 | 0 | 1,018 | 0 |
+| nyxcore | 6,414 | 1 | 9,236 | 0 |
+| archreview | 2,514 | 0 | 3,466 | 0 |
+| Madison-Server | 6,220 | 26 | 10,489 | 0 |
+
+The 40 left (moltbot, FrugalRoute) sit on lines changed after the index was built (moltbot's
+`Clawdbot`→`OpenClaw` rename, a test file one day younger than FrugalRoute's index): the
+source filter checks definitions and non-local references, not locals. Unresolved sites on the
+same files fell from 64,654 to 30,686.
+
+Lebenslauf replay (30 commits, counters normalized):
+
+| Measure | e7c4455 | now |
+|---|---|---|
+| Overlay references identical to fresh | 1,386/1,386 | 1,968/1,968 |
+| Impact items only Layer 2 brings, identical | 761/784 | 1,093/1,120 (25 the same symbol reached transitively, 2 a renamed component's references Layer 0 kept) |
+| References of the changed symbols found | 1,506/1,846 (82 %) | 1,765/1,846 (96 %) |
+| Callers found | 586/749 | 710/749 |
+| Unresolved sites | 1,419 | 648 |
+| Commits without rebuild, all at 100 % recall | 11 | 19 |
+| Overlay build, median | 52 ms | 40 ms |
+
+The 81 references still missing: a function whose destructured parameter's text changed
+(`Sep`, 38: the owner's ID carries the pattern text, so every use in an unchanged file names the
+old one until the rebuild the changed signature asks for), discriminated unions
+(`target.kind === "fassung" && target.last`), generic callbacks (`edit(id, (s) => s.x)`), and
+members of values typed by a worker's or a parser's untyped result.
+
 ### What the build changed in the design
 
 - **Go's Layers 1–2 use go/parser, not tree-sitter.** Exact for Go, positions in scip-go's byte
@@ -491,7 +580,8 @@ compares them normalized), stable definitions stay at 0 moved.
 
 ### Open
 
-- TypeScript: object keys typed only by context (an argument, `create<T>()(…)`, nested objects),
-  members of call results and untyped callback parameters, inherited members; a newer tree-sitter grammar for the 2 % of files that
-  do not parse; `extends` in tsconfig; monorepos with several tsconfigs.
+- TypeScript: discriminated-union narrowing, generic functions' callbacks, the owner rename of
+  a destructured parameter (rewriting unchanged documents' uses instead of a rebuild); repos
+  indexed per workspace package (`--pnpm-workspaces`) would need the nearest tsconfig again, and
+  the index does not say which way it was built.
 - Replays on other repos (Lebenslauf, Rubik, Hollow-Keep) once their languages have layers.
