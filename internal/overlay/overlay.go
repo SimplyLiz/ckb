@@ -284,6 +284,15 @@ func Build(base *scip.SCIPIndex, ch *Changes) (*scip.SCIPIndex, *Info) {
 				// skipped; nothing to patch.
 				continue
 			}
+			if excludedGoFile(ch.Root, f.NewPath) {
+				// A build constraint now leaves it out: scip-go would not
+				// index it, so its symbols leave the index like a deleted
+				// file's, and uses elsewhere count as changed declarations.
+				replace[oldPath] = nil
+				info.Files = append(info.Files, FileInfo{Path: oldPath, State: StateDeleted, Layers: []int{0}})
+				droppedDefs = append(droppedDefs, definedSymbols(doc)...)
+				continue
+			}
 			lm := NewLineMap(f.Hunks)
 			nd, st := RemapDocument(doc, lm)
 			fi := FileInfo{Path: f.NewPath, State: StateRemapped, Layers: []int{0}, Dropped: st.Dropped}
@@ -482,6 +491,30 @@ func newFile(p string, base *scip.SCIPIndex, root string, replace map[string]*sc
 	fi.Layers = []int{1}
 	fi.Declared = len(doc.Symbols)
 	return fi, &goJob{path: p, doc: doc, src: src, prefix: prefix}
+}
+
+// excludedGoFile reports whether the Go file at p (repo-relative) exists and
+// a build constraint excludes it under the default context.
+func excludedGoFile(root, p string) bool {
+	if root == "" || !strings.HasSuffix(p, ".go") {
+		return false
+	}
+	abs := filepath.Join(root, filepath.FromSlash(p))
+	if _, err := os.Stat(abs); err != nil {
+		return false
+	}
+	return !goBuilds(abs)
+}
+
+// definedSymbols lists the non-local symbols a document defines.
+func definedSymbols(doc *scip.Document) []string {
+	var out []string
+	for _, o := range doc.Occurrences {
+		if o.SymbolRoles&scip.SymbolRoleDefinition != 0 && !scip.IsLocalSymbol(o.Symbol) {
+			out = append(out, o.Symbol)
+		}
+	}
+	return out
 }
 
 // usedElsewhere keeps the symbols the base index has uses of outside the

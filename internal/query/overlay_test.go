@@ -180,6 +180,27 @@ func TestOverlay_DeletedFileLeavesTheIndex(t *testing.T) {
 	}
 }
 
+// A file a new build constraint excludes leaves the index as scip-go would
+// leave it out, and its symbols used elsewhere ask for a rebuild.
+func TestOverlay_BuildConstraintExcludesFile(t *testing.T) {
+	e, root := overlayEngine(t)
+	if err := os.WriteFile(filepath.Join(root, "lib/lib.go"), []byte("//go:build ignore\n\n"+overlayLib), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.overlay.checkedAt = e.overlay.checkedAt.Add(-overlayCheckInterval)
+	e.RefreshOverlay(context.Background())
+	if e.scipAdapter.GetIndex().GetDocument("lib/lib.go") != nil {
+		t.Error("excluded file still in the index")
+	}
+	info := e.OverlayInfo()
+	if info == nil || len(info.Files) != 1 || info.Files[0].State != overlay.StateDeleted {
+		t.Fatalf("overlay info %+v", info)
+	}
+	if got := info.Uncertainty.ChangedSignatures; len(got) != 1 || got[0] != symTarget {
+		t.Errorf("changed declarations used elsewhere %v, want Target (app/app.go calls it)", got)
+	}
+}
+
 func TestOverlay_Disabled(t *testing.T) {
 	t.Setenv("CKB_OVERLAY", "0")
 	e, root := overlayEngine(t)
