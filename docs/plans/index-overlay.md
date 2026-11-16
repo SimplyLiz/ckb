@@ -1,6 +1,6 @@
 # Index overlay: fresh answers between full reindexes
 
-Status: draft, 2026-11-15. Open questions 3 and 4 checked 2026-11-16; Phase 1 in progress.
+Status: Phases 1–3 (Go) and 5 built 2026-11-16 (93b9b24..d38e7ed on develop); Phase 4 (TypeScript) open. Results below.
 
 ## Problem
 
@@ -299,3 +299,74 @@ Each phase ships on its own; Phase 1 is useful without the rest.
    the remote index server exists, filled by the populate step after a full
    index, and federation is behind its preset with no new investment, so
    dropping the server would let all of it go. `ckb diff` is broken either way.
+
+## Results (2026-11-16)
+
+Replay harness and raw data: `~/Work/Projects/CKB/overlay-measure-2026-11-16/replay/`
+(outside the repo; `main.go` is built into the module with `go build -overlay`). The last 30
+first-parent commits on develop with at most 10 changed files and at least one Go file: index
+built with scip-go 0.2.3 at the parent, the commit's diff served as the overlay (a checkout of
+the commit, index at the parent), compared with an index built at the commit. Symbols are
+compared without the package version (scip-go writes the commit into it) and without the
+number of a local.
+
+| Measure | Layer 0 | + Layer 1 | + Layer 2 | + types |
+|---|---|---|---|---|
+| Occurrences on unchanged lines that differ (of 130,951) | 0 | 0 | 0 | 0 |
+| Definitions in changed files at the fresh index's place (of 7,669) | 7,501 | 7,669 | 7,669 | 7,669 |
+| Function extents that differ (of 1,679) | 1 | 0 | 0 | 0 |
+| Overlay references identical to fresh (symbol, role, range) | – | – | 1,343/1,343 | 1,411/1,411 |
+| References to the changed symbols found (of 1,122) | 703 | 703 | 1,044 | 1,051 |
+| Callers of the changed symbols found (of 797) | 534 | 535 | 761 | 768 |
+| analyzeImpact items (depth 2) only Layer 2 brings, identical | – | – | 940/946 | 956/962 |
+| Unresolved sites (no edge) | – | – | 888 | 820 |
+| Overlay build, median / max | 31 / 98 ms | 28 / 49 ms | 39 / 71 ms | 39 / 89 ms |
+
+- **Layer 0 gate: met.** No difference on unchanged lines; the one extent difference was `git diff`
+  pairing one function's `}` with another's (identical lines), which Layer 1's extents fix.
+- **Layer 2 gate (≥ 95 % within depth 2): met on CKB, so the edges count** toward callers, risk
+  and the budget. The 6 items that are not identical are the same symbols the fresh index has,
+  reached transitively because a direct reference stayed unresolved. Precision of the references
+  themselves: 100 %, 0 at a position where the fresh index has nothing. One repo, one language.
+- `PatchIndex` against a rebuild of the derived structures on CKB's own index (1,014 documents,
+  12 replaced): 29 ms vs 192 ms, equal in every structure.
+- Done check: `AnalyzeChangeSet` pins the base (below), so the overlay does not change it.
+  Base vs fresh differed in one commit (dc4c1f9a), which is the old-side/new-side difference the
+  done check already had.
+
+Rebuild trigger (decision 1): any changed declaration line whose symbol unchanged files use, a
+changed file the overlay can only remap, a new file it lacks, or 25 or more unresolved sites
+(up to 20 the impact recall stayed ≥ 94 %; from 25 on it fell below 95 % in 10 of 14 commits).
+Over the 30 commits (each as one overlay) 17 need no rebuild, all with ≥ 96 % of the changed
+symbols' references found; every commit under 95 % triggers one.
+
+### What the build changed in the design
+
+- **Go's Layers 1–2 use go/parser, not tree-sitter.** Exact for Go, positions in scip-go's byte
+  columns, partial ASTs; build constraints decide which new files count, as for scip-go.
+- **Layer 2 reads types from the declaring files.** The index has no types (scip-go's
+  SymbolInformation carries none, and the loader drops signature documentation), so the type
+  of `x.f`, of `f()` and promoted members comes from the declaring file's source, found
+  through the index. Exact or nothing still holds.
+- **Diff-driven analyses read the base.** The diff mapper and the done check read references
+  as old-side lines and check them against the hunks' text; overlay positions would be
+  misread. `AnalyzeChangeSet` pins the base for its duration (`SCIPAdapter.PinBase`).
+- **An index built from a dirty tree records it** (`worktreeTree` in index-meta.json, a git tree
+  written through a temporary git index), and the overlay diffs against that tree. Without it
+  the overlay applied the uncommitted edits a second time; with watch rebuilding on dirty
+  trees that would have been the normal case.
+- **`--watch` by default** runs beside the startup paths in repos with `.ckb`; an explicit
+  `--watch` keeps building a missing index anywhere.
+
+### Open
+
+- Phase 4: TypeScript Layers 1–2, replay on Lebenslauf. Until then a changed TS file is
+  Layer 0 only and asks for a rebuild when it has added lines.
+- Transitive impact items reached over an overlay edge are not marked `source: overlay`; only
+  direct items and prepareChange dependents are.
+- A new Go package (directory without indexed files) is uncovered: no module path to build IDs
+  from without go.mod parsing.
+- A modified file that gains a build constraint excluding it stays in the overlay.
+- `changedSinceIndex` in `indexFreshness` still lists files against the commit, also for an
+  index built from a dirty tree.
+- Replays on other repos (Lebenslauf, Rubik, Hollow-Keep) once their languages have layers.
