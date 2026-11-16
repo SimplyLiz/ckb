@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -39,8 +40,10 @@ type tsSymbolDocs func(path string) *scip.Document
 type tsResolver struct {
 	root    string
 	docs    tsSymbolDocs
-	paths   []tsPathRule
 	modules map[string]*tsModule
+	// configs is the tsconfig paths in effect per directory: the nearest
+	// tsconfig.json's, with what it extends.
+	configs map[string][]tsPathRule
 	// byPrefix maps a file symbol to its path, for the modules loaded.
 	byPrefix map[string]string
 	tyCache  map[tsTyKey]tsTy
@@ -65,9 +68,7 @@ type tsExportRef struct {
 }
 
 func newTSResolver(root string, docs tsSymbolDocs) *tsResolver {
-	r := &tsResolver{root: root, docs: docs, modules: map[string]*tsModule{}, byPrefix: map[string]string{}, tyCache: map[tsTyKey]tsTy{}}
-	r.paths = readTSPaths(root)
-	return r
+	return &tsResolver{root: root, docs: docs, modules: map[string]*tsModule{}, byPrefix: map[string]string{}, tyCache: map[tsTyKey]tsTy{}, configs: map[string][]tsPathRule{}}
 }
 
 // close frees the parse trees of the modules loaded.
@@ -83,39 +84,200 @@ func (r *tsResolver) close() {
 var jsoncComment = regexp.MustCompile(`(?s)//[^\n]*|/\*.*?\*/`)
 var jsoncTrailingComma = regexp.MustCompile(`,(\s*[}\]])`)
 
-// readTSPaths reads compilerOptions.paths (and baseUrl) of the repository's
-// tsconfig.json. "extends" is not followed.
-func readTSPaths(root string) []tsPathRule {
-	data, err := os.ReadFile(filepath.Join(root, "tsconfig.json")) // #nosec G304 -- the repository's tsconfig
-	if err != nil {
+// pathsFor is the compilerOptions.paths that govern file: those of the
+// nearest tsconfig.json in its directory or above (a monorepo's package has
+// its own), following extends.
+func (r *tsResolver) pathsFor(file string) []tsPathRule {
+	var walked []string
+	dir := path.Dir(file)
+	for {
+		if rules, ok := r.configs[dir]; ok {
+			for _, d := range walked {
+				r.configs[d] = rules
+			}
+			return rules
+		}
+		walked = append(walked, dir)
+		cfg := path.Join(dir, "tsconfig.json")
+		if _, err := os.Stat(filepath.Join(r.root, filepath.FromSlash(cfg))); err == nil {
+			rules := r.configPaths(cfg)
+			for _, d := range walked {
+				r.configs[d] = rules
+			}
+			return rules
+		}
+		if dir == "." || dir == "/" || dir == "" {
+			for _, d := range walked {
+				r.configs[d] = nil
+			}
+			return nil
+		}
+		dir = path.Dir(dir)
+	}
+}
+
+// tsConfigFile is what Layer 2 reads of a tsconfig: its paths and baseUrl,
+// resolved against the file that sets them, after what it extends.
+type tsConfigFile struct {
+	paths    map[string][]string
+	pathsDir string // the config's directory that set paths
+	baseURL  string // repo-relative, "" when unset
+	refs     []string
+}
+
+// configPaths reads the paths rules of the config at cfg (repo-relative).
+// A config that sets none but references others (a solution tsconfig, as
+// Vite writes one) takes the rules its references agree on.
+func (r *tsResolver) configPaths(cfg string) []tsPathRule {
+	c, ok := r.readConfig(cfg, 0)
+	if !ok {
 		return nil
 	}
-	data = jsoncTrailingComma.ReplaceAll(stripJSONCComments(data), []byte("$1"))
-	var cfg struct {
-		CompilerOptions struct {
-			BaseURL string              `json:"baseUrl"`
-			Paths   map[string][]string `json:"paths"`
-		} `json:"compilerOptions"`
+	if c.paths == nil && len(c.refs) > 0 {
+		var agreed []tsPathRule
+		for i, ref := range c.refs {
+			rc, ok := r.readConfig(ref, 0)
+			if !ok || rc.paths == nil {
+				continue
+			}
+			rules := tsRules(rc)
+			if i > 0 && agreed != nil && !tsSameRules(agreed, rules) {
+				return nil // the references disagree: no rule is certain
+			}
+			agreed = rules
+		}
+		return agreed
 	}
-	if json.Unmarshal(data, &cfg) != nil {
-		return nil
+	return tsRules(c)
+}
+
+func tsRules(c tsConfigFile) []tsPathRule {
+	base := c.baseURL
+	if base == "" {
+		base = c.pathsDir
 	}
-	base := path.Clean(filepath.ToSlash(cfg.CompilerOptions.BaseURL))
-	if cfg.CompilerOptions.BaseURL == "" {
-		base = "."
+	keys := make([]string, 0, len(c.paths))
+	for pat := range c.paths {
+		keys = append(keys, pat)
 	}
+	sort.Strings(keys)
 	var rules []tsPathRule
-	for pat, targets := range cfg.CompilerOptions.Paths {
+	for _, pat := range keys {
 		rule := tsPathRule{prefix: pat}
 		if i := strings.IndexByte(pat, '*'); i >= 0 {
 			rule = tsPathRule{prefix: pat[:i], suffix: pat[i+1:], star: true}
 		}
-		for _, t := range targets {
+		for _, t := range c.paths[pat] {
 			rule.targets = append(rule.targets, path.Join(base, t))
 		}
 		rules = append(rules, rule)
 	}
 	return rules
+}
+
+func tsSameRules(a, b []tsPathRule) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].prefix != b[i].prefix || a[i].suffix != b[i].suffix || a[i].star != b[i].star || strings.Join(a[i].targets, "\x00") != strings.Join(b[i].targets, "\x00") {
+			return false
+		}
+	}
+	return true
+}
+
+// readConfig reads a tsconfig (repo-relative path) and what it extends:
+// a relative path, or a package's config under node_modules. A child's
+// paths replace its parent's; baseUrl and paths are relative to the
+// config that sets them.
+func (r *tsResolver) readConfig(cfg string, depth int) (tsConfigFile, bool) {
+	if depth > 5 {
+		return tsConfigFile{}, false
+	}
+	data, err := os.ReadFile(filepath.Join(r.root, filepath.FromSlash(cfg))) // #nosec G304 -- a tsconfig in the repository
+	if err != nil {
+		return tsConfigFile{}, false
+	}
+	data = jsoncTrailingComma.ReplaceAll(stripJSONCComments(data), []byte("$1"))
+	var raw struct {
+		Extends         json.RawMessage `json:"extends"`
+		CompilerOptions struct {
+			BaseURL *string             `json:"baseUrl"`
+			Paths   map[string][]string `json:"paths"`
+		} `json:"compilerOptions"`
+		References []struct {
+			Path string `json:"path"`
+		} `json:"references"`
+	}
+	if json.Unmarshal(data, &raw) != nil {
+		return tsConfigFile{}, false
+	}
+	dir := path.Dir(cfg)
+	var out tsConfigFile
+	var exts []string
+	if len(raw.Extends) > 0 {
+		var one string
+		if json.Unmarshal(raw.Extends, &one) == nil {
+			exts = []string{one}
+		} else {
+			_ = json.Unmarshal(raw.Extends, &exts) // TypeScript 5.0: an array, later entries win
+		}
+	}
+	for _, e := range exts {
+		if p := r.extendsPath(dir, e); p != "" {
+			if parent, ok := r.readConfig(p, depth+1); ok {
+				if parent.paths != nil {
+					out.paths, out.pathsDir = parent.paths, parent.pathsDir
+				}
+				if parent.baseURL != "" {
+					out.baseURL = parent.baseURL
+				}
+			}
+		}
+	}
+	if raw.CompilerOptions.BaseURL != nil {
+		out.baseURL = path.Clean(path.Join(dir, filepath.ToSlash(*raw.CompilerOptions.BaseURL)))
+	}
+	if raw.CompilerOptions.Paths != nil {
+		out.paths, out.pathsDir = raw.CompilerOptions.Paths, dir
+	}
+	for _, ref := range raw.References {
+		p := path.Join(dir, filepath.ToSlash(ref.Path))
+		if !strings.HasSuffix(p, ".json") {
+			p = path.Join(p, "tsconfig.json")
+		}
+		out.refs = append(out.refs, p)
+	}
+	return out, true
+}
+
+// extendsPath finds the config an extends entry names, repo-relative; ""
+// when it is not in the repository.
+func (r *tsResolver) extendsPath(dir, e string) string {
+	exists := func(p string) bool {
+		st, err := os.Stat(filepath.Join(r.root, filepath.FromSlash(p)))
+		return err == nil && !st.IsDir()
+	}
+	var cands []string
+	if strings.HasPrefix(e, "./") || strings.HasPrefix(e, "../") {
+		p := path.Join(dir, e)
+		cands = []string{p, p + ".json"}
+	} else {
+		for d := dir; ; d = path.Dir(d) {
+			p := path.Join(d, "node_modules", e)
+			cands = append(cands, p, p+".json", path.Join(p, "tsconfig.json"))
+			if d == "." || d == "/" || d == "" {
+				break
+			}
+		}
+	}
+	for _, c := range cands {
+		if !strings.HasPrefix(c, "../") && exists(c) {
+			return c
+		}
+	}
+	return ""
 }
 
 // stripJSONCComments removes comments outside strings.
@@ -159,7 +321,7 @@ func (r *tsResolver) resolveModule(from, spec string) string {
 	case strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../"):
 		cands = []string{path.Join(path.Dir(from), spec)}
 	default:
-		for _, rule := range r.paths {
+		for _, rule := range r.pathsFor(from) {
 			switch {
 			case rule.star && strings.HasPrefix(spec, rule.prefix) && strings.HasSuffix(spec, rule.suffix) && len(spec) >= len(rule.prefix)+len(rule.suffix):
 				m := spec[len(rule.prefix) : len(spec)-len(rule.suffix)]
