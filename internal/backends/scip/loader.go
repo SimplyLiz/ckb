@@ -105,6 +105,57 @@ func LoadSCIPIndex(path string) (*SCIPIndex, error) {
 // top-level variables are containers (orderedBounds).
 const DerivationVersion = 4
 
+type docResult struct {
+	doc              *Document
+	symbols          map[string]*SymbolInformation
+	refEntries       map[string][]*OccurrenceRef
+	defEntries       map[string]*OccurrenceRef // first definition per symbol
+	containerEntries map[string]string
+}
+
+// indexDocument builds one document's share of the indexes.
+func indexDocument(doc *Document) docResult {
+	r := docResult{
+		doc:        doc,
+		symbols:    make(map[string]*SymbolInformation, len(doc.Symbols)),
+		refEntries: make(map[string][]*OccurrenceRef, len(doc.Occurrences)/4+1),
+		defEntries: make(map[string]*OccurrenceRef),
+	}
+
+	for _, sym := range doc.Symbols {
+		r.symbols[sym.Symbol] = sym
+	}
+
+	// Pre-allocate one backing slice for all OccurrenceRefs in this
+	// document. Taking pointers into a pre-sized slice replaces the
+	// previous pattern of one heap allocation per occurrence, cutting
+	// allocations from O(total_occs) — 68M at 50k docs — down to
+	// O(docs) — 50k. The slice stays alive because the map values
+	// hold pointers into it.
+	backing := make([]OccurrenceRef, 0, len(doc.Occurrences))
+	for i := range doc.Occurrences {
+		occ := doc.Occurrences[i]
+		if occ.Symbol == "" {
+			continue
+		}
+		backing = append(backing, OccurrenceRef{Doc: doc, Occ: occ})
+	}
+	for i := range backing {
+		ref := &backing[i]
+		r.refEntries[ref.Occ.Symbol] = append(r.refEntries[ref.Occ.Symbol], ref)
+
+		// Capture first definition occurrence for DefinitionIndex.
+		if ref.Occ.SymbolRoles&SymbolRoleDefinition != 0 {
+			if _, exists := r.defEntries[ref.Occ.Symbol]; !exists {
+				r.defEntries[ref.Occ.Symbol] = ref
+			}
+		}
+	}
+
+	r.containerEntries = containerEntries(doc)
+	return r
+}
+
 // loadSCIPIndexInternal parses the index and builds every derived structure.
 // There is no on-disk cache of the derived indexes: measured on 15–50 MB
 // indexes it was 20–150 ms slower than rebuilding and held more heap, because
@@ -147,57 +198,6 @@ func loadSCIPIndexInternal(path string) (*SCIPIndex, error) {
 	// DiscardUnknown skips unknown proto fields during decode, reducing
 	// allocations from the reflection-based unknown-field accumulator.
 	discardUnknownOpts := proto.UnmarshalOptions{DiscardUnknown: true}
-
-	type docResult struct {
-		doc              *Document
-		symbols          map[string]*SymbolInformation
-		refEntries       map[string][]*OccurrenceRef
-		defEntries       map[string]*OccurrenceRef // first definition per symbol
-		containerEntries map[string]string
-	}
-
-	// indexDocument builds one document's share of the indexes.
-	indexDocument := func(doc *Document) docResult {
-		r := docResult{
-			doc:        doc,
-			symbols:    make(map[string]*SymbolInformation, len(doc.Symbols)),
-			refEntries: make(map[string][]*OccurrenceRef, len(doc.Occurrences)/4+1),
-			defEntries: make(map[string]*OccurrenceRef),
-		}
-
-		for _, sym := range doc.Symbols {
-			r.symbols[sym.Symbol] = sym
-		}
-
-		// Pre-allocate one backing slice for all OccurrenceRefs in this
-		// document. Taking pointers into a pre-sized slice replaces the
-		// previous pattern of one heap allocation per occurrence, cutting
-		// allocations from O(total_occs) — 68M at 50k docs — down to
-		// O(docs) — 50k. The slice stays alive because the map values
-		// hold pointers into it.
-		backing := make([]OccurrenceRef, 0, len(doc.Occurrences))
-		for i := range doc.Occurrences {
-			occ := doc.Occurrences[i]
-			if occ.Symbol == "" {
-				continue
-			}
-			backing = append(backing, OccurrenceRef{Doc: doc, Occ: occ})
-		}
-		for i := range backing {
-			ref := &backing[i]
-			r.refEntries[ref.Occ.Symbol] = append(r.refEntries[ref.Occ.Symbol], ref)
-
-			// Capture first definition occurrence for DefinitionIndex.
-			if ref.Occ.SymbolRoles&SymbolRoleDefinition != 0 {
-				if _, exists := r.defEntries[ref.Occ.Symbol]; !exists {
-					r.defEntries[ref.Occ.Symbol] = ref
-				}
-			}
-		}
-
-		r.containerEntries = containerEntries(doc)
-		return r
-	}
 
 	// Producer: parses the outer Index message and sends each document to workers.
 	type pbDocMsg struct{ doc *scippb.Document }
@@ -330,6 +330,13 @@ func loadSCIPIndexInternal(path string) (*SCIPIndex, error) {
 	// Phase 2: merge per-doc results into the main index.                 //
 	// ------------------------------------------------------------------ //
 
+	return assembleIndex(convertMetadata(pbMeta), results), nil
+}
+
+// assembleIndex merges per-document results into an index, the loader's
+// Phases 2 and 3.
+func assembleIndex(meta *Metadata, results []docResult) *SCIPIndex {
+	nWorkers := runtime.GOMAXPROCS(0)
 	// Sort results by document path so RefIndex / DefinitionIndex construction
 	// is deterministic regardless of goroutine scheduling.
 	sort.Slice(results, func(i, j int) bool {
@@ -348,7 +355,7 @@ func loadSCIPIndexInternal(path string) (*SCIPIndex, error) {
 	}
 
 	scipIndex := &SCIPIndex{
-		Metadata:         convertMetadata(pbMeta),
+		Metadata:         meta,
 		Documents:        docs,
 		DocumentsByPath:  make(map[string]*Document, len(docs)),
 		Symbols:          make(map[string]*SymbolInformation, totalSyms),
@@ -449,10 +456,7 @@ func loadSCIPIndexInternal(path string) (*SCIPIndex, error) {
 	}
 
 	// Phase 4 (CallerIndex) is built lazily on the first FindCallers call.
-	// This keeps load time clean and avoids ~22k persistent heap objects on
-	// small indexes that would otherwise inflate GC pressure at startup.
-
-	return scipIndex, nil
+	return scipIndex
 }
 
 // max returns the larger of a and b (int).

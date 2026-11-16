@@ -1454,6 +1454,11 @@ type IndexStalenessInfo struct {
 
 // AnalyzeChangeSet analyzes the impact of a set of code changes (from git diff).
 func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOptions) (*AnalyzeChangeSetResponse, error) {
+	// The diff is read against the index it was taken from: the base, never
+	// the overlay (see SCIPAdapter.PinBase).
+	if e.scipAdapter != nil {
+		defer e.scipAdapter.PinBase()()
+	}
 	startTime := time.Now()
 
 	// Default options
