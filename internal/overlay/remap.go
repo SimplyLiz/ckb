@@ -8,6 +8,9 @@ import (
 type RemapStats struct {
 	Kept    int // occurrences moved to their new line (or left in place)
 	Dropped int // occurrences on removed or replaced lines
+	// DroppedDefs are the symbols whose definition sat on a changed line:
+	// a changed signature, a rename, or a removal.
+	DroppedDefs []string
 }
 
 // RemapDocument returns a copy of doc with every occurrence on an unchanged
@@ -30,6 +33,9 @@ func RemapDocument(doc *scip.Document, lm *LineMap) (*scip.Document, RemapStats)
 		rng, ok := remapRange(occ.Range, lm)
 		if !ok {
 			st.Dropped++
+			if occ.SymbolRoles&scip.SymbolRoleDefinition != 0 && occ.Symbol != "" && !scip.IsLocalSymbol(occ.Symbol) {
+				st.DroppedDefs = append(st.DroppedDefs, occ.Symbol)
+			}
 			continue
 		}
 		cp := *occ

@@ -235,19 +235,21 @@ See **[Language Support](https://github.com/SimplyLiz/CodeMCP/wiki/Language-Supp
 
 ### Keeping Your Index Fresh
 
-Your index becomes stale when you make commits. CKB offers several ways to stay current:
+Edits you have not indexed yet are served from an **index overlay**: the
+running server patches the loaded index with the diff since it was built.
+Positions in changed files are exact; for Go, declarations and references on
+the changed lines come in too (resolved exactly or left out, never guessed by
+name; `getStatus` and every result's `indexFreshness.overlay` say how much it
+covers). A full reindex still runs, but only when it adds something: on a
+commit or checkout, and when the overlay reports what it could not do. Set
+`CKB_OVERLAY=0` to turn the overlay off.
 
 | Method | Command | When to Use |
 |--------|---------|-------------|
+| MCP watch | on by default in `ckb mcp` (`--watch=false` to turn off) | AI sessions |
 | Manual | `ckb index` | One-off updates, scripts |
 | Watch mode | `ckb index --watch` | Auto-refresh during development |
-| MCP watch | `ckb mcp --watch` | Auto-refresh in AI sessions |
 | CI webhook | `POST /api/v1/refresh` | Trigger from CI/CD |
-
-**Quick start for AI sessions:**
-```bash
-ckb mcp --watch  # Auto-reindexes every 30s when stale
-```
 
 **Check staleness:**
 ```bash

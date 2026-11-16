@@ -129,6 +129,9 @@ type OverlayFreshness struct {
 	UnresolvedSites int `json:"unresolvedSites"`
 	// BuildMs is how long the last overlay build took.
 	BuildMs float64 `json:"buildMs"`
+	// Rebuild says why a reindex would serve better than the overlay (what
+	// the overlay could not do); absent while the overlay covers the changes.
+	Rebuild string `json:"rebuild,omitempty"`
 }
 
 // OverlayFreshness summarizes the current overlay, or nil when there is none.
@@ -137,7 +140,8 @@ func (e *Engine) OverlayFreshness() *OverlayFreshness {
 	if info == nil {
 		return nil
 	}
-	f := &OverlayFreshness{Files: len(info.Files), Covered: info.Covered(), Layers: info.Layers(), BuildMs: info.BuildMs, UnresolvedSites: info.UnresolvedSites()}
+	f := &OverlayFreshness{Files: len(info.Files), Covered: info.Covered(), Layers: info.Layers(), BuildMs: info.BuildMs,
+		UnresolvedSites: info.UnresolvedSites(), Rebuild: info.RebuildReason()}
 	for _, fi := range info.Files {
 		f.DroppedOccurrences += fi.Dropped
 		if fi.State == overlay.StateUncovered {
@@ -163,4 +167,11 @@ func (e *Engine) coveredByOverlay() map[string]bool {
 		}
 	}
 	return out
+}
+
+// OverlayRebuildReason says why the base index should be rebuilt given what
+// the overlay could not do (overlay.Info.RebuildReason), or "" when the
+// overlay covers the working tree's changes. "" also without an overlay.
+func (e *Engine) OverlayRebuildReason() string {
+	return e.OverlayInfo().RebuildReason()
 }

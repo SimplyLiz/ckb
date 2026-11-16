@@ -66,7 +66,8 @@ const defaultWatchInterval = 10 * time.Second
 func init() {
 	rootCmd.AddCommand(mcpCmd)
 	mcpCmd.Flags().BoolVar(&mcpStdio, "stdio", true, "Use stdio for communication (default)")
-	mcpCmd.Flags().BoolVar(&mcpWatch, "watch", false, "Watch for changes and auto-reindex")
+	mcpCmd.Flags().BoolVar(&mcpWatch, "watch", true,
+		"Keep the index current: reindex in the background on a HEAD change, and for uncommitted edits only when the index overlay cannot cover them (--watch=false turns it off)")
 	mcpCmd.Flags().DurationVar(&mcpWatchInterval, "watch-interval", defaultWatchInterval,
 		"Watch mode polling interval (min 5s, max 5m)")
 	mcpCmd.Flags().StringVar(&mcpRepo, "repo", "", "Repository path or registry name (auto-detected)")
@@ -229,22 +230,30 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "  Preset: %s\n", preset)
 	fmt.Fprintln(os.Stderr)
 
-	// Start watch mode if enabled
-	if mcpWatch {
-		// Validate and clamp watch interval
-		watchInterval := mcpWatchInterval
-		if watchInterval < 5*time.Second {
-			watchInterval = 5 * time.Second
-		}
-		if watchInterval > 5*time.Minute {
-			watchInterval = 5 * time.Minute
-		}
-
+	// Watch mode. Asked for explicitly, it is the whole startup: it builds
+	// a missing index (even without .ckb) and refreshes a stale one. As the
+	// default it runs only in a repo CKB was set up in, beside the startup
+	// paths, which keep their machine-wide lock for first builds, and its
+	// first tick comes one interval in.
+	watchInterval := mcpWatchInterval
+	if watchInterval < 5*time.Second {
+		watchInterval = 5 * time.Second
+	}
+	if watchInterval > 5*time.Minute {
+		watchInterval = 5 * time.Minute
+	}
+	explicitWatch := cmd.Flags().Changed("watch") && mcpWatch
+	switch {
+	case explicitWatch:
 		go runWatchLoop(repoRoot, watchInterval, logger)
 		logger.Info("Watch mode enabled", "pollInterval", watchInterval.String())
-	} else if hasCkbDir(repoRoot) {
+	case hasCkbDir(repoRoot):
 		startFirstIndex(repoRoot, logger)
 		startStartupRefresh(repoRoot, logger)
+		if mcpWatch {
+			go runWatchLoopFrom(repoRoot, watchInterval, false, logger)
+			logger.Info("Watch mode enabled (default)", "pollInterval", watchInterval.String())
+		}
 	}
 
 	if err := server.Start(); err != nil {
@@ -348,6 +357,13 @@ func watchBackoff(base time.Duration, consecutiveFailures int) time.Duration {
 // poll interval (up to 5 minutes) to notice would be a regression from the
 // old blocking behavior, not an improvement on it.
 func runWatchLoop(repoRoot string, interval time.Duration, logger *slog.Logger) {
+	runWatchLoopFrom(repoRoot, interval, true, logger)
+}
+
+// runWatchLoopFrom is runWatchLoop; immediate=false waits one interval before
+// the first tick, for the default watch, which starts next to the startup
+// paths (startFirstIndex, startStartupRefresh) that handle the first moments.
+func runWatchLoopFrom(repoRoot string, interval time.Duration, immediate bool, logger *slog.Logger) {
 	ckbDir := filepath.Join(repoRoot, ".ckb")
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -355,7 +371,9 @@ func runWatchLoop(repoRoot string, interval time.Duration, logger *slog.Logger) 
 	state := &watchState{}
 	permanentLogged := false
 
-	watchTick(repoRoot, ckbDir, interval, state, &permanentLogged, logger)
+	if immediate {
+		watchTick(repoRoot, ckbDir, interval, state, &permanentLogged, logger)
+	}
 
 	for range ticker.C {
 		watchTick(repoRoot, ckbDir, interval, state, &permanentLogged, logger)
@@ -494,6 +512,23 @@ func watchCheckStale(repoRoot, ckbDir string) (stale bool, trigger index.Refresh
 	freshness := meta.CheckFreshness(repoRoot)
 	if freshness.Fresh {
 		return false, "", "", ""
+	}
+
+	// Uncommitted edits on the indexed commit: the index overlay serves them,
+	// so they alone are no reason to reindex. Only what the overlay says it
+	// could not do is (unresolved sites, a changed signature with users in
+	// unchanged files, a file it can only remap, a new file it lacks).
+	if freshness.HasUncommitted && freshness.CommitsBehind == 0 && overlayEnabled() {
+		eng := loadedEngine()
+		if eng == nil {
+			return false, "", "", "" // nothing loaded yet; the next tick decides
+		}
+		eng.RefreshOverlay(context.Background())
+		reason := eng.OverlayRebuildReason()
+		if reason == "" {
+			return false, "", "", ""
+		}
+		return true, index.TriggerStale, "overlay: " + reason, "uncommitted changes the overlay cannot cover: " + reason
 	}
 
 	trigger = index.TriggerStale

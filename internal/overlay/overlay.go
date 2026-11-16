@@ -46,8 +46,66 @@ type FileInfo struct {
 	Fallback string `json:"fallback,omitempty"`
 }
 
+// Rebuild thresholds, from the replay over CKB's history
+// (docs/plans/index-overlay.md): up to 20 unresolved sites a commit kept the
+// impact items' recall at 94 % or more; from 25 on it fell below 95 % in 10 of
+// 14 commits. Precision stayed at 100 % throughout, so the threshold is about
+// what the overlay misses.
+const UnresolvedRebuildThreshold = 25
+
+// Uncertainty is what the overlay knows it could not do. Any of it makes a
+// background rebuild worthwhile (RebuildReason); a dirty working tree alone
+// does not.
+type Uncertainty struct {
+	// UnresolvedSites sums the sites on changed lines left without an edge.
+	UnresolvedSites int `json:"unresolvedSites"`
+	// ChangedSignatures are declarations whose declaration line changed (a
+	// new signature, a rename, a removal) and that unchanged files use: those
+	// uses may no longer fit, which only the indexer can tell.
+	ChangedSignatures []string `json:"changedSignatures,omitempty"`
+	// Layer0Only are changed files with added lines the overlay could only
+	// remap: a parse error, or a language without declaration and reference
+	// layers. What is on their changed lines is missing.
+	Layer0Only []string `json:"layer0Only,omitempty"`
+	// Uncovered are new files the overlay has no document for.
+	Uncovered []string `json:"uncovered,omitempty"`
+}
+
+// RebuildReason says why the base index should be rebuilt, or "" when the
+// overlay covers the changes well enough.
+func (in *Info) RebuildReason() string {
+	if in == nil {
+		return ""
+	}
+	u := in.Uncertainty
+	switch {
+	case len(u.ChangedSignatures) > 0:
+		return fmt.Sprintf("%d changed declaration(s) used by unchanged files, e.g. %s", len(u.ChangedSignatures), shortSymbol(u.ChangedSignatures[0]))
+	case len(u.Layer0Only) > 0:
+		return fmt.Sprintf("%d changed file(s) the overlay can only remap, e.g. %s", len(u.Layer0Only), u.Layer0Only[0])
+	case len(u.Uncovered) > 0:
+		return fmt.Sprintf("%d new file(s) not in the index, e.g. %s", len(u.Uncovered), u.Uncovered[0])
+	case u.UnresolvedSites >= UnresolvedRebuildThreshold:
+		return fmt.Sprintf("%d unresolved sites on changed lines (threshold %d)", u.UnresolvedSites, UnresolvedRebuildThreshold)
+	}
+	return ""
+}
+
+// shortSymbol is a symbol's last descriptors, for messages.
+func shortSymbol(sym string) string {
+	if i := strings.LastIndex(sym, "`/"); i >= 0 {
+		return sym[i+2:]
+	}
+	if i := strings.LastIndex(sym, "/"); i >= 0 && i+1 < len(sym) {
+		return sym[i+1:]
+	}
+	return sym
+}
+
 // Info describes an overlay: which changed files it covers and how.
 type Info struct {
+	// Uncertainty is what the overlay could not do (see RebuildReason).
+	Uncertainty   Uncertainty   `json:"uncertainty"`
 	IndexedCommit string        `json:"indexedCommit"`
 	Head          string        `json:"head"`
 	Key           string        `json:"-"`
@@ -198,6 +256,7 @@ func Build(base *scip.SCIPIndex, ch *Changes) (*scip.SCIPIndex, *Info) {
 	replace := map[string]*scip.Document{}
 	indexed := indexedExtensions(base)
 	var jobs []*goJob
+	var droppedDefs []string
 
 	for i := range ch.Diff.Files {
 		f := &ch.Diff.Files[i]
@@ -229,6 +288,10 @@ func Build(base *scip.SCIPIndex, ch *Changes) (*scip.SCIPIndex, *Info) {
 			nd, st := RemapDocument(doc, lm)
 			fi := FileInfo{Path: f.NewPath, State: StateRemapped, Layers: []int{0}, Dropped: st.Dropped}
 			jobs = appendJob(jobs, layer1(&fi, nd, base, doc, oldPath, ch.Root, lm))
+			droppedDefs = append(droppedDefs, st.DroppedDefs...)
+			if len(fi.Layers) == 1 && lm.HasAdditions() {
+				info.Uncertainty.Layer0Only = append(info.Uncertainty.Layer0Only, f.NewPath)
+			}
 			if f.Renamed {
 				replace[oldPath] = nil
 				fi.OldPath = oldPath
@@ -248,6 +311,13 @@ func Build(base *scip.SCIPIndex, ch *Changes) (*scip.SCIPIndex, *Info) {
 	}
 	layer2(info, jobs, base)
 	sort.Slice(info.Files, func(i, j int) bool { return info.Files[i].Path < info.Files[j].Path })
+	info.Uncertainty.UnresolvedSites = info.UnresolvedSites()
+	for _, fi := range info.Files {
+		if fi.State == StateUncovered {
+			info.Uncertainty.Uncovered = append(info.Uncertainty.Uncovered, fi.Path)
+		}
+	}
+	info.Uncertainty.ChangedSignatures = usedElsewhere(base, droppedDefs, info.Files)
 
 	idx := base
 	if len(replace) > 0 {
@@ -408,4 +478,32 @@ func newFile(p string, base *scip.SCIPIndex, root string, replace map[string]*sc
 	fi.Layers = []int{1}
 	fi.Declared = len(doc.Symbols)
 	return fi, &goJob{path: p, doc: doc, src: src, prefix: prefix}
+}
+
+// usedElsewhere keeps the symbols the base index has uses of outside the
+// changed files.
+func usedElsewhere(base *scip.SCIPIndex, syms []string, files []FileInfo) []string {
+	changed := make(map[string]bool, len(files)*2)
+	for _, f := range files {
+		changed[f.Path] = true
+		if f.OldPath != "" {
+			changed[f.OldPath] = true
+		}
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, sym := range syms {
+		if seen[sym] || !scip.IsChangeableDefinition(sym) {
+			continue
+		}
+		seen[sym] = true
+		for _, r := range base.RefIndex[sym] {
+			if r.Occ.SymbolRoles&scip.SymbolRoleDefinition == 0 && !changed[r.Doc.RelativePath] {
+				out = append(out, sym)
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
