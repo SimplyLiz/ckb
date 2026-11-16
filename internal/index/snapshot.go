@@ -120,6 +120,35 @@ func DiffSinceSnapshot(ctx context.Context, repoRoot, tree string) ([]byte, erro
 	return gitEnv(ctx, repoRoot, env, "diff", "--cached", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "-M", tree, "--")
 }
 
+// ChangedSinceSnapshot lists the repo-relative paths whose content differs
+// between a snapshot tree and the working tree as it is now (the files the
+// snapshot would take differently).
+func ChangedSinceSnapshot(ctx context.Context, repoRoot, tree string) ([]string, error) {
+	if _, err := gitEnv(ctx, repoRoot, nil, "cat-file", "-e", tree+"^{tree}"); err != nil {
+		return nil, fmt.Errorf("snapshot tree %s is gone: %w", tree, err)
+	}
+	tmp, err := tempIndexPath(repoRoot, "fresh")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.Remove(tmp) }()
+	env, err := worktreeIndex(ctx, repoRoot, tmp)
+	if err != nil {
+		return nil, err
+	}
+	out, err := gitEnv(ctx, repoRoot, env, "diff", "--cached", "--name-only", "-z", "--no-renames", tree, "--")
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, p := range strings.Split(string(out), "\x00") {
+		if p != "" {
+			files = append(files, filepath.ToSlash(p))
+		}
+	}
+	return files, nil
+}
+
 // RecordWorktree records in the metadata what the index was built from
 // beyond the commit: a snapshot tree when the working tree was dirty, nothing
 // when it was clean. Best effort: without a snapshot the overlay diffs
