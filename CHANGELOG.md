@@ -13,17 +13,18 @@ All notable changes to CKB will be documented in this file.
   patched index; the index on disk is never touched. For Go, declarations on changed lines and
   in new files of a known package come in under the indexer's own IDs (go/parser), and
   references on changed lines are resolved exactly or left out: a package-level name, `pkg.Name`
-  through the file's imports, `x.M`/`x.F` where `x`'s type is written next to it. No edge from a
-  name alone, which is what made LIP's callers 2.4 % precise. Such references carry
+  through the file's imports, `x.M`/`x.F` and longer chains where every type along them is
+  spelled in the source (read from the declaring file: fields, promoted members, function
+  results). No edge from a name alone, which is what made LIP's callers 2.4 % precise. Such references carry
   `source: "overlay"` on `analyzeImpact` items and `prepareChange` dependents (compact:
   `from_overlay`). `assessChange` reads its diff against the base index, as before.
   Replayed over CKB's last 30 small Go commits (index at the parent plus the overlay, against a
   fresh index at the commit): 0 differences on 130,951 occurrences on unchanged lines, 7,669 of
-  7,669 definitions in changed files at the same place, 1,343 of 1,343 overlay references
-  identical, callers of the changed symbols found 761 of 797 (67 % with the line remap alone),
-  and the analyzeImpact items within depth 2 that only the reference layer brings 940 of 946
+  7,669 definitions in changed files at the same place, 1,411 of 1,411 overlay references
+  identical, callers of the changed symbols found 768 of 797 (67 % with the line remap alone),
+  and the analyzeImpact items within depth 2 that only the reference layer brings 956 of 962
   identical, the other 6 the same symbols reached transitively. Building the overlay takes
-  30–70 ms. `CKB_OVERLAY=0` turns it off.
+  30–90 ms. `CKB_OVERLAY=0` turns it off. The CLI's `ckb impact` items now carry `source` too.
 - **`indexFreshness`, `getStatus` and the session-start hook say what the overlay serves**:
   `overlay {files, covered, uncovered, layers, droppedOccurrences, unresolvedSites, rebuild}`,
   and the hint says a result's changed files are served from the overlay instead of asking for a
