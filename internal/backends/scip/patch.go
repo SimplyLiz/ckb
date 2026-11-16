@@ -41,7 +41,7 @@ func PatchIndex(base *SCIPIndex, replace map[string]*Document) *SCIPIndex {
 
 	idx := &SCIPIndex{
 		Metadata:        base.Metadata,
-		DocumentsByPath: maps.Clone(base.DocumentsByPath),
+		DocumentsByPath: cloneOrMake(base.DocumentsByPath),
 		LoadedAt:        time.Now(),
 		IndexedCommit:   base.IndexedCommit,
 	}
@@ -93,8 +93,8 @@ func PatchIndex(base *SCIPIndex, replace map[string]*Document) *SCIPIndex {
 	}
 
 	// RefIndex and DefinitionIndex.
-	idx.RefIndex = maps.Clone(base.RefIndex)
-	idx.DefinitionIndex = maps.Clone(base.DefinitionIndex)
+	idx.RefIndex = cloneOrMake(base.RefIndex)
+	idx.DefinitionIndex = cloneOrMake(base.DefinitionIndex)
 	for sym := range touched {
 		var refs []*OccurrenceRef
 		for _, r := range base.RefIndex[sym] {
@@ -122,7 +122,7 @@ func PatchIndex(base *SCIPIndex, replace map[string]*Document) *SCIPIndex {
 	}
 
 	// ContainerIndex: keys carry the document path.
-	idx.ContainerIndex = maps.Clone(base.ContainerIndex)
+	idx.ContainerIndex = cloneOrMake(base.ContainerIndex)
 	for d := range oldDocs {
 		for k := range containerEntries(d) {
 			delete(idx.ContainerIndex, k)
@@ -135,7 +135,7 @@ func PatchIndex(base *SCIPIndex, replace map[string]*Document) *SCIPIndex {
 	}
 
 	// Symbols: the last document in path order that lists one wins.
-	idx.Symbols = maps.Clone(base.Symbols)
+	idx.Symbols = cloneOrMake(base.Symbols)
 	for sym := range declared {
 		delete(idx.Symbols, sym)
 	}
@@ -150,7 +150,7 @@ func PatchIndex(base *SCIPIndex, replace map[string]*Document) *SCIPIndex {
 	}
 
 	// ConvertedSymbols and NameIndex.
-	idx.ConvertedSymbols = maps.Clone(base.ConvertedSymbols)
+	idx.ConvertedSymbols = cloneOrMake(base.ConvertedSymbols)
 	nameIdx := make([]NameEntry, 0, len(base.NameIndex)+len(declared))
 	for _, e := range base.NameIndex {
 		if !declared[e.ID] {
@@ -183,4 +183,13 @@ func PatchIndex(base *SCIPIndex, replace map[string]*Document) *SCIPIndex {
 	idx.NameIndex = nameIdx
 
 	return idx
+}
+
+// cloneOrMake copies m, or makes an empty map when m is nil (an index that
+// was never loaded, as in tests).
+func cloneOrMake[K comparable, V any](m map[K]V) map[K]V {
+	if m == nil {
+		return map[K]V{}
+	}
+	return maps.Clone(m)
 }

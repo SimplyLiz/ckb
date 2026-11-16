@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -23,6 +25,7 @@ const (
 	StateDeleted   = "deleted"   // document removed
 	StateRenamed   = "renamed"   // document moved to the new path and remapped
 	StateUncovered = "uncovered" // changed, but the overlay has nothing for it (a new file)
+	StateNew       = "new"       // a new file the overlay synthesized a document for (Layer 1)
 )
 
 // FileInfo is what the overlay did for one changed file.
@@ -32,6 +35,10 @@ type FileInfo struct {
 	State   string `json:"state"`
 	Layers  []int  `json:"layers,omitempty"`
 	Dropped int    `json:"droppedOccurrences,omitempty"`
+	// Declared counts the declarations Layer 1 added on changed lines.
+	Declared int `json:"declared,omitempty"`
+	// Fallback says why a file stayed at Layer 0 (it does not parse).
+	Fallback string `json:"fallback,omitempty"`
 }
 
 // Info describes an overlay: which changed files it covers and how.
@@ -79,6 +86,8 @@ func (in *Info) Layers() []int {
 
 // Changes is the working tree's difference from the indexed commit.
 type Changes struct {
+	// Root is the repository the files are read from (Layer 1 parses them).
+	Root      string
 	Head      string
 	Diff      *impact.ParsedDiff
 	Untracked []string
@@ -115,6 +124,7 @@ func LoadChanges(ctx context.Context, repoRoot, commit string) (*Changes, error)
 	h.Write([]byte{0})
 	h.Write(untracked)
 	c := &Changes{
+		Root: repoRoot,
 		Head: strings.TrimSpace(string(head)),
 		Diff: parsed,
 		Key:  hex.EncodeToString(h.Sum(nil)),
@@ -158,7 +168,9 @@ func Build(base *scip.SCIPIndex, ch *Changes) (*scip.SCIPIndex, *Info) {
 			}
 		case f.IsNew:
 			if indexed[path.Ext(f.NewPath)] {
-				info.Files = append(info.Files, FileInfo{Path: f.NewPath, State: StateUncovered})
+				if fi := newFile(f.NewPath, base, ch.Root, replace); fi.Path != "" {
+					info.Files = append(info.Files, fi)
+				}
 			}
 		default:
 			oldPath := f.OldPath
@@ -171,8 +183,10 @@ func Build(base *scip.SCIPIndex, ch *Changes) (*scip.SCIPIndex, *Info) {
 				// skipped; nothing to patch.
 				continue
 			}
-			nd, st := RemapDocument(doc, NewLineMap(f.Hunks))
+			lm := NewLineMap(f.Hunks)
+			nd, st := RemapDocument(doc, lm)
 			fi := FileInfo{Path: f.NewPath, State: StateRemapped, Layers: []int{0}, Dropped: st.Dropped}
+			layer1(&fi, nd, base, doc, oldPath, ch.Root, lm)
 			if f.Renamed {
 				replace[oldPath] = nil
 				fi.OldPath = oldPath
@@ -184,7 +198,9 @@ func Build(base *scip.SCIPIndex, ch *Changes) (*scip.SCIPIndex, *Info) {
 	}
 	for _, p := range ch.Untracked {
 		if indexed[path.Ext(p)] {
-			info.Files = append(info.Files, FileInfo{Path: p, State: StateUncovered})
+			if fi := newFile(p, base, ch.Root, replace); fi.Path != "" {
+				info.Files = append(info.Files, fi)
+			}
 		}
 	}
 	sort.Slice(info.Files, func(i, j int) bool { return info.Files[i].Path < info.Files[j].Path })
@@ -209,4 +225,82 @@ func indexedExtensions(base *scip.SCIPIndex) map[string]bool {
 		}
 	}
 	return out
+}
+
+// layer1 adds the declarations on changed lines to a remapped document, for
+// the languages that have a Layer 1 (Go). A file that cannot be read or
+// parsed stays at Layer 0, and fi says why.
+func layer1(fi *FileInfo, doc *scip.Document, base *scip.SCIPIndex, oldDoc *scip.Document, oldPath, root string, lm *LineMap) {
+	if disabledLayer(1) || root == "" || !strings.HasSuffix(fi.Path, ".go") || !strings.HasPrefix(firstSymbol(oldDoc), "scip-go ") {
+		return
+	}
+	src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(fi.Path)))
+	if err != nil {
+		fi.Fallback = "unreadable: " + err.Error()
+		return
+	}
+	n, ok := goLayer1(doc, base, oldDoc, oldPath, src, lm)
+	if !ok {
+		fi.Fallback = "does not parse"
+		return
+	}
+	fi.Layers = append(fi.Layers, 1)
+	fi.Declared = n
+}
+
+// firstSymbol is a document's first non-local symbol, to tell its indexer.
+func firstSymbol(d *scip.Document) string {
+	if d == nil {
+		return ""
+	}
+	for _, o := range d.Occurrences {
+		if o.Symbol != "" && !strings.HasPrefix(o.Symbol, "local ") {
+			return o.Symbol
+		}
+	}
+	return ""
+}
+
+// disabledLayer reports whether CKB_OVERLAY_LAYERS leaves layer n out
+// ("0" = Layer 0 only, "0,1" = without Layer 2). For the replay
+// measurement; unset means all layers.
+func disabledLayer(n int) bool {
+	v := os.Getenv("CKB_OVERLAY_LAYERS")
+	if v == "" {
+		return false
+	}
+	for _, f := range strings.Split(v, ",") {
+		if strings.TrimSpace(f) == fmt.Sprint(n) {
+			return false
+		}
+	}
+	return true
+}
+
+// newFile handles a file the base index has no document for: Layer 1
+// synthesizes one when it can (a Go file in a package the index has), else
+// the file is uncovered.
+func newFile(p string, base *scip.SCIPIndex, root string, replace map[string]*scip.Document) FileInfo {
+	fi := FileInfo{Path: p, State: StateUncovered}
+	if disabledLayer(1) || root == "" || !strings.HasSuffix(p, ".go") || base.DocumentsByPath[p] != nil {
+		return fi
+	}
+	abs := filepath.Join(root, filepath.FromSlash(p))
+	if !goBuilds(abs) {
+		return FileInfo{} // excluded by a build constraint: not indexed, nothing to cover
+	}
+	src, err := os.ReadFile(abs)
+	if err != nil {
+		return fi
+	}
+	doc := goNewDocument(base, p, src)
+	if doc == nil {
+		fi.Fallback = "does not parse, or a package the index does not have"
+		return fi
+	}
+	replace[p] = doc
+	fi.State = StateNew
+	fi.Layers = []int{1}
+	fi.Declared = len(doc.Symbols)
+	return fi
 }
