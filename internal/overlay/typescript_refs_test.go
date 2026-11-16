@@ -187,7 +187,8 @@ func TestTSLayer2TypedMembers(t *testing.T) {
 		"L#typeLiteral7:a.@9 14 15",   // { a } as L: the property beside the local
 		"Sep().(`{ text, quiet = false }`)typeLiteral9:text.@11 15 19",
 		"Sep().(`{ text, quiet = false }`)typeLiteral9:quiet.@11 24 29",
-		"I#q.@11 49 50", // <Field q>, props: I
+		"I#q.@11 49 50",   // <Field q>, props: I
+		"Base#b.@2 16 17", // x.b: inherited from Base
 	} {
 		if !got[w] {
 			t.Errorf("missing %s", w)
@@ -199,11 +200,11 @@ func TestTSLayer2TypedMembers(t *testing.T) {
 			t.Errorf("unexpected %s", k)
 		}
 	}
-	// x.b (inherited from Base), u.b (a union of two types), k of
-	// Record<string, I>, key on Sep, h's x.q (I is h's type parameter).
-	// s.length is a primitive's member, Record<string, number> outside.
-	if unresolved != 5 {
-		t.Errorf("unresolved %d, want 5", unresolved)
+	// u.b (a union of two types), key on Sep, h's x.q (I is h's type
+	// parameter). s.length is a primitive's member, a Record's keys have no
+	// declaration.
+	if unresolved != 3 {
+		t.Errorf("unresolved %d, want 3", unresolved)
 	}
 }
 

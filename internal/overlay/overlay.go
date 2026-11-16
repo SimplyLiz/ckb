@@ -453,6 +453,9 @@ func layer2(info *Info, jobs []*goJob, base *scip.SCIPIndex, root string, replac
 		}
 		sortOccurrences(j.doc.Occurrences)
 	}
+	if ts != nil {
+		ts.close()
+	}
 	jobs = goJobs
 	if len(jobs) == 0 {
 		return
