@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/SimplyLiz/CodeMCP/internal/repostate"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -329,5 +331,44 @@ mkdir -p "$(dirname "$out")"
 			t.Fatal("runWatchLoop did not perform its first check immediately on start (no metadata after 30s, with a 1h poll interval)")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Uncommitted edits on the indexed commit are the overlay's to serve: no
+// reindex for them alone. With the overlay off, the old rule holds.
+func TestWatchCheckStale_DirtyTreeIsTheOverlays(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q"}, {"add", "-A"},
+		{"-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	ckbDir := filepath.Join(dir, ".ckb")
+	rs, err := repostate.ComputeRepoState(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&index.IndexMeta{Version: index.MetadataVersion, CommitHash: rs.HeadCommit, RepoStateID: rs.RepoStateID}).Save(ckbDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n\nfunc A() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// No engine loaded in this process: nothing to ask, no reindex.
+	if stale, _, _, reason := watchCheckStale(dir, ckbDir); stale {
+		t.Errorf("dirty tree with the overlay on: stale (%s), want no reindex", reason)
+	}
+	t.Setenv("CKB_OVERLAY", "0")
+	if stale, _, _, _ := watchCheckStale(dir, ckbDir); !stale {
+		t.Error("dirty tree with the overlay off: not stale, want the old reindex")
 	}
 }

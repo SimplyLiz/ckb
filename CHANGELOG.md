@@ -4,6 +4,42 @@ All notable changes to CKB will be documented in this file.
 
 ## [9.4.0] - 2026-11-08
 
+### Added — the index overlay: fresh answers between reindexes
+
+- **Uncommitted and not-yet-indexed edits are served from an overlay of the diff.** The server
+  diffs the working tree against what the index was built from and patches the loaded index:
+  unchanged documents shared, changed ones remapped (occurrences on unchanged lines moved,
+  those on changed lines dropped), deleted files removed, renames moved. Every query sees the
+  patched index; the index on disk is never touched. For Go, declarations on changed lines and
+  in new files of a known package come in under the indexer's own IDs (go/parser), and
+  references on changed lines are resolved exactly or left out: a package-level name, `pkg.Name`
+  through the file's imports, `x.M`/`x.F` where `x`'s type is written next to it. No edge from a
+  name alone, which is what made LIP's callers 2.4 % precise. Such references carry
+  `source: "overlay"` on `analyzeImpact` items and `prepareChange` dependents (compact:
+  `from_overlay`). `assessChange` reads its diff against the base index, as before.
+  Replayed over CKB's last 30 small Go commits (index at the parent plus the overlay, against a
+  fresh index at the commit): 0 differences on 130,951 occurrences on unchanged lines, 7,669 of
+  7,669 definitions in changed files at the same place, 1,343 of 1,343 overlay references
+  identical, callers of the changed symbols found 761 of 797 (67 % with the line remap alone),
+  and the analyzeImpact items within depth 2 that only the reference layer brings 940 of 946
+  identical, the other 6 the same symbols reached transitively. Building the overlay takes
+  30–70 ms. `CKB_OVERLAY=0` turns it off.
+- **`indexFreshness`, `getStatus` and the session-start hook say what the overlay serves**:
+  `overlay {files, covered, uncovered, layers, droppedOccurrences, unresolvedSites, rebuild}`,
+  and the hint says a result's changed files are served from the overlay instead of asking for a
+  reindex.
+- **`ckb mcp` watches by default, and a dirty working tree alone no longer reindexes.** The
+  background reindex runs on a commit or checkout, and for uncommitted edits only when the
+  overlay reports what it could not do: 25 or more unresolved sites, a declaration line changed
+  while unchanged files use it, a file it can only remap (a parse error, or a language without
+  the Go layers), or a new file it lacks. In the replay that left 17 of 30 commits without a
+  rebuild, each with 96 % or more of the changed symbols' references found. `--watch=false`
+  turns it off; an explicit `--watch` keeps building a missing index in a repo without `.ckb`.
+- **An index built from uncommitted changes records them** (`index-meta.json` `worktreeTree`, a
+  git tree written through a temporary git index; HEAD, the index and the working tree are not
+  touched, untracked non-source files stay out), and the overlay diffs against it, so those
+  edits are not applied a second time.
+
 ### Added — mixed repos, scripts and data
 
 - **`ckb index` builds one index for all of a repo's languages.** In a Go + Python or Go +

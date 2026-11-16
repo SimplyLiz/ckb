@@ -160,3 +160,13 @@ func (lm *LineMap) blockAt(old int) block {
 	}
 	return block{Old: old, New: old}
 }
+
+// HasAdditions reports whether the diff added any line.
+func (lm *LineMap) HasAdditions() bool {
+	for _, b := range lm.blocks {
+		if b.Added > 0 {
+			return true
+		}
+	}
+	return false
+}
