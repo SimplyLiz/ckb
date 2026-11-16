@@ -1493,6 +1493,9 @@ type PrepareDependent struct {
 	File     string `json:"file"`
 	Line     int    `json:"line"`
 	ModuleId string `json:"moduleId"`
+	// Source is "overlay" when the use sits on a line changed since indexing
+	// and the index overlay resolved it; absent for the indexer's own.
+	Source string `json:"source,omitempty"`
 }
 
 // PrepareTransitive summarizes transitive impact.
@@ -1986,6 +1989,7 @@ func toPrepareDependents(items []ImpactItem) []PrepareDependent {
 			File:     file,
 			Line:     line,
 			ModuleId: imp.ModuleId,
+			Source:   imp.Source,
 		})
 	}
 	return dependents

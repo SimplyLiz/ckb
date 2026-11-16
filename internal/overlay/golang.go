@@ -237,11 +237,17 @@ func addedLines(lm *LineMap) map[int32]bool {
 // file's new content. It returns false, leaving doc as Layer 0 made it, when
 // the file does not parse.
 func goLayer1(doc *scip.Document, base *scip.SCIPIndex, oldDoc *scip.Document, oldPath string, src []byte, lm *LineMap) (added int, ok bool) {
+	added, _, ok = goLayer1Prefix(doc, base, oldDoc, oldPath, src, lm)
+	return added, ok
+}
+
+// goLayer1Prefix is goLayer1, also returning the package prefix it used.
+func goLayer1Prefix(doc *scip.Document, base *scip.SCIPIndex, oldDoc *scip.Document, oldPath string, src []byte, lm *LineMap) (added int, prefix string, ok bool) {
 	decls, pkg, ok := parseGoDecls(src)
 	if !ok {
-		return 0, false
+		return 0, "", false
 	}
-	prefix := goPackagePrefix(base, oldDoc, oldPath, doc.RelativePath, pkg)
+	prefix = goPackagePrefix(base, oldDoc, oldPath, doc.RelativePath, pkg)
 	if prefix == "" {
 		prefix = "ckb-overlay . . . `" + path.Dir(doc.RelativePath) + "`/"
 	}
@@ -309,7 +315,7 @@ func goLayer1(doc *scip.Document, base *scip.SCIPIndex, oldDoc *scip.Document, o
 	}
 	doc.Symbols = kept
 	sortOccurrences(doc.Occurrences)
-	return added, true
+	return added, prefix, true
 }
 
 // wasDeclaredIn reports whether the base document had a definition of sym.
@@ -349,14 +355,14 @@ func scipRange(sl, sc, el, ec int32) []int32 {
 // not have, when its package is one the base index knows (a file added to an
 // existing package). Every declaration is new; references come from Layer 2.
 // Nil when the file does not parse or its package is not in the index.
-func goNewDocument(base *scip.SCIPIndex, newPath string, src []byte) *scip.Document {
+func goNewDocument(base *scip.SCIPIndex, newPath string, src []byte) (*scip.Document, string) {
 	decls, pkg, pkgAt, ok := parseGoFile(src)
 	if !ok {
-		return nil
+		return nil, ""
 	}
 	prefix := goPackagePrefix(base, nil, "", newPath, pkg)
 	if prefix == "" {
-		return nil
+		return nil, ""
 	}
 	doc := &scip.Document{RelativePath: newPath, Language: "go"}
 	doc.Occurrences = append(doc.Occurrences, &scip.Occurrence{Range: pkgAt, Symbol: prefix, SymbolRoles: scip.SymbolRoleDefinition})
@@ -378,7 +384,7 @@ func goNewDocument(base *scip.SCIPIndex, newPath string, src []byte) *scip.Docum
 		doc.Symbols = append(doc.Symbols, &scip.SymbolInformation{Symbol: sym, DisplayName: d.name, Kind: int32(d.kind)})
 	}
 	sortOccurrences(doc.Occurrences)
-	return doc
+	return doc, prefix
 }
 
 // goBuilds reports whether the go tool would build the file at abs under the

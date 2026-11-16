@@ -154,6 +154,7 @@ func (a *ImpactAnalyzer) processDirectReferences(symbol *Symbol, refs []Referenc
 			Location:   ref.Location,
 			Visibility: symbolVisibility, // Use the same visibility as the symbol
 			Distance:   1,                // Direct reference
+			Source:     ref.Source,       // "overlay" for a use the index overlay resolved
 		}
 
 		items = append(items, item)

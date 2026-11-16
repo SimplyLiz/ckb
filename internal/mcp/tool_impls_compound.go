@@ -21,9 +21,12 @@ type CompactPrepareChange struct {
 	// RiskBasis is what the risk assumes, for modify: that the declaration stays.
 	RiskBasis string `json:"risk_basis,omitempty"`
 	// Hint says how to narrow a file or module target down to the change made.
-	Hint     string `json:"hint,omitempty"`
-	Backend  string `json:"backend"`
-	Accuracy string `json:"accuracy"`
+	Hint string `json:"hint,omitempty"`
+	// FromOverlay counts the direct dependents the index overlay resolved on
+	// lines changed since indexing (source "overlay" in the full format).
+	FromOverlay int    `json:"from_overlay,omitempty"`
+	Backend     string `json:"backend"`
+	Accuracy    string `json:"accuracy"`
 }
 
 // buildMCPCompactPrepareChange converts a PrepareChangeResponse into compact form.
@@ -35,6 +38,12 @@ func buildMCPCompactPrepareChange(target string, r *query.PrepareChangeResponse,
 
 	seen := make(map[string]bool)
 	var affectedFiles []string
+	fromOverlay := 0
+	for _, dep := range r.DirectDependents {
+		if dep.Source == "overlay" {
+			fromOverlay++
+		}
+	}
 	for _, dep := range r.DirectDependents {
 		if dep.File != "" && !seen[dep.File] {
 			seen[dep.File] = true
@@ -113,6 +122,7 @@ func buildMCPCompactPrepareChange(target string, r *query.PrepareChangeResponse,
 		Summary:       summary,
 		RiskBasis:     riskBasis,
 		Hint:          hint,
+		FromOverlay:   fromOverlay,
 		Backend:       activeBackend,
 		Accuracy:      envelope.AccuracyForBackend(activeBackend),
 	}

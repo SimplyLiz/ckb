@@ -37,6 +37,10 @@ type FileInfo struct {
 	Dropped int    `json:"droppedOccurrences,omitempty"`
 	// Declared counts the declarations Layer 1 added on changed lines.
 	Declared int `json:"declared,omitempty"`
+	// Referenced counts the references Layer 2 resolved on changed lines;
+	// Unresolved the sites it could not resolve and left without an edge.
+	Referenced int `json:"referenced,omitempty"`
+	Unresolved int `json:"unresolved,omitempty"`
 	// Fallback says why a file stayed at Layer 0 (it does not parse).
 	Fallback string `json:"fallback,omitempty"`
 }
@@ -61,6 +65,18 @@ func (in *Info) Covered() int {
 		if f.State != StateUncovered {
 			n++
 		}
+	}
+	return n
+}
+
+// UnresolvedSites sums the sites Layer 2 left without an edge.
+func (in *Info) UnresolvedSites() int {
+	if in == nil {
+		return 0
+	}
+	n := 0
+	for _, f := range in.Files {
+		n += f.Unresolved
 	}
 	return n
 }
@@ -157,6 +173,7 @@ func Build(base *scip.SCIPIndex, ch *Changes) (*scip.SCIPIndex, *Info) {
 	info := &Info{IndexedCommit: base.IndexedCommit, Head: ch.Head, Key: ch.Key}
 	replace := map[string]*scip.Document{}
 	indexed := indexedExtensions(base)
+	var jobs []*goJob
 
 	for i := range ch.Diff.Files {
 		f := &ch.Diff.Files[i]
@@ -168,8 +185,9 @@ func Build(base *scip.SCIPIndex, ch *Changes) (*scip.SCIPIndex, *Info) {
 			}
 		case f.IsNew:
 			if indexed[path.Ext(f.NewPath)] {
-				if fi := newFile(f.NewPath, base, ch.Root, replace); fi.Path != "" {
+				if fi, job := newFile(f.NewPath, base, ch.Root, replace); fi.Path != "" {
 					info.Files = append(info.Files, fi)
+					jobs = appendJob(jobs, job)
 				}
 			}
 		default:
@@ -186,7 +204,7 @@ func Build(base *scip.SCIPIndex, ch *Changes) (*scip.SCIPIndex, *Info) {
 			lm := NewLineMap(f.Hunks)
 			nd, st := RemapDocument(doc, lm)
 			fi := FileInfo{Path: f.NewPath, State: StateRemapped, Layers: []int{0}, Dropped: st.Dropped}
-			layer1(&fi, nd, base, doc, oldPath, ch.Root, lm)
+			jobs = appendJob(jobs, layer1(&fi, nd, base, doc, oldPath, ch.Root, lm))
 			if f.Renamed {
 				replace[oldPath] = nil
 				fi.OldPath = oldPath
@@ -198,11 +216,13 @@ func Build(base *scip.SCIPIndex, ch *Changes) (*scip.SCIPIndex, *Info) {
 	}
 	for _, p := range ch.Untracked {
 		if indexed[path.Ext(p)] {
-			if fi := newFile(p, base, ch.Root, replace); fi.Path != "" {
+			if fi, job := newFile(p, base, ch.Root, replace); fi.Path != "" {
 				info.Files = append(info.Files, fi)
+				jobs = appendJob(jobs, job)
 			}
 		}
 	}
+	layer2(info, jobs, base)
 	sort.Slice(info.Files, func(i, j int) bool { return info.Files[i].Path < info.Files[j].Path })
 
 	idx := base
@@ -230,22 +250,83 @@ func indexedExtensions(base *scip.SCIPIndex) map[string]bool {
 // layer1 adds the declarations on changed lines to a remapped document, for
 // the languages that have a Layer 1 (Go). A file that cannot be read or
 // parsed stays at Layer 0, and fi says why.
-func layer1(fi *FileInfo, doc *scip.Document, base *scip.SCIPIndex, oldDoc *scip.Document, oldPath, root string, lm *LineMap) {
+func layer1(fi *FileInfo, doc *scip.Document, base *scip.SCIPIndex, oldDoc *scip.Document, oldPath, root string, lm *LineMap) *goJob {
 	if disabledLayer(1) || root == "" || !strings.HasSuffix(fi.Path, ".go") || !strings.HasPrefix(firstSymbol(oldDoc), "scip-go ") {
-		return
+		return nil
 	}
 	src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(fi.Path)))
 	if err != nil {
 		fi.Fallback = "unreadable: " + err.Error()
-		return
+		return nil
 	}
-	n, ok := goLayer1(doc, base, oldDoc, oldPath, src, lm)
+	n, prefix, ok := goLayer1Prefix(doc, base, oldDoc, oldPath, src, lm)
 	if !ok {
 		fi.Fallback = "does not parse"
-		return
+		return nil
 	}
 	fi.Layers = append(fi.Layers, 1)
 	fi.Declared = n
+	return &goJob{path: fi.Path, doc: doc, src: src, prefix: prefix, lines: addedLines(lm)}
+}
+
+// goJob is a Go file that passed Layer 1, waiting for Layer 2: references
+// resolve against every file's Layer 1 declarations, so Layer 2 runs after
+// all of them.
+type goJob struct {
+	path   string
+	doc    *scip.Document
+	src    []byte
+	prefix string
+	lines  map[int32]bool // the added lines; nil means every line (a new file)
+}
+
+func appendJob(jobs []*goJob, j *goJob) []*goJob {
+	if j == nil {
+		return jobs
+	}
+	return append(jobs, j)
+}
+
+// layer2 resolves the references on the changed lines of every file that
+// passed Layer 1.
+func layer2(info *Info, jobs []*goJob, base *scip.SCIPIndex) {
+	if disabledLayer(2) || len(jobs) == 0 {
+		return
+	}
+	pre := goPackagePrefixes(base)
+	g := &goSymbols{base: base, prefixes: pre.byPath, names: pre.names, declared: map[string]bool{}}
+	for _, j := range jobs {
+		for _, o := range j.doc.Occurrences {
+			if o.SymbolRoles&scip.SymbolRoleDefinition != 0 {
+				g.declared[o.Symbol] = true
+			}
+		}
+	}
+	byPath := map[string]*FileInfo{}
+	for i := range info.Files {
+		byPath[info.Files[i].Path] = &info.Files[i]
+	}
+	for _, j := range jobs {
+		lines := j.lines
+		if lines == nil {
+			lines = allLines(j.src)
+		}
+		added, unresolved := goLayer2(j.doc, j.src, j.prefix, lines, g)
+		if fi := byPath[j.path]; fi != nil {
+			fi.Layers = append(fi.Layers, 2)
+			fi.Referenced = added
+			fi.Unresolved = unresolved
+		}
+	}
+}
+
+func allLines(src []byte) map[int32]bool {
+	n := int32(strings.Count(string(src), "\n") + 1) // #nosec G115 -- line count fits
+	out := make(map[int32]bool, n)
+	for i := int32(0); i < n; i++ {
+		out[i] = true
+	}
+	return out
 }
 
 // firstSymbol is a document's first non-local symbol, to tell its indexer.
@@ -280,27 +361,27 @@ func disabledLayer(n int) bool {
 // newFile handles a file the base index has no document for: Layer 1
 // synthesizes one when it can (a Go file in a package the index has), else
 // the file is uncovered.
-func newFile(p string, base *scip.SCIPIndex, root string, replace map[string]*scip.Document) FileInfo {
+func newFile(p string, base *scip.SCIPIndex, root string, replace map[string]*scip.Document) (FileInfo, *goJob) {
 	fi := FileInfo{Path: p, State: StateUncovered}
 	if disabledLayer(1) || root == "" || !strings.HasSuffix(p, ".go") || base.DocumentsByPath[p] != nil {
-		return fi
+		return fi, nil
 	}
 	abs := filepath.Join(root, filepath.FromSlash(p))
 	if !goBuilds(abs) {
-		return FileInfo{} // excluded by a build constraint: not indexed, nothing to cover
+		return FileInfo{}, nil // excluded by a build constraint: not indexed, nothing to cover
 	}
 	src, err := os.ReadFile(abs)
 	if err != nil {
-		return fi
+		return fi, nil
 	}
-	doc := goNewDocument(base, p, src)
+	doc, prefix := goNewDocument(base, p, src)
 	if doc == nil {
 		fi.Fallback = "does not parse, or a package the index does not have"
-		return fi
+		return fi, nil
 	}
 	replace[p] = doc
 	fi.State = StateNew
 	fi.Layers = []int{1}
 	fi.Declared = len(doc.Symbols)
-	return fi
+	return fi, &goJob{path: p, doc: doc, src: src, prefix: prefix}
 }

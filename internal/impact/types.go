@@ -58,6 +58,7 @@ type Reference struct {
 	FromName   string        // Human-readable name of the referencing symbol, if resolved by the backend
 	FromModule string        // ModuleId of the referencing module
 	IsTest     bool          // Whether this reference is from a test
+	Source     string        // "overlay" when the index overlay resolved it, else empty
 }
 
 // CouplingTier distinguishes how a caller relationship was discovered.
