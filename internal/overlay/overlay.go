@@ -295,10 +295,11 @@ func Build(base *scip.SCIPIndex, ch *Changes) (*scip.SCIPIndex, *Info) {
 			}
 			lm := NewLineMap(f.Hunks)
 			nd, st := RemapDocument(doc, lm)
+			pinTSFileSymbol(nd, doc)
 			fi := FileInfo{Path: f.NewPath, State: StateRemapped, Layers: []int{0}, Dropped: st.Dropped}
 			jobs = appendJob(jobs, layer1(&fi, nd, base, doc, oldPath, ch.Root, lm))
 			droppedDefs = append(droppedDefs, st.DroppedDefs...)
-			if len(fi.Layers) == 1 && lm.HasAdditions() {
+			if len(fi.Layers) == 1 && (lm.HasAdditions() || f.Renamed && isTSPath(f.NewPath)) {
 				info.Uncertainty.Layer0Only = append(info.Uncertainty.Layer0Only, f.NewPath)
 			}
 			if f.Renamed {
@@ -318,7 +319,7 @@ func Build(base *scip.SCIPIndex, ch *Changes) (*scip.SCIPIndex, *Info) {
 			}
 		}
 	}
-	layer2(info, jobs, base, ch.Root)
+	layer2(info, jobs, base, ch.Root, replace)
 	sort.Slice(info.Files, func(i, j int) bool { return info.Files[i].Path < info.Files[j].Path })
 	info.Uncertainty.UnresolvedSites = info.UnresolvedSites()
 	for _, fi := range info.Files {
@@ -354,7 +355,31 @@ func indexedExtensions(base *scip.SCIPIndex) map[string]bool {
 // the languages that have a Layer 1 (Go). A file that cannot be read or
 // parsed stays at Layer 0, and fi says why.
 func layer1(fi *FileInfo, doc *scip.Document, base *scip.SCIPIndex, oldDoc *scip.Document, oldPath, root string, lm *LineMap) *goJob {
-	if disabledLayer(1) || root == "" || !strings.HasSuffix(fi.Path, ".go") || !strings.HasPrefix(firstSymbol(oldDoc), "scip-go ") {
+	if disabledLayer(1) || root == "" {
+		return nil
+	}
+	if isTSPath(fi.Path) && strings.HasPrefix(firstSymbol(oldDoc), "scip-typescript ") {
+		if fi.OldPath != "" || oldPath != fi.Path {
+			// scip-typescript writes the path into every ID: a rename
+			// changes them all, here and wherever they are used.
+			fi.Fallback = "renamed: scip-typescript IDs carry the file path"
+			return nil
+		}
+		src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(fi.Path)))
+		if err != nil {
+			fi.Fallback = "unreadable: " + err.Error()
+			return nil
+		}
+		n, why := tsLayer1(doc, base, oldDoc, src, lm)
+		if why != "" {
+			fi.Fallback = why
+			return nil
+		}
+		fi.Layers = append(fi.Layers, 1)
+		fi.Declared = n
+		return &goJob{path: fi.Path, doc: doc, src: src, lines: addedLines(lm), ts: true}
+	}
+	if !strings.HasSuffix(fi.Path, ".go") || !strings.HasPrefix(firstSymbol(oldDoc), "scip-go ") {
 		return nil
 	}
 	src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(fi.Path)))
@@ -381,6 +406,7 @@ type goJob struct {
 	src    []byte
 	prefix string
 	lines  map[int32]bool // the added lines; nil means every line (a new file)
+	ts     bool           // a TypeScript file: Layer 2 for TypeScript
 }
 
 func appendJob(jobs []*goJob, j *goJob) []*goJob {
@@ -392,8 +418,43 @@ func appendJob(jobs []*goJob, j *goJob) []*goJob {
 
 // layer2 resolves the references on the changed lines of every file that
 // passed Layer 1.
-func layer2(info *Info, jobs []*goJob, base *scip.SCIPIndex, root string) {
+func layer2(info *Info, jobs []*goJob, base *scip.SCIPIndex, root string, replace map[string]*scip.Document) {
 	if disabledLayer(2) || len(jobs) == 0 {
+		return
+	}
+	byPath := map[string]*FileInfo{}
+	for i := range info.Files {
+		byPath[info.Files[i].Path] = &info.Files[i]
+	}
+	var goJobs []*goJob
+	var ts *tsResolver
+	for _, j := range jobs {
+		if !j.ts {
+			goJobs = append(goJobs, j)
+			continue
+		}
+		if ts == nil {
+			ts = newTSResolver(root, func(p string) *scip.Document {
+				if d, ok := replace[p]; ok {
+					return d
+				}
+				return base.DocumentsByPath[p]
+			})
+		}
+		lines := j.lines
+		if lines == nil {
+			lines = allLines(j.src)
+		}
+		added, unresolved := tsLayer2(j.doc, j.path, j.src, lines, ts)
+		if fi := byPath[j.path]; fi != nil {
+			fi.Layers = append(fi.Layers, 2)
+			fi.Referenced = added
+			fi.Unresolved = unresolved
+		}
+		sortOccurrences(j.doc.Occurrences)
+	}
+	jobs = goJobs
+	if len(jobs) == 0 {
 		return
 	}
 	pre := goPackagePrefixes(base)
@@ -408,10 +469,6 @@ func layer2(info *Info, jobs []*goJob, base *scip.SCIPIndex, root string) {
 	types := newGoTypes(g, root)
 	for _, j := range jobs {
 		types.noteDeclared(j.doc)
-	}
-	byPath := map[string]*FileInfo{}
-	for i := range info.Files {
-		byPath[info.Files[i].Path] = &info.Files[i]
 	}
 	for _, j := range jobs {
 		lines := j.lines
@@ -449,6 +506,53 @@ func firstSymbol(d *scip.Document) string {
 	return ""
 }
 
+// pinTSFileSymbol keeps the definition scip-typescript writes for the file
+// itself at [0,0,0]: it is not on a line, so Layer 0 must neither move it
+// when lines are inserted above the first one nor drop it when the first
+// line changes. Its EnclosingRange (the whole file) Layer 1 sets.
+func pinTSFileSymbol(nd, old *scip.Document) {
+	sym := tsFileSymbolOf(old)
+	if sym == "" {
+		return
+	}
+	for _, o := range nd.Occurrences {
+		if o.Symbol == sym && o.SymbolRoles&scip.SymbolRoleDefinition != 0 {
+			o.Range = []int32{0, 0, 0}
+			sortOccurrences(nd.Occurrences)
+			return
+		}
+	}
+	for _, o := range old.Occurrences {
+		if o.Symbol == sym && o.SymbolRoles&scip.SymbolRoleDefinition != 0 {
+			cp := *o
+			nd.Occurrences = append(nd.Occurrences, &cp)
+			sortOccurrences(nd.Occurrences)
+			return
+		}
+	}
+}
+
+// tsFileSymbolOf is the scip-typescript file symbol a document defines at
+// [0,0,0], language-independent so Layer 0 can use it without cgo.
+func tsFileSymbolOf(d *scip.Document) string {
+	if d == nil {
+		return ""
+	}
+	for _, o := range d.Occurrences {
+		if o.SymbolRoles&scip.SymbolRoleDefinition != 0 && len(o.Range) == 3 && o.Range[0] == 0 && o.Range[1] == 0 && o.Range[2] == 0 &&
+			strings.HasPrefix(o.Symbol, "scip-typescript ") {
+			return o.Symbol
+		}
+	}
+	return ""
+}
+
+// isTSPath reports whether p is a file scip-typescript indexes with the
+// TypeScript layers (TypeScript and TSX; JavaScript stays at Layer 0).
+func isTSPath(p string) bool {
+	return strings.HasSuffix(p, ".ts") || strings.HasSuffix(p, ".tsx") || strings.HasSuffix(p, ".mts") || strings.HasSuffix(p, ".cts")
+}
+
 // disabledLayer reports whether CKB_OVERLAY_LAYERS leaves layer n out
 // ("0" = Layer 0 only, "0,1" = without Layer 2). For the replay
 // measurement; unset means all layers.
@@ -470,7 +574,26 @@ func disabledLayer(n int) bool {
 // the file is uncovered.
 func newFile(p string, base *scip.SCIPIndex, root string, replace map[string]*scip.Document) (FileInfo, *goJob) {
 	fi := FileInfo{Path: p, State: StateUncovered}
-	if disabledLayer(1) || root == "" || !strings.HasSuffix(p, ".go") || base.DocumentsByPath[p] != nil {
+	if disabledLayer(1) || root == "" || base.DocumentsByPath[p] != nil {
+		return fi, nil
+	}
+	if isTSPath(p) {
+		src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(p))) // #nosec G304 -- a file in the repository
+		if err != nil {
+			return fi, nil
+		}
+		doc, _ := tsNewDocument(base, p, src)
+		if doc == nil {
+			fi.Fallback = "does not parse, or no indexed file of its package"
+			return fi, nil
+		}
+		replace[p] = doc
+		fi.State = StateNew
+		fi.Layers = []int{1}
+		fi.Declared = len(doc.Symbols) - 1 // without the file symbol
+		return fi, &goJob{path: p, doc: doc, src: src, ts: true}
+	}
+	if !strings.HasSuffix(p, ".go") {
 		return fi, nil
 	}
 	abs := filepath.Join(root, filepath.FromSlash(p))

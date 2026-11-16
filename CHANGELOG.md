@@ -26,6 +26,16 @@ All notable changes to CKB will be documented in this file.
   and the analyzeImpact items within depth 2 that only the reference layer brings 956 of 962
   identical, the other 6 the same symbols reached transitively. Building the overlay takes
   30–90 ms. `CKB_OVERLAY=0` turns it off. The CLI's `ckb impact` items now carry `source` too.
+- **TypeScript has both layers too** (tree-sitter, UTF-16 columns as scip-typescript writes
+  them): declarations under scip-typescript's IDs, except the counter-numbered ones (object
+  literal properties, type-literal members), which keep their old IDs at definition and uses;
+  references through same-file names, imports, re-exports and `tsconfig` paths, namespace
+  imports, enum and static members and constructors. Checked on Lebenslauf: 6,138 of 6,138
+  comparable definitions identical to scip-typescript's at HEAD; over its last 30 small commits
+  1,147 of 1,147 overlay references and 543 of 543 impact items they bring identical to a fresh
+  index, 77 % of the changed symbols' references found, overlay built in 47 ms (median). A file
+  with a syntax error (or a construct the bundled grammar lacks) and a renamed TS file stay at
+  the line remap and ask for a rebuild.
 - **`indexFreshness`, `getStatus` and the session-start hook say what the overlay serves**:
   `overlay {files, covered, uncovered, layers, droppedOccurrences, unresolvedSites, rebuild}`,
   and the hint says a result's changed files are served from the overlay instead of asking for a
@@ -34,7 +44,7 @@ All notable changes to CKB will be documented in this file.
   background reindex runs on a commit or checkout, and for uncommitted edits only when the
   overlay reports what it could not do: 25 or more unresolved sites, a declaration line changed
   while unchanged files use it, a file it can only remap (a parse error, or a language without
-  the Go layers), or a new file it lacks. In the replay that left 17 of 30 commits without a
+  the Go or TypeScript layers), or a new file it lacks. In the replay that left 17 of 30 commits without a
   rebuild, each with 96 % or more of the changed symbols' references found. `--watch=false`
   turns it off; an explicit `--watch` keeps building a missing index in a repo without `.ckb`.
 - **An index built from uncommitted changes records them** (`index-meta.json` `worktreeTree`, a
