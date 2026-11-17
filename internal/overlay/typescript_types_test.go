@@ -700,7 +700,7 @@ func TestTSLayer2Zod(t *testing.T) {
 	for _, w := range []string{
 		"role0:@2 16 20", "items0:@2 24 29", "level0:@2 33 38", "id1:@2 42 44",
 		"extra0:@2 48 53", "role0:@2 57 61", // extend: its own key, the base's
-		"role0:@4 16 20",                    // parse()
+		"role0:@4 16 20",                                    // parse()
 		"id1:@5 23 25", "role0:@5 31 35", "items0:@5 41 46", // a literal typed Entry
 		"role0:@6 16 20", "items0:@6 24 29", "id0:@6 33 35", // transform(keep), keep<P>(p: P): P; z.array(s).min(1)
 	} {
