@@ -691,6 +691,38 @@ all at 100 %. Its DefsSame/Moved/Missing figures differ by up to ~20 between two
 same binary: `norm` folds counter IDs, and `normMap` keeps an arbitrary one of the symbols that
 fold together. The stable definitions do not move.
 
+### zod and `typeof` in generics (2026-11-17)
+
+Lebenslauf's silent sites were mostly one file's: 1,824 of 2,415 pointed at counter-numbered keys
+in `src/lib/cv/schema.ts`. `type Entry = z.infer<typeof entrySchema>` was a package's type to
+Layer 2, so `e.role` was nobody's. A probe project (zod 4.6, scip-typescript 0.4.0) gave the
+rules: a member is the key of the `z.object({…})` literal that declares it (`role0:`), through
+`extend` (its own keys are references to a symbol nothing defines), `merge`, `pick`, `omit`,
+`partial`, `optional`, `strict`, `refine`, `z.input`/`z.output`, `parse()`, `z.preprocess`,
+`.array()`, `z.record`; a union writes every part. `typescript_zod.go` models those plus checks
+(`.min()`), helpers returning one expression and `transform(f)` for `f<P>(p: P): P`. Each key's
+symbol comes from the declaring document; Layer 1 writes no counter IDs, so a changed schema
+file's new keys are unknown (counted). Unions, other transforms, `lazy`, `safeParse` and a schema
+behind an annotation are unknown. `ReturnType<typeof f>` and every package generic over
+`typeof` a repository value are unknown instead of a package's type. Chain links do not use
+up `tsMaxDepth` (Lebenslauf's `projectSchema` has seven).
+
+The oracle had skipped every file that uses `z.…`: scip-typescript points `z` at a module
+symbol (`external.d.cts/`) without the name, and the harness took that for changed text. With
+that fixed the baseline checks 141,373 edges instead of 124,540.
+
+| Eight repositories (oracle, every line) | before | now |
+|---|---|---|
+| Edges written, wrong | 141,373, 3 | 143,717, 3 |
+| Lebenslauf: written / silent | 24,247 / 3,167 | 26,334 / 989 |
+| moltbot: silent | 1,836 | 1,421 |
+| Madison-Server: silent | 330 | 246 |
+| Sites newly silent, any repository | | 0 |
+
+Lebenslauf replay: 2,545 of 2,545 overlay references identical (2,247 before), unresolved
+588 → 641, 18 commits without a rebuild instead of 19, all at 100 %. The one that now rebuilds
+(3664d533, 24 → 29) adds keys to `schema.ts`.
+
 ### What the build changed in the design
 
 - **Go's Layers 1–2 use go/parser, not tree-sitter.** Exact for Go, positions in scip-go's byte

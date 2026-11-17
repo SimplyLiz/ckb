@@ -704,6 +704,8 @@ type tsModule struct {
 	// columns: read once, for members whose owner Layer 1 does not name.
 	defPos map[[2]int32]string
 	cols   *utf16Cols
+	// keyPos are its object literal keys' property symbols (zod's schemas).
+	keyPos map[[2]int32]string
 }
 
 // tsParamShape is a function's first parameter, what JSX attributes of a

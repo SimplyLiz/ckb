@@ -37,6 +37,9 @@ func (r *tsResolver) tsUnionParts(m *tsModule, t *sitter.Node, depth int) (parts
 			continue
 		}
 		p := r.typeOfNode(m, c, depth+1)
+		if tsZod(p) || p.k == tyPick && p.elem != nil && tsZod(*p.elem) {
+			return nil, false, false // a schema's keys: narrowing reads type literals
+		}
 		switch p.k {
 		case tyDecl, tyLit, tyPick:
 		case tyOutside:
@@ -108,6 +111,9 @@ func (r *tsResolver) lacks(t tsTy, name string) bool {
 	var body *sitter.Node
 	switch t.k {
 	case tyLit:
+		if tsZod(t) {
+			return false
+		}
 		body = t.node
 	case tyDecl:
 		if t.node.Type() != "interface_declaration" {

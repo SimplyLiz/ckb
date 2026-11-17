@@ -53,7 +53,13 @@ All notable changes to CKB will be documented in this file.
   `globalThis as unknown as { prisma: PrismaClient | undefined }` makes `prisma.user.find()` a
   package's call instead of an unresolved one (nyxcore: 22,510 → 18,219 unresolved sites), and a
   shorthand parameter in a package's object literal (`where: { tenantId }`) counts, because the
-  index writes `f().(tenantId)` there. Where scip-typescript's contextual lookup finds no property, Layer 2
+  index writes `f().(tenantId)` there. zod's schemas are followed: a member of
+  `z.infer<typeof s>` (`z.input`, `z.output`, `s.parse()`) is the key of the `z.object({…})` literal
+  that declares it, through `extend`, `merge`, `pick`, `omit`, `partial`, `optional`, `default`,
+  `refine`, checks such as `.min()`, `z.array`, `z.record`, `z.preprocess`, a helper that returns a
+  schema and `transform(f)` with `f<P>(p: P): P`; anything else (other transforms, unions, `lazy`)
+  counts as unresolved instead of passing as a package's type, and so does `ReturnType<typeof f>`.
+  On Lebenslauf 2,178 references that went unnoticed are now written or counted. Where scip-typescript's contextual lookup finds no property, Layer 2
   writes no edge either: a literal whose context is `T | undefined` (an optional or defaulted
   parameter, a `T | null` return, an async function's return), and the value of a shorthand
   property in a package's or a global's type. Lower-case JSX tags are intrinsic elements. JSX
