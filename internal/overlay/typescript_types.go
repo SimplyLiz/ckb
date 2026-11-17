@@ -65,6 +65,9 @@ type tsTy struct {
 	// scip-typescript asks the contextual type for the property, and a
 	// union with undefined has none, so the literal defines its own.
 	nullable bool
+	// orPromise: an async function's result context, T | PromiseLike<T>
+	// (a union, which has no property of T's under any tsconfig).
+	orPromise bool
 }
 
 var (
@@ -206,6 +209,26 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 			return tsUnknownTy
 		}
 		return tsTy{k: tyLit, m: m, node: t, sym: owner}
+	case "lookup_type":
+		// T["k"]: the type of T's member k.
+		key, ok := tsLookupKey(t, m.src)
+		if !ok {
+			return tsUnknownTy
+		}
+		obj := r.typeOfNode(m, t.NamedChild(0), depth+1)
+		if len(obj.parts) > 0 && !obj.inter {
+			return tsUnknownTy
+		}
+		switch mb := r.memberOf(obj, tsStringValue(key.Content(m.src)), depth+1); mb.k {
+		case tyDecl:
+			if len(mb.more) > 0 {
+				return tsUnknownTy
+			}
+			return mb.typ
+		case tyOutside:
+			return tsOutsideTy
+		}
+		return tsUnknownTy
 	case "intersection_type":
 		return r.unionTy(m, t, depth)
 	case "function_type":
@@ -1283,6 +1306,9 @@ func (r *tsResolver) bindingType1(m *tsModule, id *sitter.Node, depth int) tsTy 
 		case tyUnknown:
 			return tsUnknownTy
 		case tyOutside:
+			if mb.typ.k != tyNone {
+				return mb.typ // a local member whose type is followed
+			}
 			return tsOutsideTy
 		}
 		return tsNoTy
@@ -1472,6 +1498,9 @@ func (r *tsResolver) contextType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 		case tyNone:
 			return tsNoTy
 		case tyOutside:
+			if mb.typ.k != tyNone {
+				return mb.typ // a local member whose type is followed
+			}
 			return tsOutsideTy
 		}
 		return tsUnknownTy
@@ -1568,7 +1597,7 @@ func (r *tsResolver) resultContext(m *tsModule, fn *sitter.Node, depth int) tsTy
 		// PromiseLike<TReturn>, as an async function's.
 		t := r.generatorContext(m, fn, 1, depth)
 		if tsIsAsync(fn) {
-			t.nullable = true
+			t.orPromise = true
 		}
 		return t
 	}
@@ -1592,7 +1621,7 @@ func (r *tsResolver) resultContext(m *tsModule, fn *sitter.Node, depth int) tsTy
 			if t.k == tyPromise {
 				t = t.of()
 			}
-			t.nullable = true
+			t.orPromise = true
 		}
 		return t
 	}
@@ -1602,7 +1631,7 @@ func (r *tsResolver) resultContext(m *tsModule, fn *sitter.Node, depth int) tsTy
 		if t.k == tyPromise {
 			t = t.of()
 		}
-		t.nullable = true
+		t.orPromise = true
 	}
 	return t
 }
@@ -1892,6 +1921,9 @@ func (r *tsResolver) patternType(m *tsModule, pat *sitter.Node, depth int) tsTy 
 		case tyUnknown:
 			return tsUnknownTy
 		case tyOutside:
+			if mb.typ.k != tyNone {
+				return mb.typ
+			}
 			return tsOutsideTy
 		}
 	}

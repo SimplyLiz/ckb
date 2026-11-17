@@ -538,3 +538,180 @@ func TestTSLayer2TypeParams(t *testing.T) {
 		t.Errorf("type parameter references\n got  %v\n want %v", got, want)
 	}
 }
+
+const tsLookupFile = `export interface S { status: "a" | "b"; nested: { deep: number }; list: { item: string }[]; "/x": number }
+export type L = { kind: string; run(): void };
+export type A = S["status"];
+export type B = S['nested']["deep"];
+export type C = S["list"][number]["item"];
+export type D = L["kind"] | L["run"];
+export type E = (S | L)["kind"];
+export type F = S["/x"];
+export type G = Partial<S>["status"];
+export type H = S["status" | "nested"];
+`
+
+// TestTSLayer2LookupTypes: T["k"] points the string, quotes included, at
+// T's member k, through nested lookups and Partial; a union of types or of
+// keys gets nothing. The want list is scip-typescript's index of the file
+// (C's "item" is a local there, Layer 2 counts it, and so it does F's).
+func TestTSLayer2LookupTypes(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src/a.ts"), []byte(tsLookupFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	doc, _ := tsNewDocument(base, "src/a.ts", []byte(tsLookupFile))
+	if doc == nil {
+		t.Fatal("document not synthesized")
+	}
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/a.ts" {
+			return doc
+		}
+		return base.DocumentsByPath[p]
+	})
+	_, unresolved := tsLayer2(doc, "src/a.ts", []byte(tsLookupFile), allLines([]byte(tsLookupFile)), r)
+	prefix := head + "src/`a.ts`/"
+	var got []string
+	for _, o := range doc.Occurrences {
+		if o.Source == scip.OccurrenceSourceOverlay && o.Range[0] >= 2 && strings.Contains(o.Symbol, "#") && !strings.HasSuffix(o.Symbol, "#") {
+			got = append(got, strings.TrimPrefix(o.Symbol, prefix)+"@"+fmtRange(o))
+		}
+	}
+	sort.Strings(got)
+	want := []string{
+		"S#status.@2 18 26",
+		"S#nested.@3 18 26", "S#nested.typeLiteral0:deep.@3 28 34",
+		"S#list.@4 18 24",
+		// typeLiteral4 in the index: a new file's literals are numbered
+		// by Layer 1 until the next reindex.
+		"L#typeLiteral1:kind.@5 18 24", "L#typeLiteral1:run().@5 30 35",
+		"S#status.@8 27 35",
+	}
+	sort.Strings(want)
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("lookup type members\n got  %v\n want %v", got, want)
+	}
+	// C's "item", and F's "/x": a member with a string name is not parsed
+	// (the index has S#`"/x"`. there).
+	if unresolved != 2 {
+		t.Errorf("unresolved %d, want 2", unresolved)
+	}
+}
+
+const tsNullCtxFile = `export interface E { t?: { a: number }; u: { b: number } | undefined }
+let x: E["t"]; x = { a: 1 };
+let y: { a: number } | undefined; y = { a: 1 };
+let w: E["u"]; w = { b: 1 };
+export function f(p?: { c: number }) { return p; }
+f({ c: 1 });
+const z: E["t"] = { a: 2 };
+`
+
+// TestTSStrictNullContext: a literal whose context is T | undefined has its
+// own keys under strictNullChecks, T's members without it (TypeScript drops
+// undefined from the union). Both want lists are scip-typescript's index of
+// the file under that tsconfig (f's literal is typeLiteral7 there: a new
+// file's literals are numbered by Layer 1).
+func TestTSStrictNullContext(t *testing.T) {
+	for _, tc := range []struct {
+		config string
+		want   []string
+	}{
+		{`{ "compilerOptions": { "strict": true } }`, nil},
+		{`{ "compilerOptions": { "strict": true, "strictNullChecks": false } }`, []string{"E#t.typeLiteral0:a.@1 21 22", "f().(p)typeLiteral1:c.@5 4 5", "E#t.typeLiteral0:a.@6 20 21"}},
+		{`{}`, []string{"E#t.typeLiteral0:a.@1 21 22", "f().(p)typeLiteral1:c.@5 4 5", "E#t.typeLiteral0:a.@6 20 21"}},
+	} {
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "tsconfig.json"), []byte(tc.config), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		head := "scip-typescript npm app 1.0.0 "
+		seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+		base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+		doc, _ := tsNewDocument(base, "src/a.ts", []byte(tsNullCtxFile))
+		if doc == nil {
+			t.Fatal("document not synthesized")
+		}
+		r := newTSResolver(root, func(p string) *scip.Document {
+			if p == "src/a.ts" {
+				return doc
+			}
+			return base.DocumentsByPath[p]
+		})
+		tsLayer2(doc, "src/a.ts", []byte(tsNullCtxFile), allLines([]byte(tsNullCtxFile)), r)
+		prefix := head + "src/`a.ts`/"
+		var got []string
+		for _, o := range doc.Occurrences {
+			if o.Source == scip.OccurrenceSourceOverlay && strings.Contains(o.Symbol, "typeLiteral") {
+				got = append(got, strings.TrimPrefix(o.Symbol, prefix)+"@"+fmtRange(o))
+			}
+		}
+		sort.Strings(got)
+		sort.Strings(tc.want)
+		if strings.Join(got, " ") != strings.Join(tc.want, " ") {
+			t.Errorf("%s\n got  %v\n want %v", tc.config, got, tc.want)
+		}
+	}
+}
+
+const tsLocalCtxFile = `export interface D { p: number }
+export type S = { l: { d: D } | null };
+export const s: S = { l: { d: { p: 1 } } };
+export function g(c: D, arr: D[]) {
+  const r = { ...c, p: 2 };
+  return arr.map((x) => ({ ...x, p: 1 }));
+}
+`
+
+// TestTSLayer2LocalMemberContext: a literal under a local member (d of a
+// literal in a union) takes the member's followed type, D. The keys of a
+// callback's result that spreads a repository value count: scip-typescript
+// points them at the inferred result's property. Both from scip-typescript's
+// index of the file; Layer 1 writes no locals, so d's is added.
+func TestTSLayer2LocalMemberContext(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src/a.ts"), []byte(tsLocalCtxFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	doc, _ := tsNewDocument(base, "src/a.ts", []byte(tsLocalCtxFile))
+	if doc == nil {
+		t.Fatal("document not synthesized")
+	}
+	doc.Occurrences = append(doc.Occurrences, &scip.Occurrence{Range: []int32{1, 23, 24}, Symbol: "local 3", SymbolRoles: scip.SymbolRoleDefinition})
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/a.ts" {
+			return doc
+		}
+		return base.DocumentsByPath[p]
+	})
+	_, unresolved := tsLayer2(doc, "src/a.ts", []byte(tsLocalCtxFile), allLines([]byte(tsLocalCtxFile)), r)
+	prefix := head + "src/`a.ts`/"
+	var got []string
+	for _, o := range doc.Occurrences {
+		if o.Source == scip.OccurrenceSourceOverlay && strings.HasPrefix(o.Symbol, prefix+"D#p.") {
+			got = append(got, fmtRange(o))
+		}
+	}
+	if strings.Join(got, ",") != "2 32 33" {
+		t.Errorf("D#p. at %v, want 2 32 33 only", got)
+	}
+	if unresolved != 1 { // p in the map callback
+		t.Errorf("unresolved %d, want 1", unresolved)
+	}
+}
