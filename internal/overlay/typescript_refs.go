@@ -1032,7 +1032,8 @@ type tsRefs struct {
 func (l *tsRefs) text(n *sitter.Node) string { return n.Content(l.src) }
 
 // defSymbolAt is the non-local symbol the document defines at a binding
-// identifier (a top-level function's or a method's parameter), else empty.
+// identifier (a parameter of a top-level function or a method, or a type
+// parameter), else empty.
 func (l *tsRefs) defSymbolAt(id *sitter.Node) string {
 	if id == nil {
 		return ""
@@ -1047,8 +1048,8 @@ func (l *tsRefs) defSymbolAt(id *sitter.Node) string {
 	}
 	sl, sc := l.cols.pos(id.StartByte())
 	sym := l.defs[[2]int32{sl, sc}]
-	if !strings.HasSuffix(sym, ")") {
-		return "" // only parameters: f().(p)
+	if !strings.HasSuffix(sym, ")") && !strings.HasSuffix(sym, "]") {
+		return "" // only parameters and type parameters: f().(p), f().[T]
 	}
 	return sym
 }
@@ -1081,7 +1082,7 @@ func (l *tsRefs) missValue(k *sitter.Node) {
 	}
 	name := l.text(k)
 	if id, local := tsLocalBinding(k, name, l.src); local {
-		if l.defSymbolAt(id) != "" {
+		if strings.HasSuffix(l.defSymbolAt(id), ")") {
 			l.unresolved++ // a parameter with a global symbol, f().(p)
 		}
 		return
@@ -1201,11 +1202,20 @@ func (l *tsRefs) ident(n *sitter.Node) {
 	if tsIntrinsicTag(n, name) {
 		return // <table>: JSX.IntrinsicElements' member, whatever value has the name
 	}
+	if ns == tsTypeNS {
+		// A type parameter with a global symbol: f().[T], C#[T].
+		if tp := tsTypeParamBinding(n, name, l.src); tp != nil {
+			if sym := l.defSymbolAt(tp); strings.HasSuffix(sym, "]") {
+				l.emit(n, sym)
+			}
+			return
+		}
+	}
 	if id, local := tsLocalBinding(n, name, l.src); local {
 		// A parameter with a global symbol: f().(p), C#m().(p). As a
 		// shorthand property ({ p }) scip-typescript writes the property, a
 		// counter or a local there, never the parameter.
-		if sym := l.defSymbolAt(id); sym != "" && ns == tsValue && n.Type() != "shorthand_property_identifier" {
+		if sym := l.defSymbolAt(id); strings.HasSuffix(sym, ")") && ns == tsValue && n.Type() != "shorthand_property_identifier" {
 			l.emit(n, sym)
 		}
 		return
@@ -2034,6 +2044,34 @@ func tsBoundLocally(n *sitter.Node, name string, src []byte) bool {
 // identifier where there is one (nil for a type variable, a function
 // expression's own name, a namespace member).
 func tsLocalBinding(n *sitter.Node, name string, src []byte) (*sitter.Node, bool) {
+	return tsLocalBindingTP(n, name, src, false)
+}
+
+// tsTypeParamBinding is the name of the type parameter that binds n's name,
+// nil when a type parameter is not the innermost binding.
+func tsTypeParamBinding(n *sitter.Node, name string, src []byte) *sitter.Node {
+	id, _ := tsLocalBindingTP(n, name, src, true)
+	if id == nil || id.Parent() == nil || id.Parent().Type() != "type_parameter" {
+		return nil
+	}
+	return id
+}
+
+// tsLocalBindingTP is tsLocalBinding; with typeParams, a binding type
+// parameter returns its name instead of nil.
+func tsLocalBindingTP(n *sitter.Node, name string, src []byte, typeParams bool) (*sitter.Node, bool) {
+	tpBind := func(a *sitter.Node) (*sitter.Node, bool) {
+		id := tsTypeParamName(a, name, src)
+		if id == nil {
+			return nil, false
+		}
+		if !typeParams || tsTypeVarBinds(a, name, src) {
+			// infer T and [T in …] may shadow the type parameter T;
+			// where they are is not modeled, so T is a local.
+			return nil, true
+		}
+		return id, true
+	}
 	for a := n.Parent(); a != nil && a.Type() != "program"; a = a.Parent() {
 		switch a.Type() {
 		case "function_declaration", "generator_function_declaration", "function_expression", "function",
@@ -2047,8 +2085,8 @@ func tsLocalBinding(n *sitter.Node, name string, src []byte) (*sitter.Node, bool
 			if p := a.ChildByFieldName("parameter"); p != nil && p.Content(src) == name {
 				return p, true
 			}
-			if tsTypeParamsBind(a, name, src) {
-				return nil, true
+			if id, ok := tpBind(a); ok {
+				return id, true
 			}
 			if a.Type() == "function_expression" || a.Type() == "function" {
 				if fn := a.ChildByFieldName("name"); fn != nil && fn.Content(src) == name {
@@ -2086,8 +2124,8 @@ func tsLocalBinding(n *sitter.Node, name string, src []byte) (*sitter.Node, bool
 				}
 			}
 		case "class_declaration", "abstract_class_declaration", "class", "interface_declaration", "type_alias_declaration":
-			if tsTypeParamsBind(a, name, src) {
-				return nil, true
+			if id, ok := tpBind(a); ok {
+				return id, true
 			}
 			if a.Type() == "class" {
 				if cn := a.ChildByFieldName("name"); cn != nil && cn.Content(src) == name {
@@ -2131,16 +2169,21 @@ func tsBindingType(id *sitter.Node) *sitter.Node {
 }
 
 func tsTypeParamsBind(a *sitter.Node, name string, src []byte) bool {
+	return tsTypeParamName(a, name, src) != nil
+}
+
+// tsTypeParamName is the name node of a's type parameter called name.
+func tsTypeParamName(a *sitter.Node, name string, src []byte) *sitter.Node {
 	tp := a.ChildByFieldName("type_parameters")
 	if tp == nil {
-		return false
+		return nil
 	}
 	for i := 0; i < int(tp.NamedChildCount()); i++ {
 		if n := tp.NamedChild(i).ChildByFieldName("name"); n != nil && n.Content(src) == name {
-			return true
+			return n
 		}
 	}
-	return false
+	return nil
 }
 
 // tsTypeVarBinds finds infer X and [K in …] variables named name under a
@@ -2154,8 +2197,9 @@ func tsTypeVarBinds(a *sitter.Node, name string, src []byte) bool {
 		}
 		switch n.Type() {
 		case "infer_type", "mapped_type_clause":
-			for i := 0; i < int(n.NamedChildCount()); i++ {
-				if c := n.NamedChild(i); c.Type() == "type_identifier" && c.Content(src) == name {
+			// The variable is the first child: infer T extends U, [K in U as V].
+			if n.NamedChildCount() > 0 {
+				if c := n.NamedChild(0); c.Type() == "type_identifier" && c.Content(src) == name {
 					found = true
 					return
 				}
