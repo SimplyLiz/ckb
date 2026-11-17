@@ -114,14 +114,59 @@ func tsParseText(src []byte) []byte {
 	return out
 }
 
+// tsParseTree parses tsParseText's text for src. A bare & in JSX text
+// (<p>Account & preferences</p>) is text to TypeScript and an error to the
+// grammar, which reads it as the start of a character reference: each such
+// & becomes a space, the same length, and the text is parsed again.
+func tsParseTree(path string, src []byte) *sitter.Tree {
+	p := sitter.NewParser()
+	p.SetLanguage(tsLanguage(path))
+	text, owned := tsParseText(src), false
+	for {
+		tree, err := p.ParseCtx(context.Background(), nil, text)
+		if err != nil || tree == nil {
+			return nil
+		}
+		if !tree.RootNode().HasError() {
+			return tree
+		}
+		var amps []uint32
+		tsJSXAmpersands(tree.RootNode(), text, &amps)
+		if len(amps) == 0 {
+			return tree
+		}
+		if !owned {
+			text, owned = append([]byte(nil), text...), true
+		}
+		for _, a := range amps {
+			text[a] = ' '
+		}
+		tree.Close()
+	}
+}
+
+// tsJSXAmpersands collects the start of each error node in a JSX element's
+// children that begins with &: an & in JSX text the grammar rejects.
+func tsJSXAmpersands(n *sitter.Node, text []byte, out *[]uint32) {
+	if n.IsError() {
+		if p := n.Parent(); p != nil && p.Type() == "jsx_element" && int(n.StartByte()) < len(text) && text[n.StartByte()] == '&' {
+			*out = append(*out, n.StartByte())
+			return
+		}
+	}
+	for i := 0; i < int(n.ChildCount()); i++ {
+		if c := n.Child(i); c.HasError() {
+			tsJSXAmpersands(c, text, out)
+		}
+	}
+}
+
 // parseTSDecls parses src and returns its declarations and the lines a
 // syntax error touches (nil when it parses cleanly). Declarations inside an
 // error are not walked. ok is false when there is no tree at all.
 func parseTSDecls(path string, src []byte) (decls []tsDecl, errLines map[int32]bool, ok bool) {
-	p := sitter.NewParser()
-	p.SetLanguage(tsLanguage(path))
-	tree, err := p.ParseCtx(context.Background(), nil, tsParseText(src))
-	if err != nil || tree == nil {
+	tree := tsParseTree(path, src)
+	if tree == nil {
 		return nil, nil, false
 	}
 	defer tree.Close()
@@ -571,10 +616,8 @@ func tsFileStart(root *sitter.Node) uint32 {
 
 // tsParse parses src with the grammar for path. Nil on a syntax error.
 func tsParse(path string, src []byte) (*sitter.Tree, *sitter.Node, int32) {
-	p := sitter.NewParser()
-	p.SetLanguage(tsLanguage(path))
-	tree, err := p.ParseCtx(context.Background(), nil, tsParseText(src))
-	if err != nil || tree == nil {
+	tree := tsParseTree(path, src)
+	if tree == nil {
 		return nil, nil, -1
 	}
 	root := tree.RootNode()

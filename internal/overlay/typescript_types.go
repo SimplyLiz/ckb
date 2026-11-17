@@ -700,7 +700,7 @@ func (r *tsResolver) returnOf(m *tsModule, t tsTy, args *sitter.Node, depth int)
 			return res
 		}
 		if tsGenerator(fn) {
-			return tsNoTy
+			return tsUnknownTy // a generator object: what it yields is not inferred
 		}
 		return r.inferReturn(t.m, fn, depth)
 	case tyCallback:
@@ -945,7 +945,7 @@ func (r *tsResolver) exprType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 			return tsNoTy
 		}
 		return r.classValueType(m, c, depth+1)
-	case "arrow_function", "function_expression", "function":
+	case "arrow_function", "function_expression", "function", "generator_function":
 		return tsTy{k: tyFn, m: m, node: e}
 	case "null", "undefined":
 		return tsNullTy
@@ -1148,7 +1148,7 @@ func (r *tsResolver) topValueType(sym string, depth int) tsTy {
 		return tsNoTy
 	}
 	switch d.Type() {
-	case "function_declaration":
+	case "function_declaration", "generator_function_declaration":
 		if dm.overloaded[suffix] {
 			return tsUnknownTy
 		}
@@ -1243,6 +1243,11 @@ func (r *tsResolver) bindingType1(m *tsModule, id *sitter.Node, depth int) tsTy 
 		if n := p.ChildByFieldName("name"); n != nil && n.StartByte() == id.StartByte() {
 			return r.declaratorType(m, p, depth)
 		}
+	case "function_declaration", "generator_function_declaration":
+		// A function declared inside another: its name is a local.
+		if n := p.ChildByFieldName("name"); n != nil && n.StartByte() == id.StartByte() {
+			return tsTy{k: tyFn, m: m, node: p}
+		}
 	case "required_parameter", "optional_parameter":
 		if pat := p.ChildByFieldName("pattern"); pat == nil || pat.StartByte() != id.StartByte() {
 			return tsNoTy
@@ -1292,10 +1297,28 @@ func (r *tsResolver) forOfElem(m *tsModule, f *sitter.Node, depth int) tsTy {
 	if !of || right == nil {
 		return tsNoTy
 	}
-	if t := r.exprType(m, right, depth+1); t.k == tyArray && t.sym == "" {
-		return t.of()
+	if right.Type() == "call_expression" {
+		// A generator's call: what it yields.
+		if ft := r.exprType(m, right.ChildByFieldName("function"), depth+1); ft.k == tyFn && tsGenerator(ft.node) {
+			if ft.node.ChildByFieldName("return_type") == nil {
+				return tsUnknownTy
+			}
+			return r.generatorContext(ft.m, ft.node, 0, depth+1)
+		}
 	}
-	return tsNoTy
+	switch t := r.exprType(m, right, depth+1); t.k {
+	case tyArray:
+		if t.sym == "" {
+			return t.of()
+		}
+		return tsUnknownTy
+	case tyNone, tyOutside:
+		// No type: a member of the element counts through its local root.
+		// A package's iterable stays that too: exprType's outside is not
+		// sure enough (Object.values(o.m ?? {})) to drop the count.
+		return tsNoTy
+	}
+	return tsUnknownTy
 }
 
 // declaratorType is a variable's type: its annotation's, else its
@@ -1422,6 +1445,23 @@ func (r *tsResolver) contextType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 		if b := p.ChildByFieldName("body"); b != nil && b.StartByte() == e.StartByte() {
 			return r.resultContext(m, p, depth)
 		}
+	case "yield_expression":
+		for i := 0; i < int(p.ChildCount()); i++ {
+			if p.Child(i).Type() == "*" {
+				return tsUnknownTy // yield* e: an iterable of what the generator yields
+			}
+		}
+		for a := p.Parent(); a != nil; a = a.Parent() {
+			switch a.Type() {
+			case "function_declaration", "function_expression", "function", "arrow_function", "method_definition", "generator_function", "generator_function_declaration":
+				if !tsGenerator(a) {
+					return tsUnknownTy
+				}
+				return r.generatorContext(m, a, 0, depth)
+			case "program", "class_body":
+				return tsUnknownTy
+			}
+		}
 	case "arguments":
 		call := p.Parent()
 		if call != nil && call.Type() == "new_expression" {
@@ -1474,8 +1514,14 @@ func (r *tsResolver) contextType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 // resultContext is what a function's result must be: its declared return
 // type (a promise's element in an async function), else its own context's.
 func (r *tsResolver) resultContext(m *tsModule, fn *sitter.Node, depth int) tsTy {
-	if fn.Type() == "generator_function" || fn.Type() == "generator_function_declaration" {
-		return tsNoTy
+	if tsGenerator(fn) {
+		// TReturn; an async generator's return expression is TReturn |
+		// PromiseLike<TReturn>, as an async function's.
+		t := r.generatorContext(m, fn, 1, depth)
+		if tsIsAsync(fn) {
+			t.nullable = true
+		}
+		return t
 	}
 	var t tsTy
 	if rt := fn.ChildByFieldName("return_type"); rt != nil {
@@ -1510,6 +1556,57 @@ func (r *tsResolver) resultContext(m *tsModule, fn *sitter.Node, depth int) tsTy
 		t.nullable = true
 	}
 	return t
+}
+
+// tsIterationTypes are the global types a generator's result can be
+// declared as; their type arguments are T (what it yields), TReturn, TNext.
+var tsIterationTypes = map[string]bool{
+	"Generator": true, "AsyncGenerator": true, "Iterator": true, "AsyncIterator": true,
+	"Iterable": true, "AsyncIterable": true, "IterableIterator": true, "AsyncIterableIterator": true,
+	"IteratorObject": true, "AsyncIteratorObject": true,
+}
+
+// generatorContext is what generator fn's yield operands (i 0) or return
+// expressions (i 1) must be: that type argument of its declared result. A
+// missing argument defaults to any or void (outside). Without a declared
+// result, a declaration or a class's method has no such context; a function
+// expression may get one from its own context, which is not followed.
+func (r *tsResolver) generatorContext(m *tsModule, fn *sitter.Node, i int, depth int) tsTy {
+	rt := fn.ChildByFieldName("return_type")
+	if rt == nil {
+		if fn.Type() == "generator_function_declaration" {
+			return tsNoTy
+		}
+		if p := fn.Parent(); fn.Type() == "method_definition" && p != nil && p.Type() == "class_body" {
+			return tsNoTy
+		}
+		if r.contextType(m, fn, depth+1).k == tyNone {
+			return tsNoTy
+		}
+		return tsUnknownTy
+	}
+	t := rt
+	if t.Type() == "type_annotation" && t.NamedChildCount() == 1 {
+		t = t.NamedChild(0)
+	}
+	name, args := t, (*sitter.Node)(nil)
+	if t.Type() == "generic_type" {
+		name, args = t.ChildByFieldName("name"), t.ChildByFieldName("type_arguments")
+	}
+	if name == nil || name.Type() != "type_identifier" {
+		return tsUnknownTy
+	}
+	n := name.Content(m.src)
+	if !tsIterationTypes[n] || tsBoundLocally(name, n, m.src) {
+		return tsUnknownTy
+	}
+	if _, ok := r.resolveIn(m.file, n, tsTypeNS); ok {
+		return tsUnknownTy // the repository's own type of that name
+	}
+	if args == nil || int(args.NamedChildCount()) <= i {
+		return tsOutsideTy
+	}
+	return r.typeOfNode(m, args.NamedChild(i), depth+1)
 }
 
 // argContext is the type a call gives its i-th argument.

@@ -288,6 +288,10 @@ export function o(v: AB, r: Ok | Err) {
   assertA(v);
   v.shared;
 }
+export function p(v: AB) {
+  const { kind } = v;
+  kind === "a" ? v.shared : 0;
+}
 declare function assertA(v: AB): asserts v is A;
 `
 
@@ -353,7 +357,8 @@ func TestTSLayer2Narrowing(t *testing.T) {
 			t.Errorf("unexpected %s", k)
 		}
 	}
-	for _, w := range []string{"Ok#shared.@35 15 21", "Err#shared.@35 15 21", "A#shared.@37 4 10", "B#shared.@37 4 10"} {
+	for _, w := range []string{"Ok#shared.@35 15 21", "Err#shared.@35 15 21", "A#shared.@37 4 10", "B#shared.@37 4 10",
+		"A#shared.@41 19 25", "B#shared.@41 19 25"} { // a destructured discriminant (nyxcore persona-picker.tsx)
 		if got[w] {
 			t.Errorf("%s: a narrowing not modeled must leave the access unresolved", w)
 		}
@@ -361,10 +366,11 @@ func TestTSLayer2Narrowing(t *testing.T) {
 	// Unresolved: w.kind (Rem's object types are local, and Layer 1 writes
 	// no local definitions, so the document cannot say), h's v.shared (v is
 	// reassigned) and the three keys assigned to it (a union context), k's
-	// o.t.shared (a property chain), o's r.shared (an aliased condition)
-	// and v.shared (after an assertion).
-	if unresolved != 8 {
-		t.Errorf("unresolved %d, want 8", unresolved)
+	// o.t.shared (a property chain), o's r.shared (an aliased condition),
+	// v.shared (after an assertion), and p's { kind } (a pattern key on a
+	// union) and v.shared (a destructured discriminant).
+	if unresolved != 10 {
+		t.Errorf("unresolved %d, want 10", unresolved)
 	}
 }
 
@@ -447,5 +453,102 @@ func TestTSLayer2React(t *testing.T) {
 	// wrap(doc).manual: a package's function given a repository value.
 	if unresolved != 1 {
 		t.Errorf("unresolved %d, want 1", unresolved)
+	}
+}
+
+const tsGenLib = `export interface Ev { type: string; n: number }
+export interface Opts { id: string }
+`
+
+// Every expected edge below is what scip-typescript 0.4.0 writes for this
+// file (checked on a scratch project).
+const tsGenUse = `import { Ev, Opts } from "./lib";
+export async function* run(o: Opts): AsyncGenerator<Ev, Opts> {
+  yield { type: "a", n: o.id.length };
+  function wrap(e: Ev): Ev { return e; }
+  yield wrap({ type: "b", n: 2 });
+  return { id: "x" };
+}
+export function* sync(): Generator<Ev, Opts> {
+  yield { type: "s", n: 0 };
+  return { id: "s" };
+}
+export function* bare() { yield { type: "c" }; }
+export async function use() {
+  for await (const e of run({ id: "y" })) e.n;
+  for (const f of sync()) f.type;
+  const p = <p>Account & preferences {Math.max(1, 2)}</p>;
+  return p;
+}
+class K { *gen(): Generator<Ev> { yield { type: "k", n: 1 }; } }
+export const k = new K();
+`
+
+// TestTSLayer2Generators: a generator's yield operands take its declared
+// result's T, its return expressions TReturn (an async generator's are
+// TReturn | PromiseLike, so the literal's own), iterating its call gives T,
+// and a function declared in a body types its parameters. The & in JSX text
+// parses.
+func TestTSLayer2Generators(t *testing.T) {
+	root := t.TempDir()
+	for rel, text := range map[string]string{"src/lib.ts": tsGenLib, "src/use.tsx": tsGenUse} {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	libSym := head + "src/`lib.ts`/"
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	lib, _ := tsNewDocument(base, "src/lib.ts", []byte(tsGenLib))
+	base = scip.PatchIndex(base, map[string]*scip.Document{"src/lib.ts": lib})
+	use, _ := tsNewDocument(base, "src/use.tsx", []byte(tsGenUse))
+	if use == nil {
+		t.Fatal("use.tsx not synthesized (the & in JSX text)")
+	}
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/use.tsx" {
+			return use
+		}
+		return base.DocumentsByPath[p]
+	})
+	_, unresolved := tsLayer2(use, "src/use.tsx", []byte(tsGenUse), allLines([]byte(tsGenUse)), r)
+	r.close()
+	got := map[string]bool{}
+	for _, o := range use.Occurrences {
+		s := strings.TrimPrefix(o.Symbol, libSym)
+		if o.Source == scip.OccurrenceSourceOverlay && strings.HasPrefix(o.Symbol, libSym) && s != "" && !strings.HasSuffix(s, "#") {
+			got[s+"@"+fmtRange(o)] = true
+		}
+	}
+	for _, w := range []string{
+		"Ev#type.@2 10 14", // yield { type }: AsyncGenerator's T
+		"Ev#n.@2 21 22",
+		"Opts#id.@2 26 28",
+		"Ev#type.@4 15 19", // wrap({ type }): a function declared in the body
+		"Ev#n.@4 26 27",
+		"Ev#type.@8 10 14", // Generator's T
+		"Ev#n.@8 21 22",
+		"Opts#id.@9 11 13",  // a sync generator's return: TReturn
+		"Opts#id.@13 30 32", // run({ id }): a generator's parameter
+		"Ev#n.@13 44 45",    // for await (const e of run(…)): what it yields
+		"Ev#type.@14 28 32",
+		"Ev#type.@18 42 46", // a generator method
+		"Ev#n.@18 53 54",
+	} {
+		if !got[w] {
+			t.Errorf("missing %s", w)
+		}
+		delete(got, w)
+	}
+	for k := range got {
+		t.Errorf("unexpected %s", k) // the async return (line 5) and bare()'s keys are the literals' own
+	}
+	if unresolved != 0 {
+		t.Errorf("unresolved %d, want 0", unresolved)
 	}
 }
