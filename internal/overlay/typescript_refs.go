@@ -883,7 +883,7 @@ func tsTopNodes(root *sitter.Node, src []byte) (map[string]*sitter.Node, map[str
 		}
 		name := st.ChildByFieldName("name")
 		switch st.Type() {
-		case "function_declaration":
+		case "function_declaration", "generator_function_declaration":
 			if name != nil {
 				put(tsMethod(name.Content(src)), st)
 			}

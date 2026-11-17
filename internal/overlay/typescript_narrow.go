@@ -622,7 +622,13 @@ func (st *tsNarrowState) mentions1(n *sitter.Node, depth int) bool {
 			return false
 		}
 		if b, local := tsLocalBinding(n, n.Content(st.m.src), st.m.src); local && b != nil && tsConstBinding(b) {
-			if d := b.Parent(); d != nil && d.Type() == "variable_declarator" {
+			// const ok = r.ok, and const { kind } = r (a destructured
+			// discriminant, which TypeScript narrows r by too).
+			d := b.Parent()
+			for d != nil && (d.Type() == "object_pattern" || d.Type() == "array_pattern" || d.Type() == "pair_pattern" || d.Type() == "shorthand_property_identifier_pattern" || d.Type() == "object_assignment_pattern") {
+				d = d.Parent()
+			}
+			if d != nil && d.Type() == "variable_declarator" {
 				if v := d.ChildByFieldName("value"); v != nil && st.mentions1(v, depth+1) {
 					return true
 				}

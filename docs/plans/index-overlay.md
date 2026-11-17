@@ -604,6 +604,66 @@ scip-typescript once at the root (`--infer-tsconfig`, never `--pnpm-workspaces`)
 arguments in `index-meta.json` (`indexerArgs`); only an index built outside CKB could be per
 package, and scip-typescript records nothing that tells.
 
+#### What the unresolved sites hide (2026-11-17)
+
+nyxcore's 11,532 unresolved sites (d7dfdef) looked like tRPC. Measured instead: every
+unresolved site recorded with its reason, then checked against what scip-typescript has at that
+position (harness in `overlay-measure-2026-11-17/unres/`, nyxcore against a `git archive` of
+its indexed commit, 111 instead of 212 files skipped, 22,200 sites):
+
+| What the index has there | Sites | |
+|---|---|---|
+| a package's symbol | 7,952 | 36 % |
+| a repository symbol nothing defines (Prisma's and zod's mapped keys, tRPC router keys) | 6,780 | 31 % |
+| nothing | 4,700 | 21 % |
+| a local | 804 | 4 % |
+| a repository symbol with a definition | 1,898 | 9 % |
+
+Only the last row can change an impact answer: a symbol without a definition is never a changed
+declaration. By chain: Prisma 10,419 sites (47 %, 165 at a defined symbol, none of them on the
+Prisma chain itself: shorthand values and `ctx.` on the same lines), tRPC 841 (3.8 %, 90, all on
+a hook's data, none on `trpc.a.b`). scip-typescript defines no symbol for a router's procedure
+keys, so resolving tRPC's client chain would add no edge an impact query can reach. Prisma is
+unknown because `prisma` is `globalForPrisma.prisma ?? new PrismaClient()` and the
+`globalThis as unknown as { prisma: … }` literal gets no owner (open).
+
+The same harness gave the measure the rebuild decision rests on: references to defined repository
+symbols that Layer 2 neither writes nor counts (**silent**). nyxcore had 1,786 silent against
+1,924 counted. Fixed:
+
+- A bare `&` in JSX text is an error to tree-sitter-tsx (it reads a character reference) and
+  text to TypeScript: 13 nyxcore files did not parse, so every commit touching one rebuilt. Such
+  an `&` becomes a space in the parsed text and the file is parsed again.
+- Generators had no types: `yield` operands, `return` in a generator, arguments to a generator's
+  call and `for await (const e of gen())` were "no context" (the literal's own keys), not
+  unknown. Now `T` and `TReturn` of a declared `Generator`/`AsyncGenerator`/`Iterable…`, an
+  async generator's return as an async function's (its own keys), an undeclared generator's
+  result unknown, `for … of` over a value whose type is unknown unknown (over a package's or
+  an untyped iterable it stays without a type, so the element's members count through their
+  local root: exprType's "a package's type" is not sure enough to drop a count, measured as 19
+  Lebenslauf and 11 moltbot sites that went silent when it was trusted).
+- A function declared inside a body (`function withNerd(e: RefactorEvent)`) is a function.
+- A condition on a name destructured from the narrowed identifier (`const { kind } = v`)
+  mentions it, so it is not modeled and the access stays unresolved (see the wrong edges below).
+
+Each rule checked on a scratch project against scip-typescript 0.4.0 (`TestTSLayer2Generators`).
+
+| Eight repositories (oracle, every line) | d7dfdef | now |
+|---|---|---|
+| Edges written, wrong | 122,964, 7 | 124,536, 3 |
+| nyxcore: written / counted / silent | 18,783 / 1,924 / 1,786 | 20,242 / 1,872 / 379 |
+| Madison-Server: silent | 285 | 225 |
+| Lebenslauf, moltbot: silent | 2,444, 1,802 | 2,441, 1,789 |
+| Sites newly silent, any repository | | 0 |
+
+The 3 left are moltbot's lines changed after indexing. nyxcore's 4 were real and older than
+this step, in a file the archive brought into the check: `const { mode } = props` and then
+`mode === "multi" ? props.value …`, a destructured discriminant TypeScript narrows `props` by
+(4.6+) and Layer 2 did not see, so it wrote both parts' `value`. Such a condition is now one not
+modeled: unresolved. Lebenslauf's silent sites
+are mostly member accesses (`x.y` in arguments, chains, JSX), not literal keys: the replay's
+100 % on its 19 commits counts only the changed symbols' references, so it did not show them.
+
 ### What the build changed in the design
 
 - **Go's Layers 1–2 use go/parser, not tree-sitter.** Exact for Go, positions in scip-go's byte
@@ -640,5 +700,8 @@ package, and scip-typescript records nothing that tells.
 
 - TypeScript: the owner rename of a destructured parameter (rewriting unchanged documents' uses
   instead of a rebuild; the commits that need it rebuild anyway for the changed signature);
-  narrowing of property chains; tRPC-style inferred package types.
+  narrowing of property chains; tRPC's client chain (no edge to gain, see 2026-11-17: its
+  sites could stop counting); Prisma's `globalThis as … { prisma }` literal; the silent
+  member accesses (Lebenslauf 2,441, moltbot 1,789), among them values exprType calls a
+  package's type that carry the repository's (`Object.values(o.customEntries ?? {})`).
 - Replays on other repos (Lebenslauf, Rubik, Hollow-Keep) once their languages have layers.

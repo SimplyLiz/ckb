@@ -41,10 +41,14 @@ All notable changes to CKB will be documented in this file.
   `create<T>()`). Uses of a parameter get its symbol. A union's member is every remaining part's
   declaration after narrowing (discriminants, truthiness, `in`, `typeof`, type guards, `if`,
   `switch`, an earlier `return`) of an identifier that is not reassigned; property chains,
-  conditions not modeled and overloads stay unresolved. `Pick`, `Omit`, `Partial`, `Readonly`
+  conditions not modeled (also one on a name destructured from it, `const { kind } = v`) and
+  overloads stay unresolved. `Pick`, `Omit`, `Partial`, `Readonly`
   and intersections have their parts' members; React's `createContext`/`useContext`, `useState`,
   `useRef`, `useMemo` and `useCallback` pass their types through, and any other package call
-  that passes a repository value counts as unresolved. Where scip-typescript's contextual lookup finds no property, Layer 2
+  that passes a repository value counts as unresolved. Generators: a `yield` operand takes `T`
+  of the declared `Generator`/`AsyncGenerator<T, TReturn>`, a `return` takes `TReturn` (an
+  async generator's, like an async function's, defines its own keys), iterating a generator's
+  call gives `T`, and a function declared inside a body types its parameters. Where scip-typescript's contextual lookup finds no property, Layer 2
   writes no edge either: a literal whose context is `T | undefined` (an optional or defaulted
   parameter, a `T | null` return, an async function's return), and the value of a shorthand
   property in a package's or a global's type. Lower-case JSX tags are intrinsic elements. JSX
@@ -61,7 +65,9 @@ All notable changes to CKB will be documented in this file.
   111,873 edges, every one identical except 41 in two repositories whose files changed after
   indexing. The grammar's two gaps, `using` as an identifier and `typeof import("…")`, are
   rewritten to same-length tokens before parsing (v0.23.2, the newest grammar, still rejects
-  both); all 547 Lebenslauf files parse. A file with a syntax error and a renamed TS file stay at
+  both), and so is a bare `&` in JSX text (`<p>Account & preferences</p>`, which the grammar
+  reads as a character reference: 13 nyxcore files that failed to parse and asked for a rebuild
+  on every touch); all 547 Lebenslauf files parse. A file with a syntax error and a renamed TS file stay at
   the line remap and ask for a rebuild.
 - **`indexFreshness`, `getStatus` and the session-start hook say what the overlay serves**:
   `overlay {files, covered, uncovered, layers, droppedOccurrences, unresolvedSites, rebuild}`,
