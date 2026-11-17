@@ -88,13 +88,23 @@ func (r *tsResolver) close() {
 var jsoncComment = regexp.MustCompile(`(?s)//[^\n]*|/\*.*?\*/`)
 var jsoncTrailingComma = regexp.MustCompile(`,(\s*[}\]])`)
 
-// pathsFor is the compilerOptions.paths that govern file the way ckb index
-// runs scip-typescript: once at the root, so the root tsconfig.json's
-// project and the projects it references (recursively). A file takes the
-// deepest referenced project whose directory holds it, else the root's. A
-// package's tsconfig that nothing references is not read: scip-typescript
-// does not see it either.
-func (r *tsResolver) pathsFor(file string) []tsPathRule {
+// strictNull reports whether strictNullChecks governs file (the project
+// pathsFor picks; projects of one directory that disagree count as strict).
+// Without it TypeScript drops undefined and null from unions, so a
+// literal's context T | undefined is T. No tsconfig: strict, as before.
+func (r *tsResolver) strictNull(file string) bool {
+	cands := r.projectsFor(file)
+	for _, p := range cands {
+		if p.strictNull {
+			return true
+		}
+	}
+	return len(cands) == 0
+}
+
+// projectsFor is the deepest referenced projects whose directory holds
+// file, else the root.
+func (r *tsResolver) projectsFor(file string) []tsProject {
 	if r.projects == nil {
 		r.projects = r.readProjects()
 	}
@@ -117,8 +127,19 @@ func (r *tsResolver) pathsFor(file string) []tsPathRule {
 		}
 	}
 	if len(cands) == 0 {
-		return r.projects[0].rules
+		return r.projects[:1]
 	}
+	return cands
+}
+
+// pathsFor is the compilerOptions.paths that govern file the way ckb index
+// runs scip-typescript: once at the root, so the root tsconfig.json's
+// project and the projects it references (recursively). A file takes the
+// deepest referenced project whose directory holds it, else the root's. A
+// package's tsconfig that nothing references is not read: scip-typescript
+// does not see it either.
+func (r *tsResolver) pathsFor(file string) []tsPathRule {
+	cands := r.projectsFor(file)
 	// Projects of one directory (tsconfig.app.json, tsconfig.node.json): the
 	// paths those with any agree on.
 	var agreed []tsPathRule
@@ -134,11 +155,12 @@ func (r *tsResolver) pathsFor(file string) []tsPathRule {
 	return agreed
 }
 
-// tsProject is a tsconfig project scip-typescript indexes: its directory
-// and paths rules.
+// tsProject is a tsconfig project scip-typescript indexes: its directory,
+// paths rules and whether strictNullChecks is on.
 type tsProject struct {
-	dir   string
-	rules []tsPathRule
+	dir        string
+	rules      []tsPathRule
+	strictNull bool
 }
 
 // readProjects reads the root tsconfig.json and the projects it references;
@@ -146,9 +168,9 @@ type tsProject struct {
 func (r *tsResolver) readProjects() []tsProject {
 	root, ok := r.readConfig("tsconfig.json", 0)
 	if !ok {
-		return []tsProject{{dir: "."}}
+		return []tsProject{{dir: ".", strictNull: true}}
 	}
-	out := []tsProject{{dir: ".", rules: tsRules(root)}}
+	out := []tsProject{{dir: ".", rules: tsRules(root), strictNull: root.strictNull()}}
 	seen := map[string]bool{"tsconfig.json": true}
 	var walk func(refs []string, depth int)
 	walk = func(refs []string, depth int) {
@@ -164,7 +186,7 @@ func (r *tsResolver) readProjects() []tsProject {
 			if !ok {
 				continue
 			}
-			out = append(out, tsProject{dir: path.Dir(ref), rules: tsRules(c)})
+			out = append(out, tsProject{dir: path.Dir(ref), rules: tsRules(c), strictNull: c.strictNull()})
 			walk(c.refs, depth+1)
 		}
 	}
@@ -179,6 +201,16 @@ type tsConfigFile struct {
 	pathsDir string // the config's directory that set paths
 	baseURL  string // repo-relative, "" when unset
 	refs     []string
+	// strict and strictNullChecks as set, after what it extends; nil
+	// when unset.
+	strict, strictNullChecks *bool
+}
+
+func (c tsConfigFile) strictNull() bool {
+	if c.strictNullChecks != nil {
+		return *c.strictNullChecks
+	}
+	return c.strict != nil && *c.strict
 }
 
 func tsRules(c tsConfigFile) []tsPathRule {
@@ -236,8 +268,10 @@ func (r *tsResolver) readConfig(cfg string, depth int) (tsConfigFile, bool) {
 	var raw struct {
 		Extends         json.RawMessage `json:"extends"`
 		CompilerOptions struct {
-			BaseURL *string             `json:"baseUrl"`
-			Paths   map[string][]string `json:"paths"`
+			BaseURL          *string             `json:"baseUrl"`
+			Paths            map[string][]string `json:"paths"`
+			Strict           *bool               `json:"strict"`
+			StrictNullChecks *bool               `json:"strictNullChecks"`
 		} `json:"compilerOptions"`
 		References []struct {
 			Path string `json:"path"`
@@ -266,6 +300,12 @@ func (r *tsResolver) readConfig(cfg string, depth int) (tsConfigFile, bool) {
 				if parent.baseURL != "" {
 					out.baseURL = parent.baseURL
 				}
+				if parent.strict != nil {
+					out.strict = parent.strict
+				}
+				if parent.strictNullChecks != nil {
+					out.strictNullChecks = parent.strictNullChecks
+				}
 			}
 		}
 	}
@@ -274,6 +314,12 @@ func (r *tsResolver) readConfig(cfg string, depth int) (tsConfigFile, bool) {
 	}
 	if raw.CompilerOptions.Paths != nil {
 		out.paths, out.pathsDir = raw.CompilerOptions.Paths, dir
+	}
+	if raw.CompilerOptions.Strict != nil {
+		out.strict = raw.CompilerOptions.Strict
+	}
+	if raw.CompilerOptions.StrictNullChecks != nil {
+		out.strictNullChecks = raw.CompilerOptions.StrictNullChecks
 	}
 	for _, ref := range raw.References {
 		p := path.Join(dir, filepath.ToSlash(ref.Path))
@@ -1137,12 +1183,50 @@ func (l *tsRefs) visit(n *sitter.Node) {
 		l.dynamicImport(n)
 	case "required_parameter", "optional_parameter":
 		l.paramPattern(n)
+	case "lookup_type":
+		l.lookupType(n)
 	case "identifier", "type_identifier", "shorthand_property_identifier":
 		l.ident(n)
 	}
 	for i := 0; i < int(n.NamedChildCount()); i++ {
 		l.visit(n.NamedChild(i))
 	}
+}
+
+// lookupType handles T["k"]: scip-typescript writes T's member k at the
+// string, quotes included. A union of types or of keys gets nothing there.
+func (l *tsRefs) lookupType(n *sitter.Node) {
+	key, ok := tsLookupKey(n, l.src)
+	if !ok || !l.onAdded(key) {
+		return
+	}
+	t := l.r.typeOfNode(l.self, n.NamedChild(0), 0)
+	if len(t.parts) > 0 && !t.inter {
+		return // (A | B)["k"]: the index has nothing
+	}
+	switch mb := l.r.memberOf(t, tsStringValue(l.text(key)), 0); mb.k {
+	case tyDecl:
+		if len(mb.more) > 0 {
+			l.unresolved++
+			return
+		}
+		l.emit(key, mb.sym)
+	case tyOutside:
+	default:
+		l.unresolved++
+	}
+}
+
+// tsLookupKey is the string literal key of a lookup type T["k"].
+func tsLookupKey(n *sitter.Node, src []byte) (*sitter.Node, bool) {
+	if n.NamedChildCount() != 2 {
+		return nil, false
+	}
+	idx := n.NamedChild(1)
+	if idx.Type() != "literal_type" || idx.NamedChildCount() != 1 || idx.NamedChild(0).Type() != "string" {
+		return nil, false
+	}
+	return idx.NamedChild(0), true
 }
 
 // resolved is where a name points: its symbol and the file declaring it.
@@ -1612,6 +1696,53 @@ func tsParamOwner(p *sitter.Node, src []byte) (string, bool) {
 // objectKeys points the keys of an object literal at the members of the
 // type its context gives it: a variable's annotation, as/satisfies, a
 // parameter, a return type, an enclosing key's member, an array's element.
+// spreadsRepoValue reports whether an object literal spreads a value whose
+// type is a repository type or not known.
+func (l *tsRefs) spreadsRepoValue(obj *sitter.Node) bool {
+	for i := 0; i < int(obj.NamedChildCount()); i++ {
+		c := obj.NamedChild(i)
+		if c.Type() != "spread_element" || c.NamedChildCount() != 1 {
+			continue
+		}
+		switch l.r.exprType(l.self, c.NamedChild(0), 0).k {
+		case tyOutside, tyNone:
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// tsCallbackResult reports whether e is what a function passed as a call's
+// argument returns: its expression body or a return statement's value,
+// through parentheses and conditionals.
+func tsCallbackResult(e *sitter.Node) bool {
+	for p := e.Parent(); p != nil; e, p = p, p.Parent() {
+		switch p.Type() {
+		case "parenthesized_expression", "ternary_expression":
+			continue
+		case "return_statement":
+			for p = p.Parent(); p != nil && p.Type() != "arrow_function" && p.Type() != "function_expression" && p.Type() != "function"; p = p.Parent() {
+				if p.Type() == "function_declaration" || p.Type() == "method_definition" || p.Type() == "program" {
+					return false
+				}
+			}
+		case "arrow_function":
+			if b := p.ChildByFieldName("body"); b == nil || b.StartByte() != e.StartByte() {
+				return false
+			}
+		default:
+			return false
+		}
+		if p == nil {
+			return false
+		}
+		a := p.Parent()
+		return a != nil && a.Type() == "arguments"
+	}
+	return false
+}
+
 func (l *tsRefs) objectKeys(obj *sitter.Node) {
 	var keys []*sitter.Node
 	for i := 0; i < int(obj.NamedChildCount()); i++ {
@@ -1634,8 +1765,16 @@ func (l *tsRefs) objectKeys(obj *sitter.Node) {
 		return
 	}
 	t := l.r.contextType(l.self, obj, 0)
-	if t.nullable {
+	if t.orPromise || t.nullable && l.r.strictNull(l.file) {
 		return // the literal's keys are its own properties
+	}
+	if t.k == tyNone && l.spreadsRepoValue(obj) && tsCallbackResult(obj) {
+		// arr.map((x) => ({ ...x, k })): scip-typescript points k at the
+		// inferred result's property, which can be the spread value's.
+		for _, k := range keys {
+			l.miss(k)
+		}
+		return
 	}
 	for _, k := range keys {
 		mb := l.keyEdge(k, t)

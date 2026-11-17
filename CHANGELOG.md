@@ -65,7 +65,13 @@ All notable changes to CKB will be documented in this file.
   `import { x as y }` and `export … from`; a name that is a value and a type gets both symbols
   (moltbot: 268 references that went unnoticed). A reference to a type parameter with a global
   symbol (`f().[T]`, `C#[E]`) gets it, unless `infer T` or `[T in …]` in the same declaration may
-  shadow it; `[K in Keys]` no longer hides `Keys` (557 references on the eight repositories). Where scip-typescript's contextual lookup finds no property, Layer 2
+  shadow it; `[K in Keys]` no longer hides `Keys` (557 references on the eight repositories).
+  `T["k"]` points the string at `T`'s member and has that member's type (nested, through
+  `Partial`; a union of types or keys gets nothing, as in the index). A literal's context
+  `T | undefined` gives it its own keys only under `strictNullChecks`, read from the tsconfig
+  that governs the file; an async function's result does so under any tsconfig. A local member
+  (of a literal in a union) passes its type on to a destructured name and to a nested literal,
+  and the keys of a callback's result that spreads a repository value count. Where scip-typescript's contextual lookup finds no property, Layer 2
   writes no edge either: a literal whose context is `T | undefined` (an optional or defaulted
   parameter, a `T | null` return, an async function's return), and the value of a shorthand
   property in a package's or a global's type. Lower-case JSX tags are intrinsic elements. JSX
