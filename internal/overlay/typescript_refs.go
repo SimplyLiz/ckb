@@ -1110,6 +1110,9 @@ func (l *tsRefs) visit(n *sitter.Node) {
 			l.importOrExportFrom(n)
 			return
 		}
+		if p := n.Parent(); p != nil && p.Type() == "program" {
+			l.exportClause(n)
+		}
 	case "member_expression":
 		l.member(n)
 		if obj := n.ChildByFieldName("object"); obj != nil {
@@ -1829,6 +1832,75 @@ func tsReadShapes(root *sitter.Node, src []byte) map[string]tsParamShape {
 	return params
 }
 
+// exportClause handles a top-level export { a, b as c } without a source.
+// scip-typescript writes the symbol the name stands for at the name and at
+// the alias alike: a top-level declaration, an import followed to its
+// target, a namespace import's file; a name that is a value and a type gets
+// both symbols.
+func (l *tsRefs) exportClause(n *sitter.Node) {
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		c := n.NamedChild(i)
+		if c.Type() != "export_clause" {
+			continue
+		}
+		for j := 0; j < int(c.NamedChildCount()); j++ {
+			s := c.NamedChild(j)
+			if s.Type() != "export_specifier" {
+				continue
+			}
+			name := s.ChildByFieldName("name")
+			if name == nil || name.Type() != "identifier" {
+				continue
+			}
+			sites := []*sitter.Node{name}
+			if a := s.ChildByFieldName("alias"); a != nil && a.Type() == "identifier" {
+				sites = append(sites, a)
+			}
+			syms, ok := l.exportedSymbols(l.text(name))
+			for _, site := range sites {
+				if !l.onAdded(site) {
+					continue
+				}
+				if !ok {
+					l.unresolved++
+					continue
+				}
+				for _, sym := range syms {
+					l.emit(site, sym)
+				}
+			}
+		}
+	}
+}
+
+// exportedSymbols is what a name in a local export clause stands for, nil
+// and true for a package import or a global (no repository edge), false
+// for a repository name Layer 2 cannot resolve.
+func (l *tsRefs) exportedSymbols(name string) ([]string, bool) {
+	v, okV := l.resolveName(name, tsValue)
+	if !okV || v.external {
+		return nil, true
+	}
+	if v.namespace != "" {
+		if fs := tsFileSymbol(l.r.docs(v.namespace)); fs != "" {
+			return []string{fs}, true
+		}
+		return nil, false
+	}
+	t, _ := l.resolveName(name, tsTypeNS)
+	var syms []string
+	if v.sym != "" {
+		syms = append(syms, v.sym)
+	}
+	if t.sym != "" && t.sym != v.sym {
+		syms = append(syms, t.sym)
+	}
+	if len(syms) == 0 {
+		return nil, false
+	}
+	return syms, true
+}
+
 // importOrExportFrom handles import … from "spec" and export … from "spec":
 // the module string points at the file, each named specifier at the symbol.
 func (l *tsRefs) importOrExportFrom(n *sitter.Node) {
@@ -1849,24 +1921,38 @@ func (l *tsRefs) importOrExportFrom(n *sitter.Node) {
 	specs = func(c *sitter.Node) {
 		switch c.Type() {
 		case "import_specifier", "export_specifier":
+			// scip-typescript writes the target at the name and at the
+			// alias. A name that is a value and a type gets both symbols;
+			// aliased, its name sometimes gets a local instead (when the
+			// target module exports the name through an export clause), so
+			// that name only counts.
 			name := c.ChildByFieldName("name")
-			if name == nil || !l.onAdded(name) {
+			if name == nil {
 				return
 			}
-			v := l.r.lookup(target, l.text(name), tsValue, 0)
-			t := l.r.lookup(target, l.text(name), tsTypeNS, 0)
-			switch {
-			case v != "" && t != "" && v != t:
-				l.unresolved++
-			case v != "":
-				l.emit(name, v)
-			case t != "":
-				l.emit(name, t)
-			default:
-				l.unresolved++
+			var syms []string
+			if v := l.r.lookup(target, l.text(name), tsValue, 0); v != "" {
+				syms = append(syms, v)
 			}
-			if a := c.ChildByFieldName("alias"); a != nil && l.onAdded(a) {
-				l.unresolved++ // scip-typescript's occurrence on an alias: not modeled
+			if t := l.r.lookup(target, l.text(name), tsTypeNS, 0); t != "" && (len(syms) == 0 || syms[0] != t) {
+				syms = append(syms, t)
+			}
+			alias := c.ChildByFieldName("alias")
+			sites := []*sitter.Node{name}
+			if alias != nil {
+				sites = append(sites, alias)
+			}
+			for _, site := range sites {
+				if !l.onAdded(site) {
+					continue
+				}
+				if len(syms) == 0 || len(syms) > 1 && alias != nil && site == name {
+					l.unresolved++
+					continue
+				}
+				for _, sym := range syms {
+					l.emit(site, sym)
+				}
 			}
 			return
 		case "import_clause":

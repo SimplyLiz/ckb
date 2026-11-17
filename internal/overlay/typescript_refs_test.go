@@ -407,3 +407,79 @@ func TestTSWorkspaces(t *testing.T) {
 		}
 	}
 }
+
+const tsExpLib = `export const other = 1;
+export type T2 = number;
+export const both = 1;
+export type both = string;
+`
+
+const tsExpUse = `import { other as o3, T2, both as b2 } from "./lib";
+import * as ns from "./lib";
+function foo() { return 1; }
+type U = number;
+export { foo as baz, U, o3, ns, b2, T2 };
+export { other as o2, both as b3, both } from "./lib";
+`
+
+// TestTSLayer2ExportClauses: export { … } with and without a source, and
+// import aliases. The want list is scip-typescript's index of these two
+// files, except the names of aliased value-and-type names, which only count.
+func TestTSLayer2ExportClauses(t *testing.T) {
+	root := t.TempDir()
+	for rel, text := range map[string]string{"src/lib.ts": tsExpLib, "src/use.ts": tsExpUse} {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	lib, _ := tsNewDocument(base, "src/lib.ts", []byte(tsExpLib))
+	base = scip.PatchIndex(base, map[string]*scip.Document{"src/lib.ts": lib})
+	use, _ := tsNewDocument(base, "src/use.ts", []byte(tsExpUse))
+	if lib == nil || use == nil {
+		t.Fatal("documents not synthesized")
+	}
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/use.ts" {
+			return use
+		}
+		return base.DocumentsByPath[p]
+	})
+	_, unresolved := tsLayer2(use, "src/use.ts", []byte(tsExpUse), allLines([]byte(tsExpUse)), r)
+
+	libSym, useSym := head+"src/`lib.ts`/", head+"src/`use.ts`/"
+	got := map[string]bool{}
+	for _, o := range use.Occurrences {
+		if o.Source == scip.OccurrenceSourceOverlay {
+			got[strings.NewReplacer(libSym, "lib:", useSym, "use:").Replace(o.Symbol)+"@"+fmtRange(o)] = true
+		}
+	}
+	want := []string{
+		"lib:other.@0 9 14", "lib:other.@0 18 20", "lib:T2#@0 22 24",
+		"lib:both.@0 34 36", "lib:both#@0 34 36", "lib:@0 44 51",
+		"use:foo().@4 9 12", "use:foo().@4 16 19", "use:U#@4 21 22", "lib:other.@4 24 26", "lib:@4 28 30",
+		"lib:both.@4 32 34", "lib:both#@4 32 34", "lib:T2#@4 36 38",
+		"lib:other.@5 9 14", "lib:other.@5 18 20", "lib:both.@5 30 32", "lib:both#@5 30 32",
+		"lib:both.@5 34 38", "lib:both#@5 34 38", "lib:@5 46 53",
+	}
+	for _, w := range want {
+		if !got[w] {
+			t.Errorf("missing %s", w)
+		}
+		delete(got, w)
+	}
+	for g := range got {
+		if !strings.HasPrefix(g, "lib:@1 ") { // import * as ns: covered elsewhere
+			t.Errorf("unexpected %s", g)
+		}
+	}
+	if unresolved != 2 { // both in "both as b2" and "both as b3"
+		t.Errorf("unresolved %d, want 2", unresolved)
+	}
+}
