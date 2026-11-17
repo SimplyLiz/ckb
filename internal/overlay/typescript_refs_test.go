@@ -483,3 +483,58 @@ func TestTSLayer2ExportClauses(t *testing.T) {
 		t.Errorf("unresolved %d, want 2", unresolved)
 	}
 }
+
+const tsTypeParamFile = "export function f<T extends object, K extends keyof T>(o: T, k: K): T[K] { return o[k]; }\n" +
+	"export class C<E> { items: E[] = []; m<R>(x: R): E | R { const g = <Z>(z: Z): Z => z; return x; } }\n" +
+	"export interface I<V> { v: V; w: Array<V> }\n" +
+	"export type M<Route extends string> = Record<Route, number> & { [P in Route]: P };\n" +
+	"export const h = <Q,>(q: Q): Q => q;\n" +
+	"function outer<O>() { function inner<O>(o: O): O { return o; } return inner; }\n" +
+	"export type First<T> = T extends (...a: [infer T]) => any ? T : never;\n"
+
+// TestTSLayer2TypeParams: a reference to a type parameter with a global
+// symbol (a top-level function's, a class's, a method's, an interface's, a
+// type alias's) gets it; one of an arrow function or a nested function is a
+// local. The want list is scip-typescript's index of the file. Where infer
+// T shadows T, no T gets an edge (the index has First#[T] at the first).
+func TestTSLayer2TypeParams(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src/a.ts"), []byte(tsTypeParamFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	doc, _ := tsNewDocument(base, "src/a.ts", []byte(tsTypeParamFile))
+	if doc == nil {
+		t.Fatal("document not synthesized")
+	}
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/a.ts" {
+			return doc
+		}
+		return base.DocumentsByPath[p]
+	})
+	tsLayer2(doc, "src/a.ts", []byte(tsTypeParamFile), allLines([]byte(tsTypeParamFile)), r)
+	prefix := head + "src/`a.ts`/"
+	var got []string
+	for _, o := range doc.Occurrences {
+		if o.Source == scip.OccurrenceSourceOverlay && strings.HasSuffix(o.Symbol, "]") {
+			got = append(got, strings.TrimPrefix(o.Symbol, prefix)+"@"+fmtRange(o))
+		}
+	}
+	sort.Strings(got)
+	want := []string{
+		"f().[T]@0 52 53", "f().[T]@0 58 59", "f().[T]@0 68 69", "f().[K]@0 64 65", "f().[K]@0 70 71",
+		"C#[E]@1 27 28", "C#[E]@1 49 50", "C#m().[R]@1 45 46", "C#m().[R]@1 53 54",
+		"I#[V]@2 27 28", "I#[V]@2 39 40",
+		"M#[Route]@3 45 50", "M#[Route]@3 70 75",
+	}
+	sort.Strings(want)
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("type parameter references\n got  %v\n want %v", got, want)
+	}
+}
