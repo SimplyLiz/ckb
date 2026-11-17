@@ -141,6 +141,9 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 		if name == nil || args == nil {
 			return tsUnknownTy
 		}
+		if zt, ok := r.zodInfer(m, t, depth); ok {
+			return zt
+		}
 		if name.Type() != "type_identifier" {
 			return r.typeOfNode(m, name, depth+1)
 		}
@@ -296,6 +299,26 @@ func (r *tsResolver) mentionsRepoIn(m *tsModule, n *sitter.Node) bool {
 			return false
 		}
 		res, ok := r.resolveIn(m.file, n.Content(m.src), tsTypeNS)
+		return ok && !res.external
+	case "type_query":
+		// typeof x (ReturnType<typeof f>): x's type, a repository one
+		// unless x is a package's or a global's value.
+		if n.NamedChildCount() != 1 {
+			return true
+		}
+		id := n.NamedChild(0)
+		for id.Type() == "member_expression" {
+			if id = id.ChildByFieldName("object"); id == nil {
+				return true
+			}
+		}
+		if id.Type() != "identifier" {
+			return true
+		}
+		if tsBoundLocally(id, id.Content(m.src), m.src) {
+			return true
+		}
+		res, ok := r.resolveIn(m.file, id.Content(m.src), tsValue)
 		return ok && !res.external
 	}
 	for i := 0; i < int(n.NamedChildCount()); i++ {
@@ -517,6 +540,9 @@ func (r *tsResolver) memberOf(t tsTy, name string, depth int) tsMember {
 	case tyDecl:
 		return r.declMember(t, name, depth)
 	case tyLit:
+		if tsZod(t) {
+			return r.zodMember(t, name, depth)
+		}
 		if t.sym == "" && tsAsType(t.node) {
 			// Locals in the index (Layer 1 writes none, so the document
 			// cannot say): no edge, the member's type followed.
@@ -949,6 +975,9 @@ func (r *tsResolver) exprType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 			return st
 		}
 		if t, ok := r.reactCall(m, e, depth); ok {
+			return t
+		}
+		if t, ok := r.zodParse(m, e, depth); ok {
 			return t
 		}
 		ft := r.exprType(m, fn, depth+1)

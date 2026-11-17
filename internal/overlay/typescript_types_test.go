@@ -614,3 +614,105 @@ func TestTSLayer2AsLiteral(t *testing.T) {
 		t.Errorf("unresolved %d, want 1 (the shorthand tenantId)", unresolved)
 	}
 }
+
+const tsZodSchema = `import { z } from "zod";
+const text = (n: number) => z.string().max(n);
+export const itemSchema = z.object({ id: z.string(), level: z.number().optional() });
+export const entrySchema = z.object({
+  id: z.string(),
+  role: text(300),
+  items: z.array(itemSchema).min(1),
+}).strict();
+export const extSchema = entrySchema.extend({ extra: z.string() });
+export type Entry = z.infer<typeof entrySchema>;
+export type Ext = z.infer<typeof extSchema>;
+export type Tr = z.infer<typeof trSchema>;
+export const trSchema = entrySchema.transform((e) => ({ ...e, n: 1 }));
+export const keepSchema = entrySchema.transform(keep);
+export type Keep = z.infer<typeof keepSchema>;
+function keep<P>(p: P): P { return p; }
+`
+
+const tsZodUse = `import { entrySchema, type Entry, type Ext, type Tr, type Keep } from "./schema";
+export function f(e: Entry, x: Ext, t: Tr, k: Keep) {
+  console.log(e.role, e.items[0].level, e.id, x.extra, x.role);
+  const p = entrySchema.parse({});
+  console.log(p.role, t.role);
+  const lit: Entry = { id: "", role: "", items: [] };
+  console.log(k.role, k.items[0].id);
+  return lit;
+}
+`
+
+// TestTSLayer2Zod: a member of z.infer<typeof s> is the key of the
+// z.object literal that declares it, through extend, a helper that builds
+// a schema, z.array and parse(); what transform returns is unknown. The
+// keys' symbols are scip-typescript's (probe project, zod 4): Layer 1 does
+// not write counter-numbered properties, so the test adds them.
+func TestTSLayer2Zod(t *testing.T) {
+	root := t.TempDir()
+	for rel, text := range map[string]string{"src/schema.ts": tsZodSchema, "src/use.ts": tsZodUse} {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	schemaSym := head + "src/`schema.ts`/"
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	schema, _ := tsNewDocument(base, "src/schema.ts", []byte(tsZodSchema))
+	for _, k := range []struct {
+		line, col int32
+		sym       string
+		def       bool
+	}{
+		{2, 37, "id0:", true}, {2, 53, "level0:", true},
+		{4, 2, "id1:", true}, {5, 2, "role0:", true}, {6, 2, "items0:", true},
+		{8, 46, "extra0:", false}, // an extend's key: a reference to a symbol nothing defines
+	} {
+		o := &scip.Occurrence{Range: []int32{k.line, k.col, k.col + int32(len(strings.TrimRight(k.sym, "0123456789:")))}, Symbol: schemaSym + k.sym}
+		if k.def {
+			o.SymbolRoles = scip.SymbolRoleDefinition
+		}
+		schema.Occurrences = append(schema.Occurrences, o)
+	}
+	base = scip.PatchIndex(base, map[string]*scip.Document{"src/schema.ts": schema})
+	use, _ := tsNewDocument(base, "src/use.ts", []byte(tsZodUse))
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/use.ts" {
+			return use
+		}
+		return base.DocumentsByPath[p]
+	})
+	_, unresolved := tsLayer2(use, "src/use.ts", []byte(tsZodUse), allLines([]byte(tsZodUse)), r)
+	r.close()
+	got := map[string]bool{}
+	for _, o := range use.Occurrences {
+		s := strings.TrimPrefix(o.Symbol, schemaSym)
+		if o.Source == scip.OccurrenceSourceOverlay && strings.HasSuffix(s, ":") {
+			got[s+"@"+fmtRange(o)] = true
+		}
+	}
+	for _, w := range []string{
+		"role0:@2 16 20", "items0:@2 24 29", "level0:@2 33 38", "id1:@2 42 44",
+		"extra0:@2 48 53", "role0:@2 57 61", // extend: its own key, the base's
+		"role0:@4 16 20",                    // parse()
+		"id1:@5 23 25", "role0:@5 31 35", "items0:@5 41 46", // a literal typed Entry
+		"role0:@6 16 20", "items0:@6 24 29", "id0:@6 33 35", // transform(keep), keep<P>(p: P): P; z.array(s).min(1)
+	} {
+		if !got[w] {
+			t.Errorf("missing %s", w)
+		}
+		delete(got, w)
+	}
+	for k := range got {
+		t.Errorf("unexpected %s", k)
+	}
+	if unresolved != 1 {
+		t.Errorf("unresolved %d, want 1 (t.role: transform)", unresolved)
+	}
+}
