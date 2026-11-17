@@ -664,6 +664,33 @@ modeled: unresolved. Lebenslauf's silent sites
 are mostly member accesses (`x.y` in arguments, chains, JSX), not literal keys: the replay's
 100 % on its 19 commits counts only the changed symbols' references, so it did not show them.
 
+### Prisma: an as-literal's members (2026-11-17)
+
+`x as { k: T }` gives `k` a local in scip-typescript's index, at the top level too (nyxcore's
+`src/server/db.ts`: `local 2` at the declaration and at every `globalForPrisma.prisma`). Layer 2
+now types such a literal: a member access writes nothing and takes the member's type, so
+`globalForPrisma.prisma ?? new PrismaClient()` is a package's type and every `prisma.a.b()`
+chain stops counting. Layer 1 writes no locals, so the rule cannot ask the declaring document
+(a changed file has none); it is decided from the syntax (`TestTSLayer2AsLiteral`).
+
+The first version made 26 nyxcore sites newly silent, all one form: a shorthand parameter in an
+object literal passed to a Prisma call (`where: { tenantId }`). Before, the literal's context
+was unknown and the key counted; now it is a package's type, and the shorthand's value was
+taken for a local. A parameter of a declared function has a global symbol, `f().(tenantId)`,
+and scip-typescript writes it there. Such a value now counts.
+
+| Eight repositories (oracle, every line) | 05b6e7f | now |
+|---|---|---|
+| Edges written, wrong | 124,536, 3 | 124,540, 3 |
+| nyxcore: unresolved / counted / silent | 22,510 / 1,872 / 379 | 18,219 / 1,902 / 349 |
+| Sites newly silent, any repository | | 0 |
+| Old silent sites now counted (all eight) | | 152 |
+
+Lebenslauf replay: unchanged at 2,247 of 2,247 overlay references, 19 commits without a rebuild,
+all at 100 %. Its DefsSame/Moved/Missing figures differ by up to ~20 between two runs of the
+same binary: `norm` folds counter IDs, and `normMap` keeps an arbitrary one of the symbols that
+fold together. The stable definitions do not move.
+
 ### What the build changed in the design
 
 - **Go's Layers 1–2 use go/parser, not tree-sitter.** Exact for Go, positions in scip-go's byte

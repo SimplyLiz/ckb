@@ -1078,6 +1078,12 @@ func (l *tsRefs) missValue(k *sitter.Node) {
 		return
 	}
 	name := l.text(k)
+	if id, local := tsLocalBinding(k, name, l.src); local {
+		if l.defSymbolAt(id) != "" {
+			l.unresolved++ // a parameter with a global symbol, f().(p)
+		}
+		return
+	}
 	if _, imported := l.self.imports[name]; imported || tsBoundLocally(k, name, l.src) {
 		return // a local, or an import (a local in the index either way)
 	}

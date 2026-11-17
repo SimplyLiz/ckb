@@ -190,6 +190,11 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 	case "object_type":
 		owner, local := tsLitOwner(t, m.src)
 		switch {
+		case tsAsType(t):
+			// x as { k: T }: scip-typescript makes k a local, so a member
+			// access writes nothing, but T is followed (the declaring
+			// document says which local it is, else unknown).
+			return tsTy{k: tyLit, m: m, node: t}
 		case local:
 			return tsOutsideTy // its members are local symbols
 		case owner == "" && tsInUnionOrIntersection(t):
@@ -355,6 +360,12 @@ func (r *tsResolver) typeBySymbol(sym string, depth int) tsTy {
 // tsLitOwner is the owner scip-typescript names an object type's members
 // under, as Layer 1's walker gives it: local is true when the literal sits in
 // a function body or another place whose symbols are local.
+// tsAsType reports whether t is the type of an as expression.
+func tsAsType(t *sitter.Node) bool {
+	p := t.Parent()
+	return p != nil && p.Type() == "as_expression" && p.NamedChildCount() == 2 && p.NamedChild(1).StartByte() == t.StartByte()
+}
+
 func tsLitOwner(t *sitter.Node, src []byte) (owner string, local bool) {
 	if tsInsideBody(t) {
 		return "", true
@@ -506,6 +517,15 @@ func (r *tsResolver) memberOf(t tsTy, name string, depth int) tsMember {
 	case tyDecl:
 		return r.declMember(t, name, depth)
 	case tyLit:
+		if t.sym == "" && tsAsType(t.node) {
+			// Locals in the index (Layer 1 writes none, so the document
+			// cannot say): no edge, the member's type followed.
+			mn := tsFindMember(t.node, name, t.m.src)
+			if mn == nil {
+				return tsMember{k: tyUnknown}
+			}
+			return tsMember{typ: r.memberType(t.m, mn, depth), k: tyOutside}
+		}
 		if t.sym == "" {
 			return r.posLitMember(t, name, depth)
 		}

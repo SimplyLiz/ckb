@@ -552,3 +552,65 @@ func TestTSLayer2Generators(t *testing.T) {
 		t.Errorf("unresolved %d, want 0", unresolved)
 	}
 }
+
+const tsAsLib = `export interface Svc { run(): void }
+`
+
+const tsAsUse = `import { Svc } from "./lib";
+import { Client } from "pkg";
+const g = globalThis as unknown as { svc: Svc | undefined; c: Client | undefined };
+export const c = g.c ?? new Client();
+export function f(tenantId: string) {
+  g.svc?.run();
+  c.user.find({ where: { tenantId } });
+}
+`
+
+// TestTSLayer2AsLiteral: the members of x as { … } are locals in
+// scip-typescript's index (nyxcore's globalThis as unknown as { prisma: … }),
+// but their types are followed: a repository type's members get their edge,
+// a package's are nobody's. A shorthand parameter in a package's object
+// literal is counted, because the index writes f().(p) there.
+func TestTSLayer2AsLiteral(t *testing.T) {
+	root := t.TempDir()
+	for rel, text := range map[string]string{"src/lib.ts": tsAsLib, "src/use.ts": tsAsUse} {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	libSym := head + "src/`lib.ts`/"
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	lib, _ := tsNewDocument(base, "src/lib.ts", []byte(tsAsLib))
+	base = scip.PatchIndex(base, map[string]*scip.Document{"src/lib.ts": lib})
+	use, _ := tsNewDocument(base, "src/use.ts", []byte(tsAsUse))
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/use.ts" {
+			return use
+		}
+		return base.DocumentsByPath[p]
+	})
+	_, unresolved := tsLayer2(use, "src/use.ts", []byte(tsAsUse), allLines([]byte(tsAsUse)), r)
+	r.close()
+	got := map[string]bool{}
+	for _, o := range use.Occurrences {
+		s := strings.TrimPrefix(o.Symbol, libSym)
+		if o.Source == scip.OccurrenceSourceOverlay && strings.HasPrefix(o.Symbol, libSym) && s != "" && !strings.HasSuffix(s, "#") {
+			got[s+"@"+fmtRange(o)] = true
+		}
+	}
+	if w := "Svc#run().@5 9 12"; !got[w] {
+		t.Errorf("missing %s (got %v)", w, got)
+	}
+	if len(got) != 1 {
+		t.Errorf("got %v, want only Svc#run()", got)
+	}
+	if unresolved != 1 {
+		t.Errorf("unresolved %d, want 1 (the shorthand tenantId)", unresolved)
+	}
+}

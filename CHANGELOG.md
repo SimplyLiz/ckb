@@ -48,7 +48,12 @@ All notable changes to CKB will be documented in this file.
   that passes a repository value counts as unresolved. Generators: a `yield` operand takes `T`
   of the declared `Generator`/`AsyncGenerator<T, TReturn>`, a `return` takes `TReturn` (an
   async generator's, like an async function's, defines its own keys), iterating a generator's
-  call gives `T`, and a function declared inside a body types its parameters. Where scip-typescript's contextual lookup finds no property, Layer 2
+  call gives `T`, and a function declared inside a body types its parameters. The members of
+  `x as { … }` are locals in the index, so they get no edge, but their types are followed:
+  `globalThis as unknown as { prisma: PrismaClient | undefined }` makes `prisma.user.find()` a
+  package's call instead of an unresolved one (nyxcore: 22,510 → 18,219 unresolved sites), and a
+  shorthand parameter in a package's object literal (`where: { tenantId }`) counts, because the
+  index writes `f().(tenantId)` there. Where scip-typescript's contextual lookup finds no property, Layer 2
   writes no edge either: a literal whose context is `T | undefined` (an optional or defaulted
   parameter, a `T | null` return, an async function's return), and the value of a shorthand
   property in a package's or a global's type. Lower-case JSX tags are intrinsic elements. JSX
