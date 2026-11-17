@@ -59,7 +59,11 @@ All notable changes to CKB will be documented in this file.
   `refine`, checks such as `.min()`, `z.array`, `z.record`, `z.preprocess`, a helper that returns a
   schema and `transform(f)` with `f<P>(p: P): P`; anything else (other transforms, unions, `lazy`)
   counts as unresolved instead of passing as a package's type, and so does `ReturnType<typeof f>`.
-  On Lebenslauf 2,178 references that went unnoticed are now written or counted. Where scip-typescript's contextual lookup finds no property, Layer 2
+  On Lebenslauf 2,178 references that went unnoticed are now written or counted. A local
+  `export { a, b as c }` points both the name and the alias at what the name stands for (a
+  declaration, an import's target, a namespace import's file), as do the aliases of
+  `import { x as y }` and `export … from`; a name that is a value and a type gets both symbols
+  (moltbot: 268 references that went unnoticed). Where scip-typescript's contextual lookup finds no property, Layer 2
   writes no edge either: a literal whose context is `T | undefined` (an optional or defaulted
   parameter, a `T | null` return, an async function's return), and the value of a shorthand
   property in a package's or a global's type. Lower-case JSX tags are intrinsic elements. JSX
