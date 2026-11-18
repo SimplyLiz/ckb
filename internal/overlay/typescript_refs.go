@@ -684,11 +684,12 @@ func (r *tsResolver) lookup(file, name string, ns tsNS, depth int) string {
 	return found
 }
 
-// starLookup is the value export name of file as scip-typescript resolves
-// typeof import("m").name: a declaration of the module, or one reached
-// through export * from. A name some module on the way re-exports by name
-// (export { a } from "./a") is a local in its index: local is true.
-func (r *tsResolver) starLookup(file, name string, depth int) (sym string, local bool) {
+// starLookup is the export name of file in namespace ns as scip-typescript
+// resolves typeof import("m").name and import("m").Name: a declaration of
+// the module, or one reached through export * from. A name some module on
+// the way re-exports by name (export { a } from "./a") is a local in its
+// index: local is true.
+func (r *tsResolver) starLookup(file, name string, ns tsNS, depth int) (sym string, local bool) {
 	if depth > 3 || file == "" {
 		return "", false
 	}
@@ -697,13 +698,13 @@ func (r *tsResolver) starLookup(file, name string, depth int) (sym string, local
 		return "", false
 	}
 	if tops := m.decls[name]; len(tops) > 0 {
-		return pickTop(m.prefix, tops, tsValue), false
+		return pickTop(m.prefix, tops, ns), false
 	}
 	if _, ok := m.named[name]; ok {
 		return "", true
 	}
 	for _, spec := range m.stars {
-		s, loc := r.starLookup(r.resolveModule(file, spec), name, depth+1)
+		s, loc := r.starLookup(r.resolveModule(file, spec), name, ns, depth+1)
 		if loc {
 			return "", true
 		}
@@ -1384,7 +1385,7 @@ func (l *tsRefs) member(n *sitter.Node) {
 			if target == "" {
 				return // a package
 			}
-			s, local := l.r.starLookup(target, pname, 0)
+			s, local := l.r.starLookup(target, pname, tsValue, 0)
 			if s != "" {
 				l.emit(prop, s)
 				return
@@ -1869,6 +1870,10 @@ func (l *tsRefs) qualifiedType(n *sitter.Node) {
 	if mod == nil || name == nil {
 		return
 	}
+	if mod.Type() == "identifier" && tsImportTypeText(l.text(mod)) {
+		l.importType(mod, name)
+		return
+	}
 	if mod.Type() == "identifier" {
 		l.ident(mod)
 	}
@@ -1895,6 +1900,55 @@ func (l *tsRefs) qualifiedType(n *sitter.Node) {
 				return
 			}
 		}
+		l.unresolved++
+	}
+}
+
+// tsImportTypeText reports an identifier's text that is import("m"): what
+// tsParseText made of an import type.
+func tsImportTypeText(text string) bool {
+	rest, ok := strings.CutPrefix(text, "import")
+	return ok && strings.HasPrefix(strings.TrimLeft(rest, " \t\r\n"), "(")
+}
+
+// importTypeTarget is m's file for the text import("m") ("" for a package).
+func (r *tsResolver) importTypeTarget(m *tsModule, text string) (string, bool) {
+	q := strings.IndexAny(text, "\"'")
+	if q < 0 || !strings.HasSuffix(text, ")") {
+		return "", false
+	}
+	return r.resolveModule(m.file, tsStringValue(strings.TrimSpace(text[q:len(text)-1]))), true
+}
+
+// importType handles import("m").Name in a type, which tsParseText turned
+// into an identifier mod: the string gets m's file, Name m's type export
+// (followed through export *, as scip-typescript does).
+func (l *tsRefs) importType(mod, name *sitter.Node) {
+	text := l.text(mod)
+	target, ok := l.r.importTypeTarget(l.self, text)
+	if !ok || target == "" {
+		return // a package
+	}
+	q := strings.IndexAny(text, "\"'")
+	str := strings.TrimSpace(text[q : len(text)-1])
+	if l.onAdded(mod) {
+		if fs := tsFileSymbol(l.r.docs(target)); fs != "" {
+			sl, sc := l.cols.pos(mod.StartByte() + uint32(q)) // #nosec G115 -- an offset in the node
+			el, ec := l.cols.pos(mod.StartByte() + uint32(q+len(str)))
+			if k := (tsTaken{sl, sc, fs}); !l.taken[k] {
+				l.taken[k] = true
+				l.doc.Occurrences = append(l.doc.Occurrences, &scip.Occurrence{Range: scipRange(sl, sc, el, ec), Symbol: fs, Source: scip.OccurrenceSourceOverlay})
+			}
+		}
+	}
+	if !l.onAdded(name) {
+		return
+	}
+	s, local := l.r.starLookup(target, l.text(name), tsTypeNS, 0)
+	switch {
+	case s != "":
+		l.emit(name, s)
+	case !local:
 		l.unresolved++
 	}
 }

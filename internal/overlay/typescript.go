@@ -60,9 +60,11 @@ func tsLanguage(path string) *sitter.Language {
 //     grammar takes for the start of a using declaration, becomes "usin$";
 //     "using x" and "await using x" stay declarations;
 //   - typeof import("m") in a type becomes typeof $mport("m"), a type query
-//     of a call.
+//     of a call;
+//   - import("m").Name, an import type, becomes $___________.Name, an
+//     identifier as long as import("m"): a qualified type name.
 //
-// src itself is returned when neither occurs.
+// src itself is returned when none occurs.
 func tsParseText(src []byte) []byte {
 	var out []byte
 	set := func(at int, s string) {
@@ -96,6 +98,21 @@ func tsParseText(src []byte) []byte {
 				continue // using x = …: a declaration
 			}
 			set(i, "usin$")
+		case 'i':
+			// import("m").Name, a type: an identifier of the same length.
+			// typeof import("m") is the case below; await import("m") and
+			// import("m").then(…) are calls.
+			if !word(i, "import") || i > 0 && (src[i-1] == '.' || src[i-1] == '$') {
+				continue
+			}
+			if end, ok := tsImportTypeEnd(src, i); ok {
+				b := []byte("$")
+				for k := i + 1; k < end; k++ {
+					b = append(b, '_')
+				}
+				// set copies over the same length; the original is read for the text.
+				set(i, string(b))
+			}
 		case 't':
 			if !word(i, "typeof") {
 				continue
@@ -112,6 +129,68 @@ func tsParseText(src []byte) []byte {
 		return src
 	}
 	return out
+}
+
+// tsImportTypeEnd reports whether src at i starts import("m").Name with
+// Name not called, not after typeof: the end of import("m").
+func tsImportTypeEnd(src []byte, i int) (int, bool) {
+	isSpace := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+	b := i - 1
+	for b >= 0 && isSpace(src[b]) {
+		b--
+	}
+	if b >= 5 && string(src[b-5:b+1]) == "typeof" || b >= 4 && string(src[b-4:b+1]) == "await" {
+		return 0, false
+	}
+	j := i + len("import")
+	for j < len(src) && isSpace(src[j]) {
+		j++
+	}
+	if j >= len(src) || src[j] != '(' {
+		return 0, false
+	}
+	j++
+	for j < len(src) && isSpace(src[j]) {
+		j++
+	}
+	if j >= len(src) || src[j] != '"' && src[j] != '\'' {
+		return 0, false
+	}
+	q := src[j]
+	j++
+	for j < len(src) && src[j] != q && src[j] != '\n' {
+		j++
+	}
+	if j >= len(src) || src[j] != q {
+		return 0, false
+	}
+	j++
+	for j < len(src) && isSpace(src[j]) {
+		j++
+	}
+	if j >= len(src) || src[j] != ')' {
+		return 0, false
+	}
+	end := j + 1
+	k := end
+	if k >= len(src) || src[k] != '.' {
+		return 0, false
+	}
+	k++
+	start := k
+	for k < len(src) && (src[k] == '_' || src[k] == '$' || src[k] >= '0' && src[k] <= '9' || src[k] >= 'a' && src[k] <= 'z' || src[k] >= 'A' && src[k] <= 'Z') {
+		k++
+	}
+	if k == start {
+		return 0, false
+	}
+	for k < len(src) && isSpace(src[k]) {
+		k++
+	}
+	if k < len(src) && (src[k] == '(' || src[k] == '`') {
+		return 0, false // a call: a value
+	}
+	return end, true
 }
 
 // tsParseTree parses tsParseText's text for src. A bare & in JSX text

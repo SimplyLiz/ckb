@@ -163,6 +163,10 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 				switch n {
 				case "Pick", "Omit", "Partial", "Readonly":
 					return r.mappedTy(m, n, args, depth)
+				case "NonNullable":
+					t := arg(0)
+					t.nullable = false
+					return t
 				case "Array", "ReadonlyArray":
 					return tsWrap(tyArray, arg(0))
 				case "Promise", "PromiseLike":
@@ -183,6 +187,18 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 		return r.namedType(m, t, depth)
 	case "nested_type_identifier":
 		mod, name := t.ChildByFieldName("module"), t.ChildByFieldName("name")
+		if mod != nil && name != nil && mod.Type() == "identifier" && tsImportTypeText(mod.Content(m.src)) {
+			// import("m").Name
+			target, ok := r.importTypeTarget(m, mod.Content(m.src))
+			if !ok || target == "" {
+				return tsOutsideTy
+			}
+			s, _ := r.starLookup(target, name.Content(m.src), tsTypeNS, 0)
+			if s == "" {
+				return tsUnknownTy
+			}
+			return r.typeBySymbol(s, depth)
+		}
 		if mod == nil || name == nil || mod.Type() != "identifier" || tsBoundLocally(mod, mod.Content(m.src), m.src) {
 			return tsUnknownTy
 		}
@@ -1363,11 +1379,11 @@ func (r *tsResolver) identType(m *tsModule, e *sitter.Node, depth int) tsTy {
 			return tsNoTy
 		}
 		t := r.bindingType(m, id, depth)
-		if t.k == tyOutside || t.k == tyNone {
-			// unknown, any, Error, a catch clause's value: x instanceof C
-			// makes it C.
-			if ct, ok := r.instanceofType(m, e, depth); ok {
-				return ct
+		if !tsIsUnion(t) {
+			// x instanceof C (on unknown, any, Error, a catch clause's
+			// value) makes it C, isT(x) T.
+			if gt, ok := r.guardType(m, e, t, depth); ok {
+				return gt
 			}
 		}
 		return t

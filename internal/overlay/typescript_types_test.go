@@ -907,3 +907,60 @@ export function F() {
 		}
 	}
 }
+
+// TestTSLayer2ImportType: import("m").T in a type parses, its string gets
+// m's file and T the type export.
+func TestTSLayer2ImportType(t *testing.T) {
+	use := `export type A = import("./lib").Cfg["channels"];
+export function f(c: import("./lib").Cfg, p: import("pkg").X) { return c.channels; }
+export const later = () => import("./lib").then((m) => m);
+`
+	got, _ := tsL2Edges(t, "export interface Cfg { channels: number }\n", use)
+	for _, w := range []string{"Cfg#@0 32 35", "Cfg#@1 37 40", "Cfg#channels.@1 73 81", "Cfg#channels.@0 36 46"} {
+		if !got[w] {
+			t.Errorf("missing %s (got %v)", w, got)
+		}
+	}
+	if string(tsParseText([]byte(use))) == use {
+		t.Error("tsParseText left the import types")
+	}
+	if tree := tsParseTree("src/use.ts", []byte(use)); tree == nil || tree.RootNode().HasError() {
+		t.Error("import types do not parse")
+	}
+}
+
+// TestTSLayer2PredicateGuard: a type predicate narrows a declared type that
+// is not a union, and NonNullable<T> is T.
+func TestTSLayer2PredicateGuard(t *testing.T) {
+	got, _ := tsL2Edges(t, `export interface Ev { type: string; context: Record<string, unknown> }
+export interface Boot extends Ev { context: { dir: string } }
+export function isBoot(e: Ev): e is Boot { return e.type === "boot"; }
+export interface D { allow: boolean }
+export interface Cfg { d?: D | null }
+export type Hook = Ev & { context: { file: string } };
+export function isHook(e: Ev): e is Hook { return e.type === "hook"; }
+export interface U { input?: number }
+export function hasU(u?: U | null): u is U { return !!u; }
+`, `import { Ev, isBoot, Cfg, isHook, hasU } from "./lib";
+export function f(event: Ev, c: NonNullable<Cfg["d"]>) {
+  if (!isBoot(event)) return c.allow;
+  const context = event.context;
+  return context.dir;
+}
+export function g(event: Ev, meta: { usage: { input?: number } }) {
+  const usage = meta.usage;
+  if (hasU(usage)) usage.input;
+  if (isHook(event)) return event.context.file;
+}
+`)
+	for _, w := range []string{"Boot#context.@3 24 31", "D#allow.@2 31 36"} {
+		if !got[w] {
+			t.Errorf("missing %s (got %v)", w, got)
+		}
+	}
+	for k := range got {
+		if strings.HasPrefix(k, "U#input.") {
+			t.Errorf("unexpected %s: a predicate's type that does not extend the declared one", k)
+		}
+	}
+}

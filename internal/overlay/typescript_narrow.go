@@ -838,27 +838,47 @@ func (st *tsNarrowState) byTypeof(kind string, truth bool) tsKeep {
 // identifier: the parts that are T (truth) or not. ok is false when the
 // call is not one, or T is not one of the parts.
 func (st *tsNarrowState) predicate(call *sitter.Node, truth bool) (tsKeep, bool) {
+	target, ok := st.predicateTarget(call)
+	if !ok {
+		return nil, false
+	}
+	keep := make(tsKeep, len(st.parts))
+	hit := false
+	for i, part := range st.parts {
+		same := tsSameTy(part, target)
+		hit = hit || same
+		keep[i] = same == truth
+	}
+	if !hit {
+		return nil, false
+	}
+	return keep, true
+}
+
+// predicateTarget is T when call is a repository function declared
+// (p): p is T, called with the identifier at p.
+func (st *tsNarrowState) predicateTarget(call *sitter.Node) (tsTy, bool) {
 	fn, args := call.ChildByFieldName("function"), call.ChildByFieldName("arguments")
 	if fn == nil || args == nil || !st.mentions(args) {
-		return nil, false
+		return tsTy{}, false
 	}
 	ft := st.r.exprType(st.m, fn, st.depth+1)
 	if ft.k != tyFn {
-		return nil, false
+		return tsTy{}, false
 	}
 	rt := ft.node.ChildByFieldName("return_type")
 	if rt == nil || rt.Type() != "type_predicate_annotation" || rt.NamedChildCount() != 1 {
-		return nil, false
+		return tsTy{}, false
 	}
 	pr := rt.NamedChild(0)
 	pn, pt := pr.ChildByFieldName("name"), pr.ChildByFieldName("type")
 	if pr.Type() != "type_predicate" || pn == nil || pt == nil {
-		return nil, false
+		return tsTy{}, false
 	}
 	// The argument at the predicate's parameter must be the identifier.
 	ps := ft.node.ChildByFieldName("parameters")
 	if ps == nil {
-		return nil, false
+		return tsTy{}, false
 	}
 	at := -1
 	for i, j := 0, 0; i < int(ps.NamedChildCount()); i++ {
@@ -878,20 +898,9 @@ func (st *tsNarrowState) predicate(call *sitter.Node, truth bool) (tsKeep, bool)
 		}
 	}
 	if at < 0 || at >= len(argList) || !st.refersHere(argList[at]) {
-		return nil, false
+		return tsTy{}, false
 	}
-	target := st.r.typeOfNode(ft.m, pt, st.depth+1)
-	keep := make(tsKeep, len(st.parts))
-	hit := false
-	for i, part := range st.parts {
-		same := tsSameTy(part, target)
-		hit = hit || same
-		keep[i] = same == truth
-	}
-	if !hit {
-		return nil, false
-	}
-	return keep, true
+	return st.r.typeOfNode(ft.m, pt, st.depth+1), true
 }
 
 // tsSameTy reports the same declared type.
@@ -1117,23 +1126,62 @@ func tsLiteralValues(t *sitter.Node, src []byte, into map[string]bool) bool {
 	return false
 }
 
-// instanceofType is the class a guard proves the identifier id an instance
-// of: x instanceof C on the right of &&, after || !(…), in an if's or a
-// ternary's branch, or after an if that returns when it is not one. Only
-// followed for a binding never reassigned, and only one class: two guards
-// naming different classes (an intersection, a subclass) are not modeled.
-// The caller asks only when the declared type is not the repository's
-// (unknown, any, Error, a catch clause's value).
-func (r *tsResolver) instanceofType(m *tsModule, id *sitter.Node, depth int) (tsTy, bool) {
+// guardType is the type a guard proves the identifier id has: x instanceof
+// C (only when the declared type is not the repository's: unknown, any,
+// Error, a catch clause's value) or a type predicate isT(x) (any declared
+// type but a union, which narrow follows), on the right of &&, after ||
+// !(…), in an if's or a ternary's branch, or after an if that returns when
+// it does not hold. Only for a binding never reassigned, and only one type:
+// two guards naming different ones (an intersection, a subclass) are not
+// modeled, nor a branch where the same guard fails too (never).
+//
+// On a declared repository type D TypeScript keeps D when D is already a T,
+// so a predicate's T counts only when it extends D (interface T extends D,
+// D & {…}); Layer 2 cannot tell D's assignability otherwise.
+func (r *tsResolver) guardType(m *tsModule, id *sitter.Node, declared tsTy, depth int) (tsTy, bool) {
 	if m.instanceof == 0 {
 		m.instanceof = 1
 		if strings.Contains(string(m.src), "instanceof") {
 			m.instanceof = 2
 		}
 	}
-	if m.instanceof == 1 {
-		return tsTy{}, false
+	open := declared.k == tyOutside || declared.k == tyNone
+	t, ok := r.guardType1(m, id, open && m.instanceof == 2, depth)
+	if !ok || open {
+		return t, ok
 	}
+	if (t.k != tyUnknown || t.inter) && r.extendsTy(t, declared, depth) {
+		return t, true
+	}
+	return tsTy{}, false
+}
+
+// extendsTy reports t declared as an extension of d: an interface or class
+// with d among its bases (followed three deep), or an intersection with d.
+func (r *tsResolver) extendsTy(t, d tsTy, depth int) bool {
+	if depth > tsMaxDepth {
+		return false
+	}
+	if t.inter {
+		for _, p := range t.parts {
+			if tsSameTy(p, d) || r.extendsTy(p, d, depth+1) {
+				return true
+			}
+		}
+		return false
+	}
+	if t.k != tyDecl || t.node == nil {
+		return false
+	}
+	for _, b := range r.heritage(t, depth+1) {
+		if tsSameTy(b, d) || r.extendsTy(b, d, depth+1) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *tsResolver) guardType1(m *tsModule, id *sitter.Node, classes bool, depth int) (tsTy, bool) {
 	name := id.Content(m.src)
 	b, local := tsLocalBinding(id, name, m.src)
 	if !local || b == nil {
@@ -1144,8 +1192,7 @@ func (r *tsResolver) instanceofType(m *tsModule, id *sitter.Node, depth int) (ts
 		return tsTy{}, false
 	}
 	st := &tsNarrowState{r: r, m: m, name: name, binding: b.StartByte(), depth: depth}
-	var classes, not []*sitter.Node
-	add := func(pos, neg []*sitter.Node) { classes, not = append(classes, pos...), append(not, neg...) }
+	g := &tsGuards{st: st, classes: classes}
 	c := id
 walk:
 	for a := id.Parent(); a != nil; c, a = a, a.Parent() {
@@ -1161,9 +1208,9 @@ walk:
 			}
 			switch op.Type() {
 			case "&&":
-				add(st.instanceofFacts(left, true))
+				g.facts(left, true)
 			case "||":
-				add(st.instanceofFacts(left, false))
+				g.facts(left, false)
 			}
 		case "ternary_expression", "if_statement":
 			cond := a.ChildByFieldName("condition")
@@ -1171,9 +1218,9 @@ walk:
 				break
 			}
 			if x := a.ChildByFieldName("consequence"); x != nil && tsSame(x, c) {
-				add(st.instanceofFacts(cond, true))
+				g.facts(cond, true)
 			} else if x := a.ChildByFieldName("alternative"); x != nil && tsSame(x, c) {
-				add(st.instanceofFacts(cond, false))
+				g.facts(cond, false)
 			}
 		case "statement_block", "program", "switch_case", "switch_default":
 			for i := 0; i < int(a.NamedChildCount()); i++ {
@@ -1185,16 +1232,16 @@ walk:
 					continue
 				}
 				cond := s.ChildByFieldName("condition")
-				if cond == nil || !strings.Contains(cond.Content(m.src), "instanceof") {
+				if cond == nil || !strings.Contains(cond.Content(m.src), name) {
 					continue
 				}
 				cons, alt := s.ChildByFieldName("consequence"), s.ChildByFieldName("alternative")
 				ce, ae := cons != nil && tsExits(cons), alt != nil && tsExits(alt)
 				switch {
 				case ce && !ae:
-					add(st.instanceofFacts(cond, false))
+					g.facts(cond, false)
 				case ae && !ce:
-					add(st.instanceofFacts(cond, true))
+					g.facts(cond, true)
 				}
 			}
 		}
@@ -1202,64 +1249,90 @@ walk:
 			break
 		}
 	}
-	if len(classes) == 0 {
-		return tsTy{}, false
-	}
-	cls := classes[0].Content(m.src)
-	for _, k := range classes[1:] {
-		if k.Content(m.src) != cls {
+	if g.unknown {
+		if tsAssigned(scope, name, m.src) {
 			return tsTy{}, false
 		}
+		return tsUnknownTy, true // a guard whose type Layer 2 does not model
 	}
-	for _, k := range not {
-		if k.Content(m.src) == cls {
+	if len(g.pos) == 0 {
+		return tsTy{}, false
+	}
+	t := g.pos[0]
+	for _, p := range g.pos[1:] {
+		if !tsSameTy(p, t) {
+			return tsUnknownTy, true
+		}
+	}
+	for _, n := range g.neg {
+		if tsSameTy(n, t) {
 			return tsTy{}, false // never: a branch Layer 2 does not type
 		}
 	}
 	if tsAssigned(scope, name, m.src) {
 		return tsTy{}, false
 	}
-	t := r.classValueType(m, classes[0], depth+1)
-	if t.k != tyDecl {
-		return tsTy{}, false
-	}
 	return t, true
 }
 
-// instanceofFacts are the classes cond being truth proves the identifier an
-// instance of (pos) and not an instance of (neg).
-func (st *tsNarrowState) instanceofFacts(cond *sitter.Node, truth bool) (pos, neg []*sitter.Node) {
+// tsGuards collects the types guards prove the identifier has (pos) and
+// has not (neg).
+type tsGuards struct {
+	st       *tsNarrowState
+	classes  bool
+	pos, neg []tsTy
+	unknown  bool // a positive guard of a type not modeled
+}
+
+func (g *tsGuards) add(t tsTy, truth bool) {
+	if t.k == tyOutside {
+		return // a package's class or type
+	}
+	if t.k != tyDecl && t.k != tyLit && !(t.inter && t.parts != nil) {
+		if truth {
+			g.unknown = true
+		}
+		return
+	}
+	if truth {
+		g.pos = append(g.pos, t)
+	} else {
+		g.neg = append(g.neg, t)
+	}
+}
+
+// facts adds what cond being truth proves.
+func (g *tsGuards) facts(cond *sitter.Node, truth bool) {
 	switch cond.Type() {
 	case "parenthesized_expression":
 		if cond.NamedChildCount() == 1 {
-			return st.instanceofFacts(cond.NamedChild(0), truth)
+			g.facts(cond.NamedChild(0), truth)
 		}
 	case "unary_expression":
 		if op := cond.ChildByFieldName("operator"); op != nil && op.Type() == "!" {
 			if a := cond.ChildByFieldName("argument"); a != nil {
-				return st.instanceofFacts(a, !truth)
+				g.facts(a, !truth)
 			}
+		}
+	case "call_expression":
+		if t, ok := g.st.predicateTarget(cond); ok {
+			g.add(t, truth)
 		}
 	case "binary_expression":
 		op, left, right := cond.ChildByFieldName("operator"), cond.ChildByFieldName("left"), cond.ChildByFieldName("right")
 		if op == nil || left == nil || right == nil {
-			break
+			return
 		}
 		switch op.Type() {
 		case "instanceof":
-			if right.Type() == "identifier" && st.refersHere(left) {
-				if truth {
-					return []*sitter.Node{right}, nil
-				}
-				return nil, []*sitter.Node{right}
+			if g.classes && right.Type() == "identifier" && g.st.refersHere(left) {
+				g.add(g.st.r.classValueType(g.st.m, right, g.st.depth+1), truth)
 			}
 		case "&&", "||":
 			if truth == (op.Type() == "&&") {
-				p1, n1 := st.instanceofFacts(left, truth)
-				p2, n2 := st.instanceofFacts(right, truth)
-				return append(p1, p2...), append(n1, n2...)
+				g.facts(left, truth)
+				g.facts(right, truth)
 			}
 		}
 	}
-	return nil, nil
 }
