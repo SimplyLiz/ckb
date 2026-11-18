@@ -1359,7 +1359,15 @@ func (r *tsResolver) identType(m *tsModule, e *sitter.Node, depth int) tsTy {
 		if id == nil {
 			return tsNoTy
 		}
-		return r.bindingType(m, id, depth)
+		t := r.bindingType(m, id, depth)
+		if t.k == tyOutside || t.k == tyNone {
+			// unknown, any, Error, a catch clause's value: x instanceof C
+			// makes it C.
+			if ct, ok := r.instanceofType(m, e, depth); ok {
+				return ct
+			}
+		}
+		return t
 	}
 	res, ok := r.resolveIn(m.file, name, tsValue)
 	switch {

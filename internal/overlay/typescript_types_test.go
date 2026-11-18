@@ -716,3 +716,78 @@ func TestTSLayer2Zod(t *testing.T) {
 		t.Errorf("unresolved %d, want 1 (t.role: transform)", unresolved)
 	}
 }
+
+const tsInstLib = `export class SyncError extends Error { reason = ""; code = 1; }
+export class StoreError extends Error { constructor(readonly status: number) { super(); } }
+export function g() {}
+`
+
+const tsInstUse = `import { SyncError, StoreError, g } from "./lib";
+export function f(e: unknown) {
+  if (e instanceof SyncError) e.reason;
+  e instanceof SyncError && e.code;
+  const s = e instanceof StoreError ? e.status : 0;
+  try { g(); } catch (err) { if (!(err instanceof SyncError)) throw err; err.reason; }
+  if (!(e instanceof SyncError) || e.code) { return s; }
+}
+export function j(e: unknown) { if (e instanceof SyncError) { return 0; } else { e.code; } }
+export function i(e: unknown) { if (e instanceof SyncError && e instanceof StoreError) e.status; }
+export function c(e: unknown) { [1].map(() => e instanceof SyncError && e.code); }
+export function h(e: unknown) { e = 1; if (e instanceof SyncError) e.reason; }
+export function k(e: SyncError | StoreError) { if (e instanceof SyncError) e.code; }
+`
+
+// TestTSLayer2Instanceof: x instanceof C narrows a value whose declared type
+// is not the repository's to C.
+func TestTSLayer2Instanceof(t *testing.T) {
+	root := t.TempDir()
+	for rel, text := range map[string]string{"src/lib.ts": tsInstLib, "src/use.ts": tsInstUse} {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	libSym := head + "src/`lib.ts`/"
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	lib, _ := tsNewDocument(base, "src/lib.ts", []byte(tsInstLib))
+	base = scip.PatchIndex(base, map[string]*scip.Document{"src/lib.ts": lib})
+	use, _ := tsNewDocument(base, "src/use.ts", []byte(tsInstUse))
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/use.ts" {
+			return use
+		}
+		return base.DocumentsByPath[p]
+	})
+	tsLayer2(use, "src/use.ts", []byte(tsInstUse), allLines([]byte(tsInstUse)), r)
+	r.close()
+
+	got := map[string]bool{}
+	for _, o := range use.Occurrences {
+		if o.Source == scip.OccurrenceSourceOverlay && strings.HasPrefix(o.Symbol, libSym) && strings.Contains(o.Symbol, "#") {
+			got[strings.TrimPrefix(o.Symbol, libSym)+"@"+fmtRange(o)] = true
+		}
+	}
+	for _, w := range []string{
+		"SyncError#reason.@2 32 38",                     // if branch
+		"SyncError#code.@3 30 34",                       // && right side
+		"StoreError#`<constructor>`().(status)@4 40 46", // ternary, a parameter property
+		"SyncError#reason.@5 77 83",                     // after if (!(…)) throw
+		"SyncError#code.@6 37 41",                       // || after !(…)
+		"SyncError#code.@10 74 78",                      // a closure
+	} {
+		if !got[w] {
+			t.Errorf("missing %s", w)
+		}
+		delete(got, w)
+	}
+	for k := range got {
+		if strings.Contains(k, "#code.") || strings.Contains(k, "#reason.") || strings.Contains(k, "status") {
+			t.Errorf("unexpected %s", k)
+		}
+	}
+}
