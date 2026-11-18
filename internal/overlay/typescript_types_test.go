@@ -844,4 +844,40 @@ export function f(x: boolean, n?: number): O {
 			t.Errorf("missing %s (got %v)", w, got)
 		}
 	}
+	for _, w := range []string{"S#a.@6 10 11", "S#b.@8 18 19"} { // a literal argument: a union with the function type
+		if got[w] {
+			t.Errorf("unexpected %s", w)
+		}
+	}
+}
+
+// TestTSLayer2Setters: zustand's set and useState's setter give their
+// argument the state's type, or a function's parameter and result.
+func TestTSLayer2Setters(t *testing.T) {
+	got, _ := tsL2Edges(t, "export interface S { a: number; b: string; inc(): void }\n",
+		`import { create } from "zustand";
+import { useState } from "react";
+import { S } from "./lib";
+export const useS = create<S>()((set) => ({ a: 1, b: "", inc: () => set((s) => ({ a: s.a + 1 })) }));
+export function F() {
+  const [st, setSt] = useState<S>({ a: 0, b: "", inc() {} });
+  setSt({ a: 1, b: "", inc() {} });
+  setSt((prev) => ({ ...prev, b: prev.b }));
+  useS.setState({ b: "" });
+  return st;
+}
+`)
+	for _, w := range []string{
+		"S#a.@3 82 83", "S#a.@3 87 88", // set((s) => ({ a: s.a + 1 }))
+		"S#b.@7 30 31", "S#b.@7 38 39", // setSt((prev) => ({ …prev, b: prev.b }))
+	} {
+		if !got[w] {
+			t.Errorf("missing %s (got %v)", w, got)
+		}
+	}
+	for _, w := range []string{"S#a.@6 10 11", "S#b.@8 18 19"} { // a literal argument: a union with the function type
+		if got[w] {
+			t.Errorf("unexpected %s", w)
+		}
+	}
 }
