@@ -791,3 +791,57 @@ func TestTSLayer2Instanceof(t *testing.T) {
 		}
 	}
 }
+
+// tsL2Edges runs Layer 2 on use next to lib and returns its edges to lib's
+// members as "suffix@range", and the unresolved count.
+func tsL2Edges(t *testing.T, libText, useText string) (map[string]bool, int) {
+	t.Helper()
+	root := t.TempDir()
+	for rel, text := range map[string]string{"src/lib.ts": libText, "src/use.ts": useText} {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	libSym := head + "src/`lib.ts`/"
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	lib, _ := tsNewDocument(base, "src/lib.ts", []byte(libText))
+	base = scip.PatchIndex(base, map[string]*scip.Document{"src/lib.ts": lib})
+	use, _ := tsNewDocument(base, "src/use.ts", []byte(useText))
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/use.ts" {
+			return use
+		}
+		return base.DocumentsByPath[p]
+	})
+	_, unresolved := tsLayer2(use, "src/use.ts", []byte(useText), allLines([]byte(useText)), r)
+	r.close()
+	got := map[string]bool{}
+	for _, o := range use.Occurrences {
+		if o.Source == scip.OccurrenceSourceOverlay && strings.HasPrefix(o.Symbol, libSym) && strings.Contains(o.Symbol, "#") {
+			got[strings.TrimPrefix(o.Symbol, libSym)+"@"+fmtRange(o)] = true
+		}
+	}
+	return got, unresolved
+}
+
+// TestTSLayer2SpreadContext: a literal spread into a typed one, and the
+// right side of &&, have its context.
+func TestTSLayer2SpreadContext(t *testing.T) {
+	got, _ := tsL2Edges(t, "export interface O { a: number; b?: string; c?: number }\n",
+		`import { O } from "./lib";
+export function f(x: boolean, n?: number): O {
+  return { a: 1, ...(x ? { b: "" } : {}), ...(x && { c: 1 }), ...(n !== undefined && { c: n }) };
+}
+`)
+	for _, w := range []string{"O#a.@2 11 12", "O#b.@2 27 28", "O#c.@2 53 54", "O#c.@2 87 88"} {
+		if !got[w] {
+			t.Errorf("missing %s (got %v)", w, got)
+		}
+	}
+}
