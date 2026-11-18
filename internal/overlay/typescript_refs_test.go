@@ -837,3 +837,72 @@ func TestTSLayer2ObjectExpression(t *testing.T) {
 		t.Errorf("unresolved %d, want 1", unresolved)
 	}
 }
+
+// TestTSLayer2TypeofImport: typeof import("m").x points at m's export x,
+// followed through a barrel's export *, as scip-typescript's index does.
+// A name re-exported by name (export { n as m } from) is a local there, and a
+// package's member has no edge: neither gets one nor counts.
+func TestTSLayer2TypeofImport(t *testing.T) {
+	files := map[string]string{
+		"src/lib.ts":    "export function load() { return 1; }\nexport const n = 1;\n",
+		"src/barrel.ts": "export * from \"./lib\";\nexport { n as m } from \"./lib\";\n",
+		"src/use.ts": "export type A = typeof import(\"./lib\").load;\n" +
+			"export type B = ReturnType<typeof import(\"./barrel\").load>;\n" +
+			"export type C = typeof import(\"./barrel\").m;\n" +
+			"export type D = typeof import(\"react\").useState;\n" +
+			"export type E = typeof import(\"./lib\").missing;\n",
+	}
+	root := t.TempDir()
+	for rel, text := range files {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	for _, rel := range []string{"src/lib.ts", "src/barrel.ts"} {
+		d, _ := tsNewDocument(base, rel, []byte(files[rel]))
+		if d == nil {
+			t.Fatalf("%s not synthesized", rel)
+		}
+		base = scip.PatchIndex(base, map[string]*scip.Document{rel: d})
+	}
+	src := []byte(files["src/use.ts"])
+	use, _ := tsNewDocument(base, "src/use.ts", src)
+	if use == nil {
+		t.Fatal("use.ts not synthesized")
+	}
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/use.ts" {
+			return use
+		}
+		return base.DocumentsByPath[p]
+	})
+	_, unresolved := tsLayer2(use, "src/use.ts", src, allLines(src), r)
+	r.close()
+
+	libSym := head + "src/`lib.ts`/"
+	got := map[string]bool{}
+	for _, o := range use.Occurrences {
+		if o.Source == scip.OccurrenceSourceOverlay && strings.HasPrefix(o.Symbol, libSym) && strings.TrimPrefix(o.Symbol, libSym) != "" {
+			got[strings.TrimPrefix(o.Symbol, libSym)+"@"+fmtRange(o)] = true
+		}
+	}
+	for _, w := range []string{"load().@0 39 43", "load().@1 53 57"} {
+		if !got[w] {
+			t.Errorf("missing %s", w)
+		}
+		delete(got, w)
+	}
+	for g := range got {
+		t.Errorf("unexpected %s", g)
+	}
+	if unresolved != 1 { // missing
+		t.Errorf("unresolved %d, want 1", unresolved)
+	}
+}
