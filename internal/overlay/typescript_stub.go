@@ -12,7 +12,7 @@ func tsLayer1(*scip.Document, *scip.SCIPIndex, *scip.Document, []byte, *LineMap)
 
 func tsNewDocument(*scip.SCIPIndex, string, []byte) (*scip.Document, string) { return nil, "" }
 
-type tsResolver struct{}
+type tsResolver struct{ paths func() []string }
 
 func newTSResolver(string, func(string) *scip.Document) *tsResolver { return &tsResolver{} }
 

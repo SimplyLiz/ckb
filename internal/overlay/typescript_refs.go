@@ -51,6 +51,16 @@ type tsResolver struct {
 	// byPrefix maps a file symbol to its path, for the modules loaded.
 	byPrefix map[string]string
 	tyCache  map[tsTyKey]tsTy
+	// paths lists the index's documents, for the declare global blocks
+	// (nil: none are looked for); globals maps a name to the files that
+	// declare it there, read once.
+	paths     func() []string
+	globals   map[string][]string
+	byFileSym map[string][]string // documents by file symbol, read once
+	// subst binds the type parameters of the generic declaration whose
+	// member type is being read to the string literal its use passed
+	// (RouteContext<"/x">: AppRouteHandlerRoute = "/x").
+	subst map[string]string
 }
 
 type tsPathRule struct {
@@ -769,7 +779,8 @@ type tsModule struct {
 	root    *sitter.Node
 	prefix  string
 	decls   map[string][]tsTop
-	all     map[string]bool // every synthesized suffix: "C#m().", "E#A."
+	globals map[string][]tsTop // the declarations of declare global, by name
+	all     map[string]bool    // every synthesized suffix: "C#m().", "E#A."
 	imports map[string]tsImport
 	tsExports
 	// params is the first parameter of each top-level function, what a
@@ -931,6 +942,14 @@ func (r *tsResolver) load(file string, src []byte) *tsModule {
 	w := &tsWalker{src: src, cols: newUTF16Cols(src)}
 	w.statements(root, "")
 	m := &tsModule{file: file, src: src, tree: tree, root: root, prefix: prefix, decls: tsTopDecls(w.decls), imports: tsImports(root, src), all: map[string]bool{}}
+	var globals []tsDecl
+	for _, d := range w.decls {
+		if rest, ok := strings.CutPrefix(d.suffix, "global/"); ok {
+			d.suffix = rest
+			globals = append(globals, d)
+		}
+	}
+	m.globals = tsTopDecls(globals)
 	for _, d := range w.decls {
 		m.all[d.suffix] = true
 	}
@@ -956,38 +975,52 @@ func tsTopNodes(root *sitter.Node, src []byte) (map[string]*sitter.Node, map[str
 		}
 		nodes[s] = n
 	}
-	for i := 0; i < int(root.NamedChildCount()); i++ {
-		st := root.NamedChild(i)
-		if st.Type() == "export_statement" {
-			d := st.ChildByFieldName("declaration")
-			if d == nil {
-				continue
+	var walk func(list *sitter.Node, owner string)
+	walk = func(list *sitter.Node, owner string) {
+		for i := 0; i < int(list.NamedChildCount()); i++ {
+			st := list.NamedChild(i)
+			if st.Type() == "export_statement" {
+				d := st.ChildByFieldName("declaration")
+				if d == nil {
+					continue
+				}
+				st = d
 			}
-			st = d
-		}
-		name := st.ChildByFieldName("name")
-		switch st.Type() {
-		case "function_declaration", "generator_function_declaration":
-			if name != nil {
-				put(tsMethod(name.Content(src)), st)
+			if st.Type() == "ambient_declaration" {
+				if _, body := tsGlobalBlock(st); body != nil && owner == "" {
+					walk(body, "global/")
+					continue
+				}
+				if st.NamedChildCount() != 1 {
+					continue
+				}
+				st = st.NamedChild(0) // declare function f(): …, declare const x
 			}
-		case "function_signature":
-			if name != nil {
-				over[tsMethod(name.Content(src))] = true
-			}
-		case "class_declaration", "abstract_class_declaration", "interface_declaration", "type_alias_declaration", "enum_declaration":
-			if name != nil {
-				put(tsType(name.Content(src)), st)
-			}
-		case "lexical_declaration", "variable_declaration":
-			for j := 0; j < int(st.NamedChildCount()); j++ {
-				d := st.NamedChild(j)
-				if n := d.ChildByFieldName("name"); d.Type() == "variable_declarator" && n != nil && n.Type() == "identifier" {
-					put(tsTerm(n.Content(src)), d)
+			name := st.ChildByFieldName("name")
+			switch st.Type() {
+			case "function_declaration", "generator_function_declaration":
+				if name != nil {
+					put(owner+tsMethod(name.Content(src)), st)
+				}
+			case "function_signature":
+				if name != nil {
+					over[owner+tsMethod(name.Content(src))] = true
+				}
+			case "class_declaration", "abstract_class_declaration", "interface_declaration", "type_alias_declaration", "enum_declaration":
+				if name != nil {
+					put(owner+tsType(name.Content(src)), st)
+				}
+			case "lexical_declaration", "variable_declaration":
+				for j := 0; j < int(st.NamedChildCount()); j++ {
+					d := st.NamedChild(j)
+					if n := d.ChildByFieldName("name"); d.Type() == "variable_declarator" && n != nil && n.Type() == "identifier" {
+						put(owner+tsTerm(n.Content(src)), d)
+					}
 				}
 			}
 		}
 	}
+	walk(root, "")
 	for s := range dup {
 		delete(nodes, s)
 	}
@@ -1298,7 +1331,63 @@ func (r *tsResolver) resolveIn(file, name string, ns tsNS) (tsResolved, bool) {
 	if tops := m.decls[name]; len(tops) > 0 {
 		return tsResolved{sym: pickTop(m.prefix, tops, ns), file: file}, true
 	}
+	if g, ok := r.globalDecl(name, ns); ok {
+		return g, true
+	}
 	return tsResolved{}, false // a global
+}
+
+// globalDecl resolves name to a declaration of the repository's declare
+// global blocks (Next.js's RouteContext, PageProps). Empty sym when several
+// files declare it.
+func (r *tsResolver) globalDecl(name string, ns tsNS) (tsResolved, bool) {
+	if r.paths == nil {
+		return tsResolved{}, false
+	}
+	if r.globals == nil {
+		r.globals = map[string][]string{}
+		for _, p := range r.paths() {
+			d := r.docs(p)
+			prefix := tsFileSymbol(d)
+			if prefix == "" {
+				continue
+			}
+			seen := map[string]bool{}
+			for _, si := range d.Symbols {
+				rest, ok := strings.CutPrefix(si.Symbol, prefix+"global/")
+				if !ok {
+					continue
+				}
+				if n, _, ok := tsSplitTop(rest); ok && !seen[n] {
+					seen[n] = true
+					r.globals[n] = append(r.globals[n], p)
+				}
+			}
+		}
+	}
+	files := r.globals[name]
+	if len(files) == 0 {
+		return tsResolved{}, false
+	}
+	sym, file := "", ""
+	for _, f := range files {
+		m := r.module(f)
+		if m == nil {
+			return tsResolved{}, true
+		}
+		s := pickTop(m.prefix+"global/", m.globals[name], ns)
+		if s == "" || s == sym {
+			continue // .next/types and .next/dev/types: one file symbol
+		}
+		if sym != "" {
+			return tsResolved{}, true
+		}
+		sym, file = s, f
+	}
+	if sym == "" {
+		return tsResolved{}, false // a value or type the global block does not declare in ns
+	}
+	return tsResolved{sym: sym, file: file}, true
 }
 
 // tsSymPrefix is the file symbol a top-level symbol starts with.
@@ -1307,7 +1396,11 @@ func tsSymPrefix(sym string) string {
 	if i < 0 {
 		return ""
 	}
-	return sym[:i+1]
+	p := sym[:i+1]
+	if strings.HasSuffix(p, "`/global/") {
+		p = strings.TrimSuffix(p, "global/") // a declaration of declare global
+	}
+	return p
 }
 
 func (l *tsRefs) ident(n *sitter.Node) {
@@ -1989,6 +2082,46 @@ func (r *tsResolver) literalMember(file, owner, name string) string {
 	if m == nil {
 		return ""
 	}
+	hit := r.literalMemberIn(m, owner, name)
+	if hit == "" {
+		return ""
+	}
+	// Documents sharing the file symbol (Next.js's .next/types and
+	// .next/dev/types) number their literals apart, and which one a use
+	// sees is the program's choice: only a number they agree on is known.
+	for _, f := range r.sharedPrefix(m.prefix) {
+		if f == file {
+			continue
+		}
+		if o := r.module(f); o == nil || r.literalMemberIn(o, owner, name) != hit {
+			return ""
+		}
+	}
+	return hit
+}
+
+// sharedPrefix lists the documents whose file symbol is prefix, when there
+// is more than one.
+func (r *tsResolver) sharedPrefix(prefix string) []string {
+	if r.paths == nil {
+		return nil
+	}
+	if r.byFileSym == nil {
+		r.byFileSym = map[string][]string{}
+		for _, p := range r.paths() {
+			if s := tsFileSymbol(r.docs(p)); s != "" {
+				r.byFileSym[s] = append(r.byFileSym[s], p)
+			}
+		}
+	}
+	if fs := r.byFileSym[prefix]; len(fs) > 1 {
+		return fs
+	}
+	return nil
+}
+
+func (r *tsResolver) literalMemberIn(m *tsModule, owner, name string) string {
+	file := m.file
 	if m.defs == nil {
 		m.defs = map[string]bool{}
 		if d := r.docs(file); d != nil {
@@ -1999,7 +2132,7 @@ func (r *tsResolver) literalMember(file, owner, name string) string {
 			}
 		}
 	}
-	esc := tsEscape(name)
+	esc, qesc := tsEscape(name), tsEscape(`"`+name+`"`)
 	hit := ""
 	for s := range m.defs {
 		rest, ok := strings.CutPrefix(s, owner+"typeLiteral")
@@ -2013,7 +2146,7 @@ func (r *tsResolver) literalMember(file, owner, name string) string {
 		if i == 0 || !strings.HasPrefix(rest[i:], ":") {
 			continue
 		}
-		if tail := rest[i+1:]; tail != esc+"." && tail != esc+"()." {
+		if tail := rest[i+1:]; tail != esc+"." && tail != esc+"()." && tail != qesc+"." && tail != qesc+"()." {
 			continue
 		}
 		if hit != "" {

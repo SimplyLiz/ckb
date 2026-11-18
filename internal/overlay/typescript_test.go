@@ -30,6 +30,7 @@ enum E { A, B = 2 }
 namespace N { export function h() {} }
 declare module "mod" { export const z: number; }
 const { d1, d2 } = { d1: 1, d2: 2 };
+declare global { interface G { "s-k": number } }
 `
 
 func TestParseTSDecls(t *testing.T) {
@@ -66,6 +67,11 @@ func TestParseTSDecls(t *testing.T) {
 		"N/h().":                  "14:30-31 [14 14 36]",
 		"`\"mod\"`/":              "15:15-20 []",
 		"`\"mod\"`/z.":            "15:36-37 []",
+		// Lebenslauf's .next/types/routes.d.ts in scip-typescript's index:
+		// global/ at the keyword, a string name with its quotes.
+		"global/":             "17:8-14 []",
+		"global/G#":           "17:27-28 [17 17 46]",
+		"global/G#`\"s-k\"`.": "17:31-36 []",
 	}
 	for k, w := range want {
 		if got[k] != w {

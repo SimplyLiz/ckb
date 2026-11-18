@@ -554,7 +554,8 @@ export type H = S["status" | "nested"];
 // TestTSLayer2LookupTypes: T["k"] points the string, quotes included, at
 // T's member k, through nested lookups and Partial; a union of types or of
 // keys gets nothing. The want list is scip-typescript's index of the file
-// (C's "item" is a local there, Layer 2 counts it, and so it does F's).
+// (C's "item" is a local there, Layer 2 counts it; F's string-named member
+// keeps its quotes).
 func TestTSLayer2LookupTypes(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
@@ -593,15 +594,15 @@ func TestTSLayer2LookupTypes(t *testing.T) {
 		// by Layer 1 until the next reindex.
 		"L#typeLiteral1:kind.@5 18 24", "L#typeLiteral1:run().@5 30 35",
 		"S#status.@8 27 35",
+		"S#`\"/x\"`.@7 18 22",
 	}
 	sort.Strings(want)
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("lookup type members\n got  %v\n want %v", got, want)
 	}
-	// C's "item", and F's "/x": a member with a string name is not parsed
-	// (the index has S#`"/x"`. there).
-	if unresolved != 2 {
-		t.Errorf("unresolved %d, want 2", unresolved)
+	// C's "item".
+	if unresolved != 1 {
+		t.Errorf("unresolved %d, want 1", unresolved)
 	}
 }
 
@@ -980,6 +981,108 @@ func TestTSLayer2ParamProperties(t *testing.T) {
 	for g := range got {
 		if !strings.HasPrefix(g, "use.ts:E#@") && !strings.HasPrefix(g, "lib.ts:R#@") && !strings.HasPrefix(g, "lib.ts:E#@") {
 			t.Errorf("unexpected %s", g)
+		}
+	}
+}
+
+const tsRoutesFile = `type R = "/a/[id]" | "/b"
+interface ParamMap {
+  "/a/[id]": { "id": string; }
+  "/b": {}
+}
+export type { ParamMap }
+declare global {
+  interface RouteContext<X extends R> {
+    params: Promise<ParamMap[X]>
+  }
+}
+`
+
+const tsRouteFile = `export async function GET(ctx: RouteContext<"/a/[id]">) {
+  return (await ctx.params).id;
+}
+`
+
+// TestTSLayer2DeclareGlobal: Next.js's generated routes.d.ts. Layer 1 names
+// declare global's declarations under global/ and string-named members with
+// their quotes; Layer 2 resolves a free name to them and binds the type
+// parameter to the literal its use passes, so ParamMap[X] is the member
+// "/a/[id]" and .id its literal's "id" (the symbols scip-typescript writes
+// for Lebenslauf's routes). When a second document has the same file symbol
+// (.next/types and .next/dev/types) and numbers the literal apart, .id is
+// counted.
+func TestTSLayer2DeclareGlobal(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		renumber bool
+		wantID   bool
+	}{{"one numbering", false, true}, {"two numberings", true, false}} {
+		root := t.TempDir()
+		for _, f := range []struct{ path, src string }{{"types/routes.d.ts", tsRoutesFile}, {"dev/types/routes.d.ts", tsRoutesFile}, {"src/route.ts", tsRouteFile}} {
+			if err := os.MkdirAll(filepath.Join(root, filepath.Dir(f.path)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, f.path), []byte(f.src), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		head := "scip-typescript npm app 1.0.0 "
+		seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+		base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+		routes, _ := tsNewDocument(base, "types/routes.d.ts", []byte(tsRoutesFile))
+		doc, _ := tsNewDocument(base, "src/route.ts", []byte(tsRouteFile))
+		if routes == nil || doc == nil {
+			t.Fatal("document not synthesized")
+		}
+		lit := ""
+		for _, o := range routes.Occurrences {
+			if strings.Contains(o.Symbol, "typeLiteral") {
+				lit = o.Symbol
+			}
+		}
+		if lit == "" {
+			t.Fatal("no literal member in routes.d.ts")
+		}
+		dev := &scip.Document{RelativePath: "dev/types/routes.d.ts", Symbols: routes.Symbols}
+		for _, o := range routes.Occurrences {
+			c := *o
+			if tc.renumber && c.Symbol == lit {
+				c.Symbol = strings.Replace(c.Symbol, "typeLiteral", "typeLiteral9", 1)
+			}
+			dev.Occurrences = append(dev.Occurrences, &c)
+		}
+		docs := map[string]*scip.Document{"types/routes.d.ts": routes, "dev/types/routes.d.ts": dev, "src/route.ts": doc}
+		r := newTSResolver(root, func(p string) *scip.Document {
+			if d, ok := docs[p]; ok {
+				return d
+			}
+			return base.DocumentsByPath[p]
+		})
+		r.paths = func() []string { return []string{"src/route.ts", "types/routes.d.ts", "dev/types/routes.d.ts"} }
+		_, unresolved := tsLayer2(doc, "src/route.ts", []byte(tsRouteFile), allLines([]byte(tsRouteFile)), r)
+		prefix := head + "types/`routes.d.ts`/"
+		var got []string
+		for _, o := range doc.Occurrences {
+			if o.Source == scip.OccurrenceSourceOverlay && strings.HasPrefix(o.Symbol, prefix) {
+				got = append(got, strings.TrimPrefix(o.Symbol, prefix)+"@"+fmtRange(o))
+			}
+		}
+		sort.Strings(got)
+		want := []string{"global/RouteContext#@0 31 43", "global/RouteContext#params.@1 20 26"}
+		wantUnres := 1
+		if tc.wantID {
+			want = append(want, strings.TrimPrefix(lit, prefix)+"@1 28 30")
+			wantUnres = 0
+		}
+		sort.Strings(want)
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("%s\n got  %v\n want %v", tc.name, got, want)
+		}
+		if unresolved != wantUnres {
+			t.Errorf("%s: unresolved %d, want %d", tc.name, unresolved, wantUnres)
+		}
+		if !strings.Contains(lit, "ParamMap#`\"/a/[id]\"`.typeLiteral") || !strings.HasSuffix(lit, ":`\"id\"`.") {
+			t.Errorf("literal member %s", lit)
 		}
 	}
 }

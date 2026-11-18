@@ -69,6 +69,9 @@ type tsTy struct {
 	// orPromise: an async function's result context, T | PromiseLike<T>
 	// (a union, which has no property of T's under any tsconfig).
 	orPromise bool
+	// targs: a generic tyDecl's type parameters the use bound to a string
+	// literal (RouteContext<"/x">), for its members' lookup types.
+	targs map[string]string
 }
 
 var (
@@ -182,7 +185,11 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 				return tsOutsideTy
 			}
 		}
-		return r.typeOfNode(m, name, depth+1)
+		res := r.typeOfNode(m, name, depth+1)
+		if res.k == tyDecl {
+			res.targs = r.typeArgs(m, res, args)
+		}
+		return res
 	case "type_identifier":
 		return r.namedType(m, t, depth)
 	case "nested_type_identifier":
@@ -227,8 +234,16 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 		}
 		return tsTy{k: tyLit, m: m, node: t, sym: owner}
 	case "lookup_type":
-		// T["k"]: the type of T's member k.
-		key, ok := tsLookupKey(t, m.src)
+		// T["k"]: the type of T's member k; T[P] when P is bound to "k".
+		k, ok := "", false
+		if key, lit := tsLookupKey(t, m.src); lit {
+			k, ok = tsStringValue(key.Content(m.src)), true
+		} else if t.NamedChildCount() == 2 && t.NamedChild(1).Type() == "type_identifier" {
+			p := t.NamedChild(1).Content(m.src)
+			if v, bound := r.subst[p]; bound && tsBoundLocally(t.NamedChild(1), p, m.src) {
+				k, ok = v, true
+			}
+		}
 		if !ok {
 			return tsUnknownTy
 		}
@@ -236,7 +251,7 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 		if len(obj.parts) > 0 && !obj.inter {
 			return tsUnknownTy
 		}
-		switch mb := r.memberOf(obj, tsStringValue(key.Content(m.src)), depth+1); mb.k {
+		switch mb := r.memberOf(obj, k, depth+1); mb.k {
 		case tyDecl:
 			if len(mb.more) > 0 {
 				return tsUnknownTy
@@ -254,6 +269,50 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 		return tsOutsideTy
 	}
 	return tsUnknownTy
+}
+
+// typeArgs binds decl's type parameters to the string literals args passes
+// (a parameter of the declaration being read passes its own binding).
+func (r *tsResolver) typeArgs(m *tsModule, decl tsTy, args *sitter.Node) map[string]string {
+	tps := decl.node.ChildByFieldName("type_parameters")
+	if tps == nil || args == nil {
+		return nil
+	}
+	var out map[string]string
+	j := 0
+	for i := 0; i < int(tps.NamedChildCount()); i++ {
+		tp := tps.NamedChild(i)
+		if tp.Type() != "type_parameter" {
+			continue
+		}
+		if j >= int(args.NamedChildCount()) {
+			break
+		}
+		a := args.NamedChild(j)
+		j++
+		name := tp.ChildByFieldName("name")
+		if name == nil {
+			continue
+		}
+		v, ok := "", false
+		switch a.Type() {
+		case "literal_type":
+			if a.NamedChildCount() == 1 && a.NamedChild(0).Type() == "string" {
+				v, ok = tsStringValue(a.NamedChild(0).Content(m.src)), true
+			}
+		case "type_identifier":
+			if p := a.Content(m.src); tsBoundLocally(a, p, m.src) {
+				v, ok = r.subst[p]
+			}
+		}
+		if ok {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[name.Content(decl.m.src)] = v
+		}
+	}
+	return out
 }
 
 // mappedTy is a homomorphic utility type of a repository type: its members
@@ -463,10 +522,23 @@ func tsPosOwner(t *sitter.Node, src []byte) string {
 	if p == nil {
 		return ""
 	}
+	// topLevel reports a declaration of the file or of its declare global
+	// block; the latter's descriptors start with gp.
+	gp := ""
 	topLevel := func(n *sitter.Node) bool {
 		a := n.Parent()
 		if a != nil && a.Type() == "export_statement" {
 			a = a.Parent()
+		}
+		if a != nil && a.Type() == "statement_block" {
+			if g := a.Parent(); g != nil && g.Type() == "ambient_declaration" {
+				if _, body := tsGlobalBlock(g); body != nil && body.StartByte() == a.StartByte() {
+					if gg := g.Parent(); gg != nil && gg.Type() == "program" {
+						gp = "global/"
+						return true
+					}
+				}
+			}
 		}
 		return a != nil && a.Type() == "program"
 	}
@@ -487,30 +559,30 @@ func tsPosOwner(t *sitter.Node, src []byte) string {
 			decl := q.Parent()
 			name := q.ChildByFieldName("name")
 			if decl != nil && name != nil && name.Type() == "identifier" && topLevel(decl) {
-				return tsTerm(name.Content(src))
+				return gp + tsTerm(name.Content(src))
 			}
 		case "property_signature":
 			body := q.Parent()
 			name := q.ChildByFieldName("name")
-			if body == nil || name == nil || !tsSimpleMemberName(name) {
+			if body == nil || name == nil || !tsSignatureName(name) {
 				return ""
 			}
 			if i := body.Parent(); i != nil && i.Type() == "interface_declaration" && topLevel(i) {
 				if in := i.ChildByFieldName("name"); in != nil {
-					return tsType(in.Content(src)) + tsTerm(name.Content(src))
+					return gp + tsType(in.Content(src)) + tsTerm(name.Content(src))
 				}
 			}
 		case "function_declaration":
 			if topLevel(q) && q.ChildByFieldName("return_type") != nil && q.ChildByFieldName("return_type").StartByte() == p.StartByte() {
 				if name := q.ChildByFieldName("name"); name != nil {
-					return tsMethod(name.Content(src))
+					return gp + tsMethod(name.Content(src))
 				}
 			}
 		}
 	case "type_alias_declaration":
 		if v := p.ChildByFieldName("value"); v != nil && v.StartByte() == t.StartByte() && topLevel(p) {
 			if name := p.ChildByFieldName("name"); name != nil {
-				return tsType(name.Content(src))
+				return gp + tsType(name.Content(src))
 			}
 		}
 	case "type_arguments":
@@ -549,9 +621,9 @@ func tsPosOwner(t *sitter.Node, src []byte) string {
 		}
 		switch d.Type() {
 		case "function_declaration":
-			return tsMethod(dn.Content(src)) + "[" + tsEscape(name.Content(src)) + "]"
+			return gp + tsMethod(dn.Content(src)) + "[" + tsEscape(name.Content(src)) + "]"
 		case "interface_declaration", "class_declaration", "abstract_class_declaration", "type_alias_declaration":
-			return tsType(dn.Content(src)) + "[" + tsEscape(name.Content(src)) + "]"
+			return gp + tsType(dn.Content(src)) + "[" + tsEscape(name.Content(src)) + "]"
 		}
 	}
 	return ""
@@ -630,9 +702,9 @@ func (r *tsResolver) declMember(t tsTy, name string, depth int) tsMember {
 	if depth > tsMaxDepth {
 		return tsMember{k: tyUnknown}
 	}
-	esc := tsEscape(name)
+	esc, qesc := tsEscape(name), tsEscape(`"`+name+`"`)
 	hit := ""
-	for _, s := range []string{t.sym + esc + ".", t.sym + esc + "().", t.sym + tsMethod("<get>"+name)} {
+	for _, s := range []string{t.sym + esc + ".", t.sym + esc + "().", t.sym + tsMethod("<get>"+name), t.sym + qesc + ".", t.sym + qesc + "()."} {
 		if t.m.all[s] {
 			if hit != "" {
 				return tsMember{k: tyUnknown}
@@ -645,7 +717,11 @@ func (r *tsResolver) declMember(t tsTy, name string, depth int) tsMember {
 		if body := t.node.ChildByFieldName("body"); body != nil {
 			mn = tsFindMember(body, name, t.m.src)
 		}
-		return tsMember{sym: t.m.prefix + hit, typ: r.memberType(t.m, mn, depth), k: tyDecl}
+		saved := r.subst
+		r.subst = t.targs
+		typ := r.memberType(t.m, mn, depth)
+		r.subst = saved
+		return tsMember{sym: t.m.prefix + hit, typ: typ, k: tyDecl}
 	}
 	if p := tsParamProperty(t.node.ChildByFieldName("body"), name, t.m.src); p != nil {
 		// constructor(readonly name: T): scip-typescript's member is the
@@ -783,7 +859,7 @@ func tsFindMember(body *sitter.Node, name string, src []byte) *sitter.Node {
 		c := body.NamedChild(i)
 		switch c.Type() {
 		case "property_signature", "method_signature", "public_field_definition", "method_definition", "abstract_method_signature":
-			if n := c.ChildByFieldName("name"); n != nil && n.Content(src) == name {
+			if n := c.ChildByFieldName("name"); n != nil && (n.Content(src) == name || n.Type() == "string" && tsStringValue(n.Content(src)) == name) {
 				return c
 			}
 		}
@@ -806,6 +882,9 @@ func (r *tsResolver) memberType(m *tsModule, mn *sitter.Node, depth int) tsTy {
 			return res
 		}
 		if v := mn.ChildByFieldName("value"); v != nil {
+			saved := r.subst
+			r.subst = nil // expression types are cached: no binding may leak in
+			defer func() { r.subst = saved }()
 			return r.exprType(m, v, depth+1)
 		}
 		return tsNoTy
