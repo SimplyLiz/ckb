@@ -906,3 +906,80 @@ func TestTSLayer2TypeofImport(t *testing.T) {
 		t.Errorf("unresolved %d, want 1", unresolved)
 	}
 }
+
+// TestTSLayer2ParamProperties: a constructor parameter with a modifier is a
+// member, and scip-typescript's symbol for it is the parameter's; a plain
+// parameter is not a member.
+func TestTSLayer2ParamProperties(t *testing.T) {
+	files := map[string]string{
+		"src/lib.ts": "export class E extends Error {\n" +
+			"  constructor(readonly reason: string, public code?: R, z = 1) { super(); }\n" +
+			"  is() { return this.reason === \"x\"; }\n" +
+			"}\n" +
+			"export interface R { n: number }\n" +
+			"export class F extends E {}\n",
+		"src/use.ts": "import { E, F } from \"./lib\";\n" +
+			"export const a = (e: E) => e.reason === \"y\" || e.code?.n;\n" +
+			"export const b = (f: F) => f.reason + f.z;\n",
+	}
+	root := t.TempDir()
+	for rel, text := range files {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	lib, _ := tsNewDocument(base, "src/lib.ts", []byte(files["src/lib.ts"]))
+	if lib == nil {
+		t.Fatal("lib.ts not synthesized")
+	}
+	base = scip.PatchIndex(base, map[string]*scip.Document{"src/lib.ts": lib})
+	docs := map[string]*scip.Document{}
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if d := docs[p]; d != nil {
+			return d
+		}
+		return base.DocumentsByPath[p]
+	})
+	got := map[string]bool{}
+	libSym := head + "src/`lib.ts`/"
+	for _, rel := range []string{"src/lib.ts", "src/use.ts"} {
+		src := []byte(files[rel])
+		d, _ := tsNewDocument(base, rel, src)
+		if d == nil {
+			t.Fatalf("%s not synthesized", rel)
+		}
+		docs[rel] = d
+		tsLayer2(d, rel, src, allLines(src), r)
+		for _, o := range d.Occurrences {
+			if o.Source == scip.OccurrenceSourceOverlay && strings.HasPrefix(o.Symbol, libSym+"E#") || o.Source == scip.OccurrenceSourceOverlay && strings.HasPrefix(o.Symbol, libSym+"R#") {
+				got[rel[4:]+":"+strings.TrimPrefix(o.Symbol, libSym)+"@"+fmtRange(o)] = true
+			}
+		}
+	}
+	r.close()
+	ctor := "E#`<constructor>`()."
+	for _, w := range []string{
+		"lib.ts:" + ctor + "(reason)@2 21 27", // this.reason
+		"use.ts:" + ctor + "(reason)@1 29 35",
+		"use.ts:" + ctor + "(code)@1 49 53",
+		"use.ts:R#n.@1 55 56",                 // the parameter's type followed
+		"use.ts:" + ctor + "(reason)@2 29 35", // inherited by F
+	} {
+		if !got[w] {
+			t.Errorf("missing %s", w)
+		}
+		delete(got, w)
+	}
+	for g := range got {
+		if !strings.HasPrefix(g, "use.ts:E#@") && !strings.HasPrefix(g, "lib.ts:R#@") && !strings.HasPrefix(g, "lib.ts:E#@") {
+			t.Errorf("unexpected %s", g)
+		}
+	}
+}

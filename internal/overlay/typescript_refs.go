@@ -1817,6 +1817,18 @@ func (l *tsRefs) objectKeys(obj *sitter.Node) {
 		return
 	}
 	t := l.r.contextType(l.self, obj, 0)
+	if t.k == tyRecord && !t.orPromise {
+		// Record<K, V>, optional or not: a shorthand is the value when K
+		// is string, a key's own symbol when K spells the keys; counted
+		// either way.
+		for _, k := range keys {
+			if k.Type() == "shorthand_property_identifier" {
+				l.noValue[k.StartByte()] = true
+				l.missValue(k)
+			}
+		}
+		return
+	}
 	if t.orPromise || t.nullable && l.r.strictNull(l.file) {
 		return // the literal's keys are its own properties
 	}
