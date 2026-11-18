@@ -1343,7 +1343,7 @@ func (l *tsRefs) member(n *sitter.Node) {
 	}
 	pname := l.text(prop)
 	switch t := l.r.exprType(l.self, obj, 0); t.k {
-	case tyDecl, tyLit, tyPick:
+	case tyDecl, tyLit, tyPick, tyObj:
 		l.memberEdgeRef(prop, obj, t)
 		return
 	case tyUnknown:

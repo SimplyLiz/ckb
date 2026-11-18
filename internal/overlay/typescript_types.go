@@ -42,6 +42,7 @@ const (
 	tyCallback                 // a function known by params and its result elem
 	tyStore                    // a zustand store whose state is elem
 	tyPick                     // Pick, Omit, Partial, Readonly of elem: keys, omit, optional
+	tyObj                      // an object literal expression: node, members by the declaring document
 )
 
 type tsTy struct {
@@ -593,6 +594,8 @@ func (r *tsResolver) memberOf(t tsTy, name string, depth int) tsMember {
 			mb.typ.nullable = true // Partial: a?: T
 		}
 		return mb
+	case tyObj:
+		return r.objMember(t, name, depth)
 	case tyStore:
 		if tsReactBox(t) {
 			return tsMember{k: tyOutside}
@@ -1026,6 +1029,8 @@ func (r *tsResolver) exprType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 		return r.classValueType(m, c, depth+1)
 	case "arrow_function", "function_expression", "function", "generator_function":
 		return tsTy{k: tyFn, m: m, node: e}
+	case "object":
+		return tsTy{k: tyObj, m: m, node: e}
 	case "null", "undefined":
 		return tsNullTy
 	case "binary_expression":
@@ -1056,6 +1061,71 @@ func (r *tsResolver) exprType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 		return tsOutsideTy
 	}
 	return tsNoTy
+}
+
+// objMember is the member name of an object literal expression: the symbol
+// the declaring document defines at its key (scip-typescript's name0:, or a
+// local), typed by its value. A key the literal does not spell, or one
+// beside a spread that may hide it, is unknown.
+func (r *tsResolver) objMember(t tsTy, name string, depth int) tsMember {
+	if depth > tsMaxDepth {
+		return tsMember{k: tyUnknown}
+	}
+	var key, val *sitter.Node
+	spread := false
+	for i := 0; i < int(t.node.NamedChildCount()); i++ {
+		c := t.node.NamedChild(i)
+		var k, v *sitter.Node
+		switch c.Type() {
+		case "pair":
+			k, v = c.ChildByFieldName("key"), c.ChildByFieldName("value")
+		case "shorthand_property_identifier":
+			k = c
+		case "method_definition":
+			k, v = c.ChildByFieldName("name"), c
+		case "spread_element":
+			// { ...a, k } where a has k too, or where a is a package's or
+			// an unresolved import's type (any, to scip-typescript): the
+			// index does not point the spread type's property at the
+			// literal's key. Where Layer 2 just does not know a's type, it
+			// does (46 on Lebenslauf).
+			if c.NamedChildCount() == 1 {
+				st := r.exprType(t.m, c.NamedChild(0), depth+1)
+				if st.k == tyOutside && st.sym != "null" || r.memberOf(st, name, depth+1).k == tyDecl {
+					spread = true
+				}
+			}
+		}
+		if k == nil {
+			continue
+		}
+		if k.Type() != "property_identifier" && k.Type() != "shorthand_property_identifier" {
+			continue
+		}
+		if k.Content(t.m.src) == name {
+			key, val = k, v // the last one wins, as in JavaScript
+		}
+	}
+	if key == nil || spread {
+		return tsMember{k: tyUnknown}
+	}
+	var typ tsTy
+	switch {
+	case key.Type() == "shorthand_property_identifier":
+		typ = r.identType(t.m, key, depth+1)
+	case val.Type() == "method_definition":
+		typ = tsTy{k: tyFn, m: t.m, node: val}
+	default:
+		typ = r.exprType(t.m, val, depth+1)
+	}
+	sym := r.defAt(t.m, key)
+	switch {
+	case sym == "":
+		return tsMember{k: tyUnknown}
+	case strings.HasPrefix(sym, "local "):
+		return tsMember{typ: typ, k: tyOutside}
+	}
+	return tsMember{sym: sym, typ: typ, k: tyDecl}
 }
 
 // newGeneric is the type of new C<…>(): the global Map and Array with their
@@ -1179,8 +1249,8 @@ func (r *tsResolver) inferReturn(m *tsModule, fn *sitter.Node, depth int) tsTy {
 	if !seen {
 		return tsOutsideTy // void
 	}
-	if tsIsAsync(fn) && t.k != tyUnknown && t.k != tyNone {
-		return tsWrap(tyPromise, t)
+	if tsIsAsync(fn) && t.k != tyUnknown && t.k != tyNone && t.k != tyPromise {
+		return tsWrap(tyPromise, t) // a returned promise is not wrapped again
 	}
 	return t
 }
