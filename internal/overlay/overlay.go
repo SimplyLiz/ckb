@@ -440,6 +440,18 @@ func layer2(info *Info, jobs []*goJob, base *scip.SCIPIndex, root string, replac
 				}
 				return base.DocumentsByPath[p]
 			})
+			ts.paths = func() []string {
+				out := make([]string, 0, len(base.DocumentsByPath)+len(replace))
+				for p := range base.DocumentsByPath {
+					if _, ok := replace[p]; !ok {
+						out = append(out, p)
+					}
+				}
+				for p := range replace {
+					out = append(out, p)
+				}
+				return out
+			}
 		}
 		lines := j.lines
 		if lines == nil {

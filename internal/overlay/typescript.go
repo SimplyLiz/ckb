@@ -331,7 +331,7 @@ func (w *tsWalker) literal(t *sitter.Node, owner string) {
 	for i := 0; i < int(t.NamedChildCount()); i++ {
 		m := t.NamedChild(i)
 		name := m.ChildByFieldName("name")
-		if name == nil || !tsSimpleMemberName(name) {
+		if name == nil || !tsSignatureName(name) {
 			continue
 		}
 		tail := ""
@@ -407,6 +407,13 @@ func (w *tsWalker) statement(n *sitter.Node, owner string, outer *sitter.Node) {
 			w.statement(n.NamedChild(0), owner, outer)
 		}
 	case "ambient_declaration":
+		if g, body := tsGlobalBlock(n); body != nil {
+			// declare global { … }: scip-typescript names its declarations
+			// under the namespace "global/", defined at the keyword.
+			w.add(g, owner+tsNamespace("global"), nil)
+			w.statements(body, owner+tsNamespace("global"))
+			return
+		}
 		for i := 0; i < int(n.NamedChildCount()); i++ {
 			w.statement(n.NamedChild(i), owner, whole)
 		}
@@ -590,7 +597,7 @@ func (w *tsWalker) typeMembers(body *sitter.Node, owner string) {
 	for i := 0; i < int(body.NamedChildCount()); i++ {
 		m := body.NamedChild(i)
 		name := m.ChildByFieldName("name")
-		if name == nil || !tsSimpleMemberName(name) {
+		if name == nil || !tsSignatureName(name) {
 			continue
 		}
 		switch m.Type() {
@@ -612,6 +619,24 @@ func tsSimpleMemberName(n *sitter.Node) bool {
 		return true
 	}
 	return false
+}
+
+// tsSignatureName is a property or method signature's name Layer 1 writes:
+// a simple one, or a string literal, which scip-typescript names with its
+// quotes (ParamMap#`"/x"`.).
+func tsSignatureName(n *sitter.Node) bool {
+	return tsSimpleMemberName(n) || n.Type() == "string"
+}
+
+// tsGlobalBlock is the keyword and the body of declare global { … }.
+func tsGlobalBlock(n *sitter.Node) (*sitter.Node, *sitter.Node) {
+	if n.Type() != "ambient_declaration" || n.ChildCount() < 3 || n.Child(1).Type() != "global" {
+		return nil, nil
+	}
+	if b := n.Child(2); b.Type() == "statement_block" {
+		return n.Child(1), b
+	}
+	return nil, nil
 }
 
 // tsAccessor reports "get" or "set" when one of those keywords precedes the
