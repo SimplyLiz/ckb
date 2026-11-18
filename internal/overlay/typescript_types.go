@@ -168,7 +168,7 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 					return tsWrap(tyPromise, arg(0))
 				case "Record":
 					return tsWrap(tyRecord, arg(1))
-				case "Map", "ReadonlyMap":
+				case "Map", "ReadonlyMap", "WeakMap":
 					return tsWrap(tyMap, arg(1))
 				}
 				if r.mentionsRepoIn(m, args) {
@@ -910,7 +910,11 @@ func (r *tsResolver) exprType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 		if e.NamedChildCount() != 1 {
 			return tsNoTy
 		}
-		return r.exprType(m, e.NamedChild(0), depth+1)
+		t := r.exprType(m, e.NamedChild(0), depth+1)
+		if e.Type() == "non_null_expression" {
+			t.nullable = false
+		}
+		return t
 	case "satisfies_expression":
 		if e.NamedChildCount() < 1 {
 			return tsNoTy
@@ -1013,8 +1017,11 @@ func (r *tsResolver) exprType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 		return r.returnOf(m, ft, args, depth)
 	case "new_expression":
 		c := e.ChildByFieldName("constructor")
-		if c == nil || c.Type() != "identifier" || e.ChildByFieldName("type_arguments") != nil {
+		if c == nil || c.Type() != "identifier" {
 			return tsNoTy
+		}
+		if ta := e.ChildByFieldName("type_arguments"); ta != nil {
+			return r.newGeneric(m, c, ta, depth)
 		}
 		return r.classValueType(m, c, depth+1)
 	case "arrow_function", "function_expression", "function", "generator_function":
@@ -1049,6 +1056,42 @@ func (r *tsResolver) exprType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 		return tsOutsideTy
 	}
 	return tsNoTy
+}
+
+// newGeneric is the type of new C<…>(): the global Map and Array with their
+// element type; anything else is left out (a generic class's members may
+// mention its type parameters).
+func (r *tsResolver) newGeneric(m *tsModule, c, ta *sitter.Node, depth int) tsTy {
+	n := c.Content(m.src)
+	if tsBoundLocally(c, n, m.src) {
+		return tsNoTy
+	}
+	if _, ok := r.resolveIn(m.file, n, tsValue); ok {
+		return tsNoTy
+	}
+	arg := func(i int) tsTy {
+		if int(ta.NamedChildCount()) <= i {
+			return tsUnknownTy
+		}
+		return r.typeOfNode(m, ta.NamedChild(i), depth+1)
+	}
+	switch n {
+	case "Map", "WeakMap":
+		return tsWrap(tyMap, arg(1))
+	case "Array":
+		return tsWrap(tyArray, arg(0))
+	}
+	return tsNoTy
+}
+
+// tsOrUndefined is T | undefined (Map.get, Array.find): a member access
+// looks through it, a literal assigned in its place has its own keys.
+func tsOrUndefined(t tsTy) tsTy {
+	if t.k == tyNone || t.k == tyUnknown && t.parts == nil {
+		return t
+	}
+	t.nullable = true
+	return t
 }
 
 // tsNullTy is null or undefined: joined with T it makes T nullable.
@@ -1149,7 +1192,7 @@ func (r *tsResolver) collectionCall(m *tsModule, ft tsTy, args *sitter.Node, dep
 	if ft.k == tyMap {
 		switch method {
 		case "get":
-			return ft.of()
+			return tsOrUndefined(ft.of())
 		case "has", "set", "delete", "size", "clear", "forEach":
 			return tsOutsideTy
 		}
@@ -1157,7 +1200,7 @@ func (r *tsResolver) collectionCall(m *tsModule, ft tsTy, args *sitter.Node, dep
 	}
 	switch method {
 	case "find", "findLast", "at", "pop", "shift":
-		return ft.of()
+		return tsOrUndefined(ft.of())
 	case "filter":
 		if args != nil && args.NamedChildCount() > 0 {
 			if cb := args.NamedChild(0); cb.ChildByFieldName("return_type") != nil {

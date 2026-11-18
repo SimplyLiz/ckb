@@ -715,3 +715,59 @@ func TestTSLayer2LocalMemberContext(t *testing.T) {
 		t.Errorf("unresolved %d, want 1", unresolved)
 	}
 }
+
+const tsMapCtxFile = `export interface E { a: number }
+const m = new Map<string, E>();
+export function f(k: string) {
+  m.set(k, { a: 1 });
+  let w = m.get(k);
+  if (!w) { w = { a: 2 }; }
+  const x = m.get(k)!;
+  return x.a + w.a;
+}
+`
+
+// TestTSLayer2NewMap: new Map<K, V>() is a map of V, so set's literal takes
+// V's members. get is V | undefined: a member access looks through it, a
+// literal assigned to the variable has its own keys under strictNullChecks.
+func TestTSLayer2NewMap(t *testing.T) {
+	for _, tc := range []struct {
+		config string
+		want   string
+	}{
+		{`{ "compilerOptions": { "strict": true } }`, "3 13 14,7 11 12,7 17 18"},
+		{`{}`, "3 13 14,5 18 19,7 11 12,7 17 18"},
+	} {
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "tsconfig.json"), []byte(tc.config), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		head := "scip-typescript npm app 1.0.0 "
+		seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+		base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+		doc, _ := tsNewDocument(base, "src/a.ts", []byte(tsMapCtxFile))
+		if doc == nil {
+			t.Fatal("document not synthesized")
+		}
+		r := newTSResolver(root, func(p string) *scip.Document {
+			if p == "src/a.ts" {
+				return doc
+			}
+			return base.DocumentsByPath[p]
+		})
+		tsLayer2(doc, "src/a.ts", []byte(tsMapCtxFile), allLines([]byte(tsMapCtxFile)), r)
+		var got []string
+		for _, o := range doc.Occurrences {
+			if o.Source == scip.OccurrenceSourceOverlay && o.Symbol == head+"src/`a.ts`/E#a." {
+				got = append(got, fmtRange(o))
+			}
+		}
+		sort.Strings(got)
+		if strings.Join(got, ",") != tc.want {
+			t.Errorf("%s: E#a. at %v, want %s", tc.config, got, tc.want)
+		}
+	}
+}
