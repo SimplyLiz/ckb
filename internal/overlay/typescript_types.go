@@ -1671,19 +1671,40 @@ func (r *tsResolver) contextType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 			}
 			return tsUnknownTy
 		}
-		mb := r.memberOf(ot, k.Content(m.src), depth+1)
-		switch mb.k {
-		case tyDecl:
-			return mb.typ
-		case tyNone:
+		return r.memberContext(ot, k.Content(m.src), depth)
+	case "jsx_expression":
+		// <F a={{ … }} />: F's props' member a; <Ctx.Provider value={…}>:
+		// the context's type.
+		attr := p.Parent()
+		if attr == nil || attr.Type() != "jsx_attribute" || attr.NamedChildCount() < 2 {
 			return tsNoTy
-		case tyOutside:
-			if mb.typ.k != tyNone {
-				return mb.typ // a local member whose type is followed
-			}
-			return tsOutsideTy
 		}
-		return tsUnknownTy
+		name := attr.NamedChild(0)
+		el := attr.Parent()
+		if name.Type() != "property_identifier" || el == nil {
+			return tsNoTy
+		}
+		tag := el.ChildByFieldName("name")
+		if tag == nil {
+			return tsNoTy
+		}
+		switch tag.Type() {
+		case "identifier":
+			ft := r.exprType(m, tag, depth+1)
+			if ft.k != tyFn {
+				return tsNoTy
+			}
+			return r.memberContext(r.paramOf(ft, 0, depth+1), name.Content(m.src), depth)
+		case "member_expression":
+			obj, prop := tag.ChildByFieldName("object"), tag.ChildByFieldName("property")
+			if obj == nil || prop == nil || prop.Content(m.src) != "Provider" || name.Content(m.src) != "value" {
+				return tsNoTy
+			}
+			if ct := r.exprType(m, obj, depth+1); ct.k == tyStore && ct.sym == tsReactContext {
+				return ct.of()
+			}
+		}
+		return tsNoTy
 	case "array":
 		if at := r.contextType(m, p, depth+1); at.k == tyArray && at.sym == "" {
 			return at.of()
@@ -1777,6 +1798,23 @@ func (r *tsResolver) contextType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 		}
 	}
 	return tsNoTy
+}
+
+// memberContext is the context ot gives its member name's value.
+func (r *tsResolver) memberContext(ot tsTy, name string, depth int) tsTy {
+	mb := r.memberOf(ot, name, depth+1)
+	switch mb.k {
+	case tyDecl:
+		return mb.typ
+	case tyNone:
+		return tsNoTy
+	case tyOutside:
+		if mb.typ.k != tyNone {
+			return mb.typ // a local member whose type is followed
+		}
+		return tsOutsideTy
+	}
+	return tsUnknownTy
 }
 
 // resultContext is what a function's result must be: its declared return
@@ -1888,6 +1926,13 @@ func (r *tsResolver) argContext(m *tsModule, call *sitter.Node, i int, depth int
 	if s, ok := r.zustandInit(m, call, depth); ok {
 		if i == 0 {
 			return s
+		}
+		return tsNoTy
+	}
+	if r.reactHook(m, fn) == "createContext" {
+		// createContext<T>(defaultValue: T)
+		if ta := call.ChildByFieldName("type_arguments"); ta != nil && ta.NamedChildCount() == 1 && i == 0 {
+			return r.typeOfNode(m, ta.NamedChild(0), depth+1)
 		}
 		return tsNoTy
 	}
