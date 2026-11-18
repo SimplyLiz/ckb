@@ -796,8 +796,14 @@ func TestTSLayer2Instanceof(t *testing.T) {
 // members as "suffix@range", and the unresolved count.
 func tsL2Edges(t *testing.T, libText, useText string) (map[string]bool, int) {
 	t.Helper()
+	return tsL2EdgesAt(t, libText, "src/use.ts", useText)
+}
+
+// tsL2EdgesAt is tsL2Edges with use at useRel (a .tsx for JSX).
+func tsL2EdgesAt(t *testing.T, libText, useRel, useText string) (map[string]bool, int) {
+	t.Helper()
 	root := t.TempDir()
-	for rel, text := range map[string]string{"src/lib.ts": libText, "src/use.ts": useText} {
+	for rel, text := range map[string]string{"src/lib.ts": libText, useRel: useText} {
 		p := filepath.Join(root, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
@@ -812,14 +818,14 @@ func tsL2Edges(t *testing.T, libText, useText string) (map[string]bool, int) {
 	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
 	lib, _ := tsNewDocument(base, "src/lib.ts", []byte(libText))
 	base = scip.PatchIndex(base, map[string]*scip.Document{"src/lib.ts": lib})
-	use, _ := tsNewDocument(base, "src/use.ts", []byte(useText))
+	use, _ := tsNewDocument(base, useRel, []byte(useText))
 	r := newTSResolver(root, func(p string) *scip.Document {
-		if p == "src/use.ts" {
+		if p == useRel {
 			return use
 		}
 		return base.DocumentsByPath[p]
 	})
-	_, unresolved := tsLayer2(use, "src/use.ts", []byte(useText), allLines([]byte(useText)), r)
+	_, unresolved := tsLayer2(use, useRel, []byte(useText), allLines([]byte(useText)), r)
 	r.close()
 	got := map[string]bool{}
 	for _, o := range use.Occurrences {
@@ -878,6 +884,26 @@ export function F() {
 	for _, w := range []string{"S#a.@6 10 11", "S#b.@8 18 19"} { // a literal argument: a union with the function type
 		if got[w] {
 			t.Errorf("unexpected %s", w)
+		}
+	}
+}
+
+// TestTSLayer2JSXContext: an attribute's value has the props' member type,
+// a context's Provider value and createContext's default the context's.
+func TestTSLayer2JSXContext(t *testing.T) {
+	got, _ := tsL2EdgesAt(t, `export interface App { status: string }
+export interface Doc { editable: boolean }
+export function Dot(props: { app: App }) { return props.app.status; }
+`, "src/use.tsx", `import { createContext } from "react";
+import { Dot, Doc } from "./lib";
+export const Ctx = createContext<Doc>({ editable: false });
+export function F() {
+  return <Ctx.Provider value={{ editable: true }}><Dot app={{ status: "a" }} /></Ctx.Provider>;
+}
+`)
+	for _, w := range []string{"Doc#editable.@2 40 48", "Doc#editable.@4 32 40", "App#status.@4 62 68"} {
+		if !got[w] {
+			t.Errorf("missing %s (got %v)", w, got)
 		}
 	}
 }
