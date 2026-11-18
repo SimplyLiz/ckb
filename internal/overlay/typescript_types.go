@@ -832,6 +832,9 @@ func (r *tsResolver) returnOf(m *tsModule, t tsTy, args *sitter.Node, depth int)
 		}
 		return r.inferReturn(t.m, fn, depth)
 	case tyCallback:
+		if t.sym == tsSetter {
+			return tsOutsideTy // void
+		}
 		return t.of()
 	case tyStore:
 		if tsReactBox(t) {
@@ -1455,7 +1458,7 @@ func (r *tsResolver) arrayElemType(m *tsModule, pat, id *sitter.Node, depth int)
 		case 0:
 			return t.of()
 		case 1:
-			return tsOutsideTy // the setter: React's
+			return tsSetterOf(t.of())
 		}
 	case t.k == tyArray && t.sym == "":
 		return t.of()
@@ -1890,6 +1893,22 @@ func (r *tsResolver) argContext(m *tsModule, call *sitter.Node, i int, depth int
 	}
 	ft := r.exprType(m, fn, depth+1)
 	switch ft.k {
+	case tyCallback:
+		if ft.sym != tsSetter || i != 0 {
+			return tsNoTy
+		}
+		// set((prev) => s): a function from the state to it. The argument
+		// itself is a union with that function type (S | ((prev: S) => S),
+		// zustand's T | Partial<T> | …), which has no property of S's: a
+		// literal's keys are its own, as scip-typescript writes them.
+		st := ft.of()
+		if a := call.ChildByFieldName("arguments"); a != nil && i < int(a.NamedChildCount()) {
+			switch a.NamedChild(i).Type() {
+			case "arrow_function", "function_expression", "function":
+				return tsTy{k: tyCallback, params: []tsTy{st}, elem: &st}
+			}
+		}
+		return tsNoTy
 	case tyFn:
 		// edit<T>(id, fn: (s: State) => T): fn's s is State whatever T is;
 		// a parameter type that mentions T is unknown (a local type name).
@@ -1989,7 +2008,7 @@ func (r *tsResolver) zustandState(m *tsModule, call *sitter.Node, depth int) (ts
 // callback (set, get) returning the state.
 func (r *tsResolver) zustandInit(m *tsModule, call *sitter.Node, depth int) (tsTy, bool) {
 	if st, ok := r.zustandState(m, call, depth); ok {
-		return tsTy{k: tyCallback, params: []tsTy{tsNoTy, {k: tyCallback, elem: &st}}, elem: &st}, true
+		return tsTy{k: tyCallback, params: []tsTy{tsSetterOf(st), {k: tyCallback, elem: &st}}, elem: &st}, true
 	}
 	fn := call.ChildByFieldName("function")
 	if r.zustandName(m, fn, "zustand/middleware", "persist", "devtools", "subscribeWithSelector") ||

@@ -22,7 +22,16 @@ const (
 	tsReactContext = "react:context"
 	tsReactState   = "react:state"
 	tsReactRef     = "react:ref"
+	// tsSetter marks a state setter (useState's, zustand's set): a
+	// callback whose argument is the state elem or a function from it to
+	// the state, and whose result is not the state.
+	tsSetter = "setter"
 )
+
+// tsSetterOf is the setter of a state t.
+func tsSetterOf(t tsTy) tsTy {
+	return tsTy{k: tyCallback, sym: tsSetter, elem: &t}
+}
 
 // reactHook is the name of the react export fn calls ("" for none):
 // useState, or React.useState for a default or namespace import.
