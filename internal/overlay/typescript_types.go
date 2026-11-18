@@ -631,6 +631,22 @@ func (r *tsResolver) declMember(t tsTy, name string, depth int) tsMember {
 		}
 		return tsMember{sym: t.m.prefix + hit, typ: r.memberType(t.m, mn, depth), k: tyDecl}
 	}
+	if p := tsParamProperty(t.node.ChildByFieldName("body"), name, t.m.src); p != nil {
+		// constructor(readonly name: T): scip-typescript's member is the
+		// parameter.
+		s := t.sym + tsMethod("<constructor>") + "(" + esc + ")"
+		if !t.m.all[s] {
+			return tsMember{k: tyUnknown}
+		}
+		var typ tsTy
+		if a := p.ChildByFieldName("type"); a != nil {
+			typ = r.typeOfNode(t.m, a, depth+1)
+			if p.Type() == "optional_parameter" {
+				typ.nullable = true
+			}
+		}
+		return tsMember{sym: t.m.prefix + s, typ: typ, k: tyDecl}
+	}
 	var found tsMember
 	outside := false
 	for _, b := range r.heritage(t, depth) {
@@ -699,6 +715,46 @@ func (r *tsResolver) classValueType(m *tsModule, v *sitter.Node, depth int) tsTy
 		return tsOutsideTy
 	}
 	return r.typeBySymbol(res.sym, depth)
+}
+
+// tsParamProperty is the parameter of a class body's constructor that
+// declares the member name (constructor(private readonly name: T)).
+func tsParamProperty(body *sitter.Node, name string, src []byte) *sitter.Node {
+	if body == nil || body.Type() != "class_body" {
+		return nil
+	}
+	for i := 0; i < int(body.NamedChildCount()); i++ {
+		c := body.NamedChild(i)
+		if c.Type() != "method_definition" {
+			continue
+		}
+		if n := c.ChildByFieldName("name"); n == nil || n.Content(src) != "constructor" {
+			continue
+		}
+		ps := c.ChildByFieldName("parameters")
+		if ps == nil {
+			return nil
+		}
+		for j := 0; j < int(ps.NamedChildCount()); j++ {
+			p := ps.NamedChild(j)
+			if p.Type() != "required_parameter" && p.Type() != "optional_parameter" {
+				continue
+			}
+			pat := p.ChildByFieldName("pattern")
+			if pat == nil || pat.Type() != "identifier" || pat.Content(src) != name {
+				continue
+			}
+			for k := 0; k < int(p.ChildCount()); k++ {
+				switch p.Child(k).Type() {
+				case "accessibility_modifier", "readonly", "override_modifier":
+					return p
+				}
+			}
+			return nil
+		}
+		return nil
+	}
+	return nil
 }
 
 // tsFindMember is the member signature or definition named name in a body
