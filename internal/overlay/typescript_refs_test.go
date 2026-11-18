@@ -771,3 +771,69 @@ func TestTSLayer2NewMap(t *testing.T) {
 		}
 	}
 }
+
+const tsObjExprFile = `import { ext } from "pkg";
+export function theme() {
+  return { warn: 1, error: (s: string) => s };
+}
+export async function inner() { return { path: "", bytes: 1 }; }
+export async function outer() { return inner(); }
+export async function g() {
+  const { warn, error } = theme();
+  const w = await outer();
+  const s = { ...ext, warn: 2 };
+  return [warn, error(""), w.path, theme().warn, s.warn];
+}
+`
+
+// TestTSLayer2ObjectExpression: an object literal is a type whose members
+// are the symbols the declaring document defines at its keys
+// (scip-typescript's warn0:; Layer 1 writes none, so the test adds them),
+// through a function's inferred result and a returned promise, which async
+// does not wrap again. Beside a spread of a package's value the key is
+// counted: the index has nothing there.
+func TestTSLayer2ObjectExpression(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src/a.ts"), []byte(tsObjExprFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	prefix := head + "src/`a.ts`/"
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	doc, _ := tsNewDocument(base, "src/a.ts", []byte(tsObjExprFile))
+	if doc == nil {
+		t.Fatal("document not synthesized")
+	}
+	for _, d := range []struct {
+		line, col int32
+		sym       string
+	}{{2, 11, "warn0:"}, {2, 20, "error0:"}, {4, 41, "path0:"}, {4, 51, "bytes0:"}, {9, 22, "warn1:"}} {
+		n := int32(len(strings.TrimRight(d.sym, "0123456789:")))
+		doc.Occurrences = append(doc.Occurrences, &scip.Occurrence{Range: []int32{d.line, d.col, d.col + n}, Symbol: prefix + d.sym, SymbolRoles: scip.SymbolRoleDefinition})
+	}
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/a.ts" {
+			return doc
+		}
+		return base.DocumentsByPath[p]
+	})
+	_, unresolved := tsLayer2(doc, "src/a.ts", []byte(tsObjExprFile), allLines([]byte(tsObjExprFile)), r)
+	var got []string
+	for _, o := range doc.Occurrences {
+		if o.Source == scip.OccurrenceSourceOverlay && strings.HasSuffix(o.Symbol, ":") {
+			got = append(got, strings.TrimPrefix(o.Symbol, prefix)+"@"+fmtRange(o))
+		}
+	}
+	sort.Strings(got)
+	want := "error0:@7 16 21 path0:@10 29 33 warn0:@10 43 47 warn0:@7 10 14"
+	if strings.Join(got, " ") != want {
+		t.Errorf("got  %v\nwant %s", got, want)
+	}
+	if unresolved != 1 { // s.warn beside ...ext
+		t.Errorf("unresolved %d, want 1", unresolved)
+	}
+}

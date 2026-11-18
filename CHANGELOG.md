@@ -74,6 +74,12 @@ All notable changes to CKB will be documented in this file.
   and the keys of a callback's result that spreads a repository value count. `new Map<K, V>()`
   and `new Array<T>()` have their element type, so `m.set(k, { … })` points the keys at `V`'s
   members; `Map.get`, `find`, `at`, `pop` and `shift` give `T | undefined`, which `x!` drops.
+  An object literal is a type: a function's inferred result, a variable's initializer or a
+  returned promise (not wrapped twice) gives `const { a } = f()`, `f().a` and `x.a` the
+  property scip-typescript defines at the literal's key; beside a spread that may hide the key
+  (the spread value has it, or is a package's or an unresolved import's type) it counts as
+  unresolved. On the eight repositories 407 references that went unnoticed are now written or
+  counted.
   Where scip-typescript's contextual lookup finds no property, Layer 2
   writes no edge either: a literal whose context is `T | undefined` (an optional or defaulted
   parameter, a `T | null` return, an async function's return), and the value of a shorthand
