@@ -785,6 +785,8 @@ type tsModule struct {
 	cols   *utf16Cols
 	// keyPos are its object literal keys' property symbols (zod's schemas).
 	keyPos map[[2]int32]string
+	// instanceof: 0 not looked at, 1 the source has no instanceof, 2 it has.
+	instanceof int8
 }
 
 // tsParamShape is a function's first parameter, what JSX attributes of a

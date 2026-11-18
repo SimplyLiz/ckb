@@ -1116,3 +1116,150 @@ func tsLiteralValues(t *sitter.Node, src []byte, into map[string]bool) bool {
 	}
 	return false
 }
+
+// instanceofType is the class a guard proves the identifier id an instance
+// of: x instanceof C on the right of &&, after || !(…), in an if's or a
+// ternary's branch, or after an if that returns when it is not one. Only
+// followed for a binding never reassigned, and only one class: two guards
+// naming different classes (an intersection, a subclass) are not modeled.
+// The caller asks only when the declared type is not the repository's
+// (unknown, any, Error, a catch clause's value).
+func (r *tsResolver) instanceofType(m *tsModule, id *sitter.Node, depth int) (tsTy, bool) {
+	if m.instanceof == 0 {
+		m.instanceof = 1
+		if strings.Contains(string(m.src), "instanceof") {
+			m.instanceof = 2
+		}
+	}
+	if m.instanceof == 1 {
+		return tsTy{}, false
+	}
+	name := id.Content(m.src)
+	b, local := tsLocalBinding(id, name, m.src)
+	if !local || b == nil {
+		return tsTy{}, false
+	}
+	scope := tsBindingScope(b)
+	if scope == nil {
+		return tsTy{}, false
+	}
+	st := &tsNarrowState{r: r, m: m, name: name, binding: b.StartByte(), depth: depth}
+	var classes, not []*sitter.Node
+	add := func(pos, neg []*sitter.Node) { classes, not = append(classes, pos...), append(not, neg...) }
+	c := id
+walk:
+	for a := id.Parent(); a != nil; c, a = a, a.Parent() {
+		switch a.Type() {
+		case "function_declaration", "generator_function_declaration", "method_definition", "class_body":
+			if !tsSame(a, scope) {
+				break walk // hoisted, or past a method: not narrowed by its surroundings
+			}
+		case "binary_expression":
+			op, left, right := a.ChildByFieldName("operator"), a.ChildByFieldName("left"), a.ChildByFieldName("right")
+			if op == nil || left == nil || right == nil || !tsSame(right, c) {
+				break
+			}
+			switch op.Type() {
+			case "&&":
+				add(st.instanceofFacts(left, true))
+			case "||":
+				add(st.instanceofFacts(left, false))
+			}
+		case "ternary_expression", "if_statement":
+			cond := a.ChildByFieldName("condition")
+			if cond == nil || tsSame(cond, c) {
+				break
+			}
+			if x := a.ChildByFieldName("consequence"); x != nil && tsSame(x, c) {
+				add(st.instanceofFacts(cond, true))
+			} else if x := a.ChildByFieldName("alternative"); x != nil && tsSame(x, c) {
+				add(st.instanceofFacts(cond, false))
+			}
+		case "statement_block", "program", "switch_case", "switch_default":
+			for i := 0; i < int(a.NamedChildCount()); i++ {
+				s := a.NamedChild(i)
+				if s.StartByte() >= c.StartByte() {
+					break
+				}
+				if s.Type() != "if_statement" {
+					continue
+				}
+				cond := s.ChildByFieldName("condition")
+				if cond == nil || !strings.Contains(cond.Content(m.src), "instanceof") {
+					continue
+				}
+				cons, alt := s.ChildByFieldName("consequence"), s.ChildByFieldName("alternative")
+				ce, ae := cons != nil && tsExits(cons), alt != nil && tsExits(alt)
+				switch {
+				case ce && !ae:
+					add(st.instanceofFacts(cond, false))
+				case ae && !ce:
+					add(st.instanceofFacts(cond, true))
+				}
+			}
+		}
+		if tsSame(a, scope) {
+			break
+		}
+	}
+	if len(classes) == 0 {
+		return tsTy{}, false
+	}
+	cls := classes[0].Content(m.src)
+	for _, k := range classes[1:] {
+		if k.Content(m.src) != cls {
+			return tsTy{}, false
+		}
+	}
+	for _, k := range not {
+		if k.Content(m.src) == cls {
+			return tsTy{}, false // never: a branch Layer 2 does not type
+		}
+	}
+	if tsAssigned(scope, name, m.src) {
+		return tsTy{}, false
+	}
+	t := r.classValueType(m, classes[0], depth+1)
+	if t.k != tyDecl {
+		return tsTy{}, false
+	}
+	return t, true
+}
+
+// instanceofFacts are the classes cond being truth proves the identifier an
+// instance of (pos) and not an instance of (neg).
+func (st *tsNarrowState) instanceofFacts(cond *sitter.Node, truth bool) (pos, neg []*sitter.Node) {
+	switch cond.Type() {
+	case "parenthesized_expression":
+		if cond.NamedChildCount() == 1 {
+			return st.instanceofFacts(cond.NamedChild(0), truth)
+		}
+	case "unary_expression":
+		if op := cond.ChildByFieldName("operator"); op != nil && op.Type() == "!" {
+			if a := cond.ChildByFieldName("argument"); a != nil {
+				return st.instanceofFacts(a, !truth)
+			}
+		}
+	case "binary_expression":
+		op, left, right := cond.ChildByFieldName("operator"), cond.ChildByFieldName("left"), cond.ChildByFieldName("right")
+		if op == nil || left == nil || right == nil {
+			break
+		}
+		switch op.Type() {
+		case "instanceof":
+			if right.Type() == "identifier" && st.refersHere(left) {
+				if truth {
+					return []*sitter.Node{right}, nil
+				}
+				return nil, []*sitter.Node{right}
+			}
+		case "&&", "||":
+			if truth == (op.Type() == "&&") {
+				p1, n1 := st.instanceofFacts(left, truth)
+				p2, n2 := st.instanceofFacts(right, truth)
+				return append(p1, p2...), append(n1, n2...)
+			}
+		}
+	}
+	return nil, nil
+}
