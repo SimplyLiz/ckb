@@ -1759,8 +1759,18 @@ func (r *tsResolver) contextType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 		}
 		return r.contextType(m, p, depth+1)
 	case "binary_expression":
-		if op := p.ChildByFieldName("operator"); op != nil && (op.Type() == "??" || op.Type() == "||") {
+		op := p.ChildByFieldName("operator")
+		if op != nil && (op.Type() == "??" || op.Type() == "||") {
 			return r.contextType(m, p, depth+1)
+		}
+		if right := p.ChildByFieldName("right"); op != nil && op.Type() == "&&" && right != nil && tsSame(right, e) {
+			return r.contextType(m, p, depth+1) // cond && { … }: TypeScript gives the right side the context
+		}
+	case "spread_element":
+		// { ...(c ? { k } : {}) }: a spread in an object literal has the
+		// literal's context.
+		if o := p.Parent(); o != nil && o.Type() == "object" {
+			return r.contextType(m, o, depth+1)
 		}
 	}
 	return tsNoTy
