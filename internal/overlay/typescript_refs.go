@@ -684,6 +684,39 @@ func (r *tsResolver) lookup(file, name string, ns tsNS, depth int) string {
 	return found
 }
 
+// starLookup is the value export name of file as scip-typescript resolves
+// typeof import("m").name: a declaration of the module, or one reached
+// through export * from. A name some module on the way re-exports by name
+// (export { a } from "./a") is a local in its index: local is true.
+func (r *tsResolver) starLookup(file, name string, depth int) (sym string, local bool) {
+	if depth > 3 || file == "" {
+		return "", false
+	}
+	m := r.module(file)
+	if m == nil {
+		return "", false
+	}
+	if tops := m.decls[name]; len(tops) > 0 {
+		return pickTop(m.prefix, tops, tsValue), false
+	}
+	if _, ok := m.named[name]; ok {
+		return "", true
+	}
+	for _, spec := range m.stars {
+		s, loc := r.starLookup(r.resolveModule(file, spec), name, depth+1)
+		if loc {
+			return "", true
+		}
+		if s != "" {
+			if sym != "" && sym != s {
+				return "", false
+			}
+			sym = s
+		}
+	}
+	return sym, false
+}
+
 // pickTop chooses among the declarations of one name the one in namespace
 // ns; empty when that is not exactly one symbol.
 func pickTop(prefix string, tops []tsTop, ns tsNS) string {
@@ -1342,6 +1375,25 @@ func (l *tsRefs) member(n *sitter.Node) {
 		return
 	}
 	pname := l.text(prop)
+	if p := n.Parent(); p != nil && p.Type() == "type_query" {
+		// typeof import("m").x: m's export x, followed through re-exports
+		// as scip-typescript does. (As a value, import("m") is a promise.)
+		if target, ok := l.importCall(obj); ok {
+			if target == "" {
+				return // a package
+			}
+			s, local := l.r.starLookup(target, pname, 0)
+			if s != "" {
+				l.emit(prop, s)
+				return
+			}
+			if local {
+				return
+			}
+			l.unresolved++
+			return
+		}
+	}
 	switch t := l.r.exprType(l.self, obj, 0); t.k {
 	case tyDecl, tyLit, tyPick, tyObj:
 		l.memberEdgeRef(prop, obj, t)
