@@ -71,7 +71,10 @@ All notable changes to CKB will be documented in this file.
   `T | undefined` gives it its own keys only under `strictNullChecks`, read from the tsconfig
   that governs the file; an async function's result does so under any tsconfig. A local member
   (of a literal in a union) passes its type on to a destructured name and to a nested literal,
-  and the keys of a callback's result that spreads a repository value count. Where scip-typescript's contextual lookup finds no property, Layer 2
+  and the keys of a callback's result that spreads a repository value count. `new Map<K, V>()`
+  and `new Array<T>()` have their element type, so `m.set(k, { … })` points the keys at `V`'s
+  members; `Map.get`, `find`, `at`, `pop` and `shift` give `T | undefined`, which `x!` drops.
+  Where scip-typescript's contextual lookup finds no property, Layer 2
   writes no edge either: a literal whose context is `T | undefined` (an optional or defaulted
   parameter, a `T | null` return, an async function's return), and the value of a shorthand
   property in a package's or a global's type. Lower-case JSX tags are intrinsic elements. JSX
