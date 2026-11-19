@@ -2,7 +2,7 @@
 
 All notable changes to CKB will be documented in this file.
 
-## [9.4.0] - 2026-11-08
+## [9.4.0] - 2026-11-19
 
 ### Added — the index overlay: fresh answers between reindexes
 
@@ -92,7 +92,7 @@ All notable changes to CKB will be documented in this file.
   `declare module "m" { … }` block. Mapped types `{ [P in K]: V }` and `T[number]` have their
   value types, and a type literal in a local variable's annotation has its members' types
   followed like `as { … }`. On the eight repositories the references that went unnoticed fell
-  from 1,782 to 674 (of 149,042 written), with no new wrong edge.
+  from 1,782 to 674, with no new wrong edge.
   Where scip-typescript's contextual lookup finds no property, Layer 2
   writes no edge either: a literal whose context is `T | undefined` (an optional or defaulted
   parameter, a `T | null` return, an async function's return), and the value of a shorthand
@@ -101,13 +101,12 @@ All notable changes to CKB will be documented in this file.
   (of a parameter, return type, constraint, alias, variable, interface property or type
   argument) are defined with the number the base gave the same owner, else a placeholder until
   the next reindex. Checked on Lebenslauf: 6,138 of 6,138 comparable definitions identical to
-  scip-typescript's at HEAD; over its last 30 small commits 2,247 of 2,247 overlay references
-  identical to a fresh index (counter numbers normalized), 1,139 of 1,166 impact items they bring
-  too (25 the same symbols reached transitively, 2 from a renamed component's kept
-  references), 1,766 of 1,846 changed symbols' references found (96 %), 19 of 30 commits without
-  a rebuild (all at 100 %), overlay built in 52 ms (median). Layer 2 run over every line of
+  scip-typescript's at HEAD; over its last 30 small commits 2,573 of 2,573 overlay references
+  identical to a fresh index (counter numbers normalized), 1,141 of 1,166 impact items they bring
+  too, 1,768 of 1,846 changed symbols' references found (96 %), 18 of 30 commits without
+  a rebuild, overlay built in 71 ms (median). Layer 2 run over every line of
   eight TypeScript repositories against their indexes (files whose source is the indexed one):
-  111,873 edges, every one identical except 41 in two repositories whose files changed after
+  149,279 edges, every one identical except 41 in two repositories whose files changed after
   indexing. The grammar's two gaps, `using` as an identifier and `typeof import("…")`, are
   rewritten to same-length tokens before parsing (v0.23.2, the newest grammar, still rejects
   both), and so is a bare `&` in JSX text (`<p>Account & preferences</p>`, which the grammar
