@@ -277,13 +277,6 @@ func tsErrorLines(n *sitter.Node, out map[int32]bool) {
 	}
 }
 
-// fileEnd is the position scip-typescript gives the end of a file: the line
-// and UTF-16 column after the last byte.
-func tsFileEnd(src []byte) (int32, int32) {
-	c := newUTF16Cols(src)
-	return c.pos(uint32(len(src))) // #nosec G115 -- file sizes fit
-}
-
 type tsWalker struct {
 	src   []byte
 	cols  *utf16Cols

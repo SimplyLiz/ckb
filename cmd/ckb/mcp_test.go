@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"errors"
-	"github.com/SimplyLiz/CodeMCP/internal/repostate"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/SimplyLiz/CodeMCP/internal/repostate"
 
 	"github.com/SimplyLiz/CodeMCP/internal/index"
 	"github.com/SimplyLiz/CodeMCP/internal/project"

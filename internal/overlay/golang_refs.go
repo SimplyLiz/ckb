@@ -61,7 +61,9 @@ type goPrefixes struct {
 // symbol prefix, once per base index.
 func goPackagePrefixes(base *scip.SCIPIndex) *goPrefixes {
 	if v, ok := goPrefixCache.Load(base); ok {
-		return v.(*goPrefixes)
+		if p, ok := v.(*goPrefixes); ok {
+			return p
+		}
 	}
 	p := &goPrefixes{byPath: map[string]string{}, names: map[string]string{}}
 	note := func(sym string) {
@@ -213,7 +215,7 @@ func goLayer2Typed(doc *scip.Document, src []byte, prefix string, lines map[int3
 		}
 		return ""
 	}
-	isTopLevel := func(o *ast.Object) bool {
+	isTopLevel := func(o *ast.Object) bool { //nolint:staticcheck // the parser's scope objects are all an untyped overlay has
 		switch d := o.Decl.(type) {
 		case *ast.FuncDecl:
 			return d.Recv == nil
