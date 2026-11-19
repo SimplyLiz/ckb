@@ -54,8 +54,11 @@ type tsResolver struct {
 	// paths lists the index's documents, for the declare global blocks
 	// (nil: none are looked for); globals maps a name to the files that
 	// declare it there, read once.
-	paths     func() []string
-	globals   map[string][]string
+	paths   func() []string
+	globals map[string][]string
+	// ambients maps a module name to the files whose declare module "m"
+	// blocks declare it, read once.
+	ambients  map[string][]string
 	byFileSym map[string][]string // documents by file symbol, read once
 	// subst binds the type parameters of the generic declaration whose
 	// member type is being read to the string literal its use passed
@@ -779,8 +782,9 @@ type tsModule struct {
 	root    *sitter.Node
 	prefix  string
 	decls   map[string][]tsTop
-	globals map[string][]tsTop // the declarations of declare global, by name
-	all     map[string]bool    // every synthesized suffix: "C#m().", "E#A."
+	globals map[string][]tsTop    // the declarations of declare global, by name
+	ambient map[string]*tsAmbient // its declare module "m" blocks, by module name
+	all     map[string]bool       // every synthesized suffix: "C#m().", "E#A."
 	imports map[string]tsImport
 	tsExports
 	// params is the first parameter of each top-level function, what a
@@ -950,6 +954,7 @@ func (r *tsResolver) load(file string, src []byte) *tsModule {
 		}
 	}
 	m.globals = tsTopDecls(globals)
+	m.ambient = tsReadAmbient(root, src, w.decls)
 	for _, d := range w.decls {
 		m.all[d.suffix] = true
 	}
@@ -989,6 +994,10 @@ func tsTopNodes(root *sitter.Node, src []byte) (map[string]*sitter.Node, map[str
 			if st.Type() == "ambient_declaration" {
 				if _, body := tsGlobalBlock(st); body != nil && owner == "" {
 					walk(body, "global/")
+					continue
+				}
+				if text, body := tsAmbientModule(st, src); body != nil && owner == "" {
+					walk(body, tsNamespace(text))
 					continue
 				}
 				if st.NamedChildCount() != 1 {
@@ -1320,6 +1329,13 @@ func (r *tsResolver) resolveIn(file, name string, ns tsNS) (tsResolved, bool) {
 	if imp, ok := m.imports[name]; ok {
 		target := r.resolveModule(file, imp.spec)
 		if target == "" {
+			// A package; its declare module block, when the repository
+			// has one, declares the names it has.
+			if imp.name != "*" {
+				if sym, f, ok := r.ambientLookup(imp.spec, imp.name, ns); ok && sym != "" {
+					return tsResolved{sym: sym, file: f}, true
+				}
+			}
 			return tsResolved{external: true}, true
 		}
 		if imp.name == "*" {
@@ -1330,6 +1346,9 @@ func (r *tsResolver) resolveIn(file, name string, ns tsNS) (tsResolved, bool) {
 	}
 	if tops := m.decls[name]; len(tops) > 0 {
 		return tsResolved{sym: pickTop(m.prefix, tops, ns), file: file}, true
+	}
+	if sym := m.ambientIn(name, ns); sym != "" {
+		return tsResolved{sym: sym, file: file}, true
 	}
 	if g, ok := r.globalDecl(name, ns); ok {
 		return g, true
@@ -1397,6 +1416,12 @@ func tsSymPrefix(sym string) string {
 		return ""
 	}
 	p := sym[:i+1]
+	if strings.HasSuffix(p, "\"`/") {
+		// A declaration of declare module "m" (the name may hold slashes).
+		if j := strings.LastIndex(p[:len(p)-3], "`\""); j > 0 {
+			return p[:j]
+		}
+	}
 	if strings.HasSuffix(p, "`/global/") {
 		p = strings.TrimSuffix(p, "global/") // a declaration of declare global
 	}
@@ -1434,7 +1459,14 @@ func (l *tsRefs) ident(n *sitter.Node) {
 		return
 	}
 	res, ok := l.resolveName(name, ns)
-	if !ok || res.external || res.namespace != "" {
+	if !ok || res.external {
+		return
+	}
+	if res.namespace != "" {
+		// import * as ns: scip-typescript writes the module at each use.
+		if fs := tsFileSymbol(l.r.docs(res.namespace)); fs != "" && n.Type() != "shorthand_property_identifier" {
+			l.emit(n, fs)
+		}
 		return
 	}
 	if n.Type() == "shorthand_property_identifier" {
@@ -1776,11 +1808,18 @@ func (l *tsRefs) importCall(e *sitter.Node) (string, bool) {
 // scip-typescript does.
 func (l *tsRefs) dynamicImport(e *sitter.Node) {
 	target, ok := l.importCall(e)
-	if !ok || target == "" {
+	if !ok {
 		return
 	}
 	s := e.ChildByFieldName("arguments").NamedChild(0)
 	if !l.onAdded(s) {
+		return
+	}
+	if target == "" {
+		// A package the repository declares in declare module "m".
+		if file, a := l.r.ambientFile(tsStringValue(l.text(s))); a != nil {
+			l.emit(s, l.r.module(file).prefix+a.ns)
+		}
 		return
 	}
 	if fs := tsFileSymbol(l.r.docs(target)); fs != "" {
@@ -2312,6 +2351,7 @@ func (l *tsRefs) importOrExportFrom(n *sitter.Node) {
 	}
 	target := l.r.resolveModule(l.file, tsStringValue(l.text(srcNode)))
 	if target == "" {
+		l.ambientImport(n, srcNode)
 		return // a package, or a file the index does not have
 	}
 	if l.onAdded(srcNode) {
@@ -2354,6 +2394,15 @@ func (l *tsRefs) importOrExportFrom(n *sitter.Node) {
 				}
 				for _, sym := range syms {
 					l.emit(site, sym)
+				}
+			}
+			return
+		case "namespace_import":
+			for i := 0; i < int(c.NamedChildCount()); i++ {
+				if d := c.NamedChild(i); d.Type() == "identifier" && l.onAdded(d) {
+					if fs := tsFileSymbol(l.r.docs(target)); fs != "" {
+						l.emit(d, fs)
+					}
 				}
 			}
 			return
@@ -2492,6 +2541,11 @@ func tsLocalBindingTP(n *sitter.Node, name string, src []byte, typeParams bool) 
 			}
 		case "statement_block", "switch_body", "class_body":
 			if p := a.Parent(); p != nil && (p.Type() == "internal_module" || p.Type() == "module") {
+				if g := p.Parent(); g != nil && g.Parent() != nil && g.Parent().Type() == "program" {
+					if _, body := tsAmbientModule(g, src); body != nil {
+						continue // declare module "m": Layer 2 resolves its names (ambientIn)
+					}
+				}
 				return nil, true // inside a namespace: its members are not file-level names
 			}
 			if id := tsBlockBinding(a, name, src); id != nil {

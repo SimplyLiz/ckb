@@ -80,6 +80,8 @@ func TestTSLayer2(t *testing.T) {
 	want := []string{
 		"@0 27 34",                     // "@/lib" -> the file
 		"@1 20 27",                     // "./lib"
+		"@1 12 14",                     // * as ns: the module
+		"@5 2 4",                       // ns in ns.f
 		"C#@0 12 13",                   // import specifier
 		"C#`<constructor>`().@4 16 17", // new C()
 		"C#@7 2 3",                     // C in C.s
@@ -1083,6 +1085,98 @@ func TestTSLayer2DeclareGlobal(t *testing.T) {
 		}
 		if !strings.Contains(lit, "ParamMap#`\"/a/[id]\"`.typeLiteral") || !strings.HasSuffix(lit, ":`\"id\"`.") {
 			t.Errorf("literal member %s", lit)
+		}
+	}
+}
+
+const tsAmbientFile = `declare module "lockpkg" {
+  export type Opts = { retries?: number };
+  export function lock(path: string, options?: Opts): Promise<void>;
+  const lockfile: { lock: typeof lock };
+  export default lockfile;
+}
+`
+
+const tsAmbientUse = `import lockfile, { lock, type Opts } from "lockpkg";
+const o: Opts = {};
+lock("a", o);
+lockfile.lock("b");
+const later = import("lockpkg");
+import other from "otherpkg";
+`
+
+// declare module "m" in a .d.ts: imports of m, its string and names inside
+// the block point at the block's declarations, as scip-typescript has them.
+func TestTSLayer2AmbientModule(t *testing.T) {
+	root := t.TempDir()
+	for _, f := range []struct{ path, src string }{{"types/lockpkg.d.ts", tsAmbientFile}, {"src/use.ts", tsAmbientUse}} {
+		if err := os.MkdirAll(filepath.Join(root, filepath.Dir(f.path)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, f.path), []byte(f.src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	amb, _ := tsNewDocument(base, "types/lockpkg.d.ts", []byte(tsAmbientFile))
+	if amb == nil {
+		t.Fatal("ambient document not synthesized")
+	}
+	base = scip.PatchIndex(base, map[string]*scip.Document{"types/lockpkg.d.ts": amb})
+	use, _ := tsNewDocument(base, "src/use.ts", []byte(tsAmbientUse))
+	if use == nil {
+		t.Fatal("document not synthesized")
+	}
+	docs := map[string]*scip.Document{"src/use.ts": use}
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if d, ok := docs[p]; ok {
+			return d
+		}
+		return base.DocumentsByPath[p]
+	})
+	r.paths = func() []string { return []string{"src/use.ts", "types/lockpkg.d.ts"} }
+
+	collect := func(doc *scip.Document) []string {
+		prefix := head + "types/`lockpkg.d.ts`/`\"lockpkg\"`/"
+		var got []string
+		for _, o := range doc.Occurrences {
+			if o.Source == scip.OccurrenceSourceOverlay && strings.HasPrefix(o.Symbol, prefix) {
+				got = append(got, strings.TrimPrefix(o.Symbol, prefix)+"@"+fmtRange(o))
+			}
+		}
+		sort.Strings(got)
+		return got
+	}
+	tsLayer2(use, "src/use.ts", []byte(tsAmbientUse), allLines([]byte(tsAmbientUse)), r)
+	want := []string{
+		"@0 42 51", // "lockpkg"
+		"@4 21 30", // import("lockpkg")
+		"Opts#@0 30 34",
+		"Opts#@1 9 13",
+		"lock().@0 19 23",
+		"lock().@2 0 4",
+		"lockfile.@0 7 15", // the default import: the block's export default
+		"lockfile.@3 0 8",
+	}
+	if got := collect(use); strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("use.ts\n got  %v\n want %v", got, want)
+	}
+
+	// Inside the block its own names resolve to it, not to locals.
+	ambDoc := &scip.Document{RelativePath: amb.RelativePath, Symbols: amb.Symbols}
+	for _, o := range amb.Occurrences {
+		if o.SymbolRoles&scip.SymbolRoleDefinition != 0 {
+			ambDoc.Occurrences = append(ambDoc.Occurrences, o)
+		}
+	}
+	docs["types/lockpkg.d.ts"] = ambDoc
+	tsLayer2(ambDoc, "types/lockpkg.d.ts", []byte(tsAmbientFile), allLines([]byte(tsAmbientFile)), r)
+	got := strings.Join(collect(ambDoc), " ")
+	for _, w := range []string{"Opts#@2 47 51", "lock().@3 33 37", "lockfile.@4 17 25"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("ambient.d.ts: missing %s in %v", w, got)
 		}
 	}
 }
