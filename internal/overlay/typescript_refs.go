@@ -2563,6 +2563,13 @@ func tsLocalBindingTP(n *sitter.Node, name string, src []byte, typeParams bool) 
 					return id, true
 				}
 			}
+		case "index_signature":
+			// [P in K]: P is a type variable of the mapped type.
+			if a.NamedChildCount() > 0 && a.NamedChild(0).Type() == "mapped_type_clause" {
+				if p := a.NamedChild(0).ChildByFieldName("name"); p != nil && p.Content(src) == name {
+					return nil, true
+				}
+			}
 		case "catch_clause":
 			if p := a.ChildByFieldName("parameter"); p != nil {
 				if id := tsPatternBinding(p, name, src); id != nil {
