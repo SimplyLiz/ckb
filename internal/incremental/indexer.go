@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/project"
@@ -98,7 +99,8 @@ func (i *IncrementalIndexer) IndexIncrementalWithLang(ctx context.Context, since
 		return nil, fmt.Errorf("%w: %s (install: %s)", ErrIndexerNotInstalled, config.Cmd, installCmd)
 	}
 
-	// 1. Detect changes
+	// 1. Detect changes in this language's source files
+	i.detector.SetExtensions(config.Extensions)
 	changes, err := i.detector.DetectChanges(since)
 	if err != nil {
 		return nil, fmt.Errorf("change detection failed: %w", err)
@@ -189,6 +191,14 @@ func (i *IncrementalIndexer) NeedsFullReindex() (bool, string) {
 		return true, "no previous index"
 	}
 
+	// The tracking tables can be intact while the index file itself is gone
+	// (deleted by hand, lost with a checkout). Incremental updates patch an
+	// existing file; without one there is nothing to patch, and reporting
+	// "up to date" would leave the repo with metadata but no index.
+	if _, err := os.Stat(i.indexFilePath()); err != nil {
+		return true, "index file missing"
+	}
+
 	// Schema version mismatch
 	schemaVersion := i.store.GetSchemaVersion()
 	if schemaVersion != 0 && schemaVersion != CurrentSchemaVersion {
@@ -202,6 +212,18 @@ func (i *IncrementalIndexer) NeedsFullReindex() (bool, string) {
 	}
 
 	return false, ""
+}
+
+// indexFilePath is the absolute path of the SCIP index this indexer updates.
+func (i *IncrementalIndexer) indexFilePath() string {
+	p := i.config.IndexPath
+	if p == "" {
+		p = "index.scip"
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(i.repoRoot, p)
+	}
+	return p
 }
 
 // GetIndexState returns current index state for UI display

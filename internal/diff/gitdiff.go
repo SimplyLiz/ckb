@@ -85,11 +85,39 @@ func (p *GitDiffParser) parseHunk(hunk *godiff.Hunk) impact.ChangedHunk {
 	// Parse the hunk body to find added/removed lines
 	oldLine := int(hunk.OrigStartLine)
 	newLine := int(hunk.NewStartLine)
+	// With -U0, a side with no lines names the line before the change, not after.
+	if hunk.OrigLines == 0 {
+		oldLine++
+	}
+	if hunk.NewLines == 0 {
+		newLine++
+	}
+
+	var block *impact.ChangeBlock
+	flush := func() {
+		if block != nil {
+			ch.Blocks = append(ch.Blocks, *block)
+			block = nil
+		}
+	}
+	current := func() *impact.ChangeBlock {
+		if block == nil {
+			block = &impact.ChangeBlock{OldLine: oldLine, NewLine: newLine}
+		}
+		return block
+	}
 
 	lines := strings.Split(string(hunk.Body), "\n")
-	for _, line := range lines {
+	for i, line := range lines {
 		if len(line) == 0 {
+			// The piece after the body's final newline isn't a line at all.
+			if i == len(lines)-1 {
+				break
+			}
 			// Empty line in diff body - treat as context line (both advance)
+			flush()
+			ch.OldText = append(ch.OldText, "")
+			ch.NewText = append(ch.NewText, "")
 			oldLine++
 			newLine++
 			continue
@@ -97,19 +125,29 @@ func (p *GitDiffParser) parseHunk(hunk *godiff.Hunk) impact.ChangedHunk {
 
 		switch line[0] {
 		case '+':
+			b := current()
+			b.Added = append(b.Added, line[1:])
 			ch.Added = append(ch.Added, newLine)
+			ch.NewText = append(ch.NewText, line[1:])
 			newLine++
 		case '-':
+			b := current()
+			b.Removed = append(b.Removed, line[1:])
 			ch.Removed = append(ch.Removed, oldLine)
+			ch.OldText = append(ch.OldText, line[1:])
 			oldLine++
 		case ' ':
 			// Context line - both advance
+			flush()
+			ch.OldText = append(ch.OldText, line[1:])
+			ch.NewText = append(ch.NewText, line[1:])
 			oldLine++
 			newLine++
 		case '\\':
 			// "\ No newline at end of file" - ignore
 		}
 	}
+	flush()
 
 	return ch
 }

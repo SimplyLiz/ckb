@@ -75,45 +75,11 @@ func (s *MCPServer) toolScanSecrets(params map[string]interface{}) (*envelope.Re
 	// Create scanner
 	scanner := secrets.NewScanner(repoRoot, s.logger)
 
-	// Handle history/staged scopes with git scanner
-	ctx := context.Background()
-	var result *secrets.ScanResult
-	var err error
-
-	switch opts.Scope {
-	case secrets.ScopeHistory:
-		gitScanner := secrets.NewGitScanner(repoRoot)
-		findings, scanErr := gitScanner.ScanHistory(ctx, opts)
-		if scanErr != nil {
-			return nil, errors.NewOperationError("scan git history", scanErr)
-		}
-		result = &secrets.ScanResult{
-			RepoRoot: repoRoot,
-			Scope:    opts.Scope,
-			Findings: findings,
-			Summary:  buildSummaryFromFindings(findings),
-			Sources:  []secrets.SourceInfo{{Name: "builtin", Findings: len(findings)}},
-		}
-
-	case secrets.ScopeStaged:
-		gitScanner := secrets.NewGitScanner(repoRoot)
-		findings, scanErr := gitScanner.ScanStaged(ctx, opts)
-		if scanErr != nil {
-			return nil, errors.NewOperationError("scan staged files", scanErr)
-		}
-		result = &secrets.ScanResult{
-			RepoRoot: repoRoot,
-			Scope:    opts.Scope,
-			Findings: findings,
-			Summary:  buildSummaryFromFindings(findings),
-			Sources:  []secrets.SourceInfo{{Name: "builtin", Findings: len(findings)}},
-		}
-
-	default:
-		result, err = scanner.Scan(ctx, opts)
-		if err != nil {
-			return nil, errors.NewOperationError("scan secrets", err)
-		}
+	// Every scope (workdir, staged, history) goes through Scan, which fills
+	// scannedAt, duration and filesScanned and applies the allowlist.
+	result, err := scanner.Scan(context.Background(), opts)
+	if err != nil {
+		return nil, errors.NewOperationError("scan secrets", err)
 	}
 
 	// Build response
@@ -143,25 +109,6 @@ func (s *MCPServer) toolScanSecrets(params map[string]interface{}) (*envelope.Re
 	}
 
 	return builder.Build(), nil
-}
-
-// buildSummaryFromFindings creates a summary from a list of findings.
-func buildSummaryFromFindings(findings []secrets.SecretFinding) secrets.ScanSummary {
-	summary := secrets.ScanSummary{
-		TotalFindings: len(findings),
-		BySeverity:    make(map[secrets.Severity]int),
-		ByType:        make(map[secrets.SecretType]int),
-	}
-
-	files := make(map[string]bool)
-	for _, f := range findings {
-		summary.BySeverity[f.Severity]++
-		summary.ByType[f.Type]++
-		files[f.File] = true
-	}
-
-	summary.FilesWithSecrets = len(files)
-	return summary
 }
 
 // formatFindingsSummary creates a human-readable summary string.

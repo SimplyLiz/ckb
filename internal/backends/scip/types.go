@@ -100,6 +100,10 @@ type SCIPReference struct {
 
 	// Context is the surrounding code snippet
 	Context string
+
+	// Source is the occurrence's Source: empty from the indexer,
+	// OccurrenceSourceOverlay when the index overlay resolved it.
+	Source string
 }
 
 // Metadata represents SCIP index metadata
@@ -137,6 +141,11 @@ type Document struct {
 
 	// Symbols are symbol definitions in this document
 	Symbols []*SymbolInformation
+
+	// dartLeads maps the definition line of a Dart top-level variable to the
+	// first line of the doc comment and annotations above it, read from the
+	// source on load (dartLeadStart). Nil when the source wasn't read.
+	dartLeads map[int]int
 }
 
 // Occurrence represents a single occurrence of a symbol in a document
@@ -161,7 +170,15 @@ type Occurrence struct {
 
 	// EnclosingRange is the range of the enclosing scope
 	EnclosingRange []int32
+
+	// Source is empty for an occurrence the indexer wrote. The index overlay
+	// sets OccurrenceSourceOverlay on the references it resolved itself
+	// (Layer 2), so what they add can be told apart and kept out of counts.
+	Source string
 }
+
+// OccurrenceSourceOverlay marks an occurrence the index overlay resolved.
+const OccurrenceSourceOverlay = "overlay"
 
 // SymbolInformation contains detailed information about a symbol
 type SymbolInformation struct {

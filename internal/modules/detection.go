@@ -227,10 +227,12 @@ func detectManifestModules(repoRoot string, ignoreDirs []string, stateId string,
 			return err
 		}
 
-		// Skip ignored directories
+		// Skip ignored and hidden directories. A manifest under .claude/,
+		// .github/ or .codex/ is a tool's checkout or action, not a module of
+		// this repo: it used to make agent worktrees show up as entrypoints.
 		if info.IsDir() {
 			relPath, _ := filepath.Rel(repoRoot, path)
-			if relPath != "." && shouldIgnore(relPath, ignoreMap) {
+			if relPath != "." && (strings.HasPrefix(info.Name(), ".") || shouldIgnore(relPath, ignoreMap)) {
 				return filepath.SkipDir
 			}
 			return nil

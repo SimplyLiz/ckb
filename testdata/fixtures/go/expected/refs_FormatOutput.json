@@ -2,28 +2,28 @@
   "references": [
     {
       "column": 6,
-      "context": "// Context at internal/util.go:13:5",
+      "context": "func FormatOutput(s string) string {",
       "file": "internal/util.go",
       "kind": "definition",
       "line": 14
     },
     {
       "column": 18,
-      "context": "// Context at main.go:18:17",
+      "context": "return internal.FormatOutput(\"main handler\")",
       "file": "main.go",
       "kind": "read",
       "line": 19
     },
     {
       "column": 18,
-      "context": "// Context at pkg/handler.go:19:17",
+      "context": "return internal.FormatOutput(result)",
       "file": "pkg/handler.go",
       "kind": "read",
       "line": 20
     },
     {
       "column": 18,
-      "context": "// Context at pkg/service.go:27:17",
+      "context": "return internal.FormatOutput(transformed)",
       "file": "pkg/service.go",
       "kind": "read",
       "line": 28

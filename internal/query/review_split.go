@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends/git"
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
-	"github.com/SimplyLiz/CodeMCP/internal/coupling"
+	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 )
 
 // PRSplitSuggestion contains the result of PR split analysis.
@@ -70,15 +70,8 @@ func (e *Engine) suggestPRSplit(ctx context.Context, diffStats []git.DiffStats, 
 		}
 	}
 
-	// Connect files with dependency or coupling edges.
-	// Cartographer uses the static import graph + git co-change in a single pass.
-	// Fall back to the per-file coupling analyzer for non-Cartographer builds;
-	// skip for very large PRs where the O(n) cost is prohibitive.
-	if cartographer.Available() {
-		e.addCartographerEdges(files, adj)
-	} else if len(diffStats) <= 200 {
-		e.addCouplingEdges(ctx, files, adj)
-	}
+	// Connect files that reference or import each other, or change together.
+	e.addSplitEdges(ctx, files, adj)
 
 	// Find connected components using BFS
 	visited := make(map[string]bool)
@@ -139,78 +132,58 @@ func (e *Engine) suggestPRSplit(ctx context.Context, diffStats []git.DiffStats, 
 	}
 }
 
-// addCartographerEdges enriches the adjacency graph using Cartographer's
-// static import graph and git co-change pairs — a single pass per data source
-// instead of O(n) git subprocess calls.
-func (e *Engine) addCartographerEdges(files []string, adj map[string]map[string]bool) {
+// addSplitEdges joins changed files that depend on each other — one
+// references a symbol the other defines (SCIP, any language) or imports it
+// (TS/Python import graph) — or that change together (co-change score >= 0.5,
+// strong signal only). One pass over the index and one cached history, so
+// large PRs need no cap.
+func (e *Engine) addSplitEdges(ctx context.Context, files []string, adj map[string]map[string]bool) {
 	fileSet := make(map[string]bool, len(files))
 	for _, f := range files {
 		fileSet[f] = true
 	}
+	link := func(a, b string) {
+		if a != b && fileSet[a] && fileSet[b] {
+			adj[a][b] = true
+			adj[b][a] = true
+		}
+	}
 
-	// Static import edges from the dependency graph. Skip fuzzy (low-confidence)
-	// edges so a split recommendation isn't driven by a fabricated dependency.
-	if graph, err := cartographer.MapProject(e.repoRoot); err == nil {
-		for _, edge := range graph.Edges {
-			if edge.Resolution == "fuzzy" {
+	if e.hasConsumerGraph() {
+		idx := e.scipAdapter.GetIndex()
+		for _, f := range files {
+			doc := idx.DocumentsByPath[f]
+			if doc == nil {
 				continue
 			}
-			if fileSet[edge.Source] && fileSet[edge.Target] {
-				adj[edge.Source][edge.Target] = true
-				adj[edge.Target][edge.Source] = true
+			for _, occ := range doc.Occurrences {
+				if occ == nil || occ.SymbolRoles&scip.SymbolRoleDefinition != 0 || strings.HasPrefix(occ.Symbol, "local ") {
+					continue
+				}
+				if def := idx.DefinitionIndex[occ.Symbol]; def != nil && def.Doc != nil {
+					link(f, def.Doc.RelativePath)
+				}
+			}
+		}
+		if g := fileImportGraph(idx, e.repoRoot); g != nil {
+			for _, f := range files {
+				for to := range g.edges[f] {
+					link(f, to)
+				}
 			}
 		}
 	}
 
-	// Temporal coupling edges (co-change ≥ 0.5, strong signal only).
-	if pairs, err := cartographer.GitCochange(e.repoRoot, 0, 3); err == nil {
-		for _, p := range pairs {
-			if fileSet[p.FileA] && fileSet[p.FileB] && p.CouplingScore >= 0.5 {
-				adj[p.FileA][p.FileB] = true
-				adj[p.FileB][p.FileA] = true
-			}
-		}
-	}
-}
-
-// addCouplingEdges enriches the adjacency graph with coupling data.
-func (e *Engine) addCouplingEdges(ctx context.Context, files []string, adj map[string]map[string]bool) {
-	analyzer := coupling.NewAnalyzer(e.repoRoot, e.logger)
-
-	fileSet := make(map[string]bool)
 	for _, f := range files {
-		fileSet[f] = true
-	}
-
-	// Limit coupling lookups for performance
-	limit := 20
-	if len(files) < limit {
-		limit = len(files)
-	}
-
-	for _, f := range files[:limit] {
 		if ctx.Err() != nil {
-			break
+			return
 		}
-		result, err := analyzer.Analyze(ctx, coupling.AnalyzeOptions{
-			RepoRoot:       e.repoRoot,
-			Target:         f,
-			MinCorrelation: 0.5, // Higher threshold — only strong connections matter for split
-			Limit:          10,
-		})
-		if err != nil {
-			continue
-		}
-		for _, corr := range result.Correlations {
-			if fileSet[corr.File] {
-				adj[f][corr.File] = true
-				adj[corr.File][f] = true
-			}
+		for _, p := range e.cochangePartners(ctx, f, 0.5, 0, nil) {
+			link(p.FileA, p.FileB)
 		}
 	}
 }
 
-// bfs performs breadth-first search to find a connected component.
 func bfs(start string, adj map[string]map[string]bool, visited map[string]bool) []string {
 	queue := []string{start}
 	visited[start] = true

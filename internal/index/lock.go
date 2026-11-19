@@ -68,6 +68,21 @@ func AcquireLock(ckbDir string) (*Lock, error) {
 	return &Lock{path: path, file: file}, nil
 }
 
+// BuildRunning reports whether another process holds the index lock right now. It
+// only looks, so a build starting at the same moment can't lose its lock to it.
+func BuildRunning(ckbDir string) bool {
+	file, err := os.Open(filepath.Join(ckbDir, lockFile))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = file.Close() }()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil { // #nosec G115 -- fd fits in int
+		return true
+	}
+	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN) // #nosec G115 -- fd fits in int
+	return false
+}
+
 // Release releases the lock and removes the lock file.
 func (l *Lock) Release() {
 	if l == nil || l.file == nil {

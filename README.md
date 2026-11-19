@@ -74,7 +74,7 @@ ckb status
 
 | AI Assistants | CI/CD | Your Tools |
 |---------------|-------|------------|
-| Claude Code, Cursor, Windsurf, VS Code, Grok | GitHub Actions, GitLab CI | CLI, HTTP API, Scripts |
+| Claude Code, Cursor, Windsurf, VS Code, Grok, Codex | GitHub Actions, GitLab CI | CLI, HTTP API, Scripts |
 
 **83% token reduction** with smart presets—load only the tools you need.
 
@@ -129,25 +129,40 @@ go build -o ckb ./cmd/ckb
 
 ### Setup
 
+**Claude Code:** install the plugin once, done — for every repo, with `/ckb:review` and
+`/ckb:audit`:
+
 ```bash
-# 1. Initialize in your project
-cd /path/to/your/project
-ckb init   # or: npx @tastehub/ckb init
-
-# 2. Generate SCIP index (optional but recommended)
-ckb index  # auto-detects language and runs appropriate indexer
-
-# 3. Connect to Claude Code
-ckb setup  # creates .mcp.json automatically
-
-# Or manually:
-claude mcp add --transport stdio ckb -- npx @tastehub/ckb mcp
+claude plugin marketplace add SimplyLiz/ckb
+claude plugin install ckb@lisa
 ```
+
+The first time Claude Code opens a repo, CKB initializes it and builds the SCIP index in
+the background (`.ckb/` and `index.scip` are kept out of `git status` via
+`.git/info/exclude`). Until the index is there — or if your language's indexer isn't
+installed — answers come from git history and LSP. Refresh the index after larger changes
+with `npx @tastehub/ckb index`.
+
+**Any other tool, or your own `ckb` binary:**
+
+```bash
+cd /path/to/your/project
+ckb setup   # or: npx @tastehub/ckb setup
+```
+
+`ckb setup` runs `ckb init` for you if needed, then writes the MCP config.
+Building the SCIP index is non-blocking by default: the generated config
+runs with `--watch`, so the index builds itself in the background the
+moment your AI tool starts the server and stays current after that. Want it
+ready before setup exits? `ckb setup --index-now`. Prefer to build it
+yourself whenever you like? `ckb index`.
+
+Pick one of `ckb setup` and the plugin, not both — otherwise the server starts twice.
 
 **Token efficiency shown at startup:**
 ```
-CKB MCP Server v9.3.1
-  Active tools: 25 / 110 (22%)
+CKB MCP Server v9.4.0
+  Active tools: 25 / 106 (24%)
   Estimated context: ~4k tokens
   Preset: core
 ```
@@ -174,7 +189,7 @@ Now Claude can answer questions like:
 
 | Interface | Best For |
 |-----------|----------|
-| **[MCP](https://github.com/SimplyLiz/CodeMCP/wiki/MCP-Integration)** | AI-assisted development — Claude, Cursor, Windsurf, VS Code, OpenCode, Grok |
+| **[MCP](https://github.com/SimplyLiz/CodeMCP/wiki/MCP-Integration)** | AI-assisted development — Claude, Cursor, Windsurf, VS Code, OpenCode, Grok, Codex |
 | **[CLI](https://github.com/SimplyLiz/CodeMCP/wiki/User-Guide)** | Quick lookups from terminal, scripting |
 | **[HTTP API](https://github.com/SimplyLiz/CodeMCP/wiki/API-Reference)** | IDE plugins, CI integration, custom tooling |
 
@@ -220,19 +235,21 @@ See **[Language Support](https://github.com/SimplyLiz/CodeMCP/wiki/Language-Supp
 
 ### Keeping Your Index Fresh
 
-Your index becomes stale when you make commits. CKB offers several ways to stay current:
+Edits you have not indexed yet are served from an **index overlay**: the
+running server patches the loaded index with the diff since it was built.
+Positions in changed files are exact; for Go, declarations and references on
+the changed lines come in too (resolved exactly or left out, never guessed by
+name; `getStatus` and every result's `indexFreshness.overlay` say how much it
+covers). A full reindex still runs, but only when it adds something: on a
+commit or checkout, and when the overlay reports what it could not do. Set
+`CKB_OVERLAY=0` to turn the overlay off.
 
 | Method | Command | When to Use |
 |--------|---------|-------------|
+| MCP watch | on by default in `ckb mcp` (`--watch=false` to turn off) | AI sessions |
 | Manual | `ckb index` | One-off updates, scripts |
 | Watch mode | `ckb index --watch` | Auto-refresh during development |
-| MCP watch | `ckb mcp --watch` | Auto-refresh in AI sessions |
 | CI webhook | `POST /api/v1/refresh` | Trigger from CI/CD |
-
-**Quick start for AI sessions:**
-```bash
-ckb mcp --watch  # Auto-reindexes every 30s when stale
-```
 
 **Check staleness:**
 ```bash
@@ -362,6 +379,28 @@ CKB works with any MCP-compatible AI coding tool.
 
 <details>
 <summary><strong>Claude Code</strong></summary>
+
+Two ways in. Pick by what you have:
+
+| You have | Use | Why |
+|---|---|---|
+| `ckb` installed (npm, Homebrew, source) | `ckb setup` in the repo, or `ckb setup --global` | Uses your binary; also installs `/ckb-review` and `/ckb-audit` |
+| Only Claude Code | The plugin (below) | One install for every repo, no binary to manage, skills update with each CKB release |
+
+Don't do both: the plugin and `ckb setup` each register a `ckb` server, and Claude Code
+would start two. Switching to the plugin: `claude mcp remove ckb` first.
+
+**Plugin:**
+
+```bash
+claude plugin marketplace add SimplyLiz/ckb
+claude plugin install ckb@lisa
+```
+
+It runs `npx -y @tastehub/ckb mcp`, so Node is required. Each repo is initialized and
+indexed on first use; `npx @tastehub/ckb index` refreshes the index.
+
+**`ckb setup`:**
 
 ```bash
 # Auto-configure for current project
@@ -515,6 +554,48 @@ The `CKB_REPO` environment variable tells CKB which repository to analyze. Claud
 </details>
 
 <details>
+<summary><strong>Codex</strong></summary>
+
+Codex CLI supports both project-local config (`<repo>/.codex/config.toml`, for
+trusted projects) and user-global config (`~/.codex/config.toml`). By default
+`ckb setup --tool=codex` writes the project-local file, same as Cursor or
+VS Code; pass `--global` to write the global one instead.
+
+```bash
+# Project-local (default) — writes <repo>/.codex/config.toml
+npx @tastehub/ckb setup --tool=codex
+
+# Global — writes ~/.codex/config.toml, used across all projects
+npx @tastehub/ckb setup --tool=codex --global
+```
+
+Or manually add to either file:
+```toml
+[mcp_servers.ckb]
+command = "npx"
+args = ["-y", "@tastehub/ckb", "mcp", "--watch"]
+```
+
+`ckb setup` merges this table into your existing `config.toml` without
+touching anything else in the file — including any `[mcp_servers.ckb.env]`
+subtable you've hand-added for your own environment variables.
+
+On Windows, `ckb setup --tool=codex --npx` automatically wraps the command
+in `cmd /c` (Codex spawns commands directly, and `npx` on Windows is
+`npx.cmd`, which only resolves through a shell) — see the "Windows" section
+below if you're editing `config.toml` by hand instead.
+
+With the global config, `ckb mcp` has no per-project file to anchor it to,
+so it resolves the target repository the same way any other CKB command
+does when no `--repo`/`CKB_REPO` is set: from the working directory Codex
+launches the server in (matched against the registry, or auto-detected via
+the enclosing git repo), falling back to your default registered repo. Run
+`ckb setup` from inside each project once with `--tool=codex` (project
+scope) if you want an explicit, unambiguous per-project config instead.
+
+</details>
+
+<details>
 <summary><strong>Windows</strong></summary>
 
 Use `cmd /c` wrapper in any config above:
@@ -529,28 +610,35 @@ Use `cmd /c` wrapper in any config above:
 }
 ```
 
+For Codex's TOML config, the same wrapper looks like:
+```toml
+[mcp_servers.ckb]
+command = "cmd"
+args = ["/c", "npx", "-y", "@tastehub/ckb", "mcp", "--watch"]
+```
+
 </details>
 
 <details>
 <summary><strong>Presets (Token Optimization)</strong></summary>
 
-CKB exposes 110+ tools, but most sessions only need a subset. Use presets to reduce token overhead by up to 77%:
+CKB exposes 106+ tools, but most sessions only need a subset. Use presets to reduce token overhead by up to 77%:
 
 ```bash
 # List all available presets with tool counts and token estimates
 ckb mcp --list-presets
 
-# Default: core preset (25 essential tools)
+# Default: core preset (26 essential tools)
 ckb mcp
 
 # Workflow-specific presets
-ckb mcp --preset=core        # 25 tools - search, explain, impact (default)
-ckb mcp --preset=review      # 42 tools - core + diff, ownership, PR review
-ckb mcp --preset=refactor    # 42 tools - core + coupling, dead code
-ckb mcp --preset=federation  # 46 tools - core + cross-repo
-ckb mcp --preset=docs        # 34 tools - core + doc-symbol linking
-ckb mcp --preset=ops         # 43 tools - core + jobs, webhooks, metrics
-ckb mcp --preset=full        # 110 tools - complete feature set
+ckb mcp --preset=core        # 26 tools - search, explain, impact (default)
+ckb mcp --preset=review      # 44 tools - core + diff, ownership, PR review
+ckb mcp --preset=refactor    # 44 tools - core + coupling, dead code
+ckb mcp --preset=federation  # 47 tools - core + cross-repo
+ckb mcp --preset=docs        # 35 tools - core + doc-symbol linking
+ckb mcp --preset=ops         # 44 tools - core + jobs, webhooks, metrics
+ckb mcp --preset=full        # 106 tools - complete feature set
 ```
 
 In MCP config:
@@ -573,15 +661,14 @@ The AI can dynamically expand the toolset mid-session using the `expandToolset` 
 
 CKB orchestrates multiple code intelligence backends, using whatever is available and stacking their strengths — more backends running means richer answers:
 
-- **Cartographer** — Fast structural analysis (architecture, dependencies, blast-radius, coupling, directory rollup) that needs **no index** and works the moment CKB is installed. Compiled into the binary, so it ships in the npm and Homebrew builds by default.
-- **SCIP** — Precise, pre-indexed symbol data for exact definitions, references, and call graphs (run `ckb index`)
+- **SCIP** — Precise, pre-indexed symbol data for exact definitions, references, and call graphs (run `ckb index`); import cycles, bridges and god modules are computed from it too
 - **LSP** — Real-time language server queries
 - **Git** — Blame, history, churn analysis, ownership
 - **LIP** — Semantic embedding daemon for nearest-neighbour search and re-ranking. Runs as a **separate, optional daemon** — install and start it alongside CKB.
 
 Results are merged intelligently and compressed for LLM context limits. Every backend except Git is optional; CKB degrades gracefully to whatever is present.
 
-> **LIP enhances semantic search, PR novelty detection, test discovery, file boundary analysis, and architecture coupling signals.** When LIP is running alongside CKB, search quality improves significantly — especially for natural-language queries that don't match symbol names literally. See [Hybrid Retrieval](https://github.com/SimplyLiz/CodeMCP/wiki/Hybrid-Retrieval) for details, or the [LIP documentation](https://lip-sigma.vercel.app/docs).
+> **LIP is experimental.** With the daemon running and an embedding endpoint configured (`LIP_EMBEDDING_URL`), CKB uses it for query expansion and a semantic fallback in symbol search, re-ranking when there is no SCIP index, `related` files in explainFile, semantic callers next to the static ones in impact analysis, and the outgoing call graph. Its name-linked static callers are not added to impact analysis: measured against a type-checked call graph they were almost all wrong. Whether the semantic features improve results has not been measured yet; SCIP stays the source of truth. See the [LIP documentation](https://lip-sigma.vercel.app/docs).
 
 Persistent knowledge survives across sessions:
 - **Module Registry** — Boundaries, responsibilities, tags
@@ -628,7 +715,7 @@ See the **[Full Documentation Wiki](https://github.com/SimplyLiz/CodeMCP/wiki)**
 - [Incremental Indexing](https://github.com/SimplyLiz/CodeMCP/wiki/Incremental-Indexing) — Fast index updates for Go projects
 - [Doc-Symbol Linking](https://github.com/SimplyLiz/CodeMCP/wiki/Doc-Symbol-Linking) — Symbol detection in docs, staleness checking
 - [Authentication](https://github.com/SimplyLiz/CodeMCP/wiki/Authentication) — API tokens, scopes, rate limiting
-- [MCP Integration](https://github.com/SimplyLiz/CodeMCP/wiki/MCP-Integration) — Claude Code setup, 110+ tools
+- [MCP Integration](https://github.com/SimplyLiz/CodeMCP/wiki/MCP-Integration) — Claude Code setup, 106+ tools
 - [API Reference](https://github.com/SimplyLiz/CodeMCP/wiki/API-Reference) — HTTP API documentation
 - [Daemon Mode](https://github.com/SimplyLiz/CodeMCP/wiki/Daemon-Mode) — Always-on service with scheduler, webhooks
 - [Configuration](https://github.com/SimplyLiz/CodeMCP/wiki/Configuration) — All options including MODULES.toml
@@ -650,7 +737,7 @@ See the **[Full Documentation Wiki](https://github.com/SimplyLiz/CodeMCP/wiki)**
 
 **Optional (for enhanced analysis):**
 - SCIP indexer for your language (scip-go, scip-typescript, etc.) — run `ckb index` to auto-install
-- [LIP v2.3+](https://lip-sigma.vercel.app) semantic embedding daemon (requires Rust/cargo) — strongly recommended for best search quality ([docs](https://lip-sigma.vercel.app/docs), [crates.io](https://crates.io/crates/lip-cli)):
+- [LIP v2.3+](https://lip-sigma.vercel.app) semantic embedding daemon (requires Rust/cargo) — experimental, its effect on results is not measured yet; the semantic features need an embedding endpoint in `LIP_EMBEDDING_URL` ([docs](https://lip-sigma.vercel.app/docs), [crates.io](https://crates.io/crates/lip-cli)):
   ```bash
   cargo install lip-cli
   lip daemon --socket ~/.local/share/lip/lip.sock

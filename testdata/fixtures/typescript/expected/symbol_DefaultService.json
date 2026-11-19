@@ -5,7 +5,7 @@
     "file": "src/pkg/service.ts",
     "kind": "class",
     "line": 30,
-    "moduleId": "",
+    "moduleId": "src/pkg",
     "name": "DefaultService"
   }
 }

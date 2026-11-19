@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -68,6 +69,44 @@ type Config struct {
 
 	// v8.3 Compliance auditing
 	Compliance ComplianceConfig `json:"compliance" mapstructure:"compliance"`
+
+	// Activity ledger (MCP tool-call audit trail)
+	Activity ActivityConfig `json:"activity" mapstructure:"activity"`
+
+	// Path classes left out of hotspots, co-change coupling and risk scoring
+	Paths PathsConfig `json:"paths" mapstructure:"paths"`
+
+	// auditRisk tuning
+	Audit AuditConfig `json:"audit" mapstructure:"audit"`
+}
+
+// AuditConfig tunes auditRisk for a repo. Empty fields keep the defaults.
+type AuditConfig struct {
+	// SecurityKeywords replaces the built-in keyword list of the
+	// security_sensitive factor. A keyword matches an identifier or a run of
+	// its parts: "access_token" matches accessToken, ACCESS_TOKEN and
+	// get_access_token, "token" any identifier with a part "token".
+	SecurityKeywords []string `json:"securityKeywords,omitempty" mapstructure:"securityKeywords"`
+	// DisabledFactors are risk factors not scored, e.g. ["security_sensitive"].
+	DisabledFactors []string `json:"disabledFactors,omitempty" mapstructure:"disabledFactors"`
+}
+
+// PathsConfig declares repo paths that hold generated files or data rather than
+// code. Files in them drop out of history-based analyses (getHotspots, co-change
+// coupling, auditRisk, assessChange's coChangeCheck); responses say how many were
+// left out. Globs: "*" crosses directories, "**" any depth, a plain directory name
+// covers everything under it. paths.generated also feeds the review's generated
+// check, alongside review.generatedPatterns.
+type PathsConfig struct {
+	Generated []string `json:"generated,omitempty" mapstructure:"generated"` // e.g. ["gen/**", "*.pb.go"]
+	Data      []string `json:"data,omitempty" mapstructure:"data"`           // e.g. ["bench-data/**"]
+}
+
+// ActivityConfig controls the MCP activity ledger (tool_calls table).
+type ActivityConfig struct {
+	Enabled       bool `json:"enabled" mapstructure:"enabled"`
+	RetentionDays int  `json:"retentionDays" mapstructure:"retentionDays"`
+	StoreParams   bool `json:"storeParams" mapstructure:"storeParams"`
 }
 
 // ComplianceConfig configures compliance audit behavior (v8.3)
@@ -133,6 +172,19 @@ type BackendsConfig struct {
 	Scip ScipConfig `json:"scip" mapstructure:"scip"`
 	Lsp  LspConfig  `json:"lsp" mapstructure:"lsp"`
 	Git  GitConfig  `json:"git" mapstructure:"git"`
+
+	// Treesitter configures the tree-sitter symbol fallback used when no SCIP index is loaded.
+	Treesitter TreesitterConfig `json:"treesitter" mapstructure:"treesitter"`
+}
+
+// TreesitterConfig contains tree-sitter fallback configuration.
+type TreesitterConfig struct {
+	// Exclude lists globs of files/directories the fallback must not index.
+	// Matched against the repo-relative slash path. Supported: "dir/**"
+	// (dir and everything below it, whole path segments) and path.Match
+	// patterns against the full path ("*" does not cross "/").
+	// .gitignore is honoured automatically in git work trees.
+	Exclude []string `json:"exclude,omitempty" mapstructure:"exclude"`
 }
 
 // ScipConfig contains SCIP backend configuration
@@ -509,6 +561,11 @@ func DefaultConfig() *Config {
 				LineKeys:      []string{"code.lineno", "code.line_number"},
 			},
 		},
+		Activity: ActivityConfig{
+			Enabled:       true,
+			RetentionDays: 30,
+			StoreParams:   true,
+		},
 	}
 }
 
@@ -582,12 +639,17 @@ func LoadConfigWithDetails(repoRoot string) (*LoadResult, error) {
 				return nil, err
 			}
 		} else {
-			// Unmarshal into config struct
-			var cfg Config
-			if err := v.Unmarshal(&cfg); err != nil {
+			// Unmarshal into a struct pre-filled with defaults so that keys
+			// absent from an older config.json keep their default value
+			// (mapstructure only touches fields present in the input).
+			// Without this, every default-true bool (activity.enabled,
+			// backends.scip.enabled, ...) silently flipped to false for
+			// configs written before the key existed.
+			cfg := DefaultConfig()
+			if err := v.Unmarshal(cfg); err != nil {
 				return nil, err
 			}
-			result.Config = &cfg
+			result.Config = cfg
 			result.ConfigPath = v.ConfigFileUsed()
 		}
 	}
@@ -605,12 +667,14 @@ func loadConfigFromPath(path string) (*Config, error) {
 		return nil, err
 	}
 
-	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	// Pre-fill with defaults: json.Unmarshal leaves fields untouched when
+	// the key is absent, so older config files keep default values.
+	cfg := DefaultConfig()
+	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("invalid JSON in config file: %w", err)
 	}
 
-	return &cfg, nil
+	return cfg, nil
 }
 
 // envVarMapping defines the supported environment variable overrides
@@ -918,6 +982,18 @@ func (c *Config) Validate() error {
 		return &ConfigError{
 			Field:   "version",
 			Message: fmt.Sprintf("unsupported config version %d, supported versions: %v", c.Version, SupportedConfigVersions),
+		}
+	}
+
+	for i, g := range c.Backends.Treesitter.Exclude {
+		if strings.HasSuffix(g, "/**") {
+			continue // literal-prefix form, always valid
+		}
+		if _, err := path.Match(g, ""); err != nil {
+			return &ConfigError{
+				Field:   fmt.Sprintf("backends.treesitter.exclude[%d]", i),
+				Message: fmt.Sprintf("invalid glob %q: %v", g, err),
+			}
 		}
 	}
 

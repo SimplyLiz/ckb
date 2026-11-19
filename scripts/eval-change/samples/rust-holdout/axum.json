@@ -1,0 +1,246 @@
+{
+ "lang": "rust",
+ "name": "axum",
+ "repo": "/tmp/ckb940/holdout/axum",
+ "head": "40d061fdacd468217c7a609bede16357276b6c40",
+ "seed": "ckb-eval-change-v1",
+ "commits_in_pool": 2015,
+ "candidates": 117,
+ "index_lang": "rust",
+ "prep": null,
+ "target": 4,
+ "sample": [
+  {
+   "sha": "bf7c5fc5f31706dab13fc3ab41bb185d9c32a07f",
+   "parent": "64563fb94cef32080ec0d13e4d60686951b83f27",
+   "symbol": "layer",
+   "kind": "signature",
+   "definers": [
+    "axum/src/routing/path_router.rs"
+   ],
+   "decl_before": [
+    "pub(super)fnlayer<L>(self,layer:L)->PathRouter<S,IS_FALLBACK>whereL:Layer<Route>+Clone+Send+Sync+'static,L::Service:Service<Request>+Clone+Send+Sync+'static,<L::ServiceasService<Request>>::Response:IntoResponse+'static,<L::ServiceasService<Request>>::Error:Into<Infallible>+'static,<L::ServiceasService<Request>>::Future:Send+'static,"
+   ],
+   "decl_after": [
+    "pub(super)fnlayer<L>(self,layer:L)->PathRouter<S>whereL:Layer<Route>+Clone+Send+Sync+'static,L::Service:Service<Request>+Clone+Send+Sync+'static,<L::ServiceasService<Request>>::Response:IntoResponse+'static,<L::ServiceasService<Request>>::Error:Into<Infallible>+'static,<L::ServiceasService<Request>>::Future:Send+'static,"
+   ],
+   "truth_all": [
+    "axum/src/routing/mod.rs"
+   ],
+   "truth_ref": [
+    "axum/src/routing/mod.rs"
+   ],
+   "truth_tests": [
+    "axum/src/routing/tests/mod.rs",
+    "axum/src/routing/tests/nest.rs"
+   ],
+   "truth_tests_ref": [],
+   "files_in_commit": 5,
+   "rank": "001d8342fb2fd2f428b60c0711956c29d0effe972998f4f5d953b214e1328449"
+  },
+  {
+   "sha": "f10508db0b221f66414c7203764610e83acbb0c1",
+   "parent": "1a78a3f2243f67e7401c2c6fad5c5e713876df52",
+   "symbol": "handle_error",
+   "kind": "signature",
+   "definers": [
+    "examples/key-value-store/src/main.rs"
+   ],
+   "decl_before": [
+    "fnhandle_error(error:BoxError)->Result<implIntoResponse,Infallible>"
+   ],
+   "decl_after": [
+    "fnhandle_error(error:BoxError)->implIntoResponse"
+   ],
+   "truth_all": [
+    "examples/print-request-response/src/main.rs",
+    "examples/sse/src/main.rs",
+    "examples/static-file-server/src/main.rs",
+    "examples/todos/src/main.rs",
+    "examples/websockets/src/main.rs",
+    "src/handler/mod.rs",
+    "src/lib.rs",
+    "src/routing/future.rs",
+    "src/routing/mod.rs",
+    "src/routing/or.rs",
+    "src/service/future.rs",
+    "src/service/mod.rs"
+   ],
+   "truth_ref": [
+    "examples/todos/src/main.rs",
+    "src/handler/mod.rs",
+    "src/routing/mod.rs",
+    "src/service/mod.rs"
+   ],
+   "truth_tests": [
+    "src/tests/handle_error.rs",
+    "src/tests/mod.rs",
+    "src/tests/nest.rs",
+    "src/tests/or.rs"
+   ],
+   "truth_tests_ref": [
+    "src/tests/handle_error.rs",
+    "src/tests/mod.rs",
+    "src/tests/or.rs"
+   ],
+   "files_in_commit": 19,
+   "rank": "01ce9430f81feedbd950cd1946b11f36663cd89c66b976df14d4fc7c78e3e13d"
+  },
+  {
+   "sha": "80131659083a7a10f1fb3a0c4e5ca67fd87cf22b",
+   "parent": "9b3f3c9bdf63d7775ac670793f7e84b1cebf5141",
+   "symbol": "handle_error",
+   "kind": "signature",
+   "definers": [
+    "src/routing.rs",
+    "src/service/mod.rs"
+   ],
+   "decl_before": [
+    "pubfnhandle_error<F,ReqBody,ResBody,Res,E>(self,f:F)->crate::service::HandleError<S,F,ReqBody,HandleErrorFromRouter>whereS:Service<Request<ReqBody>,Response=Response<ResBody>>+Clone,F:FnOnce(S::Error)->Result<Res,E>,Res:IntoResponse,ResBody:http_body::Body<Data=Bytes>+Send+Sync+'static,ResBody::Error:Into<BoxError>+Send+Sync+'static,"
+   ],
+   "decl_after": [
+    "fnhandle_error<ReqBody,ResBody,F,Res,E>(self,f:F)->HandleError<Self,F,ReqBody,HandleErrorFromRouter>whereSelf:Service<Request<ReqBody>,Response=Response<ResBody>>,F:FnOnce(Self::Error)->Result<Res,E>,Res:IntoResponse,ResBody:http_body::Body<Data=Bytes>+Send+Sync+'static,ResBody::Error:Into<BoxError>+Send+Sync+'static,"
+   ],
+   "truth_all": [
+    "examples/key_value_store.rs",
+    "examples/sse.rs",
+    "examples/static_file_server.rs",
+    "examples/todos.rs",
+    "examples/websocket.rs",
+    "src/handler/mod.rs",
+    "src/lib.rs",
+    "src/tests.rs"
+   ],
+   "truth_ref": [
+    "examples/sse.rs",
+    "examples/static_file_server.rs",
+    "examples/websocket.rs",
+    "src/tests.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 12,
+   "rank": "02f04adb38c81a7141e5ff7fc514d566a8657bec7ceb63b3927084752e7f8b6e"
+  },
+  {
+   "sha": "4bb17cbc2da9a1ccad4303f732ae1f3f80d59671",
+   "parent": "75b5615ccdf7c63ff4c2ad49729645f83d164d61",
+   "symbol": "uri",
+   "kind": "signature",
+   "definers": [
+    "src/extract/mod.rs"
+   ],
+   "decl_before": [
+    "pubfnuri(&self)->Option<&Uri>"
+   ],
+   "decl_after": [
+    "pubfnuri(&self)->&Uri"
+   ],
+   "truth_all": [
+    "src/extract/form.rs",
+    "src/extract/query.rs",
+    "src/extract/raw_query.rs",
+    "src/extract/rejection.rs",
+    "src/extract/request_parts.rs",
+    "src/extract/ws.rs"
+   ],
+   "truth_ref": [
+    "src/extract/form.rs",
+    "src/extract/query.rs",
+    "src/extract/raw_query.rs",
+    "src/extract/request_parts.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 8,
+   "rank": "02f144db96d49cd86aeaf1c15bafce3c66a8bc1b71730f8bd0634182e2e78f60"
+  },
+  {
+   "sha": "f32d325e55fe002fdfcad8fd32475c2e3222c225",
+   "parent": "e544fe1c395ff3304ba679413bfb1af1b1da6fa6",
+   "symbol": "empty",
+   "kind": "signature",
+   "definers": [
+    "src/body.rs"
+   ],
+   "decl_before": [
+    "pub(crate)fnempty()->Self"
+   ],
+   "decl_after": [
+    "pub(crate)fnempty()->BoxBody"
+   ],
+   "truth_all": [
+    "examples/key_value_store.rs",
+    "examples/versioning.rs",
+    "src/extract/extractor_middleware.rs",
+    "src/extract/mod.rs",
+    "src/extract/multipart.rs",
+    "src/extract/rejection.rs",
+    "src/handler/mod.rs",
+    "src/routing.rs",
+    "src/service/future.rs",
+    "src/service/mod.rs",
+    "src/tests.rs"
+   ],
+   "truth_ref": [
+    "src/routing.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 12,
+   "rank": "062ee9c68ea23f036c7b9a9debcc99d180e8e489ac83610b81ba61d31bcc834e"
+  },
+  {
+   "sha": "25fac01661a9018e59f12a71158536691cc758e6",
+   "parent": "291b62e21edc0e988afb5f996895ffee65fbccc5",
+   "symbol": "merge_for_path",
+   "kind": "signature",
+   "definers": [
+    "axum/src/routing/method_routing.rs"
+   ],
+   "decl_before": [
+    "pub(crate)fnmerge_for_path(mutself,path:Option<&str>,other:MethodRouter<S,E>)->Self"
+   ],
+   "decl_after": [
+    "pub(crate)fnmerge_for_path(mutself,path:Option<&str>,other:MethodRouter<S,E>)->Result<Self,Cow<'static,str>>"
+   ],
+   "truth_all": [
+    "axum/src/routing/path_router.rs"
+   ],
+   "truth_ref": [
+    "axum/src/routing/path_router.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 2,
+   "rank": "06e2c3733cb7e9354594b7b705c316852e4e88ff28ae5bcb863adb06cff42acb"
+  },
+  {
+   "sha": "178e1801e98bcf4a32d1fff225242fe6b51ba0b8",
+   "parent": "d37b93a3c4ad75990d4e11a06b6ed99d89abe67b",
+   "symbol": "new",
+   "kind": "removed",
+   "definers": [
+    "axum/src/extract/rejection.rs"
+   ],
+   "decl_before": [
+    "pub(super)fnnew<T,E>(error:E)->SelfwhereE:Into<BoxError>,"
+   ],
+   "decl_after": [],
+   "truth_all": [
+    "axum-extra/src/extract/mod.rs",
+    "axum/src/extract/form.rs",
+    "axum/src/extract/mod.rs",
+    "axum/src/extract/query.rs"
+   ],
+   "truth_ref": [
+    "axum/src/extract/form.rs",
+    "axum/src/extract/query.rs"
+   ],
+   "truth_tests": [],
+   "truth_tests_ref": [],
+   "files_in_commit": 10,
+   "rank": "0af62d5e9af883512fafd50c81eed6d66762ee8eff4321625a73f3221e08e395"
+  }
+ ]
+}

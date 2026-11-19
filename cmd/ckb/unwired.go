@@ -49,7 +49,7 @@ func init() {
 	unwiredCmd.Flags().Float64Var(&unwiredMinConfidence, "min-confidence", 0.80, "Minimum confidence threshold (0-1)")
 	unwiredCmd.Flags().StringSliceVar(&unwiredExclude, "exclude", nil, "Patterns to exclude")
 	unwiredCmd.Flags().BoolVar(&unwiredIncludeTypes, "include-types", false, "Include type definitions (higher FP rate)")
-	unwiredCmd.Flags().IntVar(&unwiredMaxNodes, "max-nodes", 10000, "Max symbols in reachable set")
+	unwiredCmd.Flags().IntVar(&unwiredMaxNodes, "max-nodes", 100000, "Max symbols in reachable set")
 	rootCmd.AddCommand(unwiredCmd)
 }
 
@@ -99,17 +99,26 @@ func printUnwiredHuman(resp *query.FindUnwiredModulesResponse) {
 	fmt.Println("============================================================")
 	fmt.Println()
 
-	if len(resp.Entrypoints) > 0 {
-		fmt.Printf("Entrypoints: %d\n", len(resp.Entrypoints))
+	if len(resp.Entrypoints) == 0 {
+		fmt.Println("No entrypoints found, so nothing was analyzed.")
+		fmt.Println("CKB starts from a main under cmd/, a package.json script, or a file a")
+		fmt.Println("framework calls by convention (Next.js pages and route handlers).")
+		return
+	}
+	fmt.Printf("Entrypoints: %d\n", len(resp.Entrypoints))
+	if len(resp.Entrypoints) <= 20 {
 		for _, ep := range resp.Entrypoints {
 			fmt.Printf("  - %s\n", ep)
 		}
-		fmt.Println()
 	}
+	fmt.Println()
 
 	fmt.Printf("Reachable symbols: %d\n", resp.ReachableCount)
 	fmt.Printf("Total exported:    %d\n", resp.Summary.TotalExported)
 	fmt.Printf("Unwired:           %d\n", resp.Summary.UnwiredCount)
+	if resp.Summary.ViaInterface > 0 {
+		fmt.Printf("  (%d methods reached through an interface are not listed)\n", resp.Summary.ViaInterface)
+	}
 	if resp.Partial {
 		fmt.Println("  (partial — reachable set budget exhausted)")
 	}
@@ -131,6 +140,17 @@ func printUnwiredHuman(resp *query.FindUnwiredModulesResponse) {
 				fmt.Printf("     refs: %d (test: %d)\n", item.ReferenceCount, item.TestReferences)
 			}
 		}
+		if more := mod.Summary.UnwiredCount - len(mod.Items); more > 0 {
+			fmt.Printf("   … and %d more\n", more)
+		}
 		fmt.Println()
+	}
+	if resp.Truncated {
+		listed := 0
+		for _, mod := range resp.UnwiredModules {
+			listed += len(mod.Items)
+		}
+		fmt.Printf("Showing %d of %d unwired symbols in %d of %d modules. Raise --limit to see more.\n",
+			listed, resp.Summary.UnwiredCount, len(resp.UnwiredModules), resp.Summary.UnwiredModules)
 	}
 }

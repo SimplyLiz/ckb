@@ -25,12 +25,16 @@ func NewAnalyzer() *Analyzer {
 
 // AnalyzeFile analyzes a source file and returns complexity metrics.
 func (a *Analyzer) AnalyzeFile(ctx context.Context, path string) (*FileComplexity, error) {
-	ext := strings.ToLower(filepath.Ext(path))
-	lang, ok := LanguageFromExtension(ext)
+	lang, ok := LanguageFromPath(path)
 	if !ok {
+		ext := strings.ToLower(filepath.Ext(path))
+		msg := "unsupported file extension: " + ext
+		if ext == "" {
+			msg = "unsupported file: no extension and no recognised shebang"
+		}
 		return &FileComplexity{
 			Path:  path,
-			Error: "unsupported file extension: " + ext,
+			Error: msg,
 		}, nil
 	}
 
@@ -71,6 +75,15 @@ func (a *Analyzer) AnalyzeSource(ctx context.Context, path string, source []byte
 	for _, fn := range functions {
 		result := a.analyzeFunction(fn, source, lang)
 		fc.Functions = append(fc.Functions, result)
+	}
+
+	// A shell script's work is mostly its top-level commands, outside any
+	// function; report them as one unit so a script without functions still
+	// has a complexity.
+	if lang == LangBash {
+		if top, ok := analyzeTopLevel(root, source, lang, functionTypes); ok {
+			fc.Functions = append(fc.Functions, top)
+		}
 	}
 
 	fc.Aggregate()
@@ -123,7 +136,7 @@ func getFunctionName(node *sitter.Node, source []byte, lang Language) string {
 			nameNode = node.ChildByFieldName("name")
 		}
 
-	case LangPython:
+	case LangPython, LangBash:
 		nameNode = node.ChildByFieldName("name")
 
 	case LangRust:
@@ -167,7 +180,7 @@ func computeCyclomaticComplexity(node *sitter.Node, source []byte, lang Language
 
 	for _, dn := range decisionNodes {
 		// For binary expressions, only count if it's && or ||
-		if dn.Type() == "binary_expression" || dn.Type() == "boolean_operator" {
+		if isOperatorNodeType(dn.Type()) {
 			if IsBooleanOperator(dn, source, lang) {
 				complexity++
 			}
@@ -182,10 +195,57 @@ func computeCyclomaticComplexity(node *sitter.Node, source []byte, lang Language
 // computeCognitiveComplexity calculates cognitive complexity.
 // Cognitive complexity adds weight for nesting depth.
 func computeCognitiveComplexity(node *sitter.Node, source []byte, lang Language) int {
-	return computeCognitiveRecursive(node, source, lang, 0)
+	return computeCognitiveRecursive(node, source, lang, 0, nil)
 }
 
-func computeCognitiveRecursive(node *sitter.Node, source []byte, lang Language, nestingLevel int) int {
+// TopLevelName is the name of the unit that holds a script's commands outside
+// its functions (Bash only).
+const TopLevelName = "<toplevel>"
+
+// analyzeTopLevel measures the statements of root that are not inside a
+// function. ok is false when there are none besides comments.
+func analyzeTopLevel(root *sitter.Node, source []byte, lang Language, functionTypes []string) (ComplexityResult, bool) {
+	first, last, lines := -1, -1, 0
+	for i := 0; i < int(root.NamedChildCount()); i++ {
+		child := root.NamedChild(i)
+		if child == nil || child.Type() == "comment" || contains(functionTypes, child.Type()) {
+			continue
+		}
+		if first < 0 {
+			first = i
+		}
+		last = i
+		lines += int(child.EndPoint().Row-child.StartPoint().Row) + 1
+	}
+	if first < 0 {
+		return ComplexityResult{}, false
+	}
+
+	cyclomatic := 1
+	for _, dn := range FindNodesSkipping(root, GetDecisionNodeTypes(lang), functionTypes) {
+		if !isOperatorNodeType(dn.Type()) || IsBooleanOperator(dn, source, lang) {
+			cyclomatic++
+		}
+	}
+	cognitive := computeCognitiveRecursive(root, source, lang, 0, functionTypes)
+
+	startLine := int(root.NamedChild(first).StartPoint().Row) + 1
+	endLine := int(root.NamedChild(last).EndPoint().Row) + 1
+	// StartLine-EndLine spans the top-level statements and so may enclose
+	// functions; Lines counts only the statements' own lines.
+	return ComplexityResult{
+		Name:       TopLevelName,
+		StartLine:  startLine,
+		EndLine:    endLine,
+		Lines:      lines,
+		Cyclomatic: cyclomatic,
+		Cognitive:  cognitive,
+	}, true
+}
+
+// computeCognitiveRecursive sums cognitive complexity below node. Children
+// whose type is in skip are not visited.
+func computeCognitiveRecursive(node *sitter.Node, source []byte, lang Language, nestingLevel int, skip []string) int {
 	complexity := 0
 
 	decisionTypes := GetDecisionNodeTypes(lang)
@@ -199,7 +259,7 @@ func computeCognitiveRecursive(node *sitter.Node, source []byte, lang Language, 
 
 	if isDecision {
 		// For binary expressions, only count if it's && or ||
-		if nodeType == "binary_expression" || nodeType == "boolean_operator" {
+		if isOperatorNodeType(nodeType) {
 			if IsBooleanOperator(node, source, lang) {
 				complexity += 1 + nestingLevel
 			}
@@ -218,8 +278,8 @@ func computeCognitiveRecursive(node *sitter.Node, source []byte, lang Language, 
 	// Recurse into children
 	for i := uint32(0); i < node.ChildCount(); i++ {
 		child := node.Child(int(i))
-		if child != nil {
-			complexity += computeCognitiveRecursive(child, source, lang, childNesting)
+		if child != nil && !contains(skip, child.Type()) {
+			complexity += computeCognitiveRecursive(child, source, lang, childNesting, skip)
 		}
 	}
 

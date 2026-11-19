@@ -44,8 +44,27 @@ func (s *MCPServer) resolveRepoForPath(pathHint string) string {
 		return repos.FindGitRoot(pathHint)
 	}
 
-	// Relative path: try against each client root
-	for _, root := range s.GetRootPaths() {
+	activeRoot := ""
+	if eng := s.engine(); eng != nil {
+		activeRoot = eng.GetRepoRoot()
+	}
+	return resolveRelativeHint(pathHint, activeRoot, s.GetRootPaths())
+}
+
+// resolveRelativeHint resolves a relative path hint to a git root. The active
+// repo goes first: a relative path that exists there means the caller is
+// working in it. Trying the client roots first undid every switchProject into
+// a linked worktree — the same relative file exists in the main checkout the
+// client is rooted in, so the next call with a filePath silently switched back
+// to the main checkout's index.
+func resolveRelativeHint(pathHint, activeRoot string, clientRoots []string) string {
+	candidates := make([]string, 0, len(clientRoots)+1)
+	if activeRoot != "" {
+		candidates = append(candidates, activeRoot)
+	}
+	candidates = append(candidates, clientRoots...)
+
+	for _, root := range candidates {
 		candidate := filepath.Join(root, pathHint)
 		if _, err := os.Stat(candidate); err == nil {
 			if gitRoot := repos.FindGitRoot(candidate); gitRoot != "" {
@@ -53,16 +72,5 @@ func (s *MCPServer) resolveRepoForPath(pathHint string) string {
 			}
 		}
 	}
-
-	// Try against current engine's repo root
-	if eng := s.engine(); eng != nil {
-		candidate := filepath.Join(eng.GetRepoRoot(), pathHint)
-		if _, err := os.Stat(candidate); err == nil {
-			if gitRoot := repos.FindGitRoot(candidate); gitRoot != "" {
-				return gitRoot
-			}
-		}
-	}
-
 	return ""
 }

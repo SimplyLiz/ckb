@@ -60,14 +60,38 @@ type MCPServer struct {
 	// MCP roots support (v8.0)
 	roots *rootsManager
 
+	// Client identity captured from the initialize handshake (activity ledger consumer field)
+	clientName    string
+	clientVersion string
+	// protocolVersion is the MCP revision agreed in initialize.
+	protocolVersion string
+	// homeRepoPath is the repo the process was started in; see homeRepoRoot.
+	homeRepoPath string
+
 	// Binary staleness detection (v8.0)
 	binaryPath    string    // Path to the running binary
 	binaryModTime time.Time // Modification time at startup
+	// binaryStaleMu guards the cached check every tool response reads (see
+	// staleServerWarning): the last stat and whether it found a newer binary.
+	binaryStaleMu      sync.Mutex
+	binaryStaleChecked time.Time
+	binaryStale        bool
 
 	// Lazy engine loading (for fast MCP startup)
 	engineLoader func() (*query.Engine, error)
 	engineOnce   sync.Once
 	engineErr    error
+
+	// reindex tool: injected by cmd/ckb (see ReindexRunner), nil otherwise;
+	// one run per repo at a time.
+	reindexRunner ReindexRunner
+	reindexGuard  reindexGuard
+
+	// missing-index warning: the next step checked by cmd/ckb (see
+	// IndexDiagnoser), cached per repo.
+	indexDiagnoser IndexDiagnoser
+	missingIndex   missingIndexCache
+	partialIndex   missingIndexCache
 }
 
 // NewMCPServer creates a new MCP server in legacy single-engine mode
@@ -97,6 +121,7 @@ func NewMCPServer(version string, engine *query.Engine, logger *slog.Logger) *MC
 	// Wire up metrics persistence if database is available
 	if engine != nil && engine.DB() != nil {
 		SetMetricsDB(engine.DB())
+		wireActivityRecorder(engine, server.logger)
 	}
 
 	// Warm up the FTS index in the background. This populates FTS from SCIP
@@ -198,6 +223,43 @@ func NewMCPServerWithRegistry(version string, registry *repos.Registry, logger *
 	return server
 }
 
+// loadedEngine returns the active engine if one has already been built, nil
+// otherwise. Unlike engine() it never triggers the lazy load: an engine that
+// does not exist yet cannot be holding a stale index.
+func (s *MCPServer) loadedEngine() *query.Engine {
+	if s.legacyEngine != nil {
+		return s.legacyEngine
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.activeRepoPath != "" {
+		if entry, ok := s.engines[s.activeRepoPath]; ok {
+			return entry.engine
+		}
+	}
+	return nil
+}
+
+// refreshIndexIfChanged picks up an index that 'ckb index' rewrote while this
+// server was running (#134). One os.Stat per tool call when nothing changed.
+// The reindex tool is skipped: it does its own reload and reports it.
+func (s *MCPServer) refreshIndexIfChanged(toolName string) {
+	if toolName == "reindex" {
+		return
+	}
+	eng := s.loadedEngine()
+	if eng == nil {
+		return
+	}
+	reloaded, err := eng.EnsureSCIPLoaded(context.Background())
+	switch {
+	case err != nil:
+		s.logger.Warn("SCIP index changed on disk but reloading it failed", "error", err.Error())
+	case reloaded:
+		s.logger.Info("Reloaded SCIP index that changed on disk", "tool", toolName)
+	}
+}
+
 // engine returns the current engine (for backward compatibility with tool handlers)
 func (s *MCPServer) engine() *query.Engine {
 	// Legacy mode with preloaded engine
@@ -219,6 +281,7 @@ func (s *MCPServer) engine() *query.Engine {
 			// Wire up metrics persistence
 			if engine != nil && engine.DB() != nil {
 				SetMetricsDB(engine.DB())
+				wireActivityRecorder(engine, s.logger)
 			}
 			// Store in engine cache for auto-resolution
 			if engine != nil {
@@ -301,6 +364,7 @@ func (s *MCPServer) SetActiveRepo(name, path string, engine *query.Engine) {
 		// Wire up metrics persistence for multi-repo mode
 		if engine.DB() != nil {
 			SetMetricsDB(engine.DB())
+			wireActivityRecorder(engine, s.logger)
 		}
 	}
 }
@@ -321,6 +385,8 @@ func (s *MCPServer) Start() error {
 				if s.roots != nil {
 					s.roots.CancelAllPending()
 				}
+				// Flush and stop the activity ledger writer(s) before exiting.
+				closeAllActivityRecorders()
 				return nil
 			}
 			s.logger.Error("Error reading message",
@@ -465,7 +531,10 @@ func (s *MCPServer) CallTool(name string, params map[string]interface{}) (*envel
 	if !exists {
 		return nil, fmt.Errorf("tool not found: %s", name)
 	}
-	return handler(params)
+	s.refreshIndexIfChanged(name)
+	warnings := s.remapSymbolIDs(params)
+	resp, err := handler(params)
+	return withWarnings(resp, warnings), err
 }
 
 // GetRoots returns the current MCP roots from the client (v8.0)
@@ -636,6 +705,7 @@ func (s *MCPServer) switchProject(path string) (string, error) {
 	// Wire up metrics persistence
 	if newEngine.DB() != nil {
 		SetMetricsDB(newEngine.DB())
+		wireActivityRecorder(newEngine, s.logger)
 	}
 
 	s.logger.Info("Switched project", "root", gitRoot)
@@ -696,7 +766,46 @@ func (s *MCPServer) GetBinaryStaleWarning() string {
 	if !s.IsBinaryStale() {
 		return ""
 	}
-	return "CKB binary has been updated. Restart Claude Code or run /clear for changes to take effect."
+	return staleServerMessage
+}
+
+// staleServerMessage is what getStatus and every tool response's meta say once
+// the binary on disk is newer than this process. /clear does not restart an MCP
+// server; reconnecting it does.
+const staleServerMessage = "The ckb binary changed after this server started, so results come from the old build. Reconnect ckb (Claude Code: /mcp) or restart the client."
+
+// binaryStaleCheckInterval bounds how often a tool call stats the binary.
+var binaryStaleCheckInterval = 30 * time.Second
+
+// staleServerWarning is GetBinaryStaleWarning for every tool response: it stats
+// the binary at most once per binaryStaleCheckInterval, and once the binary is
+// newer it stays so for the life of the process.
+func (s *MCPServer) staleServerWarning() string {
+	s.binaryStaleMu.Lock()
+	defer s.binaryStaleMu.Unlock()
+	if !s.binaryStale && time.Since(s.binaryStaleChecked) >= binaryStaleCheckInterval {
+		s.binaryStaleChecked = time.Now()
+		s.binaryStale = s.IsBinaryStale()
+	}
+	if !s.binaryStale {
+		return ""
+	}
+	return staleServerMessage
+}
+
+// markStaleServer puts staleServerWarning into a tool response's meta.
+func (s *MCPServer) markStaleServer(resp *envelope.Response) {
+	if resp == nil {
+		return
+	}
+	warning := s.staleServerWarning()
+	if warning == "" {
+		return
+	}
+	if resp.Meta == nil {
+		resp.Meta = &envelope.Meta{}
+	}
+	resp.Meta.StaleServer = warning
 }
 
 // SendNotification sends a JSON-RPC notification to the client

@@ -220,6 +220,7 @@ func runRefresh(cmd *cobra.Command, args []string) error {
 	if rs != nil {
 		meta.CommitHash = rs.HeadCommit
 		meta.RepoStateID = rs.RepoStateID
+		meta.RecordWorktree(repoRoot, rs.Dirty)
 	}
 	if saveErr := meta.Save(ckbDir); saveErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Could not save index metadata: %v\n", saveErr)

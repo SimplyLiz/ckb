@@ -1,6 +1,8 @@
 package deadcode
 
 import (
+	bindingscip "github.com/sourcegraph/scip/bindings/go/scip"
+
 	"testing"
 )
 
@@ -24,13 +26,17 @@ func TestIsTestFile(t *testing.T) {
 		{"src/main_test.py", true},
 		{"src/main.py", false},
 
-		// Test directories
-		{"test/fixtures/data.json", false}, // test/ not matched, only /test/
+		// Test directories, at the root too: a vitest repo keeps its helpers in tests/support
+		{"test/fixtures/data.json", true},
 		{"tests/unit/test_api.py", true},
-		{"__tests__/Button.test.tsx", false}, // requires leading /
-		{"testdata/sample.json", false},      // testdata/ is for fixtures, not actual test files
+		{"tests/support/db.ts", true},
+		{"__tests__/Button.test.tsx", true},
+		{"testdata/sample.json", true},
 		{"src/__tests__/Button.test.tsx", true},
+		{"src/Button.test.tsx", true},
+		{"src/Button.spec.mjs", true},
 		{"pkg/tests/unit.go", true},
+		{"src/testing/helpers.ts", false},
 
 		// Non-test files
 		{"internal/query/engine.go", false},
@@ -158,6 +164,8 @@ func TestIsCommonInterfaceMethod(t *testing.T) {
 		{"MarshalJSON", "method", true},
 		{"UnmarshalJSON", "method", true},
 		{"ServeHTTP", "method", true},
+		{"Unwrap", "method", true}, // errors.Is/As call it through an unnamed interface
+		{"Format", "method", true},
 
 		// Not interface methods
 		{"String", "function", false}, // Not a method
@@ -285,26 +293,55 @@ func TestExclusionRules_ShouldExclude(t *testing.T) {
 
 func TestKindToString(t *testing.T) {
 	tests := []struct {
-		kind     int32
+		kind     bindingscip.SymbolInformation_Kind
 		expected string
 	}{
-		{1, "package"},
-		{2, "type"},
-		{3, "term"},
-		{4, "method"},
-		{5, "type_parameter"},
-		{6, "parameter"},
-		{7, "self_parameter"},
-		{8, "attr"},
-		{9, "macro"},
-		{0, "unknown"},
-		{99, "unknown"},
+		{bindingscip.SymbolInformation_Package, "package"},
+		{bindingscip.SymbolInformation_Struct, "type"},
+		{bindingscip.SymbolInformation_Interface, "type"},
+		{bindingscip.SymbolInformation_Function, "function"},
+		{bindingscip.SymbolInformation_Method, "method"},
+		{bindingscip.SymbolInformation_MethodSpecification, "method_spec"},
+		{bindingscip.SymbolInformation_Field, "field"},
+		{bindingscip.SymbolInformation_Constant, "constant"},
+		{bindingscip.SymbolInformation_Variable, "variable"},
+		{bindingscip.SymbolInformation_Parameter, "parameter"},
+		{bindingscip.SymbolInformation_TypeParameter, "parameter"},
+		{bindingscip.SymbolInformation_UnspecifiedKind, "unknown"},
+		{bindingscip.SymbolInformation_Kind(9999), "unknown"},
 	}
 
 	for _, tc := range tests {
-		result := kindToString(tc.kind)
+		result := kindToString(int32(tc.kind))
 		if result != tc.expected {
-			t.Errorf("kindToString(%d) = %q, want %q", tc.kind, result, tc.expected)
+			t.Errorf("kindToString(%v) = %q, want %q", tc.kind, result, tc.expected)
+		}
+	}
+}
+
+func TestKindFromID(t *testing.T) {
+	const ts = "scip-typescript npm m 1.0.0 src/`lib.ts`/"
+	const g = "scip-go gomod m v1 `m/pkg`/"
+	cases := map[string]string{
+		ts + "run().":                        "function",
+		ts + "Box#open().":                   "method",
+		ts + "Box#":                          "type",
+		ts + "Box#size.":                     "field",
+		ts + "MAX_BYTES.":                    "constant",
+		ts + "metadata.":                     "term",
+		ts + "ArrowDown0:":                   "meta",
+		ts + "Attachment#typeLiteral0:name.": "meta",
+		ts + "Card().(props)typeLiteral1:x.": "meta",
+		ts + "run().(x)":                     "parameter",
+		ts:                                   "package",
+		g + "Run().":                         "function",
+		g + "Engine#Close().":                "method",
+		g + "Engine#logger.":                 "field",
+		"local 3":                            "local",
+	}
+	for id, want := range cases {
+		if got := kindFromID(id); got != want {
+			t.Errorf("kindFromID(%q) = %q, want %q", id, got, want)
 		}
 	}
 }

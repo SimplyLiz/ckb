@@ -5,7 +5,7 @@
     "file": "pkg/handler.go",
     "kind": "function",
     "line": 12,
-    "moduleId": "",
+    "moduleId": "pkg",
     "name": "NewHandler"
   }
 }

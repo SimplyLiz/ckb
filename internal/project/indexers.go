@@ -16,17 +16,30 @@ type IndexerConfig struct {
 	// Args are additional arguments before the output flag
 	Args []string
 
-	// OutputFlag is the flag for specifying output path (e.g., "--output")
-	// Empty if the indexer uses a fixed output path
+	// OutputFlag is the flag that tells the indexer where to write its index,
+	// as the indexer's own source names it: not every SCIP indexer calls it
+	// --output. Empty if the indexer can't be told and uses FixedOutput.
+	// indexplan reads it too, so a wrong flag here breaks every custom index
+	// path and every multi-language build for that language. Checked against
+	// each indexer's source: scip-clang's indexer/main.cc, scip-ruby's
+	// docs/scip-ruby/CLI.md, scip_dart's bin/scip_dart.dart; bin/scip-php has
+	// no such option and writes index.scip unconditionally.
 	OutputFlag string
 
-	// FixedOutput is the fixed output filename for indexers that ignore --output
-	// (e.g., rust-analyzer always outputs "index.scip")
+	// FixedOutput is the file an indexer without OutputFlag always writes into
+	// its working directory (scip-php: "index.scip").
 	FixedOutput string
 
 	// SupportsIncremental indicates if this indexer works with incremental mode
 	SupportsIncremental bool
+
+	// Extensions are the source files the indexer reads. Incremental change
+	// detection looks at these and nothing else, so a language without them
+	// would never see a change and never re-run its indexer.
+	Extensions []string
 }
+
+var tsExtensions = []string{".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"}
 
 // Indexers maps languages to their SCIP indexer configurations.
 // Only languages with SupportsIncremental=true can use incremental indexing.
@@ -35,36 +48,42 @@ var Indexers = map[Language]IndexerConfig{
 		Cmd:                 "scip-go",
 		OutputFlag:          "--output",
 		SupportsIncremental: true,
+		Extensions:          []string{".go"},
 	},
 	LangTypeScript: {
 		Cmd:                 "scip-typescript",
 		Args:                []string{"index", "--infer-tsconfig"},
 		OutputFlag:          "--output",
 		SupportsIncremental: true,
+		Extensions:          tsExtensions,
 	},
 	LangJavaScript: {
 		Cmd:                 "scip-typescript",
 		Args:                []string{"index", "--infer-tsconfig"},
 		OutputFlag:          "--output",
 		SupportsIncremental: true,
+		Extensions:          tsExtensions,
 	},
 	LangPython: {
 		Cmd:                 "scip-python",
 		Args:                []string{"index", "."},
 		OutputFlag:          "--output",
 		SupportsIncremental: true,
+		Extensions:          []string{".py", ".pyi"},
 	},
 	LangDart: {
 		Cmd:                 "dart",
 		Args:                []string{"pub", "global", "run", "scip_dart", "./"},
 		OutputFlag:          "--output",
 		SupportsIncremental: true,
+		Extensions:          []string{".dart"},
 	},
 	LangRust: {
 		Cmd:                 "rust-analyzer",
 		Args:                []string{"scip", "."},
-		FixedOutput:         "index.scip",
+		OutputFlag:          "--output",
 		SupportsIncremental: true,
+		Extensions:          []string{".rs"},
 	},
 	LangJava: {
 		Cmd:                 "scip-java",
@@ -80,13 +99,13 @@ var Indexers = map[Language]IndexerConfig{
 	},
 	LangCpp: {
 		Cmd:                 "scip-clang",
-		OutputFlag:          "--output",
+		OutputFlag:          "--index-output-path",
 		SupportsIncremental: false, // Requires compile_commands.json
 	},
 	LangRuby: {
 		Cmd:                 "scip-ruby",
 		Args:                []string{"."},
-		OutputFlag:          "--output",
+		OutputFlag:          "--index-file",
 		SupportsIncremental: false, // Lower priority
 	},
 	LangCSharp: {
@@ -97,9 +116,15 @@ var Indexers = map[Language]IndexerConfig{
 	},
 	LangPHP: {
 		Cmd:                 "vendor/bin/scip-php",
-		OutputFlag:          "--output",
+		FixedOutput:         "index.scip",
 		SupportsIncremental: false, // Lower priority
 	},
+}
+
+// OutputFlag is the flag that tells lang's indexer where to write, or "" when
+// it can't be told (or there's no indexer).
+func OutputFlag(lang Language) string {
+	return Indexers[lang].OutputFlag
 }
 
 // GetIndexerConfig returns the indexer configuration for a language.
@@ -190,4 +215,20 @@ func (c *IndexerConfig) IsInstalled() bool {
 // HasFixedOutput returns true if the indexer outputs to a fixed path.
 func (c *IndexerConfig) HasFixedOutput() bool {
 	return c.FixedOutput != ""
+}
+
+// UndoInferredTSConfig returns what removes the tsconfig.json that
+// scip-typescript's --infer-tsconfig writes into dir when dir has none, and
+// leaves behind: an untracked file in the user's repo after every index. A
+// tsconfig.json that was there before is never touched; a command without the
+// flag gets a no-op. Call it before the indexer runs, the result after.
+func UndoInferredTSConfig(dir, command string) func() {
+	if !strings.Contains(command, "--infer-tsconfig") {
+		return func() {}
+	}
+	path := filepath.Join(dir, "tsconfig.json")
+	if _, err := os.Lstat(path); err == nil {
+		return func() {}
+	}
+	return func() { _ = os.Remove(path) }
 }

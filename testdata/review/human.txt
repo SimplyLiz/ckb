@@ -26,9 +26,9 @@ Top Findings:
   ⚠ internal/query/engine.go
       Complexity 12→20 in parseQuery()
   ⚠ internal/query/engine.go
-      Usually changed with: 
+      Usually changed with: engine_test.go (87% co-change rate)
   ⚠ protocol/modbus.go
-      Usually changed with: 
+      Usually changed with: modbus_test.go (91% co-change rate)
   ... and 1 informational
 
 Estimated Review: ~95min (complex)
@@ -54,4 +54,4 @@ Code Health:
   C ↑ protocol/modbus.go (65)
   2 degraded · 1 improved · avg -4.7
 
-Reviewers: @alice (85%) · @bob (45%)
+Reviewers (has lines in % of changed files): @alice 85% · @bob 45%

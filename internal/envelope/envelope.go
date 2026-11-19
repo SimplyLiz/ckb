@@ -3,6 +3,8 @@
 // confidence, provenance, freshness, truncation, warnings, and suggested next calls.
 package envelope
 
+import "github.com/SimplyLiz/CodeMCP/internal/query"
+
 // ConfidenceTier represents the quality tier of results.
 type ConfidenceTier string
 
@@ -76,6 +78,14 @@ type Meta struct {
 	Cache      *CacheInfo  `json:"cache,omitempty"`    // v8.0: cache status
 	Backend    string      `json:"backend,omitempty"`  // "scip" | "lsp" | "tree-sitter" | "git"
 	Accuracy   string      `json:"accuracy,omitempty"` // "high" | "medium" | "low"
+
+	// IndexFreshness is set on SCIP-backed responses: how the loaded index
+	// relates to the working tree and whether that touches this result.
+	IndexFreshness *query.IndexFreshness `json:"indexFreshness,omitempty"`
+
+	// StaleServer is set when the ckb binary on disk is newer than the running
+	// server, so this answer comes from older code. It says what to do about it.
+	StaleServer string `json:"staleServer,omitempty"`
 }
 
 // AccuracyForBackend returns the accuracy tier string for a given backend name.

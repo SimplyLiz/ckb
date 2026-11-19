@@ -180,13 +180,18 @@ func TestDiffSymbolMapper_WithOccurrence(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	// A referenced symbol isn't changed by a change on the line referencing it,
+	// and no definition contains the line: that's a file-level entry, not a guess.
 	if len(result) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(result))
 	}
 
 	sym := result[0]
-	if sym.Confidence != 0.7 {
-		t.Errorf("expected confidence 0.7 (reference), got %f", sym.Confidence)
+	if sym.SymbolID != "file:main.go" {
+		t.Errorf("expected a file-level entry, got %s", sym.SymbolID)
+	}
+	if sym.Confidence != confidenceUnresolved || sym.Note == "" {
+		t.Errorf("expected low confidence with a note, got %f %q", sym.Confidence, sym.Note)
 	}
 }
 

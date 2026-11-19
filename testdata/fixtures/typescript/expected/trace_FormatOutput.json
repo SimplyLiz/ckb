@@ -9,9 +9,49 @@
           "role": "target"
         },
         {
+          "file": "src/main.ts",
+          "kind": "",
+          "name": "main",
+          "role": "entrypoint"
+        }
+      ],
+      "pathType": "cli"
+    },
+    {
+      "nodes": [
+        {
+          "file": "src/internal/util.ts",
+          "kind": "",
+          "name": "FormatOutput",
+          "role": "target"
+        },
+        {
           "file": "src/pkg/handler.ts",
           "kind": "",
-          "name": "Handler#handle().(input)",
+          "name": "handle",
+          "role": "entrypoint"
+        }
+      ],
+      "pathType": "api"
+    },
+    {
+      "nodes": [
+        {
+          "file": "src/internal/util.ts",
+          "kind": "",
+          "name": "FormatOutput",
+          "role": "target"
+        },
+        {
+          "file": "src/pkg/handler.ts",
+          "kind": "",
+          "name": "handle",
+          "role": "intermediate"
+        },
+        {
+          "file": "src/pkg/handler.ts",
+          "kind": "",
+          "name": "handleBatch",
           "role": "entrypoint"
         }
       ],
@@ -19,5 +59,5 @@
     }
   ],
   "targetSymbol": "scip-typescript npm fixture 1.0.0 src/internal/`util.ts`/FormatOutput().",
-  "totalPathsFound": 1
+  "totalPathsFound": 3
 }

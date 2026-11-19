@@ -846,3 +846,19 @@ func TestGetModuleOverview(t *testing.T) {
 		_, _ = engine.GetModuleOverview(ctx, opts)
 	})
 }
+
+func TestAnchorConfigToRepo(t *testing.T) {
+	cfg := config.DefaultConfig()
+	got := anchorConfigToRepo(cfg, "/repos/other")
+	if got.RepoRoot != "/repos/other" {
+		t.Errorf("RepoRoot = %q, want /repos/other", got.RepoRoot)
+	}
+	if cfg.RepoRoot != "." {
+		t.Errorf("caller's config changed to %q", cfg.RepoRoot)
+	}
+	abs := config.DefaultConfig()
+	abs.RepoRoot = "/fixed"
+	if anchorConfigToRepo(abs, "/repos/other").RepoRoot != "/fixed" {
+		t.Error("an absolute RepoRoot must stay")
+	}
+}

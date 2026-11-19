@@ -66,12 +66,12 @@ jobs:
       total_findings: ${{ steps.summary.outputs.total }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       # ==================== Go Setup (if needed) ====================
       - name: Set up Go
         if: inputs.has_go && (inputs.scan_govulncheck || inputs.scan_trivy)
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -79,7 +79,7 @@ jobs:
       # ==================== Trivy ====================
       - name: Setup Trivy
         if: inputs.scan_trivy
-        uses: aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514 # v0.2.3
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.2.3
         with:
           cache: true
           version: latest
@@ -142,7 +142,7 @@ jobs:
 
       - name: Upload Trivy SARIF
         if: inputs.scan_trivy && hashFiles('trivy-vuln.sarif') != ''
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
         with:
           sarif_file: trivy-vuln.sarif
           category: trivy
@@ -220,7 +220,7 @@ jobs:
           echo "| **Total** | **$TOTAL** |" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: dependency-scan-results

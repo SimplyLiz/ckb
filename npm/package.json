@@ -1,7 +1,7 @@
 {
   "name": "@tastehub/ckb",
   "mcpName": "io.github.SimplyLiz/ckb",
-  "version": "9.3.1",
+  "version": "9.4.0",
   "description": "Code intelligence for AI assistants (MCP), CLI, and HTTP API - symbol navigation, impact analysis, architecture",
   "keywords": [
     "mcp",
@@ -40,21 +40,22 @@
   },
   "license": "SEE LICENSE IN LICENSE",
   "scripts": {
-    "prepublishOnly": "cp ../README.md ./README.md && cp ../LICENSE ./LICENSE"
+    "prepublishOnly": "cp ../README.md ./README.md && cp ../LICENSE ./LICENSE && cp ../THIRD-PARTY-LICENSES ./THIRD-PARTY-LICENSES"
   },
   "author": "SimplyLiz",
   "bin": {
     "ckb": "bin/ckb.js"
   },
   "files": [
-    "bin"
+    "bin",
+    "THIRD-PARTY-LICENSES"
   ],
   "optionalDependencies": {
-    "@tastehub/ckb-darwin-arm64": "9.3.1",
-    "@tastehub/ckb-darwin-x64": "9.3.1",
-    "@tastehub/ckb-linux-x64": "9.3.1",
-    "@tastehub/ckb-linux-arm64": "9.3.1",
-    "@tastehub/ckb-win32-x64": "9.3.1"
+    "@tastehub/ckb-darwin-arm64": "9.4.0",
+    "@tastehub/ckb-darwin-x64": "9.4.0",
+    "@tastehub/ckb-linux-x64": "9.4.0",
+    "@tastehub/ckb-linux-arm64": "9.4.0",
+    "@tastehub/ckb-win32-x64": "9.4.0"
   },
   "engines": {
     "node": ">=16"

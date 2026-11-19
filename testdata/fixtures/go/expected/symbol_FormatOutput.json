@@ -5,7 +5,7 @@
     "file": "internal/util.go",
     "kind": "function",
     "line": 14,
-    "moduleId": "",
+    "moduleId": "internal",
     "name": "FormatOutput"
   }
 }

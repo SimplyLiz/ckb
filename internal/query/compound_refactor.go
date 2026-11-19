@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/audit"
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/version"
 )
 
@@ -34,7 +33,7 @@ type PlanRefactorResponse struct {
 
 // PlanRefactorRisk combines file-level risk with per-function complexity breakdown.
 type PlanRefactorRisk struct {
-	RiskLevel          string               `json:"riskLevel"` // critical, high, medium, low
+	RiskLevel          string               `json:"riskLevel"` // critical, high, medium, low, or RiskLevelNotAssessed
 	RiskScore          float64              `json:"riskScore"` // 0-100
 	Factors            []audit.RiskFactor   `json:"factors,omitempty"`
 	FunctionComplexity []audit.FunctionRisk `json:"functionComplexity,omitempty"`
@@ -117,33 +116,24 @@ func (e *Engine) PlanRefactor(ctx context.Context, opts PlanRefactorOptions) (*P
 		defer wg.Done()
 		filePath := opts.Target
 		// If target is a symbol ID, we'll get the path from prepareResult later
-		if filepath.Ext(filePath) == "" && filePath != "" {
-			// Likely a symbol ID, skip file-level audit for now
+		if filepath.Ext(filePath) == "" || !fileExists(filepath.Join(e.repoRoot, filePath)) {
+			// A symbol ID or no file: no file-level audit
 			return
 		}
+		// Score only the target. Analyze over the whole repo (blame, churn and a
+		// co-change pass per file) took more than 10 minutes on CKB itself and
+		// then kept the single top item, which was rarely the target.
 		analyzer := audit.NewAnalyzer(e.repoRoot, e.logger)
-		analysisResult, err := analyzer.Analyze(ctx, audit.AuditOptions{
-			RepoRoot: e.repoRoot,
-			MinScore: 0, // include everything for this specific file
-			Limit:    1,
-		})
+		item, err := analyzer.AnalyzeFile(ctx, filePath)
 		if err != nil {
 			mu.Lock()
 			warnings = append(warnings, fmt.Sprintf("auditRisk: %s", err.Error()))
 			mu.Unlock()
 			return
 		}
-		if analysisResult != nil && len(analysisResult.Items) > 0 {
-			// Find the item matching our target
-			for i, item := range analysisResult.Items {
-				if item.File == filePath || filepath.Base(item.File) == filepath.Base(filePath) {
-					mu.Lock()
-					riskItem = &analysisResult.Items[i]
-					mu.Unlock()
-					return
-				}
-			}
-		}
+		mu.Lock()
+		riskItem = item
+		mu.Unlock()
 	}()
 
 	// 3. Test gap analysis
@@ -205,7 +195,7 @@ func (e *Engine) PlanRefactor(ctx context.Context, opts PlanRefactorOptions) (*P
 			if len(prepareResult.CoChangeFiles) > 0 {
 				resp.CouplingAnalysis.HighestCoupled = prepareResult.CoChangeFiles[0].File
 			}
-			// Collect hidden-coupling files (co-change without import edge) from the
+			// Collect hidden-coupling files (co-change without a static link) from the
 			// PrepareCoChange results — these are the highest-risk implicit dependencies
 			// for a refactoring because they will cascade without any static signal.
 			for _, cc := range prepareResult.CoChangeFiles {
@@ -217,34 +207,14 @@ func (e *Engine) PlanRefactor(ctx context.Context, opts PlanRefactorOptions) (*P
 			}
 		}
 
-		// Augment with Cartographer hidden coupling when not already captured above
-		// (e.g. when Cartographer was unavailable during PrepareChange but is now).
-		if cartographer.Available() && resp.CouplingAnalysis != nil && len(resp.CouplingAnalysis.HiddenCouplingFiles) == 0 {
-			filePath := opts.Target
-			if prepareResult.Target != nil && prepareResult.Target.Path != "" {
-				filePath = prepareResult.Target.Path
-			}
-			if hidden, err := cartographer.HiddenCoupling(e.repoRoot, 0, 2); err == nil {
-				for _, p := range hidden {
-					partner := ""
-					if p.FileA == filePath {
-						partner = p.FileB
-					} else if p.FileB == filePath {
-						partner = p.FileA
-					}
-					if partner != "" {
-						resp.CouplingAnalysis.HiddenCouplingFiles = append(
-							resp.CouplingAnalysis.HiddenCouplingFiles, partner,
-						)
-					}
-				}
-			}
-		}
+		// No second co-change pass here: prepareChange already marked the
+		// hidden pairs, and its rules (3+ co-changes, CKB's correlation floor,
+		// no link CKB can see) are the ones that held up when measured.
 	}
 
 	// Risk assessment
 	resp.RiskAssessment = &PlanRefactorRisk{
-		RiskLevel: "low",
+		RiskLevel: RiskLevelNotAssessed, // Until one of the two analyses below says otherwise
 		RiskScore: 0,
 	}
 	if riskItem != nil {

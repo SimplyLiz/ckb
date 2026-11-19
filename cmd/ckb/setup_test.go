@@ -4,7 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+
+	claudeplugin "github.com/SimplyLiz/CodeMCP/claude-plugin"
+	"github.com/SimplyLiz/CodeMCP/internal/version"
 )
 
 func TestAiToolsContainsGrok(t *testing.T) {
@@ -334,5 +339,52 @@ func TestWriteGrokConfig_CreatesParentDir(t *testing.T) {
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		t.Error("config file was not created")
+	}
+}
+
+// The command files call ckb where it is on PATH and npx where it is not: the
+// /ckb-review injection runs before the model reads anything, and a failing
+// call aborts the command.
+func TestInstallClaudeCodeSkills_NpxWithoutCKBOnPath(t *testing.T) {
+	read := func(home, name string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(home, ".claude", "commands", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("PATH", t.TempDir())
+	captureStdout(t, func() {
+		if err := installClaudeCodeSkills(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if got := read(home, "ckb-review.md"); !strings.Contains(got, "!`npx -y @tastehub/ckb@"+version.Version+" review --target=") {
+		t.Errorf("without ckb on PATH the review command must inject through npx:\n%s", got)
+	}
+	if got := read(home, "ckb-audit.md"); !strings.Contains(got, "\nnpx -y @tastehub/ckb@"+version.Version+" audit compliance") {
+		t.Error("without ckb on PATH the audit command must call npx")
+	}
+
+	if runtime.GOOS == "windows" {
+		return
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "ckb"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	captureStdout(t, func() {
+		if err := installClaudeCodeSkills(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if got := read(home, "ckb-review.md"); got != claudeplugin.CommandText(claudeplugin.ReviewSkill, true) {
+		t.Error("with ckb on PATH the review command must call ckb")
 	}
 }

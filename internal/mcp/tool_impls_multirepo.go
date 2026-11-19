@@ -201,8 +201,9 @@ func (s *MCPServer) evictLRULocked() {
 		)
 		// Wait for any in-flight operations
 		entry.activeOps.Wait()
-		// Close the engine
+		// Flush and drop the activity recorder before its DB goes away
 		if entry.engine != nil {
+			closeActivityRecorder(entry.engine.DB())
 			_ = entry.engine.Close()
 		}
 		delete(s.engines, victim)
@@ -223,6 +224,7 @@ func (s *MCPServer) CloseAllEngines() {
 	for _, entry := range entries {
 		entry.activeOps.Wait()
 		if entry.engine != nil {
+			closeActivityRecorder(entry.engine.DB())
 			_ = entry.engine.Close()
 		}
 	}

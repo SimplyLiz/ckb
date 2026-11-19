@@ -27,7 +27,7 @@ func (e *Engine) checkTestGaps(ctx context.Context, changedFiles []string, opts 
 	// Filter to non-test source files, cap at 20
 	var sourceFiles []string
 	for _, f := range changedFiles {
-		if isTestFilePathEnhanced(f) {
+		if isTestFilePath(f) {
 			continue
 		}
 		sourceFiles = append(sourceFiles, f)

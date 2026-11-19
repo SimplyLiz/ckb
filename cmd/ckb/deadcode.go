@@ -96,10 +96,14 @@ func runDeadCodeStatic(cmd *cobra.Command, args []string) {
 
 // DeadCodeResponseCLI is the CLI response format for dead code detection.
 type DeadCodeResponseCLI struct {
-	DeadCode   []DeadCodeItemCLI  `json:"deadCode"`
-	Summary    DeadCodeSummaryCLI `json:"summary"`
-	Scope      []string           `json:"scope,omitempty"`
-	Provenance *ProvenanceCLI     `json:"provenance,omitempty"`
+	// Analyzed is false when there was no index to look with; an empty
+	// DeadCode then means "not checked", not "nothing dead".
+	Analyzed          bool               `json:"analyzed"`
+	NotAnalyzedReason string             `json:"notAnalyzedReason,omitempty"`
+	DeadCode          []DeadCodeItemCLI  `json:"deadCode"`
+	Summary           DeadCodeSummaryCLI `json:"summary"`
+	Scope             []string           `json:"scope,omitempty"`
+	Provenance        *ProvenanceCLI     `json:"provenance,omitempty"`
 }
 
 // DeadCodeItemCLI is a single dead code item in CLI format.
@@ -127,7 +131,9 @@ type DeadCodeSummaryCLI struct {
 
 func convertDeadCodeResponse(resp *query.FindDeadCodeResponse) *DeadCodeResponseCLI {
 	cli := &DeadCodeResponseCLI{
-		DeadCode: make([]DeadCodeItemCLI, len(resp.DeadCode)),
+		Analyzed:          resp.Analyzed,
+		NotAnalyzedReason: resp.NotAnalyzedReason,
+		DeadCode:          make([]DeadCodeItemCLI, len(resp.DeadCode)),
 		Summary: DeadCodeSummaryCLI{
 			TotalSymbols:    resp.Summary.TotalSymbols,
 			DeadCount:       resp.Summary.DeadCount,
@@ -170,6 +176,15 @@ func formatDeadCodeHuman(resp *DeadCodeResponseCLI) string {
 
 	sb.WriteString("Dead Code Analysis\n")
 	sb.WriteString("━━━━━━━━━━━━━━━━━━\n\n")
+
+	if !resp.Analyzed {
+		reason := resp.NotAnalyzedReason
+		if reason == "" {
+			reason = "no SCIP index; run 'ckb index'"
+		}
+		sb.WriteString("Not analyzed: " + reason + "\n")
+		return sb.String()
+	}
 
 	if len(resp.DeadCode) == 0 {
 		sb.WriteString("No dead code found.\n")

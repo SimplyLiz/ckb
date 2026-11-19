@@ -37,6 +37,18 @@ func (e *Engine) checkUnwiredModules(ctx context.Context, changedFiles []string,
 		}, nil
 	}
 
+	// Nothing to walk from: no main, no server, no framework convention CKB
+	// knows. That is not a pass.
+	if len(resp.Entrypoints) == 0 {
+		return ReviewCheck{
+			Name:     "unwired",
+			Status:   "skip",
+			Severity: "info",
+			Summary:  "No entrypoints found, so reachability was not analyzed",
+			Duration: time.Since(start).Milliseconds(),
+		}, nil
+	}
+
 	// Filter to only items that are in changed files
 	changedFileSet := make(map[string]bool)
 	for _, f := range changedFiles {

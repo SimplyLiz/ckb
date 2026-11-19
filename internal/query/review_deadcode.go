@@ -10,8 +10,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 )
 
 // constDeclRe matches Go const declarations like "ConstName = value" or "ConstName Type = value".
@@ -95,33 +93,16 @@ func (e *Engine) checkDeadCode(ctx context.Context, changedFiles []string, opts 
 	constFindings := e.findDeadConstants(ctx, changedFiles, reported)
 	findings = append(findings, constFindings...)
 
-	// Phase 3: Cartographer cross-project unreferenced exports.
-	// Catches public symbols with no callers anywhere in the project —
-	// stronger signal than SCIP's per-package analysis.
-	if cartographer.Available() {
-		unref, err := cartographer.UnreferencedSymbols(e.repoRoot)
-		if err == nil {
-			for _, f := range unref.Files {
-				if !changedSet[f.Path] {
-					continue
-				}
-				for _, sym := range f.Symbols {
-					key := fmt.Sprintf("%s:sym:%s", f.Path, sym)
-					if reported[key] {
-						continue
-					}
-					reported[key] = true
-					findings = append(findings, ReviewFinding{
-						Check:    "dead-code",
-						Severity: "warning",
-						File:     f.Path,
-						Message:  fmt.Sprintf("Unreferenced export: %s — no callers found project-wide", sym),
-						Category: "dead-code",
-						RuleID:   "ckb/dead-code/unreferenced-export",
-					})
-				}
-			}
-		}
+	// Without the SCIP index the reference analysis didn't run: with nothing
+	// else checked that's a skip, not a pass, and a partial check says so.
+	if !resp.Analyzed {
+		return ReviewCheck{
+			Name:     "dead-code",
+			Status:   "skip",
+			Severity: "warning",
+			Summary:  "Not analyzed: " + resp.NotAnalyzedReason,
+			Duration: time.Since(start).Milliseconds(),
+		}, nil
 	}
 
 	status := "pass"
@@ -156,7 +137,7 @@ func (e *Engine) findDeadConstants(ctx context.Context, changedFiles []string, a
 		if ctx.Err() != nil {
 			break
 		}
-		if !strings.HasSuffix(file, ".go") || isTestFilePathEnhanced(file) {
+		if !strings.HasSuffix(file, ".go") || isTestFilePath(file) {
 			continue
 		}
 
@@ -320,7 +301,7 @@ func symbolReferencedInPackage(repoRoot, filePath, symbolName string) bool {
 
 	// Use grep to search for the symbol name in sibling .go files, excluding
 	// the declaring file itself and test files.
-	cmd := exec.Command("grep", "-rl", "--include=*.go", symbolName, absDir)
+	cmd := exec.Command("grep", "-rl", "--include=*.go", "-e", symbolName, "--", absDir) // #nosec G204 -- fixed binary, no shell; -e and -- keep the symbol name from being read as an option
 	out, err := cmd.Output()
 	if err != nil {
 		return false // grep found nothing or errored

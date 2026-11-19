@@ -58,6 +58,10 @@ func (e *Engine) SymbolExists(ctx context.Context, opts SymbolExistsOptions) (*S
 		return notFound("db-unavailable"), nil
 	}
 
+	if ftsErr := e.EnsureFTSCurrent(ctx); ftsErr != nil {
+		e.logger.Warn("Failed to refresh stale FTS content", "error", ftsErr.Error())
+	}
+
 	sqlStr := `SELECT name, kind, COALESCE(signature, '') FROM symbols_fts_content WHERE name = ?`
 	args := []interface{}{opts.Name}
 

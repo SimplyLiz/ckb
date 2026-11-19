@@ -188,25 +188,6 @@ func (s *MCPServer) toolExportForLLM(params map[string]interface{}) (*envelope.R
 		"bridges":   organized.Bridges,
 	}
 
-	// Augment with cartographer skeleton when a token budget is requested.
-	// Cartographer's signature-only extraction reduces token usage by ~90% vs full source.
-	if tokenBudget, ok := params["tokenBudget"].(float64); ok && tokenBudget > 0 {
-		focusFiles, _ := params["focusFiles"].([]interface{})
-		focus := make([]string, 0, len(focusFiles))
-		for _, f := range focusFiles {
-			if s, ok := f.(string); ok {
-				focus = append(focus, s)
-			}
-		}
-		if skeleton, serr := s.engine().GetRankedSkeleton(focus, uint32(tokenBudget)); serr == nil && skeleton != nil {
-			data["rankedSkeleton"] = skeleton
-		}
-	} else {
-		if skeleton, serr := s.engine().GetSkeleton("standard"); serr == nil && skeleton != nil {
-			data["skeleton"] = skeleton
-		}
-	}
-
 	return NewToolResponse().Data(data).Build(), nil
 }
 

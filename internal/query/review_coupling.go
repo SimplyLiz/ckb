@@ -1,63 +1,123 @@
 package query
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
-	"os"
+	"io"
+	"math"
 	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends/git"
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/coupling"
 )
 
 const maxCouplingAge = 180 * 24 * time.Hour
 
 // batchFileLastModified returns the last git modification time for each file
-// in a single git-log invocation, avoiding O(n) subprocess spawns.
+// from a single git-log invocation, avoiding O(n) subprocess spawns.
+//
+// git log walks history newest-first and, with --name-only restricted to the
+// requested paths, lists which of them each commit touched — so the first
+// commit a path shows up under is the one `git log -1 -- <path>` would report.
+// The walk stops as soon as every path has been seen.
+//
+// The paths come from git history, which on a PR branch is whatever the PR
+// author committed, so they go to git as argv — never through a shell — and
+// as literal pathspecs, so a name like ":(glob)**" matches only itself.
 func (e *Engine) batchFileLastModified(ctx context.Context, files []string) map[string]time.Time {
 	result := make(map[string]time.Time, len(files))
 	if len(files) == 0 {
 		return result
 	}
 
-	// git log --format="<file>\t<date>" with --name-only and --diff-filter
-	// won't work cleanly for this. Instead, one call per unique file but
-	// batched: ask git for dates of all files at once via
-	// "git log --format=%aI --name-only -1 -- file1 file2 ..."
-	// Unfortunately git log -1 with multiple paths returns only one result.
-	// Use a single git log with --stdin-paths is not supported either.
-	// Pragmatic: batch via a single shell invocation using a for-loop.
-	// This runs one process instead of N.
-	var script strings.Builder
-	for _, f := range files {
-		// Shell-safe: files are repo-relative paths, no user input
-		fmt.Fprintf(&script, "echo \"$(git log -1 --format=%%aI -- %q)\t%s\"\n", f, f)
-	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	// Use env -i to prevent the user's shell profile (.zshrc, .bashrc) from
-	// being sourced — profile side-effects (e.g. ~/.secrets/api-keys.env errors)
-	// would leak into our stdout and corrupt the output.
-	cmd := exec.CommandContext(ctx, "env", "-i", "PATH="+os.Getenv("PATH"), "HOME="+os.Getenv("HOME"), "sh", "-c", script.String())
+	args := []string{
+		"--literal-pathspecs", "log",
+		"-z", "--no-renames", "--name-only",
+		"--format=" + lastModifiedHeader + "%aI",
+		"--",
+	}
+	args = append(args, files...)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = e.repoRoot
-	out, err := cmd.Output()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return result
 	}
+	if err := cmd.Start(); err != nil {
+		return result
+	}
+	parseLastModified(stdout, files, result)
+	// Either git has finished, or every path is resolved and the rest of the
+	// history is not needed: cancel kills it, and its exit status is moot.
+	cancel()
+	_ = cmd.Wait()
+	return result
+}
 
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 || parts[0] == "" {
+// lastModifiedHeader prefixes the commit-date record in batchFileLastModified's
+// git log output, so it can be told apart from the path records around it.
+const lastModifiedHeader = "ckb-date:"
+
+// parseLastModified reads `git log -z --name-only --format=<header>%aI` output:
+// NUL-separated records, each either a commit header or a path the commit
+// touched. git puts a newline in front of the first path after a header and
+// nowhere else; a commit that touched none of the paths is a header followed
+// directly by the next header. The first date seen for each requested path is
+// recorded, and reading stops once all of them have one.
+func parseLastModified(r io.Reader, files []string, result map[string]time.Time) {
+	wanted := make(map[string]bool, len(files))
+	for _, f := range files {
+		wanted[f] = true
+	}
+
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	sc.Split(splitNUL)
+
+	var current time.Time
+	afterHeader := false
+	for sc.Scan() {
+		rec := sc.Text()
+		if afterHeader && strings.HasPrefix(rec, "\n") {
+			rec = rec[1:]
+		} else if !wanted[rec] {
+			if date, ok := strings.CutPrefix(rec, lastModifiedHeader); ok {
+				if t, err := time.Parse(time.RFC3339, date); err == nil {
+					current = t
+					afterHeader = true
+					continue
+				}
+			}
+		}
+		afterHeader = false
+		if !wanted[rec] || current.IsZero() {
 			continue
 		}
-		t, err := time.Parse(time.RFC3339, strings.TrimSpace(parts[0]))
-		if err == nil {
-			result[parts[1]] = t
+		if _, seen := result[rec]; !seen {
+			result[rec] = current
+			if len(result) == len(wanted) {
+				return
+			}
 		}
 	}
-	return result
+}
+
+// splitNUL is a bufio.SplitFunc for NUL-terminated records.
+func splitNUL(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexByte(data, 0); i >= 0 {
+		return i + 1, data[:i], nil
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 // CouplingGap represents a missing co-changed file.
@@ -69,6 +129,10 @@ type CouplingGap struct {
 }
 
 // checkCouplingGaps checks if commonly co-changed files are missing from the changeset.
+// maxMissingPerFile is how many missing co-change partners one changed file
+// can report.
+const maxMissingPerFile = 5
+
 func (e *Engine) checkCouplingGaps(ctx context.Context, changedFiles []string, diffStats []git.DiffStats) (ReviewCheck, []ReviewFinding) {
 	start := time.Now()
 
@@ -119,22 +183,30 @@ func (e *Engine) checkCouplingGaps(ctx context.Context, changedFiles []string, d
 		if ctx.Err() != nil {
 			break
 		}
+		// The cut to the top partners comes after dropping the ones the change
+		// already touches: cut first, and files in the changeset took the
+		// places of the missing partners they tied with.
 		result, err := analyzer.Analyze(ctx, coupling.AnalyzeOptions{
 			Target:         file,
 			MinCorrelation: minCorrelation,
 			WindowDays:     365,
-			Limit:          5,
+			Limit:          math.MaxInt32,
 		})
 		if err != nil {
 			continue
 		}
 
+		perFile := 0
 		for _, corr := range result.Correlations {
+			if perFile >= maxMissingPerFile {
+				break
+			}
 			missing := corr.FilePath
 			if missing == "" {
 				missing = corr.File
 			}
 			if corr.Correlation >= minCorrelation && !changedSet[missing] && !isCouplingNoiseFile(missing) {
+				perFile++
 				candidates = append(candidates, candidateGap{
 					changedFile:  file,
 					missingFile:  missing,
@@ -145,7 +217,7 @@ func (e *Engine) checkCouplingGaps(ctx context.Context, changedFiles []string, d
 		}
 	}
 
-	// Batch-lookup last modification dates in a single shell invocation.
+	// Batch-lookup last modification dates in a single git invocation.
 	filesToLookup := make([]string, 0, len(missingFiles))
 	for f := range missingFiles {
 		filesToLookup = append(filesToLookup, f)
@@ -192,40 +264,31 @@ func (e *Engine) checkCouplingGaps(ctx context.Context, changedFiles []string, d
 		})
 	}
 
-	// Augment with Cartographer hidden coupling: co-change pairs with NO import edge.
-	// These represent implicit dependencies invisible in the static dependency graph.
-	if cartographer.Available() {
-		hidden, err := cartographer.HiddenCoupling(e.repoRoot, 0, 3)
-		if err == nil {
-			existing := make(map[string]bool, len(gaps)*2)
-			for _, g := range gaps {
-				existing[g.ChangedFile+"\x00"+g.MissingFile] = true
-				existing[g.MissingFile+"\x00"+g.ChangedFile] = true
+	// Hidden coupling: co-change pairs scored against the less-changed file
+	// (so a file that always follows the changed one counts even when the
+	// changed file mostly changes alone) with no static link CKB can see.
+	// newHiddenCoupling needs a SCIP index; hiddenPartners applies the
+	// 3-commit floor, the same correlation floor as above and the link check.
+	if hc := e.newHiddenCoupling(ctx, minCorrelation); hc != nil {
+		existing := make(map[string]bool, len(gaps)*2)
+		for _, g := range gaps {
+			existing[g.ChangedFile+"\x00"+g.MissingFile] = true
+			existing[g.MissingFile+"\x00"+g.ChangedFile] = true
+		}
+		// Cap hidden-coupling findings at N per changed file. The regular
+		// co-change pass caps too; without it, large/vendor-sync PRs produce
+		// hundreds of weak hits that drown out actionable findings.
+		const maxHiddenPerFile = 3
+		for _, changedFile := range filesToCheck {
+			if ctx.Err() != nil {
+				break
 			}
-			// Cap hidden-coupling findings at N per changed file. The regular
-			// co-change pass uses Limit:5 — match that intent here. Without a
-			// per-file cap, large/vendor-sync PRs produce hundreds of weak
-			// hits that drown out actionable findings.
-			const maxHiddenPerFile = 3
-			perFile := make(map[string]int)
-			for _, pair := range hidden {
-				srcChanged := changedSet[pair.FileA]
-				tgtChanged := changedSet[pair.FileB]
-				if !srcChanged && !tgtChanged {
-					continue
+			n := 0
+			for _, pair := range hc.hiddenPartners(changedFile) {
+				if n >= maxHiddenPerFile {
+					break
 				}
-				changedFile, missingFile := pair.FileA, pair.FileB
-				if tgtChanged && !srcChanged {
-					changedFile, missingFile = pair.FileB, pair.FileA
-				}
-				// Filter noise on BOTH sides. The regular co-change pass skips
-				// noise-changed files at filesToCheck assembly; this pass walks
-				// hidden pairs directly and must filter the changed side too,
-				// otherwise files like .gitignore (which co-change with everything
-				// in any vendor/release PR) produce a flood of meaningless hits.
-				if isCouplingNoiseFile(changedFile) {
-					continue
-				}
+				missingFile := pair.FileB
 				if changedSet[missingFile] || isCouplingNoiseFile(missingFile) {
 					continue
 				}
@@ -233,21 +296,19 @@ func (e *Engine) checkCouplingGaps(ctx context.Context, changedFiles []string, d
 				if existing[key] {
 					continue
 				}
-				if perFile[changedFile] >= maxHiddenPerFile {
-					continue
-				}
 				existing[key] = true
-				perFile[changedFile]++
+				existing[missingFile+"\x00"+changedFile] = true
+				n++
 				gaps = append(gaps, CouplingGap{
 					ChangedFile:  changedFile,
 					MissingFile:  missingFile,
-					CoChangeRate: pair.CouplingScore,
+					CoChangeRate: pair.Score,
 				})
 				findings = append(findings, ReviewFinding{
 					Check:      "coupling",
 					Severity:   "warning",
 					File:       changedFile,
-					Message:    fmt.Sprintf("Hidden coupling: %s co-changes with %s (%.0f%% score, no import link)", changedFile, missingFile, pair.CouplingScore*100),
+					Message:    fmt.Sprintf("Hidden coupling: %s co-changes with %s (%.0f%% score, %d commits, no import or reference link)", changedFile, missingFile, pair.Score*100, pair.Count),
 					Suggestion: fmt.Sprintf("Consider also changing %s — it co-changes with %s but has no direct import relationship", missingFile, changedFile),
 					Category:   "coupling",
 					RuleID:     "ckb/coupling/hidden",
@@ -306,6 +367,18 @@ func isCouplingNoiseFile(path string) bool {
 		}
 	}
 
+	// Documentation: a plan or an ADR written alongside the code is not a file the
+	// next change to that code has to touch.
+	lower := strings.ToLower(path)
+	if strings.HasPrefix(lower, "docs/") || strings.HasPrefix(lower, "doc/") || strings.Contains(lower, "/docs/") {
+		return true
+	}
+	for _, ext := range []string{".md", ".mdx", ".rst", ".adoc", ".txt"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+
 	noiseSuffixes := []string{
 		// Config/metadata
 		".yml", ".yaml", ".lock", ".sum",
@@ -338,7 +411,9 @@ func isCouplingNoiseFile(path string) bool {
 		strings.HasSuffix(path, "_test.py") ||
 		strings.HasSuffix(path, "_test.rs") ||
 		strings.Contains(path, "/test/") ||
-		strings.Contains(path, "/tests/") {
+		strings.Contains(path, "/tests/") ||
+		strings.HasPrefix(path, "test/") ||
+		strings.HasPrefix(path, "tests/") {
 		return true
 	}
 

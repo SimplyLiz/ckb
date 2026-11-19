@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/SimplyLiz/CodeMCP/internal/cartographer"
 	"github.com/SimplyLiz/CodeMCP/internal/index"
 	"github.com/SimplyLiz/CodeMCP/internal/tier"
 	"github.com/SimplyLiz/CodeMCP/internal/version"
@@ -46,6 +46,11 @@ type CacheStatus struct {
 // GetStatus returns the current system status.
 func (e *Engine) GetStatus(ctx context.Context) (*StatusResponse, error) {
 	startTime := time.Now()
+
+	// Report the index that is on disk, not the one loaded at startup.
+	if _, err := e.EnsureSCIPLoaded(ctx); err != nil {
+		e.logger.Warn("failed to reload changed SCIP index", "error", err.Error())
+	}
 
 	// Get repo state
 	repoState, err := e.GetRepoState(ctx, "head")
@@ -121,12 +126,7 @@ func (e *Engine) getBackendStatuses(ctx context.Context) []BackendStatus {
 		Capabilities: []string{"symbol-search", "find-references", "goto-definition", "hover"},
 	}
 	if e.lspSupervisor != nil {
-		stats := e.lspSupervisor.GetStats()
-		if processCount, ok := stats["totalProcesses"].(int); ok {
-			lspStatus.Available = processCount > 0
-			lspStatus.Healthy = lspStatus.Available
-			lspStatus.Details = formatServerCount(processCount)
-		}
+		lspStatus.Available, lspStatus.Healthy, lspStatus.Details = e.lspBackendState()
 	}
 	statuses = append(statuses, lspStatus)
 
@@ -141,35 +141,6 @@ func (e *Engine) getBackendStatuses(ctx context.Context) []BackendStatus {
 		gitStatus.Details = "Ready"
 	}
 	statuses = append(statuses, gitStatus)
-
-	// Cartographer backend (optional — only present when built with -tags cartographer)
-	cartographerStatus := BackendStatus{
-		Id:        "cartographer",
-		Available: cartographer.Available(),
-		Capabilities: []string{
-			"layer-analysis",      // CheckLayers in PR review
-			"health-scoring",      // MapProject in getArchitecture, Health in review pipeline
-			"hidden-coupling",     // HiddenCoupling in PR coupling check
-			"churn-analysis",      // GitChurn in blast-radius check
-			"cochange-analysis",   // GitCochange in getHotspots
-			"dead-code-detection", // UnreferencedSymbols in PR dead-code check
-			"simulate-change",     // SimulateChange in analyzeImpact
-			"semidiff",            // Semidiff in summarizeDiff
-			"module-skeleton",     // GetModuleContext in getModuleOverview
-			"skeleton-extraction", // SkeletonMap in exportForLLM
-			"ranked-skeleton",     // RankedSkeleton in exportForLLM (tokenBudget)
-		},
-	}
-	if cartographer.Available() {
-		if ver, err := cartographer.Version(); err == nil {
-			cartographerStatus.Healthy = true
-			cartographerStatus.Details = "v" + ver
-		} else {
-			cartographerStatus.Healthy = false
-			cartographerStatus.Warning = err.Error()
-		}
-	}
-	statuses = append(statuses, cartographerStatus)
 
 	return statuses
 }
@@ -215,15 +186,46 @@ func (e *Engine) getCacheStatus() *CacheStatus {
 	}
 }
 
-// formatServerCount formats the LSP server count message.
-func formatServerCount(count int) string {
-	if count == 0 {
-		return "No servers running"
+// lspBackendState derives LSP availability from configuration and PATH, not from
+// running processes. Servers start lazily on the first query, so an idle server is
+// healthy as long as its binary can be started:
+//   - running server(s): available, healthy
+//   - configured, binary on PATH, not yet started: available, healthy
+//   - configured but no binary on PATH: unavailable, details name the missing binaries
+//   - nothing configured for the repo's languages: unavailable
+//
+// Running servers are always listed, even if the repo's languages would not select them.
+func (e *Engine) lspBackendState() (available, healthy bool, details string) {
+	servers := e.lspSupervisor.ConfiguredServers()
+	if e.config != nil && len(servers) > 0 {
+		relevant := e.filterRelevantLspServers(e.config.Backends.Lsp.Servers)
+		kept := servers[:0]
+		for _, s := range servers {
+			if _, ok := relevant[s.Language]; ok || s.Running {
+				kept = append(kept, s)
+			}
+		}
+		servers = kept
 	}
-	if count == 1 {
-		return "1 server configured"
+
+	if len(servers) == 0 {
+		return false, false, "No LSP servers configured"
 	}
-	return strconv.Itoa(count) + " server(s) configured"
+
+	var parts []string
+	for _, s := range servers {
+		switch {
+		case s.Running:
+			available = true
+			parts = append(parts, s.Language+": running")
+		case s.OnPath:
+			available = true
+			parts = append(parts, s.Language+": configured, starts on demand")
+		default:
+			parts = append(parts, s.Language+": "+s.Command+" not found on PATH")
+		}
+	}
+	return available, available, strings.Join(parts, "; ")
 }
 
 // SystemInfo contains system information for diagnostics.

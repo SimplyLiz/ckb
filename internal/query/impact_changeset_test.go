@@ -1,0 +1,433 @@
+package query
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/SimplyLiz/CodeMCP/internal/impact"
+)
+
+// --- Decisions dedup ---
+
+func TestAppendDedupedDecision(t *testing.T) {
+	seen := make(map[string]bool)
+	var decisions []RelatedDecision
+
+	decisions = appendDedupedDecision(decisions, seen, RelatedDecision{ID: "ADR-1", Title: "First"}, 10)
+	decisions = appendDedupedDecision(decisions, seen, RelatedDecision{ID: "ADR-2", Title: "Second"}, 10)
+	// Duplicate ID should not be added again.
+	decisions = appendDedupedDecision(decisions, seen, RelatedDecision{ID: "ADR-1", Title: "First (dup)"}, 10)
+
+	if len(decisions) != 2 {
+		t.Fatalf("expected 2 deduped decisions, got %d: %+v", len(decisions), decisions)
+	}
+	if decisions[0].ID != "ADR-1" || decisions[1].ID != "ADR-2" {
+		t.Errorf("unexpected decision order/content: %+v", decisions)
+	}
+}
+
+func TestAppendDedupedDecision_RespectsCap(t *testing.T) {
+	seen := make(map[string]bool)
+	var decisions []RelatedDecision
+
+	for i := 0; i < 15; i++ {
+		id := string(rune('A' + i))
+		decisions = appendDedupedDecision(decisions, seen, RelatedDecision{ID: id}, 10)
+	}
+
+	if len(decisions) != 10 {
+		t.Fatalf("expected decisions capped at 10, got %d", len(decisions))
+	}
+}
+
+// --- Contracts heuristic ---
+
+func TestBuildContractSignal(t *testing.T) {
+	tests := []struct {
+		name       string
+		symbol     string
+		visibility string
+		language   string
+		file       string
+		wantNil    bool
+	}{
+		{
+			name:       "explicit public visibility",
+			symbol:     "Resolve",
+			visibility: "public",
+			language:   "go",
+			file:       "internal/foo/foo.go",
+			wantNil:    false,
+		},
+		{
+			name:       "go exported by capitalization, unknown visibility",
+			symbol:     "KnowledgeContext",
+			visibility: "unknown",
+			language:   "go",
+			file:       "internal/foo/foo.go",
+			wantNil:    false,
+		},
+		{
+			name:       "go unexported lowercase",
+			symbol:     "resolve",
+			visibility: "unknown",
+			language:   "go",
+			file:       "internal/foo/foo.go",
+			wantNil:    true,
+		},
+		{
+			name:       "explicit private visibility",
+			symbol:     "Resolve",
+			visibility: "private",
+			language:   "go",
+			file:       "internal/foo/foo.go",
+			wantNil:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildContractSignal(tt.symbol, tt.visibility, tt.language, tt.file)
+			if tt.wantNil {
+				if got != nil {
+					t.Fatalf("expected nil ContractSignal, got %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected a ContractSignal, got nil")
+			}
+			if got.Symbol != tt.symbol {
+				t.Errorf("Symbol = %q, want %q", got.Symbol, tt.symbol)
+			}
+			if got.File != tt.file {
+				t.Errorf("File = %q, want %q", got.File, tt.file)
+			}
+			if got.Kind != "possible-contract-change" {
+				t.Errorf("Kind = %q, want %q", got.Kind, "possible-contract-change")
+			}
+			if strings.Contains(strings.ToLower(got.Basis), "breaking") {
+				t.Errorf("Basis must never say 'breaking change': %q", got.Basis)
+			}
+			if strings.Contains(strings.ToLower(got.Kind), "breaking") {
+				t.Errorf("Kind must never say 'breaking change': %q", got.Kind)
+			}
+		})
+	}
+}
+
+// --- Risk factors (structured, with Evidence) ---
+
+func TestCalculateAggregatedRisk_FactorsHaveEvidence(t *testing.T) {
+	e := &Engine{}
+
+	changed := []impact.ChangedSymbol{
+		{SymbolID: "s1", Name: "Foo", File: "a.go"},
+		{SymbolID: "s2", Name: "Bar", File: "b.go"},
+	}
+	direct := []ImpactItem{{StableId: "d1"}, {StableId: "d2"}}
+	transitive := []ImpactItem{{StableId: "t1"}}
+	modules := []ModuleImpact{{ModuleId: "m1"}, {ModuleId: "m2"}}
+
+	risk := e.calculateAggregatedRisk(changed, direct, transitive, modules)
+	if risk == nil {
+		t.Fatal("expected non-nil RiskScore")
+	}
+
+	wantNames := map[string]bool{
+		"symbols_changed":   false,
+		"direct_impact":     false,
+		"transitive_impact": false,
+		"module_spread":     false,
+	}
+	for _, f := range risk.Factors {
+		if _, ok := wantNames[f.Name]; ok {
+			wantNames[f.Name] = true
+			if f.Evidence == "" {
+				t.Errorf("factor %q has no Evidence", f.Name)
+			}
+			if f.Weight <= 0 {
+				t.Errorf("factor %q has non-positive weight %v", f.Name, f.Weight)
+			}
+		}
+	}
+	for name, found := range wantNames {
+		if !found {
+			t.Errorf("expected factor %q not present in %+v", name, risk.Factors)
+		}
+	}
+}
+
+// --- Confidence mapping ---
+
+func TestChangeScoreToTier(t *testing.T) {
+	tests := []struct {
+		score float64
+		want  string
+	}{
+		{0.99, "high"},
+		{0.95, "high"},
+		{0.94, "medium"},
+		{0.70, "medium"},
+		{0.69, "low"},
+		{0.30, "low"},
+		{0.29, "speculative"},
+		{0.0, "speculative"},
+	}
+	for _, tt := range tests {
+		if got := changeScoreToTier(tt.score); got != tt.want {
+			t.Errorf("changeScoreToTier(%v) = %q, want %q", tt.score, got, tt.want)
+		}
+	}
+}
+
+func TestBuildChangeConfidence_NoSCIP(t *testing.T) {
+	e := &Engine{} // no scipAdapter -> hasSCIP == false
+
+	conf := e.buildChangeConfidence(CompletenessInfo{Score: 0.3, Reason: "file-level-only"}, nil, 0, 0)
+	if conf == nil {
+		t.Fatal("expected non-nil ChangeConfidence")
+	}
+	if conf.Tier != "speculative" && conf.Tier != "low" {
+		t.Errorf("expected a low/speculative tier without SCIP, got %q (score %v)", conf.Tier, conf.Score)
+	}
+	found := false
+	for _, r := range conf.Reasons {
+		if strings.Contains(r, "no SCIP index") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a 'no SCIP index' reason, got %+v", conf.Reasons)
+	}
+}
+
+func TestBuildChangeConfidence_StaleIndexReason(t *testing.T) {
+	e := &Engine{}
+
+	staleness := &IndexStalenessInfo{IsStale: true, CommitsBehind: 3}
+	conf := e.buildChangeConfidence(CompletenessInfo{Score: 0.9, Reason: "scip-available"}, staleness, 0, 0)
+
+	found := false
+	for _, r := range conf.Reasons {
+		if strings.Contains(r, "3 commit(s) behind") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a staleness reason mentioning commits behind, got %+v", conf.Reasons)
+	}
+}
+
+func TestBuildChangeConfidence_AverageMappingConfidence(t *testing.T) {
+	e := &Engine{}
+
+	conf := e.buildChangeConfidence(CompletenessInfo{Score: 0.3, Reason: "file-level-only"}, nil, 1.6, 2) // avg 0.8
+	found := false
+	for _, r := range conf.Reasons {
+		if strings.Contains(r, "80%") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected an 80%% mapping-confidence reason, got %+v", conf.Reasons)
+	}
+}
+
+// --- Test-gap counting ---
+
+func TestRecordTestGap(t *testing.T) {
+	untested, examples := 0, []string(nil)
+
+	// Consumer with a reaching test: no change.
+	untested, examples = recordTestGap(untested, examples, "TestedCaller", "ChangedFn", true)
+	if untested != 0 || len(examples) != 0 {
+		t.Fatalf("hasTest=true should not record a gap, got untested=%d examples=%v", untested, examples)
+	}
+
+	// Consumer with no reaching test: counted and recorded.
+	untested, examples = recordTestGap(untested, examples, "UntestedCaller", "ChangedFn", false)
+	if untested != 1 {
+		t.Errorf("expected untested=1, got %d", untested)
+	}
+	if len(examples) != 1 || examples[0] != "UntestedCaller -> ChangedFn" {
+		t.Errorf("unexpected examples: %+v", examples)
+	}
+}
+
+func TestRecordTestGap_ExamplesCappedAtFive(t *testing.T) {
+	untested, examples := 0, []string(nil)
+	for i := 0; i < 10; i++ {
+		untested, examples = recordTestGap(untested, examples, "Caller", "ChangedFn", false)
+	}
+	if untested != 10 {
+		t.Errorf("expected untested count to keep incrementing past the example cap, got %d", untested)
+	}
+	if len(examples) != 5 {
+		t.Errorf("expected examples capped at 5, got %d: %+v", len(examples), examples)
+	}
+}
+
+// --- Recommendations carry a Source ---
+
+func TestGenerateRecommendations_SourceAttribution(t *testing.T) {
+	e := &Engine{}
+
+	summary := &ChangeSummary{TransitivelyAffected: 25}
+	risk := &RiskScore{Level: "high"}
+	changed := []impact.ChangedSymbol{{SymbolID: "s1", Confidence: 0.9}}
+	modules := []ModuleImpact{{ModuleId: "m1"}}
+	testGaps := &TestGapsInfo{UntestedConsumers: 3}
+	contracts := []ContractSignal{{Symbol: "Foo", File: "a.go", Kind: "possible-contract-change", Basis: "heuristic: exported/public symbol lines changed"}}
+
+	recs := e.generateRecommendations(summary, risk, changed, modules, testGaps, contracts)
+
+	sources := make(map[string]bool)
+	for _, r := range recs {
+		if r.Source == "" {
+			t.Errorf("recommendation %+v has no Source", r)
+		}
+		sources[r.Source] = true
+	}
+	for _, want := range []string{"risk", "transitive-impact", "test-gaps", "contracts"} {
+		if !sources[want] {
+			t.Errorf("expected a recommendation sourced from %q, got sources=%v", want, sources)
+		}
+	}
+}
+
+func TestDeletedSymbolWithConsumersOutsideDiff(t *testing.T) {
+	direct := []ImpactItem{
+		{Name: "Run", Location: &LocationInfo{FileId: "app/app.go"}},
+		{Name: "Sibling", Location: &LocationInfo{FileId: "lib/lib.go"}},
+	}
+
+	broken := findBrokenContract("Doomed", impact.DeclRemoved, direct, map[string]bool{"lib/lib.go": true})
+	if broken == nil || len(broken.consumers) != 1 || broken.consumers[0] != "Run" {
+		t.Fatalf("broken = %+v, want Run only: Sibling's file is in the diff", broken)
+	}
+
+	risk := &RiskScore{Level: "low", Score: 0.17}
+	applyContractChangesToRisk(risk, []brokenContract{*broken}, 0)
+	if risk.Level != "high" || risk.Score != 0.6 {
+		t.Errorf("risk = %s %.2f, want a floor of high 0.60", risk.Level, risk.Score)
+	}
+
+	recs := contractRecommendations([]brokenContract{*broken}, nil)
+	if len(recs) != 1 || recs[0].Severity != "error" || !strings.Contains(recs[0].Message, "Deleted Doomed is still used by Run") {
+		t.Errorf("recommendations = %+v", recs)
+	}
+
+	if broken := findBrokenContract("Doomed", impact.DeclRemoved, direct[1:], map[string]bool{"lib/lib.go": true}); broken != nil {
+		t.Errorf("consumers all in the diff: broken = %+v, want nil", broken)
+	}
+}
+
+func TestDeletionNotResolvedIsRecommended(t *testing.T) {
+	recs := contractRecommendations(nil, []impact.ChangedSymbol{
+		{File: "lib/lib.go", Note: "1 removed line(s)", DeletionUnresolved: true},
+		{File: "lib/lib.go", Name: "Target"},
+	})
+	if len(recs) != 1 || recs[0].Severity != "warning" || recs[0].Source != "deleted-symbols" {
+		t.Errorf("recommendations = %+v", recs)
+	}
+}
+
+// References outside any definition have no StableId. Deduping on the blank ID kept
+// the first of them across the whole change and lost every other consumer file.
+func TestMergeConsumers_FileLevelConsumersStaySeparate(t *testing.T) {
+	loc := func(file string) *LocationInfo { return &LocationInfo{FileId: file} }
+	direct, _ := mergeConsumers([]ImpactItem{
+		{Location: loc("a.ts"), Distance: 1},
+		{Location: loc("b.ts"), Distance: 1},
+		{Location: loc("b.ts"), Distance: 1}, // second reference in the same file
+		{StableId: "s", Name: "named", Location: loc("c.ts"), Distance: 1},
+		{Location: loc("c.ts"), Distance: 1}, // its import: c.ts already has a named consumer
+	}, nil)
+
+	var got []string
+	for _, item := range direct {
+		got = append(got, item.Location.FileId+"/"+item.Name)
+	}
+	want := []string{"a.ts/", "b.ts/", "c.ts/named"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("direct = %v, want %v", got, want)
+	}
+}
+
+func TestMergeConsumers_DirectBeatsTransitiveInAnyOrder(t *testing.T) {
+	_, transitive := mergeConsumers(
+		[]ImpactItem{{StableId: "both", Distance: 1}},
+		[]ImpactItem{
+			{StableId: "both", Distance: 2},
+			{StableId: "far", Distance: 3},
+			{StableId: "far", Distance: 2},
+		})
+	if len(transitive) != 1 || transitive[0].StableId != "far" || transitive[0].Distance != 2 {
+		t.Errorf("transitive = %+v, want only far at its closest distance", transitive)
+	}
+}
+
+func TestIsTestFilePath_AcrossLanguages(t *testing.T) {
+	for path, want := range map[string]bool{
+		"internal/a_test.go":          true,
+		"web/src/a.test.tsx":          true,
+		"web/src/a.spec.ts":           true,
+		"web/src/__tests__/a.ts":      true,
+		"tests/smoke.rs":              true,
+		"crates/x/tests/smoke.rs":     true,
+		"crates/x/src/tests.rs":       true,
+		"e2e/login.ts":                true,
+		"benches/speed.rs":            true,
+		"internal/latest.go":          false,
+		"internal/contest/entry.go":   false,
+		"src/attest.ts":               false,
+		"src/testimony/deposition.ts": false,
+	} {
+		if got := isTestFilePath(path); got != want {
+			t.Errorf("isTestFilePath(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
+// A test file named after the changed file is a guess. It must not read as a test
+// that was seen using the symbol.
+func TestDeriveAffectedTests_NamingConventionIsNotDirect(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "lib_test.go"), []byte("package lib\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{repoRoot: dir}
+	tests := e.deriveAffectedTests([]ChangedSymbolInfo{{SymbolID: "s", File: "lib.go"}}, nil, nil)
+	if len(tests) != 1 || tests[0].Reason != "naming-convention" {
+		t.Errorf("tests = %+v, want lib_test.go by naming-convention", tests)
+	}
+}
+
+// An affected test names what selected it: affectedBy holds the changed symbols, not
+// the test's own id again, and testNames are short names even when the consumer's
+// name came through as a whole SCIP symbol.
+func TestDeriveAffectedTests_ShortNamesAndCauses(t *testing.T) {
+	e := &Engine{repoRoot: t.TempDir()}
+	testID := "scip-go gomod m v `m/internal/api`/TestArchitectureEndpoint()."
+	items := []ImpactItem{
+		{StableId: "scip-go gomod m v `m/internal/api`/newTestServer().", Name: "newTestServer", Distance: 1, Location: &LocationInfo{FileId: "internal/api/api_test.go"}, Confidence: 0.9},
+		{StableId: testID, Name: testID, Distance: 2, Location: &LocationInfo{FileId: "internal/api/api_test.go"}, Confidence: 0.85},
+	}
+	causes := map[string][]string{
+		items[0].StableId: {"changed#NewEngine"},
+		testID:            {"changed#NewEngine"},
+	}
+	tests := e.deriveAffectedTests(nil, items, causes)
+	if len(tests) != 1 {
+		t.Fatalf("tests = %+v, want one file", tests)
+	}
+	if got := strings.Join(tests[0].TestNames, ","); got != "newTestServer,TestArchitectureEndpoint" {
+		t.Errorf("TestNames = %q", got)
+	}
+	if got := strings.Join(tests[0].AffectedBy, ","); got != "changed#NewEngine" {
+		t.Errorf("AffectedBy = %q, want the changed symbol once", got)
+	}
+}

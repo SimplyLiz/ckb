@@ -37,10 +37,19 @@ type ExternalBlastRadius struct {
 	EdgesSource string
 }
 
+// ExternalSource is the ImpactItem.Source of an item LIP contributed:
+// "lip:<edgesSource>", or "lip" when the daemon reported no edge source.
+func ExternalSource(edgesSource string) string {
+	if edgesSource == "" {
+		return "lip"
+	}
+	return "lip:" + edgesSource
+}
+
 // Edge-source values for ExternalBlastRadius.EdgesSource.
 const (
 	EdgesSourceTier1              = "tier1"
-	EdgesSourceScipWithTier1Edges = "scip_with_tier1_edges"
+	EdgesSourceScipWithTier1Edges = "scip_with_tier1_edges" // #nosec G101 -- provenance label, not a credential
 	EdgesSourceScipOnly           = "scip_only"
 	EdgesSourceEmpty              = "empty"
 )
@@ -196,6 +205,7 @@ func foldExternalItemsWithKinds(
 	if external == nil || external.EdgesSource == EdgesSourceEmpty {
 		return direct, transitive
 	}
+	source := ExternalSource(external.EdgesSource)
 
 	seen := make(map[string]struct{}, len(direct)+len(transitive))
 	for _, it := range direct {
@@ -213,10 +223,12 @@ func foldExternalItemsWithKinds(
 		if !ok {
 			continue
 		}
+		item.Source = source
 		if _, dup := seen[key]; dup {
 			continue
 		}
 		seen[key] = struct{}{}
+		relativizeFileId(&item, repoRoot)
 		foldedDirect = append(foldedDirect, item)
 	}
 	for _, ei := range external.TransitiveItems {
@@ -224,13 +236,29 @@ func foldExternalItemsWithKinds(
 		if !ok {
 			continue
 		}
+		item.Source = source
 		if _, dup := seen[key]; dup {
 			continue
 		}
 		seen[key] = struct{}{}
+		relativizeFileId(&item, repoRoot)
 		foldedTransitive = append(foldedTransitive, item)
 	}
 	return foldedDirect, foldedTransitive
+}
+
+// relativizeFileId rewrites a LIP item's absolute path to the repo-relative
+// form SCIP items use, so FileCount and consumer files see one id per file.
+// Paths outside repoRoot stay absolute.
+func relativizeFileId(item *ImpactItem, repoRoot string) {
+	if repoRoot == "" || item.Location == nil || !filepath.IsAbs(item.Location.FileId) {
+		return
+	}
+	rel, err := filepath.Rel(repoRoot, item.Location.FileId)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return
+	}
+	item.Location.FileId = filepath.ToSlash(rel)
 }
 
 // externalItemToImpactItem parses a LIP ExternalItem into an ImpactItem

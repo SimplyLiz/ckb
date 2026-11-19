@@ -31,6 +31,10 @@ type ChangeDetector struct {
 	store    *Store
 	config   *Config
 	logger   *slog.Logger
+
+	// extensions are the source files of the language being indexed; nil
+	// means Go. Set by IndexIncrementalWithLang.
+	extensions []string
 }
 
 // NewChangeDetector creates a new change detector
@@ -44,6 +48,11 @@ func NewChangeDetector(repoRoot string, store *Store, config *Config, logger *sl
 		config:   config,
 		logger:   logger,
 	}
+}
+
+// SetExtensions sets the source extensions of the language being indexed.
+func (d *ChangeDetector) SetExtensions(exts []string) {
+	d.extensions = exts
 }
 
 // DetectChanges finds files that need reindexing
@@ -143,7 +152,7 @@ func (d *ChangeDetector) detectUncommittedChanges() ([]ChangedFile, error) {
 	// Parse NUL-separated untracked files
 	for _, path := range bytes.Split(untrackedOut, []byte{0}) {
 		pathStr := string(path)
-		if pathStr != "" && d.isGoFile(pathStr) {
+		if pathStr != "" && d.isSourceFile(pathStr) {
 			changes = append(changes, ChangedFile{
 				Path:       pathStr,
 				ChangeType: ChangeAdded,
@@ -200,7 +209,7 @@ func (d *ChangeDetector) parseGitDiffNUL(output []byte) []ChangedFile {
 		// Now decide what to do based on status and paths
 		switch {
 		case status == "A":
-			if d.isGoFile(newPath) {
+			if d.isSourceFile(newPath) {
 				changes = append(changes, ChangedFile{
 					Path:       newPath,
 					ChangeType: ChangeAdded,
@@ -208,7 +217,7 @@ func (d *ChangeDetector) parseGitDiffNUL(output []byte) []ChangedFile {
 			}
 
 		case status == "M":
-			if d.isGoFile(newPath) {
+			if d.isSourceFile(newPath) {
 				changes = append(changes, ChangedFile{
 					Path:       newPath,
 					ChangeType: ChangeModified,
@@ -216,7 +225,7 @@ func (d *ChangeDetector) parseGitDiffNUL(output []byte) []ChangedFile {
 			}
 
 		case status == "D":
-			if d.isGoFile(oldPath) {
+			if d.isSourceFile(oldPath) {
 				changes = append(changes, ChangedFile{
 					Path:       oldPath,
 					ChangeType: ChangeDeleted,
@@ -226,8 +235,8 @@ func (d *ChangeDetector) parseGitDiffNUL(output []byte) []ChangedFile {
 		case strings.HasPrefix(status, "R"):
 			// Rename: decide based on new path (what we'll index going forward)
 			// But we need OldPath to delete the old entry
-			oldIsGo := d.isGoFile(oldPath)
-			newIsGo := d.isGoFile(newPath)
+			oldIsGo := d.isSourceFile(oldPath)
+			newIsGo := d.isSourceFile(newPath)
 
 			if oldIsGo && newIsGo {
 				// .go -> .go rename: track as rename
@@ -254,7 +263,7 @@ func (d *ChangeDetector) parseGitDiffNUL(output []byte) []ChangedFile {
 		case strings.HasPrefix(status, "C"):
 			// Copy: new file appears, old file unchanged
 			// Only care about new path
-			if d.isGoFile(newPath) {
+			if d.isSourceFile(newPath) {
 				changes = append(changes, ChangedFile{
 					Path:       newPath,
 					ChangeType: ChangeAdded,
@@ -263,7 +272,7 @@ func (d *ChangeDetector) parseGitDiffNUL(output []byte) []ChangedFile {
 
 		default:
 			// Unknown status, treat as modified if it's a Go file
-			if d.isGoFile(newPath) {
+			if d.isSourceFile(newPath) {
 				changes = append(changes, ChangedFile{
 					Path:       newPath,
 					ChangeType: ChangeModified,
@@ -275,9 +284,21 @@ func (d *ChangeDetector) parseGitDiffNUL(output []byte) []ChangedFile {
 	return changes
 }
 
-// isGoFile checks if a path is a Go source file
-func (d *ChangeDetector) isGoFile(path string) bool {
-	if !strings.HasSuffix(path, ".go") {
+// isSourceFile checks if a path is a source file of the language being
+// indexed (Go unless SetExtensions said otherwise).
+func (d *ChangeDetector) isSourceFile(path string) bool {
+	exts := d.extensions
+	if len(exts) == 0 {
+		exts = []string{".go"}
+	}
+	matched := false
+	for _, ext := range exts {
+		if strings.HasSuffix(path, ext) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
 		return false
 	}
 	// Exclude test files unless configured to include them
@@ -326,7 +347,7 @@ func (d *ChangeDetector) detectHashChanges() ([]ChangedFile, error) {
 		relPath, _ := filepath.Rel(d.repoRoot, path)
 
 		// Skip non-Go files
-		if !d.isGoFile(relPath) {
+		if !d.isSourceFile(relPath) {
 			return nil
 		}
 

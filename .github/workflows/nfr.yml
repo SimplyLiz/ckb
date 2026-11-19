@@ -18,10 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -39,7 +39,7 @@ jobs:
           exit 0
 
       - name: Upload head results
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nfr-head
           path: nfr-output.txt
@@ -50,12 +50,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           ref: ${{ github.event.pull_request.base.sha }}
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -72,7 +72,7 @@ jobs:
           exit 0
 
       - name: Upload base results
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nfr-base
           path: nfr-output.txt
@@ -85,6 +85,12 @@ jobs:
     needs: [nfr-head, nfr-base]
     if: always()
     steps:
+      - name: Checkout accepted growth list
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          sparse-checkout: .github/nfr-accepted.json
+          sparse-checkout-cone-mode: false
+
       - name: Download head results
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -139,6 +145,15 @@ jobs:
           head = parse_nfr("head/nfr-output.txt")
           base = parse_nfr("base/nfr-output.txt")
 
+          # Growth a PR means to make: {"tool_tier": {"maxBytes": N, "reason": "..."}}.
+          # A scenario at or under maxBytes (and its static max) is ACCEPTED
+          # instead of WARN/FAIL; anything above still fails.
+          import json, os
+          accepted = {}
+          if os.path.exists(".github/nfr-accepted.json"):
+              with open(".github/nfr-accepted.json") as f:
+                  accepted = {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+
           if not head:
               print("No NFR metrics found in PR head output")
               sys.exit(0)
@@ -165,6 +180,9 @@ jobs:
                   verdict = "GOOD"
               else:
                   verdict = "OK"
+              acc = accepted.get(key)
+              if verdict in ("FAIL", "WARN") and acc and h["actual"] <= acc["maxBytes"] and h["actual"] <= h["max"]:
+                  verdict = "ACCEPTED"
 
               rows.append({
                   "tool": h["tool"], "tier": h["tier"],
@@ -183,13 +201,16 @@ jobs:
               warns = [r for r in rows if r["verdict"] == "WARN"]
               improved = [r for r in rows if r["diff_pct"] < -0.05]
               unchanged = [r for r in rows if abs(r["diff_pct"]) <= 0.05]
-              worsened = [r for r in rows if r["diff_pct"] > 0.05 and r["verdict"] not in ("FAIL", "WARN")]
+              worsened = [r for r in rows if r["diff_pct"] > 0.05 and r["verdict"] not in ("FAIL", "WARN", "ACCEPTED")]
+              accepted_rows = [r for r in rows if r["verdict"] == "ACCEPTED"]
 
               indicators = []
               if fails:
                   indicators.append(f"\u274c {len(fails)} failed")
               if warns:
                   indicators.append(f"\u26a0\ufe0f {len(warns)} regressed")
+              if accepted_rows:
+                  indicators.append(f"\u2611\ufe0f {len(accepted_rows)} accepted")
               if improved:
                   indicators.append(f"\u2b06\ufe0f {len(improved)} improved")
               if unchanged:
@@ -207,6 +228,11 @@ jobs:
                   print(f"**Regressions:** 0 \u2705\n")
 
               print("**Thresholds:** WARN \u2265 +5% \u2022 FAIL \u2265 +10%\n")
+              for r in accepted_rows:
+                  k = f"{r['tool']}_{r['tier']}"
+                  print(f"- accepted {r['tool']}/{r['tier']} {r['diff_pct']:+.1f}% (up to {accepted[k]['maxBytes']:,}B): {accepted[k]['reason']}")
+              if accepted_rows:
+                  print()
 
               # Diff block preview
               preview_bad = sorted([r for r in rows if r["diff_pct"] >= 5], key=lambda r: -r["diff_pct"])[:3]
@@ -270,7 +296,7 @@ jobs:
 
       - name: Comment on PR
         if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const fs = require('fs');
@@ -308,7 +334,7 @@ jobs:
 
       - name: Upload NFR results
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nfr-results
           path: |

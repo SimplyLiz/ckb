@@ -73,7 +73,8 @@ func TestSecurityKeywords(t *testing.T) {
 	}
 
 	// Check for essential keywords
-	essential := []string{"password", "secret", "token", "auth"}
+	// Bare "token" is gone on purpose: in LLM code it's a domain term.
+	essential := []string{"password", "secret", "auth", "access_token", "api_key"}
 	for _, kw := range essential {
 		found := false
 		for _, sk := range SecurityKeywords {

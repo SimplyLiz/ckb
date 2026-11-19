@@ -19,9 +19,11 @@ func NewExclusionRules(patterns []string) *ExclusionRules {
 
 // SymbolInfo contains information about a symbol for exclusion checking.
 type SymbolInfo struct {
+	SymbolID      string
 	Name          string
 	Kind          string
 	FilePath      string
+	LineNumber    int
 	Signature     string
 	Documentation string
 	Tags          string // Struct field tags
@@ -137,8 +139,15 @@ func isCommonInterfaceMethod(name, kind string) bool {
 	commonMethods := map[string]bool{
 		// fmt.Stringer
 		"String": true,
-		// error interface
-		"Error": true,
+		// error interface, and what errors.Is/As/Unwrap assert for without a named
+		// interface anyone could implement in the repo
+		"Error":  true,
+		"Unwrap": true,
+		"Is":     true,
+		"As":     true,
+		// fmt.Formatter, fmt.GoStringer
+		"Format":   true,
+		"GoString": true,
 		// io.Reader/Writer/Closer
 		"Read":  true,
 		"Write": true,
@@ -158,6 +167,9 @@ func isCommonInterfaceMethod(name, kind string) bool {
 		// json.Marshaler/Unmarshaler
 		"MarshalJSON":   true,
 		"UnmarshalJSON": true,
+		// yaml.Marshaler/Unmarshaler
+		"MarshalYAML":   true,
+		"UnmarshalYAML": true,
 		// sql.Scanner/driver.Valuer
 		"Scan":  true,
 		"Value": true,
@@ -221,12 +233,13 @@ func IsTestFile(path string) bool {
 		return true
 	}
 
-	// TypeScript/JavaScript tests
-	if strings.HasSuffix(path, ".test.ts") ||
-		strings.HasSuffix(path, ".test.js") ||
-		strings.HasSuffix(path, ".spec.ts") ||
-		strings.HasSuffix(path, ".spec.js") {
-		return true
+	// TypeScript/JavaScript tests: name.test.ts, name.spec.tsx, name.test.mjs …
+	base := filepath.Base(path)
+	if i := strings.LastIndex(base, "."); i > 0 {
+		switch stem := base[:i]; {
+		case strings.HasSuffix(stem, ".test"), strings.HasSuffix(stem, ".spec"):
+			return true
+		}
 	}
 
 	// Python tests
@@ -234,13 +247,25 @@ func IsTestFile(path string) bool {
 		return true
 	}
 
-	// Test directories
-	if strings.Contains(path, "/test/") ||
-		strings.Contains(path, "/tests/") ||
-		strings.Contains(path, "/testdata/") ||
-		strings.Contains(path, "/__tests__/") {
+	// Test directories, at the root as well (tests/support/db.ts)
+	slashed := "/" + path
+	if strings.Contains(slashed, "/test/") ||
+		strings.Contains(slashed, "/tests/") ||
+		strings.Contains(slashed, "/testdata/") ||
+		strings.Contains(slashed, "/__tests__/") {
 		return true
 	}
 
+	return false
+}
+
+// IsHiddenPath reports whether a path component starts with a dot: .next/,
+// .venv/, .cache/. What lives there is build output or someone else's code.
+func IsHiddenPath(path string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if len(part) > 1 && part[0] == '.' {
+			return true
+		}
+	}
 	return false
 }

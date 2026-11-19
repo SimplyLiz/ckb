@@ -108,7 +108,7 @@ func runSession(ctx context.Context, h SubscribeHandler) error {
 	ping := func() error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		return writeFrame(conn, map[string]any{"type": "index_status"})
+		return writeFrame(conn, map[string]any{"type": "query_index_status"})
 	}
 	if err = ping(); err != nil {
 		return err
@@ -175,7 +175,7 @@ func dispatchFrame(frame map[string]json.RawMessage, h SubscribeHandler) {
 			IndexedFiles: ev.IndexedFiles,
 			AffectedURIs: ev.AffectedURIs,
 		})
-	case "index_status":
+	case "index_status_result":
 		var s indexStatusResp
 		if b, ok := marshalInner(inner); ok {
 			_ = json.Unmarshal(b, &s)
@@ -203,10 +203,12 @@ func writeFrame(conn net.Conn, payload any) error {
 	if err != nil {
 		return err
 	}
-	lenBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(lenBuf, uint32(len(b)))
+	frame, err := encodeFrame(b)
+	if err != nil {
+		return err
+	}
 	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	if _, err = conn.Write(append(lenBuf, b...)); err != nil {
+	if _, err = conn.Write(frame); err != nil {
 		return err
 	}
 	return nil
@@ -222,7 +224,7 @@ func readFrame(conn net.Conn) (map[string]json.RawMessage, error) {
 		return nil, err
 	}
 	respLen := binary.BigEndian.Uint32(lenBuf)
-	if respLen == 0 || respLen > 64<<20 {
+	if respLen == 0 || respLen > maxFrameBytes {
 		return nil, errors.New("lip: frame length out of range")
 	}
 	buf := make([]byte, respLen)

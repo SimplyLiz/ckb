@@ -36,15 +36,20 @@ type Result struct {
 	Entrypoints    []string        `json:"entrypoints"`
 	ReachableCount int             `json:"reachableCount"`
 	Partial        bool            `json:"partial,omitempty"`
+	// Truncated is set when the limit cut the list; Summary has the full counts.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // Summary provides aggregate statistics.
 type Summary struct {
-	TotalExported  int            `json:"totalExported"`
-	ReachableCount int            `json:"reachableCount"`
-	UnwiredCount   int            `json:"unwiredCount"`
-	UnwiredModules int            `json:"unwiredModules"`
-	ByKind         map[string]int `json:"byKind"`
+	TotalExported  int `json:"totalExported"`
+	ReachableCount int `json:"reachableCount"`
+	UnwiredCount   int `json:"unwiredCount"`
+	UnwiredModules int `json:"unwiredModules"`
+	// ViaInterface counts the methods not listed because they implement a
+	// reachable interface on a reachable type.
+	ViaInterface int            `json:"viaInterface,omitempty"`
+	ByKind       map[string]int `json:"byKind"`
 }
 
 // DetectorOptions configures the unwired module detector.

@@ -47,24 +47,28 @@ var (
 
 var perfCouplingCmd = &cobra.Command{
 	Use:   "coupling",
-	Short: "Find hidden coupling (co-change without import edge)",
-	Long: `Find file pairs that co-change frequently in git but have no static import
-edge between them. This is the primary hidden-complexity signal: files that
-look unrelated in the dependency graph but are implicitly coupled through
-shared state, side effects, or a third party.
+	Short: "Find hidden coupling (co-change without a static link)",
+	Long: `Find source file pairs that co-changed in the last 500 commits but have no
+link in the SCIP index: neither references a symbol the other defines (between
+Go files: a symbol of the other's package), and they are not files of one Go
+package. This is the primary hidden-complexity signal:
+files that look unrelated in the dependency graph but are implicitly coupled
+through shared state, side effects, or a third party. Needs an index
+('ckb index'); without one no pair is called hidden.
 
 Examples:
   ckb perf coupling
   ckb perf coupling --min-correlation=0.5
   ckb perf coupling --scope=internal/auth,internal/sessions
-  ckb perf coupling --window=180 --format=json`,
+  ckb perf coupling --format=json`,
 	Run: runPerfCoupling,
 }
 
 func init() {
-	perfCouplingCmd.Flags().Float64Var(&perfCouplingMinCorrelation, "min-correlation", 0.3, "Minimum co-change correlation threshold (0–1)")
+	perfCouplingCmd.Flags().Float64Var(&perfCouplingMinCorrelation, "min-correlation", 0.3, "Minimum co-change score (0–1): shared commits / (commits of the less-changed file + 2)")
 	perfCouplingCmd.Flags().IntVar(&perfCouplingMinCoChanges, "min-co-changes", 3, "Minimum number of shared commits to consider a pair")
-	perfCouplingCmd.Flags().IntVar(&perfCouplingWindowDays, "window", 365, "Git history window in days")
+	perfCouplingCmd.Flags().IntVar(&perfCouplingWindowDays, "window", 0, "Ignored: the history is the last 500 commits")
+	_ = perfCouplingCmd.Flags().MarkDeprecated("window", "the history is the last 500 commits")
 	perfCouplingCmd.Flags().IntVar(&perfCouplingLimit, "limit", 50, "Maximum hidden-coupling pairs to return")
 	perfCouplingCmd.Flags().StringSliceVar(&perfCouplingScope, "scope", nil, "Limit scan to these paths (comma-separated or repeated flag)")
 	perfCouplingCmd.Flags().StringVar(&perfCouplingFormat, "format", "human", "Output format: human or json")
@@ -75,15 +79,13 @@ func runPerfCoupling(cmd *cobra.Command, args []string) {
 	start := time.Now()
 	logger := newLogger(perfCouplingFormat)
 	repoRoot := mustGetRepoRoot()
-
-	analyzer := perf.NewAnalyzer(repoRoot, logger)
+	engine := mustGetEngine(repoRoot, logger)
 
 	ctx := context.Background()
-	result, err := analyzer.Scan(ctx, perf.ScanOptions{
+	result, err := engine.ScanHiddenCoupling(ctx, perf.ScanOptions{
 		Scope:          perfCouplingScope,
 		MinCorrelation: perfCouplingMinCorrelation,
 		MinCoChanges:   perfCouplingMinCoChanges,
-		WindowDays:     perfCouplingWindowDays,
 		Limit:          perfCouplingLimit,
 	})
 	if err != nil {
@@ -112,17 +114,23 @@ func runPerfCoupling(cmd *cobra.Command, args []string) {
 
 func printPerfCouplingResult(result *perf.PerfScanResult) {
 	s := result.Summary
-	fmt.Printf("Hidden coupling scan: %d files, %d pairs checked, %d hidden pairs found\n",
-		s.FilesObserved, s.PairsChecked, s.HiddenPairsFound)
-	fmt.Printf("Window: %s – %s\n\n",
-		s.AnalysisFrom.Format("2006-01-02"), s.AnalysisTo.Format("2006-01-02"))
+	fmt.Printf("Hidden coupling scan: last %d commits, %d files, %d pairs checked, %d hidden pairs found\n",
+		s.CommitsRead, s.FilesObserved, s.PairsChecked, s.HiddenPairsFound)
+	if s.PairsNotIndexed > 0 {
+		fmt.Printf("%d pair(s) skipped: a file is not source code in the index, so its links are unknown\n", s.PairsNotIndexed)
+	}
+	fmt.Println()
 
+	if s.NotAssessed != "" {
+		fmt.Println("Not assessed: " + s.NotAssessed)
+		return
+	}
 	if len(result.HiddenCoupling) == 0 {
 		fmt.Println("No hidden coupling detected.")
 		return
 	}
 
-	fmt.Println("Hidden coupling (co-change without import edge):")
+	fmt.Println("Hidden coupling (co-change without a static link):")
 	fmt.Println(strings.Repeat("─", 70))
 
 	for _, p := range result.HiddenCoupling {

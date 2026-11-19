@@ -186,6 +186,13 @@ type IndexerRequirement struct {
 	// VersionArgs are arguments to get version (e.g., ["--version"]).
 	VersionArgs []string
 
+	// AltPaths are where the binary is installed when its install command
+	// doesn't put it on PATH, "~/" meaning the home directory and "$VAR/" an
+	// environment variable. `dart pub global activate` writes to
+	// ~/.pub-cache/bin, which most shells never add to PATH, while CKB runs
+	// the indexer through `dart pub global run` and needs no PATH entry.
+	AltPaths []string
+
 	// MinVersion is the minimum required version (semver, empty = any).
 	MinVersion string
 
@@ -299,7 +306,7 @@ var LanguageRequirements = map[Language]map[AnalysisTier][]IndexerRequirement{
 				Binary:      "scip-python",
 				VersionArgs: []string{"--version"},
 				InstallCmd: map[string]string{
-					"default": "pip install scip-python",
+					"default": "npm install -g @sourcegraph/scip-python",
 				},
 				Provider:     ProviderSCIP,
 				Capabilities: []Capability{CapDefinitions, CapReferences, CapCallGraph, CapTypeInfo},
@@ -479,6 +486,7 @@ var LanguageRequirements = map[Language]map[AnalysisTier][]IndexerRequirement{
 				Name:        "scip_dart",
 				Binary:      "scip_dart",
 				VersionArgs: []string{"--version"},
+				AltPaths:    []string{"$PUB_CACHE/bin/scip_dart", "~/.pub-cache/bin/scip_dart"},
 				InstallCmd: map[string]string{
 					"default": "dart pub global activate scip_dart",
 				},

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/diff"
 	"github.com/SimplyLiz/CodeMCP/internal/storage"
 )
@@ -39,12 +40,16 @@ func (e *Engine) ApplyDelta(ctx context.Context, delta *diff.Delta) ([]string, e
 
 	// Apply symbol additions
 	for _, sym := range delta.Deltas.Symbols.Added {
-		ftsRecords = append(ftsRecords, symbolRecordToFTS(&sym))
+		if !scip.IsLocalSymbol(sym.ID) {
+			ftsRecords = append(ftsRecords, symbolRecordToFTS(&sym))
+		}
 	}
 
 	// Apply symbol modifications (add to FTS, it will replace existing)
 	for _, sym := range delta.Deltas.Symbols.Modified {
-		ftsRecords = append(ftsRecords, symbolRecordToFTS(&sym))
+		if !scip.IsLocalSymbol(sym.ID) {
+			ftsRecords = append(ftsRecords, symbolRecordToFTS(&sym))
+		}
 	}
 
 	// If we have FTS records, bulk insert them

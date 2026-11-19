@@ -333,9 +333,6 @@ func (u *IndexUpdater) PopulateFromFullIndex(extractor *SCIPExtractor) error {
 	}
 	var entries []docEntry
 	for i, doc := range index.Documents {
-		if doc.Language != "go" && doc.Language != "" {
-			continue
-		}
 		entries = append(entries, docEntry{
 			idx:    i,
 			change: ChangedFile{Path: doc.RelativePath, ChangeType: ChangeAdded},
@@ -525,9 +522,6 @@ func (u *IndexUpdater) PopulateFromFullIndexStreaming(extractor *SCIPExtractor) 
 	const defRole = int32(1)                       // scippb.SymbolRole_Definition == 1
 	symbolToFile := make(map[string]string, 1<<17) // pre-alloc 128k
 	if err := scip.StreamDocuments(extractor.indexPath, func(pbDoc *scippb.Document) error {
-		if pbDoc.Language != "go" && pbDoc.Language != "" {
-			return nil
-		}
 		for _, occ := range pbDoc.Occurrences {
 			if occ.SymbolRoles&defRole != 0 && occ.Symbol != "" {
 				symbolToFile[occ.Symbol] = pbDoc.RelativePath
@@ -664,9 +658,6 @@ func (u *IndexUpdater) PopulateFromFullIndexStreaming(extractor *SCIPExtractor) 
 
 	u.logger.Info("Streaming populate: pass 2 — extracting deltas + writing SQL")
 	if err := scip.StreamDocuments(extractor.indexPath, func(pbDoc *scippb.Document) error {
-		if pbDoc.Language != "go" && pbDoc.Language != "" {
-			return nil
-		}
 		change := ChangedFile{Path: pbDoc.RelativePath, ChangeType: ChangeAdded}
 		delta := extractor.extractFileDeltaFromProto(pbDoc, change)
 		batch = append(batch, delta)

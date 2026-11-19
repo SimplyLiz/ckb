@@ -2,6 +2,7 @@ package coupling
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -418,5 +419,149 @@ func runGit(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v failed: %v\n%s", args, err, output)
+	}
+}
+
+// A commit touching more files than maxFilesPerCommit made every file in it fully
+// coupled to every other. It no longer counts, in the count or in the total.
+func TestAnalyze_IgnoresGiantCommits(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("init", "-q")
+	// One sweeping commit with the target, a partner and 60 others.
+	write("target.ts", "1")
+	write("partner.ts", "1")
+	for i := 0; i < 60; i++ {
+		write(fmt.Sprintf("other%d.ts", i), "1")
+	}
+	run("add", ".")
+	run("commit", "-q", "-m", "import")
+	// Two ordinary commits: target with partner.
+	for i := 2; i <= 3; i++ {
+		write("target.ts", fmt.Sprint(i))
+		write("partner.ts", fmt.Sprint(i))
+		run("commit", "-q", "-am", fmt.Sprint(i))
+	}
+
+	a := NewAnalyzer(dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	res, err := a.Analyze(context.Background(), AnalyzeOptions{Target: "target.ts", MinCorrelation: 0.1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Correlations) != 1 || res.Correlations[0].FilePath != "partner.ts" ||
+		res.Correlations[0].Correlation != 1 || res.Correlations[0].TotalChanges != 2 {
+		t.Errorf("correlations = %+v, want only partner.ts at 2/2", res.Correlations)
+	}
+}
+
+// A co-changed file is reported by its repo-relative path, not its basename:
+// prepareChange listed "symbols.go" and review's split graph never matched a
+// coupled file against its own path list.
+func TestAnalyzeReportsRepoRelativePaths(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	tmpDir := t.TempDir()
+	runGit(t, tmpDir, "init")
+	runGit(t, tmpDir, "config", "user.email", "test@test.com")
+	runGit(t, tmpDir, "config", "user.name", "Test")
+	if err := os.MkdirAll(filepath.Join(tmpDir, "internal", "a"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		for _, f := range []string{"main.go", "internal/a/helper.go"} {
+			content := []byte("package x // " + itoa(i) + "\n")
+			if err := os.WriteFile(filepath.Join(tmpDir, f), content, 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runGit(t, tmpDir, "add", ".")
+		runGit(t, tmpDir, "commit", "-m", "change "+itoa(i))
+	}
+
+	analyzer := NewAnalyzer(tmpDir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	result, err := analyzer.Analyze(context.Background(), AnalyzeOptions{Target: "main.go"})
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	if len(result.Correlations) != 1 {
+		t.Fatalf("want 1 correlation, got %+v", result.Correlations)
+	}
+	if got := result.Correlations[0].File; got != "internal/a/helper.go" {
+		t.Errorf("Correlation.File = %q, want repo-relative internal/a/helper.go", got)
+	}
+}
+
+// A data directory declared in .ckb/config.json paths.data is committed in batches
+// with the scripts that write it; its files are no correlations, and the result
+// says how many were left out.
+func TestAnalyzeLeavesOutDeclaredDataPaths(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-q")
+	runGit(t, dir, "config", "user.email", "t@t")
+	runGit(t, dir, "config", "user.name", "t")
+	if err := os.MkdirAll(filepath.Join(dir, "bench-data", "ocr"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".ckb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".ckb", "config.json"),
+		[]byte(`{"paths": {"data": ["bench-data/**"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		files := []string{"bench.py", "report.py"}
+		for j := 0; j < 5; j++ {
+			files = append(files, fmt.Sprintf("bench-data/ocr/page%d.json", j))
+		}
+		for _, f := range files {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte(fmt.Sprint(i)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runGit(t, dir, "add", "bench.py", "report.py", "bench-data")
+		runGit(t, dir, "commit", "-q", "-m", fmt.Sprint(i))
+	}
+
+	a := NewAnalyzer(dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	res, err := a.Analyze(context.Background(), AnalyzeOptions{Target: "bench.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Correlations) != 1 || res.Correlations[0].File != "report.py" {
+		t.Errorf("correlations = %+v, want only report.py", res.Correlations)
+	}
+	if res.LeftOut == nil || res.LeftOut.Count != 5 || res.LeftOut.ByClass["data"] != 5 {
+		t.Fatalf("LeftOut = %+v, want 5 data files", res.LeftOut)
+	}
+	found := false
+	for _, s := range res.Insights {
+		if contains(s, "5 files in data/generated paths left out") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("insights %q don't say what was left out", res.Insights)
 	}
 }

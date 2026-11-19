@@ -46,16 +46,18 @@ type UpdateInfo struct {
 
 // Checker handles update checking with caching
 type Checker struct {
-	cache     *Cache
-	isNpmPath bool
+	cache      *Cache
+	isNpmPath  bool
+	isBrewPath bool
 }
 
 // NewChecker creates a new update checker.
 // It automatically detects if running from an npm installation.
 func NewChecker() *Checker {
 	return &Checker{
-		cache:     NewCache(),
-		isNpmPath: detectNpmInstall(),
+		cache:      NewCache(),
+		isNpmPath:  detectNpmInstall(),
+		isBrewPath: detectBrewInstall(),
 	}
 }
 
@@ -76,6 +78,24 @@ func detectNpmInstall() bool {
 	return strings.Contains(realPath, "node_modules") &&
 		strings.Contains(realPath, "@tastehub") &&
 		strings.Contains(realPath, "ckb")
+}
+
+// detectBrewInstall checks if the current executable is the Homebrew formula,
+// which lives under <prefix>/Cellar/ckb/<version>/bin.
+func detectBrewInstall() bool {
+	execPath, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	realPath, err := filepath.EvalSymlinks(execPath)
+	if err != nil {
+		realPath = execPath
+	}
+	return isBrewPath(realPath)
+}
+
+func isBrewPath(p string) bool {
+	return strings.Contains(filepath.ToSlash(p), "/Cellar/ckb/")
 }
 
 // IsNpmInstall returns true if running from an npm installation
@@ -224,6 +244,9 @@ func (c *Checker) compareVersions(latest string) *UpdateInfo {
 func (c *Checker) getUpgradeCommand() string {
 	if c.isNpmPath {
 		return "npm update -g " + npmPackageName
+	}
+	if c.isBrewPath {
+		return "brew upgrade ckb"
 	}
 	return githubReleasesPage
 }

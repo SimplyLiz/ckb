@@ -3,9 +3,9 @@
   "redirected": false,
   "symbol": {
     "file": "pkg/model.go",
-    "kind": "function",
-    "line": 49,
-    "moduleId": "",
-    "name": "Model#Clone"
+    "kind": "class",
+    "line": 7,
+    "moduleId": "pkg",
+    "name": "Model"
   }
 }

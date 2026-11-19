@@ -8,10 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	scippb "github.com/sourcegraph/scip/bindings/go/scip"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/SimplyLiz/CodeMCP/internal/index"
 	"github.com/SimplyLiz/CodeMCP/internal/webhooks"
@@ -748,5 +752,165 @@ func TestRefreshManager_RunFullReindex_EmptyRepoPath(t *testing.T) {
 	}
 	if result.Error == "" {
 		t.Error("expected error message")
+	}
+}
+
+// nestedGoRepo is a git repo whose go.mod lives in a subdirectory.
+func nestedGoRepo(t *testing.T) string {
+	t.Helper()
+	return goRepo(t, "engine")
+}
+
+// goRepo is a git repo with a Go module in the given subdirectory of it.
+func goRepo(t *testing.T, subdir string) string {
+	t.Helper()
+	repo := t.TempDir()
+	engine := filepath.Join(repo, subdir)
+	if err := os.MkdirAll(filepath.Join(repo, ".ckb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(engine, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"go.mod":  "module example.com/engine\n\ngo 1.22\n",
+		"main.go": "package engine\n\nfunc Run() int { return 1 }\n",
+	} {
+		if err := os.WriteFile(filepath.Join(engine, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}, {"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return repo
+}
+
+// fakeIndexer puts a scip-go on PATH that behaves like the real one: it fails
+// without a go.mod in its working directory, and otherwise writes index.scip there
+// with paths relative to it.
+func fakeIndexer(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script indexer")
+	}
+	data, err := proto.Marshal(&scippb.Index{Documents: []*scippb.Document{{RelativePath: "main.go"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	template := filepath.Join(dir, "template.scip")
+	if err := os.WriteFile(template, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n[ -f go.mod ] || { echo 'no go.mod' >&2; exit 1; }\ncp '" + template + "' index.scip\n"
+	if err := os.WriteFile(filepath.Join(dir, "scip-go"), []byte(script), 0o755); err != nil { // #nosec G306 -- has to be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func assertRepoRootIndex(t *testing.T, repo string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(repo, "index.scip")) // #nosec G304 -- test temp path
+	if err != nil {
+		t.Fatalf("no index at the repo root: %v", err)
+	}
+	var idx scippb.Index
+	if err := proto.Unmarshal(data, &idx); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, doc := range idx.Documents {
+		found = found || doc.RelativePath == "engine/main.go"
+	}
+	if !found {
+		t.Errorf("no document with a repo-relative path engine/main.go in %d documents", len(idx.Documents))
+	}
+	if _, err := os.Stat(filepath.Join(repo, "engine", "index.scip")); err == nil {
+		t.Error("indexer output left behind in engine/")
+	}
+}
+
+func TestRefreshManager_NestedProject_Full(t *testing.T) {
+	fakeIndexer(t)
+	repo := nestedGoRepo(t)
+	rm := NewRefreshManager(slog.New(slog.DiscardHandler), &mockLogger{}, nil)
+
+	result := rm.RunFullReindex(context.Background(), repo)
+	if !result.Success {
+		t.Fatalf("full reindex failed: %s", result.Error)
+	}
+	assertRepoRootIndex(t, repo)
+
+	// Reindexing replaces the index, and doesn't rebase the paths a second time.
+	result = rm.RunFullReindex(context.Background(), repo)
+	if !result.Success {
+		t.Fatalf("second full reindex failed: %s", result.Error)
+	}
+	assertRepoRootIndex(t, repo)
+}
+
+// An incremental run from the repo root finds no project there and exits cleanly,
+// so it has to become a full run rather than report an empty update.
+func TestRefreshManager_NestedProject_IncrementalFallsBackToFull(t *testing.T) {
+	fakeIndexer(t)
+	repo := nestedGoRepo(t)
+	rm := NewRefreshManager(slog.New(slog.DiscardHandler), &mockLogger{}, nil)
+
+	if result := rm.RunFullReindex(context.Background(), repo); !result.Success {
+		t.Fatalf("full reindex failed: %s", result.Error)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "engine", "main.go"), []byte("package engine\n\nfunc Run() int { return 2 }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := rm.RunIncrementalRefresh(context.Background(), repo)
+	if !result.Success {
+		t.Fatalf("refresh failed: %s", result.Error)
+	}
+	if result.Type != "full" {
+		t.Errorf("refresh type = %s, want a fallback to full", result.Type)
+	}
+	assertRepoRootIndex(t, repo)
+}
+
+// The real indexer, where it's installed.
+func TestRefreshManager_NestedProject_RealIndexer(t *testing.T) {
+	if _, err := exec.LookPath("scip-go"); err != nil {
+		t.Skip("scip-go not installed")
+	}
+	repo := nestedGoRepo(t)
+	rm := NewRefreshManager(slog.New(slog.DiscardHandler), &mockLogger{}, nil)
+
+	if result := rm.RunFullReindex(context.Background(), repo); !result.Success {
+		t.Fatalf("full reindex failed: %s", result.Error)
+	}
+	assertRepoRootIndex(t, repo)
+
+	if result := rm.RunIncrementalRefresh(context.Background(), repo); !result.Success || result.Type != "full" {
+		t.Errorf("incremental refresh = %+v, want a successful fallback to full", result)
+	}
+	assertRepoRootIndex(t, repo)
+}
+
+// Indexing a repo at its root keeps using the incremental path, for its own
+// language rather than always Go.
+func TestRefreshManager_RootProject_StaysIncremental(t *testing.T) {
+	if _, err := exec.LookPath("scip-go"); err != nil {
+		t.Skip("scip-go not installed")
+	}
+	root := goRepo(t, "")
+
+	rm := NewRefreshManager(slog.New(slog.DiscardHandler), &mockLogger{}, nil)
+	if result := rm.RunFullReindex(context.Background(), root); !result.Success {
+		t.Fatalf("full reindex failed: %s", result.Error)
+	}
+	if result := rm.RunIncrementalRefresh(context.Background(), root); !result.Success || result.Type != "incremental" {
+		t.Errorf("refresh = %+v, want a successful incremental", result)
 	}
 }
