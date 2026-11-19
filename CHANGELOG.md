@@ -79,7 +79,20 @@ All notable changes to CKB will be documented in this file.
   property scip-typescript defines at the literal's key; beside a spread that may hide the key
   (the spread value has it, or is a package's or an unresolved import's type) it counts as
   unresolved. On the eight repositories 407 references that went unnoticed are now written or
-  counted.
+  counted. Also followed: `typeof import("m").x`; constructor parameter properties
+  (`constructor(private opts: O)` types `this.opts`); `x instanceof C` and type predicates on a
+  binding that is not reassigned (an unmodeled guard on an open type counts as unresolved);
+  React state setters `set((prev) => …)`, JSX attribute values, `Ctx.Provider value` and
+  `createContext<T>(literal)`; `import("m").Name` in a type. `declare global` blocks are
+  declarations under `global/`, so Next.js' `.next/types/routes.d.ts` gives `RouteContext<"/x">`
+  the route's params; string-named members keep their quotes. `import * as ns` writes the
+  module symbol at the binding and every use, and its value is `m`'s namespace object, as is
+  `import("m")`'s (`ns.f()`, `const { a } = await import("m")`, `.then((m) => m.X)`; `then`,
+  `catch` and `finally` pass the promise's type on). Imports from `"m"` point at a
+  `declare module "m" { … }` block. Mapped types `{ [P in K]: V }` and `T[number]` have their
+  value types, and a type literal in a local variable's annotation has its members' types
+  followed like `as { … }`. On the eight repositories the references that went unnoticed fell
+  from 1,782 to 674 (of 149,042 written), with no new wrong edge.
   Where scip-typescript's contextual lookup finds no property, Layer 2
   writes no edge either: a literal whose context is `T | undefined` (an optional or defaulted
   parameter, a `T | null` return, an async function's return), and the value of a shorthand
