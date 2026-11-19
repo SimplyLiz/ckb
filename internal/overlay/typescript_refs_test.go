@@ -1228,3 +1228,71 @@ func TestTSLayer2MappedType(t *testing.T) {
 		t.Errorf("Item#id. at %v, want %v", got, want)
 	}
 }
+
+const tsNSLib = `export interface Opts { id: string }
+export function make(o: Opts): Opts { return o; }
+export async function load(): Promise<Opts> { return { id: "" }; }
+`
+
+const tsNSUse = `import * as lib from "./lib";
+lib.make({ id: "x" });
+export async function g() {
+  const { make } = await import("./lib");
+  lib.load().then((o) => o.id);
+  return import("./lib").then((m) => m.make);
+}
+`
+
+// TestTSLayer2NamespaceValue: import * as ns and import("m") are m's
+// namespace object, whose members are m's exports with their types; a
+// promise's then passes its value to the callback.
+func TestTSLayer2NamespaceValue(t *testing.T) {
+	root := t.TempDir()
+	for _, f := range []struct{ path, src string }{{"src/lib.ts", tsNSLib}, {"src/use.ts", tsNSUse}} {
+		if err := os.MkdirAll(filepath.Join(root, filepath.Dir(f.path)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, f.path), []byte(f.src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	lib, _ := tsNewDocument(base, "src/lib.ts", []byte(tsNSLib))
+	base = scip.PatchIndex(base, map[string]*scip.Document{"src/lib.ts": lib})
+	use, _ := tsNewDocument(base, "src/use.ts", []byte(tsNSUse))
+	if lib == nil || use == nil {
+		t.Fatal("documents not synthesized")
+	}
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/use.ts" {
+			return use
+		}
+		return base.DocumentsByPath[p]
+	})
+	_, unresolved := tsLayer2(use, "src/use.ts", []byte(tsNSUse), allLines([]byte(tsNSUse)), r)
+	prefix := head + "src/`lib.ts`/"
+	var got []string
+	for _, o := range use.Occurrences {
+		if o.Source == scip.OccurrenceSourceOverlay && strings.HasPrefix(o.Symbol, prefix) && o.Symbol != prefix {
+			got = append(got, strings.TrimPrefix(o.Symbol, prefix)+"@"+fmtRange(o))
+		}
+	}
+	sort.Strings(got)
+	want := []string{
+		"make().@1 4 8",
+		"Opts#id.@1 11 13", // lib.make({ id }): the parameter's type
+		"make().@3 10 14",  // const { make } = await import("./lib")
+		"load().@4 6 10",
+		"Opts#id.@4 27 29", // then((o) => o.id)
+		"make().@5 39 43",  // then((m) => m.make)
+	}
+	sort.Strings(want)
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("references\n got  %v\n want %v", got, want)
+	}
+	if unresolved != 0 {
+		t.Errorf("unresolved %d, want 0", unresolved)
+	}
+}
