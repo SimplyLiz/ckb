@@ -716,7 +716,7 @@ func (a *Analyzer) findQuickWins(items []RiskItem) []QuickWin {
 
 // executeGit executes a git command
 func (a *Analyzer) executeGit(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- fixed git binary; args are passed as arguments, not through a shell
 	cmd.Dir = a.repoRoot
 
 	output, err := cmd.Output()

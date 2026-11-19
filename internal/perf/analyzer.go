@@ -67,7 +67,7 @@ func (a *Analyzer) buildCoChangePairs(ctx context.Context, since time.Time, scop
 		args = append(args, scope...)
 	}
 
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- fixed git binary; args are passed as arguments, not through a shell
 	cmd.Dir = a.repoRoot
 
 	var stderrBuf bytes.Buffer

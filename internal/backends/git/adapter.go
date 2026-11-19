@@ -232,7 +232,7 @@ func (g *GitAdapter) executeGitCommand(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), g.queryTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- fixed git binary; args are passed as arguments, not through a shell
 	cmd.Dir = g.repoRoot
 
 	g.logger.Debug("Executing git command",
