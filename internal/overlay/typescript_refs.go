@@ -1533,8 +1533,14 @@ func (l *tsRefs) member(n *sitter.Node) {
 		}
 		l.unresolved++
 		return
+	case tyNS:
+		if obj.Type() != "identifier" || tsBoundLocally(obj, l.text(obj), l.src) {
+			l.memberEdgeRef(prop, obj, t) // (await import("m")).x, import("m").then((m) => m.x)
+			return
+		}
+		// ns.x of import * as ns: below.
 	case tyNone:
-		// No type: a namespace's, an enum's or a class's static member, below.
+		// No type: an enum's or a class's static member, below.
 	default:
 		return // a member of a primitive, a global's or a package's type, an array, a function
 	}

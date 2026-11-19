@@ -18,6 +18,8 @@ import (
 //   - initializers: const x = f(), const s = () => store.getState();
 //   - calls of repository functions with a spelled or expression-bodied
 //     return type, await, new C(), this, x[i] of an array or record;
+//   - a module's namespace object (import * as ns, import("m")), whose
+//     members are its exports, and a promise's then;
 //   - context: a variable's annotation, an argument's parameter type, a
 //     return type, a key's member type, an array method's element type, and
 //     zustand's create<T>() (the store's state).
@@ -45,6 +47,7 @@ const (
 	tyPick                     // Pick, Omit, Partial, Readonly of elem: keys, omit, optional
 	tyObj                      // an object literal expression: node, members by the declaring document
 	tyMapped                   // { [P in K]: V }: node; a member's type is V with P bound to its name
+	tyNS                       // a module's namespace object (import * as ns, await import("m")): m
 )
 
 type tsTy struct {
@@ -695,6 +698,12 @@ func (r *tsResolver) memberOf(t tsTy, name string, depth int) tsMember {
 		return mb
 	case tyObj:
 		return r.objMember(t, name, depth)
+	case tyNS:
+		sym := r.lookup(t.m.file, name, tsValue, 0)
+		if sym == "" {
+			return tsMember{k: tyUnknown}
+		}
+		return tsMember{sym: sym, typ: r.topValueType(sym, depth+1), k: tyDecl}
 	case tyMapped:
 		// The members have no declaration of their own: no edge, the
 		// value type followed with the key bound.
@@ -1143,6 +1152,12 @@ func (r *tsResolver) exprType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 		if ot.k == tyMap {
 			return tsTy{k: tyMap, elem: ot.elem, sym: "method:" + prop.Content(m.src)}
 		}
+		if ot.k == tyPromise {
+			switch prop.Content(m.src) {
+			case "then", "catch", "finally":
+				return tsTy{k: tyPromise, elem: ot.elem, sym: "method:" + prop.Content(m.src)}
+			}
+		}
 		if ot.k == tyRecord {
 			return ot.of() // rec.key: the value type
 		}
@@ -1196,9 +1211,23 @@ func (r *tsResolver) exprType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 		if t, ok := r.zodParse(m, e, depth); ok {
 			return t
 		}
+		if fn.Type() == "import" && args != nil && args.NamedChildCount() == 1 && args.NamedChild(0).Type() == "string" {
+			// import("m"): a promise of m's namespace object.
+			target := r.resolveModule(m.file, tsStringValue(args.NamedChild(0).Content(m.src)))
+			if target == "" {
+				return tsOutsideTy
+			}
+			if dm := r.module(target); dm != nil {
+				return tsWrap(tyPromise, tsTy{k: tyNS, m: dm})
+			}
+			return tsUnknownTy
+		}
 		ft := r.exprType(m, fn, depth+1)
 		if (ft.k == tyArray || ft.k == tyMap) && strings.HasPrefix(ft.sym, "method:") {
 			return r.collectionCall(m, ft, args, depth)
+		}
+		if ft.k == tyPromise && strings.HasPrefix(ft.sym, "method:") {
+			return r.promiseCall(m, ft, args, depth)
 		}
 		if e.ChildByFieldName("type_arguments") != nil && ft.k == tyFn {
 			return tsUnknownTy
@@ -1508,7 +1537,12 @@ func (r *tsResolver) identType(m *tsModule, e *sitter.Node, depth int) tsTy {
 		return tsOutsideTy // a global
 	case res.external:
 		return tsOutsideTy
-	case res.namespace != "" || res.sym == "":
+	case res.namespace != "":
+		if dm := r.module(res.namespace); dm != nil {
+			return tsTy{k: tyNS, m: dm}
+		}
+		return tsNoTy
+	case res.sym == "":
 		return tsNoTy
 	}
 	return r.topValueType(res.sym, depth)
@@ -2106,6 +2140,15 @@ func (r *tsResolver) argContext(m *tsModule, call *sitter.Node, i int, depth int
 			}
 		}
 		return tsNoTy
+	case tyPromise:
+		// p.then(onFulfilled, onRejected): the value, then any.
+		switch method := strings.TrimPrefix(ft.sym, "method:"); {
+		case method == "then" && i == 0:
+			return tsTy{k: tyCallback, params: []tsTy{ft.of()}}
+		case method == "then" || method == "catch":
+			return tsTy{k: tyCallback, params: []tsTy{tsOutsideTy}}
+		}
+		return tsNoTy
 	case tyMap:
 		if strings.TrimPrefix(ft.sym, "method:") == "forEach" && i == 0 {
 			return tsTy{k: tyCallback, params: []tsTy{ft.of()}}
@@ -2362,4 +2405,29 @@ func tsMappedClause(t *sitter.Node) *sitter.Node {
 		return nil
 	}
 	return sig.NamedChild(0)
+}
+
+// promiseCall is the type of p.then(f), p.catch(f), p.finally(f): then's a
+// promise of f's result when f is an expression-bodied arrow function,
+// finally's p's; anything else is unknown.
+func (r *tsResolver) promiseCall(m *tsModule, ft tsTy, args *sitter.Node, depth int) tsTy {
+	switch strings.TrimPrefix(ft.sym, "method:") {
+	case "finally":
+		return tsWrap(tyPromise, ft.of())
+	case "then":
+		if args == nil || args.NamedChildCount() != 1 {
+			return tsUnknownTy
+		}
+		f := args.NamedChild(0)
+		b := f.ChildByFieldName("body")
+		if f.Type() != "arrow_function" || b == nil || b.Type() == "statement_block" {
+			return tsUnknownTy
+		}
+		res := r.exprType(m, b, depth+1)
+		if res.k == tyPromise {
+			return res
+		}
+		return tsWrap(tyPromise, res)
+	}
+	return tsUnknownTy
 }
