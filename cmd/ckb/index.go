@@ -479,8 +479,8 @@ func performIndex(repoRoot string) indexResult {
 	for _, plan := range lp.Plans {
 		if deps := indexplan.DepsCommand(plan); deps != "" {
 			fmt.Printf("\nFetching %s dependencies: %s\n", project.LanguageDisplayName(plan.Lang), deps)
-			if _, err := indexplan.FetchDeps(plan); err != nil {
-				fmt.Fprintf(os.Stderr, "  %v\n", err)
+			if _, depErr := indexplan.FetchDeps(plan); depErr != nil {
+				fmt.Fprintf(os.Stderr, "  %v\n", depErr)
 			}
 		}
 	}

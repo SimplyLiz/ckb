@@ -1052,8 +1052,8 @@ func daemonError(resp []byte) *DaemonError {
 		Message     string  `json:"message"`
 		MessageType *string `json:"message_type"`
 	}
-	if json.Unmarshal(resp, &head) != nil {
-		return nil
+	if err := json.Unmarshal(resp, &head); err != nil {
+		return nil //nolint:nilerr // a reply that is not JSON is no daemon error
 	}
 	switch head.Type {
 	case "error":

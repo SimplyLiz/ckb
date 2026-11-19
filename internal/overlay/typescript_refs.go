@@ -1786,17 +1786,6 @@ func (l *tsRefs) memberEdgeRef(prop, obj *sitter.Node, t tsTy) {
 	}
 }
 
-// memberEdge gives prop the edge to t's member of its name, or counts it.
-func (l *tsRefs) memberEdge(prop *sitter.Node, t tsTy) {
-	switch mb := l.r.memberOf(t, l.text(prop), 0); mb.k {
-	case tyDecl:
-		l.emit(prop, mb.sym)
-	case tyOutside:
-	default:
-		l.unresolved++ // a member the parse does not see, or of a type not followed
-	}
-}
-
 // importCall reports whether e is import("m") (also typeof import("m"),
 // which tsParseText turned into a call), with m's file ("" for a package).
 func (l *tsRefs) importCall(e *sitter.Node) (string, bool) {
@@ -2071,8 +2060,8 @@ func (l *tsRefs) importType(mod, name *sitter.Node) {
 	str := strings.TrimSpace(text[q : len(text)-1])
 	if l.onAdded(mod) {
 		if fs := tsFileSymbol(l.r.docs(target)); fs != "" {
-			sl, sc := l.cols.pos(mod.StartByte() + uint32(q)) // #nosec G115 -- an offset in the node
-			el, ec := l.cols.pos(mod.StartByte() + uint32(q+len(str)))
+			sl, sc := l.cols.pos(mod.StartByte() + uint32(q))          // #nosec G115 -- an offset in the node
+			el, ec := l.cols.pos(mod.StartByte() + uint32(q+len(str))) // #nosec G115 -- an offset in the node
 			if k := (tsTaken{sl, sc, fs}); !l.taken[k] {
 				l.taken[k] = true
 				l.doc.Occurrences = append(l.doc.Occurrences, &scip.Occurrence{Range: scipRange(sl, sc, el, ec), Symbol: fs, Source: scip.OccurrenceSourceOverlay})
@@ -2670,12 +2659,6 @@ func tsTypeVarBinds(a *sitter.Node, name string, src []byte) bool {
 	}
 	walk(a)
 	return found
-}
-
-// tsPatternBinds reports whether a parameter list, declaration or pattern
-// binds name.
-func tsPatternBinds(n *sitter.Node, name string, src []byte) bool {
-	return tsPatternBinding(n, name, src) != nil
 }
 
 // tsPatternBinding returns the identifier in a parameter list, declaration

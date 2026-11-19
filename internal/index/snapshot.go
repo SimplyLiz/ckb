@@ -56,11 +56,11 @@ func worktreeIndex(ctx context.Context, repoRoot, tmp string) ([]string, error) 
 	if !filepath.IsAbs(src) {
 		src = filepath.Join(repoRoot, src)
 	}
-	if err := copyFile(src, tmp); err != nil {
+	if err = copyFile(src, tmp); err != nil {
 		return nil, err
 	}
 	env := []string{"GIT_INDEX_FILE=" + tmp}
-	if _, err := gitEnv(ctx, repoRoot, env, "add", "-u"); err != nil {
+	if _, err = gitEnv(ctx, repoRoot, env, "add", "-u"); err != nil {
 		return nil, err
 	}
 	out, err := gitEnv(ctx, repoRoot, nil, "ls-files", "--others", "--exclude-standard", "-z")

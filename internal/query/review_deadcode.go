@@ -326,18 +326,3 @@ func symbolReferencedInPackage(repoRoot, filePath, symbolName string) bool {
 	}
 	return false
 }
-
-// languagePathspecs are the git pathspecs of the files that can use a name declared
-// in file: its extension, and for JavaScript and TypeScript the whole family.
-func languagePathspecs(file string) []string {
-	ext := strings.ToLower(filepath.Ext(file))
-	switch ext {
-	case ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs":
-		return []string{"*.ts", "*.tsx", "*.mts", "*.cts", "*.js", "*.jsx", "*.mjs", "*.cjs"}
-	case ".py", ".pyi":
-		return []string{"*.py", "*.pyi"}
-	case "":
-		return []string{filepath.ToSlash(file)}
-	}
-	return []string{"*" + ext}
-}
