@@ -1296,3 +1296,47 @@ func TestTSLayer2NamespaceValue(t *testing.T) {
 		t.Errorf("unresolved %d, want 0", unresolved)
 	}
 }
+
+const tsLocalLitFile = `export interface FileEntry { filePath: string }
+export function f() {
+  const ds: Array<{ name: string; check: (fs: FileEntry[]) => string[] }> = [
+    { name: "a", check: (fs) => fs.map((x) => x.filePath) },
+  ];
+  return ds;
+}
+`
+
+// TestTSLayer2LocalLiteral: a type literal in a function body has local
+// members (no edge at name or check), but their types are followed.
+func TestTSLayer2LocalLiteral(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src/a.ts"), []byte(tsLocalLitFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	doc, _ := tsNewDocument(base, "src/a.ts", []byte(tsLocalLitFile))
+	if doc == nil {
+		t.Fatal("document not synthesized")
+	}
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/a.ts" {
+			return doc
+		}
+		return base.DocumentsByPath[p]
+	})
+	tsLayer2(doc, "src/a.ts", []byte(tsLocalLitFile), allLines([]byte(tsLocalLitFile)), r)
+	var got []string
+	for _, o := range doc.Occurrences {
+		if o.Source == scip.OccurrenceSourceOverlay && o.Range[0] == 3 {
+			got = append(got, strings.TrimPrefix(o.Symbol, head+"src/`a.ts`/")+"@"+fmtRange(o))
+		}
+	}
+	if want := []string{"FileEntry#filePath.@3 48 56"}; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("line 4\n got  %v\n want %v", got, want)
+	}
+}

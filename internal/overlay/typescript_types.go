@@ -234,7 +234,8 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 			// document says which local it is, else unknown).
 			return tsTy{k: tyLit, m: m, node: t}
 		case local:
-			return tsOutsideTy // its members are local symbols
+			// Its members are local symbols: no edge, their types followed.
+			return tsTy{k: tyLit, m: m, node: t}
 		case owner == "" && tsInUnionOrIntersection(t):
 			return tsTy{k: tyLit, m: m, node: t} // members by the declaring document
 		case owner == "":
@@ -669,7 +670,7 @@ func (r *tsResolver) memberOf(t tsTy, name string, depth int) tsMember {
 		if tsZod(t) {
 			return r.zodMember(t, name, depth)
 		}
-		if t.sym == "" && tsAsType(t.node) {
+		if t.sym == "" && (tsAsType(t.node) || tsInsideBody(t.node)) {
 			// Locals in the index (Layer 1 writes none, so the document
 			// cannot say): no edge, the member's type followed.
 			mn := tsFindMember(t.node, name, t.m.src)
