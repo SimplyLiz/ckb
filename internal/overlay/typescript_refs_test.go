@@ -1180,3 +1180,51 @@ func TestTSLayer2AmbientModule(t *testing.T) {
 		}
 	}
 }
+
+const tsMappedFile = `export interface Item { id: string }
+export interface S { a: Item[]; b: Item }
+type K = "a" | "b";
+export function f() {
+  const m: { [P in K]: S[P] extends Item[] ? Item : S[P] } = { a: { id: "" }, b: { id: "" } };
+  const n: { [P in K]?: S[P][number] } = { a: { id: "" } };
+  const o: { [P in K]: S[P][number] } = { a: { id: "" } };
+  return [m, n, o];
+}
+`
+
+// TestTSLayer2MappedType: a key of { [P in K]: V } has no symbol of its own;
+// its value's context is V with P bound to the key (S[P][number] for "a" is
+// Item). A conditional V stays unknown; an optional member's value is
+// nullable, so its literal defines its own keys.
+func TestTSLayer2MappedType(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src/a.ts"), []byte(tsMappedFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	head := "scip-typescript npm app 1.0.0 "
+	seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+	base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+	doc, _ := tsNewDocument(base, "src/a.ts", []byte(tsMappedFile))
+	if doc == nil {
+		t.Fatal("document not synthesized")
+	}
+	r := newTSResolver(root, func(p string) *scip.Document {
+		if p == "src/a.ts" {
+			return doc
+		}
+		return base.DocumentsByPath[p]
+	})
+	tsLayer2(doc, "src/a.ts", []byte(tsMappedFile), allLines([]byte(tsMappedFile)), r)
+	var got []string
+	for _, o := range doc.Occurrences {
+		if o.Source == scip.OccurrenceSourceOverlay && strings.HasSuffix(o.Symbol, "Item#id.") {
+			got = append(got, fmtRange(o))
+		}
+	}
+	if want := []string{"6 47 49"}; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("Item#id. at %v, want %v", got, want)
+	}
+}

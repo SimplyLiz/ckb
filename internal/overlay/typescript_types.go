@@ -23,7 +23,8 @@ import (
 //     zustand's create<T>() (the store's state).
 //
 // Unions of several types, intersections, type parameters, overloads and
-// mapped types are not followed: a member of one is counted as unresolved.
+// mapped types other than { [P in K]: V } with string keys are not
+// followed: a member of one is counted as unresolved.
 
 // tsTyKind is what Layer 2 knows about a type.
 type tsTyKind int
@@ -43,6 +44,7 @@ const (
 	tyStore                    // a zustand store whose state is elem
 	tyPick                     // Pick, Omit, Partial, Readonly of elem: keys, omit, optional
 	tyObj                      // an object literal expression: node, members by the declaring document
+	tyMapped                   // { [P in K]: V }: node; a member's type is V with P bound to its name
 )
 
 type tsTy struct {
@@ -218,6 +220,9 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 		}
 		return tsUnknownTy
 	case "object_type":
+		if tsMappedClause(t) != nil {
+			return tsTy{k: tyMapped, m: m, node: t}
+		}
 		owner, local := tsLitOwner(t, m.src)
 		switch {
 		case tsAsType(t):
@@ -238,6 +243,12 @@ func (r *tsResolver) typeOfNode(m *tsModule, t *sitter.Node, depth int) tsTy {
 		k, ok := "", false
 		if key, lit := tsLookupKey(t, m.src); lit {
 			k, ok = tsStringValue(key.Content(m.src)), true
+		} else if t.NamedChildCount() == 2 && t.NamedChild(1).Type() == "predefined_type" && t.NamedChild(1).Content(m.src) == "number" {
+			// T[number]: an array's element.
+			if obj := r.typeOfNode(m, t.NamedChild(0), depth+1); obj.k == tyArray {
+				return obj.of()
+			}
+			return tsUnknownTy
 		} else if t.NamedChildCount() == 2 && t.NamedChild(1).Type() == "type_identifier" {
 			p := t.NamedChild(1).Content(m.src)
 			if v, bound := r.subst[p]; bound && tsBoundLocally(t.NamedChild(1), p, m.src) {
@@ -684,6 +695,27 @@ func (r *tsResolver) memberOf(t tsTy, name string, depth int) tsMember {
 		return mb
 	case tyObj:
 		return r.objMember(t, name, depth)
+	case tyMapped:
+		// The members have no declaration of their own: no edge, the
+		// value type followed with the key bound.
+		mc := tsMappedClause(t.node)
+		p, v := mc.ChildByFieldName("name"), mc.Parent().ChildByFieldName("type")
+		if p == nil || v == nil || v.NamedChildCount() != 1 {
+			return tsMember{k: tyUnknown}
+		}
+		saved := r.subst
+		r.subst = map[string]string{p.Content(t.m.src): name}
+		for k, val := range saved {
+			if k != p.Content(t.m.src) {
+				r.subst[k] = val
+			}
+		}
+		typ := r.typeOfNode(t.m, v.NamedChild(0), depth+1)
+		r.subst = saved
+		if v.Type() == "opting_type_annotation" {
+			typ.nullable = true
+		}
+		return tsMember{typ: typ, k: tyOutside}
 	case tyStore:
 		if tsReactBox(t) {
 			return tsMember{k: tyOutside}
@@ -2317,4 +2349,17 @@ func (r *tsResolver) constructorOf(m *tsModule, n *sitter.Node, depth int) tsTy 
 		return tsUnknownTy
 	}
 	return tsTy{k: tyFn, m: ct.m, node: found}
+}
+
+// tsMappedClause is the [P in K] of a mapped object type { [P in K]: V },
+// nil for any other type.
+func tsMappedClause(t *sitter.Node) *sitter.Node {
+	if t.Type() != "object_type" || t.NamedChildCount() != 1 {
+		return nil
+	}
+	sig := t.NamedChild(0)
+	if sig.Type() != "index_signature" || sig.NamedChildCount() == 0 || sig.NamedChild(0).Type() != "mapped_type_clause" {
+		return nil
+	}
+	return sig.NamedChild(0)
 }
