@@ -45,36 +45,17 @@ jobs:
 
       - name: Validate tokens
         env:
-          NPM_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          FAILED=false
-
-          # Check npm token (granular tokens return 403 on /v1/user, use /v1/tokens instead)
-          echo "Checking npm token..."
-          NPM_RESPONSE=$(curl -s -H "Authorization: Bearer $NPM_AUTH_TOKEN" https://registry.npmjs.org/-/npm/v1/tokens)
-          NPM_RESULT=$(echo "$NPM_RESPONSE" | node -e "try{const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));const t=d.objects?.find(o=>o.token&&o.token.startsWith(process.env.NPM_AUTH_TOKEN.slice(0,8)));if(!t){console.log('NOT_FOUND')}else if(new Date(t.expiry)<new Date()){console.log('EXPIRED:'+t.expiry)}else{console.log('OK:'+t.expiry+':'+t.scopes?.map(s=>s.name).join(','))}}catch{console.log('ERROR')}" 2>/dev/null)
-          case "$NPM_RESULT" in
-            OK:*) echo "✓ npm token is valid" ;;
-            EXPIRED:*)
-              echo "::error::npm token expired on ${NPM_RESULT#EXPIRED:}. Update NPM_AUTH_TOKEN in repo secrets."
-              FAILED=true ;;
-            *)
-              echo "::error::npm token is invalid or could not be verified. Update NPM_AUTH_TOKEN in repo secrets."
-              FAILED=true ;;
-          esac
-
+          # npm needs no token: finalize publishes through trusted publishing
+          # (OIDC), configured on npmjs.com for each of the six packages with
+          # repository SimplyLiz/ckb and workflow release.yml.
           echo "Checking Homebrew tap token..."
           BREW_RESULT=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $HOMEBREW_TAP_TOKEN" https://api.github.com/repos/SimplyLiz/homebrew-ckb)
           if [ "$BREW_RESULT" = "200" ]; then
             echo "✓ Homebrew tap token is valid"
           else
             echo "::warning::Homebrew tap token is invalid or expired (HTTP $BREW_RESULT). Brew formula upload will be skipped."
-          fi
-
-          if [ "$FAILED" = "true" ]; then
-            echo "::error::One or more required tokens are invalid. Fix them before releasing."
-            exit 1
           fi
 
       - name: Run tests
@@ -202,6 +183,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
+      id-token: write  # npm trusted publishing (OIDC), no NPM token
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -209,8 +191,15 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
         with:
-          node-version: '20'
+          # Trusted publishing needs Node >= 22.14 and npm >= 11.5.1.
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: npm for trusted publishing
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
 
       - name: Checksums, publish release
         env:
@@ -246,8 +235,9 @@ jobs:
           git push
 
       - name: Publish npm packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }}
+        # No NODE_AUTH_TOKEN: npm exchanges the job's OIDC token for a
+        # short-lived publish token and attaches provenance. Each package's
+        # repository.url must be https://github.com/SimplyLiz/ckb.
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           cp rel/checksums.txt checksums.txt
@@ -298,7 +288,7 @@ jobs:
 
             mkdir -p "$PKG_DIR/bin"
 
-            curl -sfL "https://github.com/SimplyLiz/CodeMCP/releases/download/v${VERSION}/${ARCHIVE}" -o "$ARCHIVE"
+            curl -sfL "https://github.com/SimplyLiz/ckb/releases/download/v${VERSION}/${ARCHIVE}" -o "$ARCHIVE"
 
             if ! grep "$ARCHIVE" checksums.txt | sha256sum -c -; then
               echo "::error::Checksum verification failed for $ARCHIVE"
@@ -319,6 +309,7 @@ jobs:
             "os": ["${PLATFORM%-*}"],
             "cpu": ["${PLATFORM#*-}"],
             "files": ["bin"],
+            "repository": { "type": "git", "url": "git+https://github.com/SimplyLiz/ckb.git" },
             "license": "SEE LICENSE IN bin/LICENSE"
           }
           EOF
