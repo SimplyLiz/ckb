@@ -1160,6 +1160,9 @@ func (r *tsResolver) exprType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 			}
 		}
 		if ot.k == tyRecord {
+			if tsObjectProtoMember(prop.Content(m.src)) {
+				return tsOutsideTy // rec.toString: Object's method
+			}
 			return ot.of() // rec.key: the value type
 		}
 		if tsReactBox(ot) {
@@ -1483,6 +1486,19 @@ func (r *tsResolver) collectionCall(m *tsModule, ft tsTy, args *sitter.Node, dep
 			return tsOutsideTy
 		}
 		return tsNoTy
+	}
+	// A method newer than the file's library is an error to
+	// scip-typescript, so any: at is ES2022's, findLast, toSorted and
+	// toReversed ES2023's.
+	switch method {
+	case "at":
+		if r.esYear(m.file) < 2022 {
+			return tsOutsideTy
+		}
+	case "findLast", "toSorted", "toReversed":
+		if r.esYear(m.file) < 2023 {
+			return tsOutsideTy
+		}
 	}
 	switch method {
 	case "find", "findLast", "at", "pop", "shift":
@@ -1825,6 +1841,9 @@ func (r *tsResolver) contextType1(m *tsModule, e *sitter.Node, depth int) tsTy {
 		}
 		ot := r.contextType(m, obj, depth+1)
 		if ot.k == tyRecord {
+			if (k.Type() == "property_identifier" || k.Type() == "string") && tsObjectProtoMember(tsStringValue(k.Content(m.src))) {
+				return tsOutsideTy
+			}
 			return ot.of()
 		}
 		if k.Type() != "property_identifier" {
@@ -2431,4 +2450,17 @@ func (r *tsResolver) promiseCall(m *tsModule, ft tsTy, args *sitter.Node, depth 
 		return tsWrap(tyPromise, res)
 	}
 	return tsUnknownTy
+}
+
+// tsObjectProtoMember reports a member of Object.prototype. TypeScript finds
+// it on every object type before an index signature, so under Record<K, V>
+// a key or property access spelled so has Object's method type, not V's:
+// the literal at T = { toString: { … } } defines its own keys.
+func tsObjectProtoMember(name string) bool {
+	switch name {
+	case "constructor", "toString", "toLocaleString", "valueOf",
+		"hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable":
+		return true
+	}
+	return false
 }

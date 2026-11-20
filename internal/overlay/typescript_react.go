@@ -3,6 +3,12 @@
 package overlay
 
 import (
+	"encoding/json"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
@@ -36,6 +42,11 @@ func tsSetterOf(t tsTy) tsTy {
 // reactHook is the name of the react export fn calls ("" for none):
 // useState, or React.useState for a default or namespace import.
 func (r *tsResolver) reactHook(m *tsModule, fn *sitter.Node) string {
+	if !r.packageTyped(m.file, "react") {
+		// No types for react where the file sits: its hooks are any to
+		// scip-typescript, and the rule for package calls applies.
+		return ""
+	}
 	switch fn.Type() {
 	case "identifier":
 		name := fn.Content(m.src)
@@ -147,4 +158,91 @@ func (r *tsResolver) reactCall(m *tsModule, call *sitter.Node, depth int) (tsTy,
 // react: symbol, so a zustand store's rules leave it alone).
 func tsReactBox(t tsTy) bool {
 	return t.k == tyStore && (t.sym == tsReactContext || t.sym == tsReactState || t.sym == tsReactRef)
+}
+
+// packageTyped reports whether a package import of spec from file has
+// types. What the index was built with decides: another document of the
+// file's package (the nearest directory with a package.json) that refers to
+// a symbol of spec or @types/spec. Without one, the installation now:
+// node_modules/@types/<spec>, or a <spec> package that ships its own
+// declarations, in the file's directory or one above it. Read once per
+// package root and spec.
+func (r *tsResolver) packageTyped(file, spec string) bool {
+	exists := func(p string) bool {
+		_, err := os.Stat(filepath.Join(r.root, filepath.FromSlash(p)))
+		return err == nil
+	}
+	pkg := ""
+	for d := path.Dir(file); ; d = path.Dir(d) {
+		if exists(path.Join(d, "package.json")) {
+			pkg = d
+			break
+		}
+		if d == "." || d == "/" || d == "" {
+			break
+		}
+	}
+	key := pkg + "\x00" + spec
+	if v, ok := r.typedPkgs[key]; ok {
+		return v
+	}
+	types := "@types/" + strings.ReplaceAll(strings.TrimPrefix(spec, "@"), "/", "__")
+	typed := r.indexUsesPackage(pkg, file, []string{" npm " + spec + " ", " npm " + types + " "})
+	for d := path.Dir(file); !typed; d = path.Dir(d) {
+		nm := path.Join(d, "node_modules")
+		if exists(path.Join(nm, types)) || exists(path.Join(nm, spec, "index.d.ts")) || packageJSONTypes(filepath.Join(r.root, filepath.FromSlash(path.Join(nm, spec, "package.json")))) {
+			typed = true
+		}
+		if d == "." || d == "/" || d == "" {
+			break
+		}
+	}
+	if r.typedPkgs == nil {
+		r.typedPkgs = map[string]bool{}
+	}
+	r.typedPkgs[key] = typed
+	return typed
+}
+
+// indexUsesPackage reports a document under dir ("" or ".": the whole
+// repository), other than file, with an occurrence whose symbol has one of
+// the package infixes outside the package's global declarations.
+func (r *tsResolver) indexUsesPackage(dir, file string, infixes []string) bool {
+	if r.paths == nil || r.docs == nil {
+		return false
+	}
+	under := dir + "/"
+	for _, p := range r.paths() {
+		if p == file || dir != "" && dir != "." && !strings.HasPrefix(p, under) {
+			continue
+		}
+		d := r.docs(p)
+		if d == nil {
+			continue
+		}
+		for _, o := range d.Occurrences {
+			for _, in := range infixes {
+				// A global.d.ts symbol does not count: @types/react declares
+				// the DOM's element interfaces there, which reach every file
+				// of the program even where "react" does not resolve.
+				if strings.Contains(o.Symbol, in) && !strings.Contains(o.Symbol, "`global.d.ts`") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// packageJSONTypes reports a package.json that names its declarations.
+func packageJSONTypes(p string) bool {
+	data, err := os.ReadFile(p) // #nosec G304 -- a package.json under the repository
+	if err != nil {
+		return false
+	}
+	var pj struct {
+		Types   string `json:"types"`
+		Typings string `json:"typings"`
+	}
+	return json.Unmarshal(data, &pj) == nil && (pj.Types != "" || pj.Typings != "")
 }

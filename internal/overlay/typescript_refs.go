@@ -64,6 +64,8 @@ type tsResolver struct {
 	// member type is being read to the string literal its use passed
 	// (RouteContext<"/x">: AppRouteHandlerRoute = "/x").
 	subst map[string]string
+	// typedPkgs caches packageTyped by directory and package.
+	typedPkgs map[string]bool
 }
 
 type tsPathRule struct {
@@ -113,6 +115,16 @@ func (r *tsResolver) strictNull(file string) bool {
 		}
 	}
 	return len(cands) == 0
+}
+
+// esYear is the newest ECMAScript library that governs file (the
+// project's, or any of several that hold it).
+func (r *tsResolver) esYear(file string) int {
+	y := 0
+	for _, p := range r.projectsFor(file) {
+		y = max(y, p.esYear)
+	}
+	return y
 }
 
 // projectsFor is the deepest referenced projects whose directory holds
@@ -174,6 +186,7 @@ type tsProject struct {
 	dir        string
 	rules      []tsPathRule
 	strictNull bool
+	esYear     int // tsConfigFile.esYear
 }
 
 // readProjects reads the root tsconfig.json and the projects it references;
@@ -181,9 +194,9 @@ type tsProject struct {
 func (r *tsResolver) readProjects() []tsProject {
 	root, ok := r.readConfig("tsconfig.json", 0)
 	if !ok {
-		return []tsProject{{dir: ".", strictNull: true}}
+		return []tsProject{{dir: ".", strictNull: true, esYear: tsNoConfigYear}}
 	}
-	out := []tsProject{{dir: ".", rules: tsRules(root), strictNull: root.strictNull()}}
+	out := []tsProject{{dir: ".", rules: tsRules(root), strictNull: root.strictNull(), esYear: root.esYear()}}
 	seen := map[string]bool{"tsconfig.json": true}
 	var walk func(refs []string, depth int)
 	walk = func(refs []string, depth int) {
@@ -199,7 +212,7 @@ func (r *tsResolver) readProjects() []tsProject {
 			if !ok {
 				continue
 			}
-			out = append(out, tsProject{dir: path.Dir(ref), rules: tsRules(c), strictNull: c.strictNull()})
+			out = append(out, tsProject{dir: path.Dir(ref), rules: tsRules(c), strictNull: c.strictNull(), esYear: c.esYear()})
 			walk(c.refs, depth+1)
 		}
 	}
@@ -217,6 +230,54 @@ type tsConfigFile struct {
 	// strict and strictNullChecks as set, after what it extends; nil
 	// when unset.
 	strict, strictNullChecks *bool
+	// target and lib as set, after what it extends; nil when unset.
+	target *string
+	lib    []string
+}
+
+// tsNoConfigYear stands for no tsconfig at all: nothing to go by, so no
+// library member is held back.
+const tsNoConfigYear = 9999
+
+// esYear is the newest ECMAScript library the config gives its files: lib's
+// newest es entry when lib is set, else target's (TypeScript 5.9 defaults
+// to ES5). esnext counts as the newest.
+func (c tsConfigFile) esYear() int {
+	year := func(s string) int {
+		s = strings.ToLower(s)
+		if !strings.HasPrefix(s, "es") {
+			return 0
+		}
+		s = strings.TrimPrefix(s, "es")
+		if strings.HasPrefix(s, "next") {
+			return tsNoConfigYear
+		}
+		n := 0
+		for _, ch := range s {
+			if ch < '0' || ch > '9' {
+				break
+			}
+			n = n*10 + int(ch-'0')
+		}
+		switch {
+		case n == 6:
+			return 2015
+		case n < 2015:
+			return n // es3, es5
+		}
+		return n
+	}
+	if c.lib != nil {
+		best := 0
+		for _, l := range c.lib {
+			best = max(best, year(l))
+		}
+		return best
+	}
+	if c.target != nil {
+		return year(*c.target)
+	}
+	return 5
 }
 
 func (c tsConfigFile) strictNull() bool {
@@ -285,6 +346,8 @@ func (r *tsResolver) readConfig(cfg string, depth int) (tsConfigFile, bool) {
 			Paths            map[string][]string `json:"paths"`
 			Strict           *bool               `json:"strict"`
 			StrictNullChecks *bool               `json:"strictNullChecks"`
+			Target           *string             `json:"target"`
+			Lib              []string            `json:"lib"`
 		} `json:"compilerOptions"`
 		References []struct {
 			Path string `json:"path"`
@@ -319,6 +382,12 @@ func (r *tsResolver) readConfig(cfg string, depth int) (tsConfigFile, bool) {
 				if parent.strictNullChecks != nil {
 					out.strictNullChecks = parent.strictNullChecks
 				}
+				if parent.target != nil {
+					out.target = parent.target
+				}
+				if parent.lib != nil {
+					out.lib = parent.lib
+				}
 			}
 		}
 	}
@@ -333,6 +402,12 @@ func (r *tsResolver) readConfig(cfg string, depth int) (tsConfigFile, bool) {
 	}
 	if raw.CompilerOptions.StrictNullChecks != nil {
 		out.strictNullChecks = raw.CompilerOptions.StrictNullChecks
+	}
+	if raw.CompilerOptions.Target != nil {
+		out.target = raw.CompilerOptions.Target
+	}
+	if raw.CompilerOptions.Lib != nil {
+		out.lib = raw.CompilerOptions.Lib
 	}
 	for _, ref := range raw.References {
 		p := path.Join(dir, filepath.ToSlash(ref.Path))
