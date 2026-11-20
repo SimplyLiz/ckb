@@ -4,21 +4,7 @@ All notable changes to CKB will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-
-- **TypeScript Layer 2 on a repository it was not built on.** Run over kianu, outside the
-  eight repositories the TS rules were checked on, it wrote 12 wrong edges and 460 where the
-  index has none. React's hooks are now modeled only where react has types (the index shows
-  another file of the package using them, else node_modules has them): in a folder never
-  installed they are `any` to scip-typescript, and so is what they return, an element
-  destructured or indexed out of it, and an object literal spreading that. Under `Record<string, V>` a key spelled like a
-  member of `Object.prototype` (`toString`, `valueOf`, …) has Object's method type, so the
-  literal at it defines its own keys. `at` (ES2022) and `findLast`, `toSorted`, `toReversed`
-  (ES2023) are `any` where the tsconfig's library is older (from `lib`, else `target`, ES5
-  when unset). kianu: 12 → 0 wrong, 460 → 0 edges the index lacks, 58,735 matching
-  unchanged; on the eight repositories every edge is identical before and after.
-
-## [9.4.0] - 2026-11-19
+## [9.4.0] - 2026-11-20
 
 ### Added — the index overlay: fresh answers between reindexes
 
@@ -159,6 +145,20 @@ All notable changes to CKB will be documented in this file.
   git tree written through a temporary git index; HEAD, the index and the working tree are not
   touched, untracked non-source files stay out), and the overlay diffs against it, so those
   edits are not applied a second time. `changedSinceIndex` lists against it as well.
+
+### Fixed — TypeScript Layer 2 on a held-out repository
+
+- **TypeScript Layer 2 on a repository it was not built on.** Run over kianu, outside the
+  eight repositories the TS rules were checked on, it wrote 12 wrong edges and 460 where the
+  index has none. React's hooks are now modeled only where react has types (the index shows
+  another file of the package using them, else node_modules has them): in a folder never
+  installed they are `any` to scip-typescript, and so is what they return, an element
+  destructured or indexed out of it, and an object literal spreading that. Under `Record<string, V>` a key spelled like a
+  member of `Object.prototype` (`toString`, `valueOf`, …) has Object's method type, so the
+  literal at it defines its own keys. `at` (ES2022) and `findLast`, `toSorted`, `toReversed`
+  (ES2023) are `any` where the tsconfig's library is older (from `lib`, else `target`, ES5
+  when unset). kianu: 12 → 0 wrong, 460 → 0 edges the index lacks, 58,735 matching
+  unchanged; on the eight repositories every edge is identical before and after.
 
 ### Added — mixed repos, scripts and data
 
@@ -727,8 +727,8 @@ private, so only aggregates are here.
   transitive ones. On a fixture: 1 consumer before, 6 after; the done check's 4 open
   sites are the 4 lines mypy reports.
 - **A Go interface method's implementations count as its dependents.** analyzeImpact and
-  prepareChange saw only callers, so `Backend.Priority` (implemented 4 times, called
-  nowhere) read 0 dependents and low risk. They are now listed as `implements-interface`,
+  prepareChange saw only callers, so `Backend.Priority` (implemented by two adapters
+  and two test mocks, called nowhere) read 0 dependents and low risk. They are now listed as `implements-interface`,
   found by the done check's own lookup and read as of the indexed commit; test mocks go
   to the related tests. Renaming the method gets the 0.6 floor; deleting it or renaming
   the interface type breaks no implementation and doesn't. For a one-method interface,
@@ -903,7 +903,7 @@ Claude Code mods, with no manifest anywhere.
 - **`doneCheck` and `coChangeCheck` come right after `summary`** in `assessChange` and
   `analyzeChange`. They sat behind ~70k characters of `changedSymbols` and
   `affectedTests`, so a preview of a large result never reached them. Now they start
-  at character 156.
+  within the first 150 characters.
 
 ### Added — MCP 2026-07-28
 
@@ -1128,7 +1128,7 @@ Three changes with known breakage, checked against the compiler: a new parameter
   them struct literals and 6 from one type rename; 14 commits `not_assessed`. After: 0
   open sites, 71 commits `clear`, 9 `not_assessed`, each for a file the Go index can't
   have (Python, TypeScript testdata, a `_windows.go` file). A literal is now read to
-  its end: the 2,799-line `[]Tool{...}` ran past the 300 lines it was followed and
+  its end: the 2,819-line `[]Tool{...}` ran past the 300 lines it was followed and
   counted as open. `scripts/eval-change/sweep.py` repeats the measurement.
 - **A declaration is read from the whole file, not only the hunks.** A constant moved
   out of a long `const (` block whose opening line the hunk doesn't reach was still
@@ -1487,7 +1487,7 @@ things in every language. Checked on this repo and on a Next.js app.
   is set in a literal or read through JSON, which the index does not record as a
   reference; an interface's method specification is a contract, not code. None of
   these are listed any more. Methods are matched against interfaces the way
-  `ckb unwired` does it: `Severity`, `Article` and `ID` of 770 compliance checks
+  `ckb unwired` does it: `Severity`, `Article` and `ID` of every compliance check
   were "dead" because `c.Severity()` references the interface's method.
 - **Numbers.** CKB: 1,723 findings all filed under one wrong path, now 339 with
   files and lines (`AcquireAdaptive`, `GetFileStatus`, `NewFileCursor`: exported,
@@ -1690,7 +1690,7 @@ CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
   tier that names its reasons (no SCIP index, commits behind). This is
   `analyzeChange` grown up, not a third diff analysis: `analyzeChange` stays
   registered as a deprecated alias for two minor versions, and `ckb impact
-  diff` stays as an alias of `ckb changes`. Tool count is now 111.
+  diff` stays as an alias of `ckb changes`.
 - **Activity ledger**: every MCP tool call is recorded in a `tool_calls`
   table in `.ckb/ckb.db` (schema v12) — session (from `CLAUDE_CODE_SESSION_ID`
   when run under Claude Code), consumer (from the MCP `clientInfo` handshake),
@@ -1820,14 +1820,14 @@ npx fallback: they shell out to `ckb`, which users who set up via
 
 ### Changed
 
-- Go toolchain 1.26.6 → 1.26.10 (`go.mod`; CI and release builds read it via
+- Go toolchain 1.26.6 → 1.26.11 (`go.mod`; CI and release builds read it via
   `go-version-file`). Picks up the stdlib fixes in `net/http`, `net/textproto`,
   `crypto/tls` and `crypto/x509` that govulncheck flagged as reachable. The
   glibc floor (2.34, [#243](https://github.com/SimplyLiz/ckb/issues/243)) is
   unaffected: it comes from the pinned `ubuntu-22.04` runners, and
   `scripts/check-glibc-floor.go` still verifies every linux binary.
 - Dependencies with open HIGH advisories bumped: `github.com/klauspost/compress`
-  1.18.2 → 1.18.7, `golang.org/x/net` 0.58.0 → 0.60.0 (both DoS), and
+  1.18.2 → 1.20.2, `golang.org/x/net` 0.58.0 → 0.62.0 (both DoS), and
   `undici` 6.27.0 → 6.29.1 in the PR-analysis GitHub Action (bundle rebuilt).
 
 ### Changed — unresolved dependent names/symbolIds now serialize as `""`, not `"unknown"`
