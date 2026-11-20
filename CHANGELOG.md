@@ -239,7 +239,7 @@ for the tree-sitter parsers, so the glibc floor check stays.
 
 - **Bridges are computed by CKB, and the risk factor counts only real ones.** analyzeImpact
   multiplied the risk by 1 + Cartographer's betweenness/1000, which fired on nearly every
-  central file (96 of 618 files in a Next.js app were "bridges"). A bridge is now an
+  central file (96 files in a Next.js app were "bridges"). A bridge is now an
   articulation point of the file graph that cuts off at least 3 files
   (`internal/query/bridges.go`, ported from Cartographer aebfbd4): files are joined by
   cross-file SCIP references in any language and by TS/Python imports, lazy ones included;
