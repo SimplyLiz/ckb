@@ -239,6 +239,9 @@ jobs:
         # short-lived publish token and attaches provenance. Each package's
         # repository.url must be https://github.com/SimplyLiz/ckb.
         run: |
+          # pipefail: without it `npm publish | tee` returns tee's 0 and a
+          # rejected publish (9.4.0: E404 on all six) leaves the job green.
+          set -o pipefail
           VERSION=${GITHUB_REF#refs/tags/v}
           cp rel/checksums.txt checksums.txt
           echo "Publishing version $VERSION"
