@@ -42,92 +42,107 @@ All notable changes to CKB will be documented in this file.
   identical, the other 6 the same symbols reached transitively. Building the overlay takes
   20–90 ms (median 39 ms). `CKB_OVERLAY=0` turns it off. The CLI's `ckb impact` items now carry `source` too.
 - **TypeScript has both layers too** (tree-sitter, UTF-16 columns as scip-typescript writes
-  them): declarations under scip-typescript's IDs, except the counter-numbered ones (object
-  literal properties, type-literal members), which keep their old IDs at definition and uses;
-  references through same-file names, imports, re-exports, dynamic `import("…")`, the
-  `tsconfig` paths `ckb index` makes scip-typescript use (the root project and the projects it
-  references, `extends` followed) and workspace packages (`exports`, `types`, `main`),
-  namespace imports, enum and static members and constructors, and members wherever the syntax
-  pins the type: annotations, initializers (`const x = await load()`), call results (also
-  inferred from `return` statements and `??`), `this`, destructured bindings, members inherited
-  through `extends`, callback parameters of array methods and of repository functions, and keys
-  of object literals typed by their context (a variable's annotation, an argument, a
-  constructor's parameter, a return type, an enclosing key, an array element, zustand's
-  `create<T>()`). Uses of a parameter get its symbol. A union's member is every remaining part's
-  declaration after narrowing (discriminants, truthiness, `in`, `typeof`, type guards, `if`,
-  `switch`, an earlier `return`) of an identifier that is not reassigned; property chains,
-  conditions not modeled (also one on a name destructured from it, `const { kind } = v`) and
-  overloads stay unresolved. `Pick`, `Omit`, `Partial`, `Readonly`
-  and intersections have their parts' members; React's `createContext`/`useContext`, `useState`,
-  `useRef`, `useMemo` and `useCallback` pass their types through, and any other package call
-  that passes a repository value counts as unresolved. Generators: a `yield` operand takes `T`
-  of the declared `Generator`/`AsyncGenerator<T, TReturn>`, a `return` takes `TReturn` (an
-  async generator's, like an async function's, defines its own keys), iterating a generator's
-  call gives `T`, and a function declared inside a body types its parameters. The members of
-  `x as { … }` are locals in the index, so they get no edge, but their types are followed:
-  `globalThis as unknown as { prisma: PrismaClient | undefined }` makes `prisma.user.find()` a
-  package's call instead of an unresolved one (nyxcore: 22,510 → 18,219 unresolved sites), and a
-  shorthand parameter in a package's object literal (`where: { tenantId }`) counts, because the
-  index writes `f().(tenantId)` there. zod's schemas are followed: a member of
-  `z.infer<typeof s>` (`z.input`, `z.output`, `s.parse()`) is the key of the `z.object({…})` literal
-  that declares it, through `extend`, `merge`, `pick`, `omit`, `partial`, `optional`, `default`,
-  `refine`, checks such as `.min()`, `z.array`, `z.record`, `z.preprocess`, a helper that returns a
-  schema and `transform(f)` with `f<P>(p: P): P`; anything else (other transforms, unions, `lazy`)
-  counts as unresolved instead of passing as a package's type, and so does `ReturnType<typeof f>`.
-  On Lebenslauf 2,178 references that went unnoticed are now written or counted. A local
-  `export { a, b as c }` points both the name and the alias at what the name stands for (a
-  declaration, an import's target, a namespace import's file), as do the aliases of
-  `import { x as y }` and `export … from`; a name that is a value and a type gets both symbols
-  (moltbot: 268 references that went unnoticed). A reference to a type parameter with a global
-  symbol (`f().[T]`, `C#[E]`) gets it, unless `infer T` or `[T in …]` in the same declaration may
-  shadow it; `[K in Keys]` no longer hides `Keys` (549 references on the eight repositories).
-  `T["k"]` points the string at `T`'s member and has that member's type (nested, through
-  `Partial`; a union of types or keys gets nothing, as in the index). A literal's context
-  `T | undefined` gives it its own keys only under `strictNullChecks`, read from the tsconfig
-  that governs the file; an async function's result does so under any tsconfig. A local member
-  (of a literal in a union) passes its type on to a destructured name and to a nested literal,
-  and the keys of a callback's result that spreads a repository value count. `new Map<K, V>()`
-  and `new Array<T>()` have their element type, so `m.set(k, { … })` points the keys at `V`'s
-  members; `Map.get`, `find`, `at`, `pop` and `shift` give `T | undefined`, which `x!` drops.
-  An object literal is a type: a function's inferred result, a variable's initializer or a
-  returned promise (not wrapped twice) gives `const { a } = f()`, `f().a` and `x.a` the
-  property scip-typescript defines at the literal's key; beside a spread that may hide the key
-  (the spread value has it, or is a package's or an unresolved import's type) it counts as
-  unresolved. On the eight repositories 407 references that went unnoticed are now written or
-  counted. Also followed: `typeof import("m").x`; constructor parameter properties
-  (`constructor(private opts: O)` types `this.opts`); `x instanceof C` and type predicates on a
-  binding that is not reassigned (an unmodeled guard on an open type counts as unresolved);
-  React state setters `set((prev) => …)`, JSX attribute values, `Ctx.Provider value` and
-  `createContext<T>(literal)`; `import("m").Name` in a type. `declare global` blocks are
-  declarations under `global/`, so Next.js' `.next/types/routes.d.ts` gives `RouteContext<"/x">`
-  the route's params; string-named members keep their quotes. `import * as ns` writes the
-  module symbol at the binding and every use, and its value is `m`'s namespace object, as is
-  `import("m")`'s (`ns.f()`, `const { a } = await import("m")`, `.then((m) => m.X)`; `then`,
-  `catch` and `finally` pass the promise's type on). Imports from `"m"` point at a
-  `declare module "m" { … }` block. Mapped types `{ [P in K]: V }` and `T[number]` have their
-  value types, and a type literal in a local variable's annotation has its members' types
-  followed like `as { … }`. On the eight repositories the references that went unnoticed fell
-  from 1,782 to 674, with no new wrong edge.
-  Where scip-typescript's contextual lookup finds no property, Layer 2
-  writes no edge either: a literal whose context is `T | undefined` (an optional or defaulted
-  parameter, a `T | null` return, an async function's return), and the value of a shorthand
-  property in a package's or a global's type. Lower-case JSX tags are intrinsic elements. JSX
-  attributes go through the component's first parameter. A type literal's members on new lines
-  (of a parameter, return type, constraint, alias, variable, interface property or type
-  argument) are defined with the number the base gave the same owner, else a placeholder until
-  the next reindex. Checked on Lebenslauf: 6,262 of 6,262 comparable definitions identical to
-  scip-typescript's at HEAD; over its last 30 small commits 2,573 of 2,573 overlay references
-  identical to a fresh index (counter numbers normalized), 1,141 of 1,166 impact items they bring
-  too, 1,768 of 1,846 changed symbols' references found (96 %), 18 of 30 commits without
-  a rebuild, overlay built in 71 ms (median). Layer 2 run over every line of
-  eight TypeScript repositories against their indexes (files whose source is the indexed one):
-  149,279 edges, every one identical except 41 in two repositories whose files changed after
-  indexing. The grammar's two gaps, `using` as an identifier and `typeof import("…")`, are
-  rewritten to same-length tokens before parsing (v0.23.2, the newest grammar, still rejects
-  both), and so is a bare `&` in JSX text (`<p>Account & preferences</p>`, which the grammar
-  reads as a character reference: 13 nyxcore files that failed to parse and asked for a rebuild
-  on every touch); all 551 Lebenslauf files parse. A file with a syntax error and a renamed TS file stay at
-  the line remap and ask for a rebuild.
+  them):
+  - Declarations and IDs: declarations under scip-typescript's IDs, except the counter-numbered
+    ones (object literal properties, type-literal members), which keep their old IDs at
+    definition and uses. A type literal's members on new lines (of a parameter, return type,
+    constraint, alias, variable, interface property or type argument) are defined with the
+    number the base gave the same owner, else a placeholder until the next reindex. `declare
+    global` blocks are declarations under `global/`, so Next.js' `.next/types/routes.d.ts`
+    gives `RouteContext<"/x">` the route's params; string-named members keep their quotes.
+    Uses of a parameter get its symbol.
+  - References resolve through same-file names, imports, re-exports, dynamic `import("…")`,
+    the `tsconfig` paths `ckb index` makes scip-typescript use (the root project and the projects
+    it references, `extends` followed) and workspace packages (`exports`, `types`, `main`),
+    namespace imports, enum and static members and constructors. A local `export { a, b as c }`
+    points both the name and the alias at what the name stands for (a declaration, an import's
+    target, a namespace import's file), as do the aliases of `import { x as y }` and
+    `export … from`; a name that is a value and a type gets both symbols. `import * as ns`
+    writes the module symbol at the binding and every use, and its value is `m`'s namespace
+    object, as is `import("m")`'s (`ns.f()`, `const { a } = await import("m")`,
+    `.then((m) => m.X)`; `then`, `catch` and `finally` pass the promise's type on). Imports
+    from `"m"` point at a `declare module "m" { … }` block. Also followed: `typeof
+    import("m").x` and `import("m").Name` in a type.
+  - Type parameters and indexed types: a reference to a type parameter with a global symbol
+    (`f().[T]`, `C#[E]`) gets it, unless `infer T` or `[T in …]` in the same declaration may
+    shadow it; `[K in Keys]` no longer hides `Keys`. `T["k"]` points the string at `T`'s
+    member and has that member's type (nested, through `Partial`; a union of types or keys
+    gets nothing, as in the index). Mapped types `{ [P in K]: V }` and `T[number]` have their
+    value types. `Pick`, `Omit`, `Partial`, `Readonly` and intersections have their parts'
+    members.
+  - Members wherever the syntax pins the type: annotations, initializers
+    (`const x = await load()`), call results (also inferred from `return` statements and `??`),
+    `this`, destructured bindings, members inherited through `extends`, callback parameters of
+    array methods and of repository functions, and constructor parameter properties
+    (`constructor(private opts: O)` types `this.opts`). A function declared inside a body
+    types its parameters. A type literal in a local variable's annotation has its members'
+    types followed like `as { … }`.
+  - Keys of object literals typed by their context: a variable's annotation, an argument, a
+    constructor's parameter, a return type, an enclosing key, an array element, zustand's
+    `create<T>()`. An object literal is a type: a function's inferred result, a variable's
+    initializer or a returned promise (not wrapped twice) gives `const { a } = f()`, `f().a`
+    and `x.a` the property scip-typescript defines at the literal's key; beside a spread that
+    may hide the key (the spread value has it, or is a package's or an unresolved import's
+    type) it counts as unresolved. A literal's context `T | undefined` gives it its own keys
+    only under `strictNullChecks`, read from the tsconfig that governs the file; an async
+    function's result does so under any tsconfig. A local member (of a literal in a union)
+    passes its type on to a destructured name and to a nested literal, and the keys of a
+    callback's result that spreads a repository value count. The members of `x as { … }` are
+    locals in the index, so they get no edge, but their types are followed:
+    `globalThis as unknown as { prisma: PrismaClient | undefined }` makes `prisma.user.find()`
+    a package's call instead of an unresolved one, and a shorthand parameter in a package's
+    object literal (`where: { tenantId }`) counts, because the index writes `f().(tenantId)`
+    there.
+  - Unions and narrowing: a union's member is every remaining part's declaration after
+    narrowing (discriminants, truthiness, `in`, `typeof`, type guards, `if`, `switch`, an
+    earlier `return`) of an identifier that is not reassigned; property chains, conditions not
+    modeled (also one on a name destructured from it, `const { kind } = v`) and overloads stay
+    unresolved. `x instanceof C` and type predicates are followed on a binding that is not
+    reassigned (an unmodeled guard on an open type counts as unresolved).
+  - Library models: React's `createContext`/`useContext`, `useState`, `useRef`, `useMemo` and
+    `useCallback` pass their types through, and any other package call that passes a
+    repository value counts as unresolved. React state setters `set((prev) => …)`, JSX
+    attribute values, `Ctx.Provider value` and `createContext<T>(literal)` are followed.
+    `new Map<K, V>()` and `new Array<T>()` have their element type, so `m.set(k, { … })`
+    points the keys at `V`'s members; `Map.get`, `find`, `at`, `pop` and `shift` give
+    `T | undefined`, which `x!` drops. Generators: a `yield` operand takes `T` of the declared
+    `Generator`/`AsyncGenerator<T, TReturn>`, a `return` takes `TReturn` (an async generator's,
+    like an async function's, defines its own keys), iterating a generator's call gives `T`.
+    zod's schemas are followed: a member of `z.infer<typeof s>` (`z.input`, `z.output`,
+    `s.parse()`) is the key of the `z.object({…})` literal that declares it, through `extend`,
+    `merge`, `pick`, `omit`, `partial`, `optional`, `default`, `refine`, checks such as
+    `.min()`, `z.array`, `z.record`, `z.preprocess`, a helper that returns a schema and
+    `transform(f)` with `f<P>(p: P): P`; anything else (other transforms, unions, `lazy`)
+    counts as unresolved instead of passing as a package's type, and so does
+    `ReturnType<typeof f>`.
+  - No edge written: where scip-typescript's contextual lookup finds no property,
+    Layer 2 writes no edge either: a literal whose context is `T | undefined` (an optional or
+    defaulted parameter, a `T | null` return, an async function's return), and the value of a
+    shorthand property in a package's or a global's type. Lower-case JSX tags are intrinsic
+    elements. JSX attributes go through the component's first parameter.
+  - Parsing: the grammar's two gaps, `using` as an identifier and `typeof import("…")`, are
+    rewritten to same-length tokens before parsing (v0.23.2, the newest grammar, still rejects
+    both), and so is a bare `&` in JSX text (`<p>Account & preferences</p>`, which the grammar
+    reads as a character reference: 13 nyxcore files that failed to parse and asked for a
+    rebuild on every touch). A file with a syntax error and a renamed TS file stay at the line
+    remap and ask for a rebuild.
+  - Measurements:
+    - Unresolved sites, nyxcore: 22,510 → 18,219 with the `as { … }` rule.
+    - References that went unnoticed, now written or counted: on Lebenslauf 2,178 (zod's
+      schemas); moltbot: 268 (local `export` and value-and-type names); 549 references on the
+      eight repositories (type parameters, `[K in Keys]`); on the eight repositories 407
+      (object literals as types, `Map`/`Array` element types); on the eight repositories they
+      fell from 1,782 to 674, with no new wrong edge (everything from `typeof import("m").x`
+      on: parameter properties, guards, setters and JSX, `declare global`, namespace imports,
+      `declare module`, mapped types).
+    - Lebenslauf: 6,262 of 6,262 comparable definitions identical to scip-typescript's at HEAD;
+      over its last 30 small commits 2,573 of 2,573 overlay references identical to a fresh
+      index (counter numbers normalized), 1,141 of 1,166 impact items they bring too, 1,768 of
+      1,846 changed symbols' references found (96 %), 18 of 30 commits without a rebuild,
+      overlay built in 71 ms (median). All 551 Lebenslauf files parse.
+    - Layer 2 run over every line of eight TypeScript repositories against their indexes
+      (files whose source is the indexed one): 149,279 edges, every one identical except 41 in
+      two repositories whose files changed after indexing.
 - **`indexFreshness`, `getStatus` and the session-start hook say what the overlay serves**:
   `overlay {files, covered, uncovered, layers, droppedOccurrences, unresolvedSites, rebuild}`,
   and the hint says a result's changed files are served from the overlay instead of asking for a
