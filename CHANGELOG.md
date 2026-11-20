@@ -2,6 +2,21 @@
 
 All notable changes to CKB will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **TypeScript Layer 2 on a repository it was not built on.** Run over kianu, outside the
+  eight repositories the TS rules were checked on, it wrote 12 wrong edges and 446 where the
+  index has none. React's hooks are now modeled only where react has types (the index shows
+  another file of the package using them, else node_modules has them): in a folder never
+  installed they are `any` to scip-typescript. Under `Record<string, V>` a key spelled like a
+  member of `Object.prototype` (`toString`, `valueOf`, …) has Object's method type, so the
+  literal at it defines its own keys. `at` (ES2022) and `findLast`, `toSorted`, `toReversed`
+  (ES2023) are `any` where the tsconfig's library is older (from `lib`, else `target`, ES5
+  when unset). kianu: 12 → 0 wrong, 460 → 3 edges the index lacks, 58,735 matching
+  unchanged; the eight repositories identical before and after.
+
 ## [9.4.0] - 2026-11-19
 
 ### Added — the index overlay: fresh answers between reindexes
@@ -25,7 +40,7 @@ All notable changes to CKB will be documented in this file.
   identical, callers of the changed symbols found 768 of 797 (67 % with the line remap alone),
   and the analyzeImpact items within depth 2 that only the reference layer brings 956 of 962
   identical, the other 6 the same symbols reached transitively. Building the overlay takes
-  30–90 ms. `CKB_OVERLAY=0` turns it off. The CLI's `ckb impact` items now carry `source` too.
+  20–90 ms (median 39 ms). `CKB_OVERLAY=0` turns it off. The CLI's `ckb impact` items now carry `source` too.
 - **TypeScript has both layers too** (tree-sitter, UTF-16 columns as scip-typescript writes
   them): declarations under scip-typescript's IDs, except the counter-numbered ones (object
   literal properties, type-literal members), which keep their old IDs at definition and uses;
@@ -65,7 +80,7 @@ All notable changes to CKB will be documented in this file.
   `import { x as y }` and `export … from`; a name that is a value and a type gets both symbols
   (moltbot: 268 references that went unnoticed). A reference to a type parameter with a global
   symbol (`f().[T]`, `C#[E]`) gets it, unless `infer T` or `[T in …]` in the same declaration may
-  shadow it; `[K in Keys]` no longer hides `Keys` (557 references on the eight repositories).
+  shadow it; `[K in Keys]` no longer hides `Keys` (549 references on the eight repositories).
   `T["k"]` points the string at `T`'s member and has that member's type (nested, through
   `Partial`; a union of types or keys gets nothing, as in the index). A literal's context
   `T | undefined` gives it its own keys only under `strictNullChecks`, read from the tsconfig
@@ -100,7 +115,7 @@ All notable changes to CKB will be documented in this file.
   attributes go through the component's first parameter. A type literal's members on new lines
   (of a parameter, return type, constraint, alias, variable, interface property or type
   argument) are defined with the number the base gave the same owner, else a placeholder until
-  the next reindex. Checked on Lebenslauf: 6,138 of 6,138 comparable definitions identical to
+  the next reindex. Checked on Lebenslauf: 6,262 of 6,262 comparable definitions identical to
   scip-typescript's at HEAD; over its last 30 small commits 2,573 of 2,573 overlay references
   identical to a fresh index (counter numbers normalized), 1,141 of 1,166 impact items they bring
   too, 1,768 of 1,846 changed symbols' references found (96 %), 18 of 30 commits without
@@ -111,7 +126,7 @@ All notable changes to CKB will be documented in this file.
   rewritten to same-length tokens before parsing (v0.23.2, the newest grammar, still rejects
   both), and so is a bare `&` in JSX text (`<p>Account & preferences</p>`, which the grammar
   reads as a character reference: 13 nyxcore files that failed to parse and asked for a rebuild
-  on every touch); all 547 Lebenslauf files parse. A file with a syntax error and a renamed TS file stay at
+  on every touch); all 551 Lebenslauf files parse. A file with a syntax error and a renamed TS file stay at
   the line remap and ask for a rebuild.
 - **`indexFreshness`, `getStatus` and the session-start hook say what the overlay serves**:
   `overlay {files, covered, uncovered, layers, droppedOccurrences, unresolvedSites, rebuild}`,
@@ -121,8 +136,8 @@ All notable changes to CKB will be documented in this file.
   background reindex runs on a commit or checkout, and for uncommitted edits only when the
   overlay reports what it could not do: 25 or more unresolved sites, a declaration line changed
   while unchanged files use it, a file it can only remap (a parse error, or a language without
-  the Go or TypeScript layers), or a new file it lacks. In the replay that left 17 of 30 commits without a
-  rebuild, each with 96 % or more of the changed symbols' references found. `--watch=false`
+  the Go or TypeScript layers), or a new file it lacks. In the Go replay and in the TypeScript one that left 18 of 30
+  commits each without a rebuild, every one with all of the changed symbols' references found. `--watch=false`
   turns it off; an explicit `--watch` keeps building a missing index in a repo without `.ckb`.
 - **An index built from uncommitted changes records them** (`index-meta.json` `worktreeTree`, a
   git tree written through a temporary git index; HEAD, the index and the working tree are not
@@ -192,7 +207,7 @@ All notable changes to CKB will be documented in this file.
 
 - **The SCIP index loads without `.ckb/scip_derived.gob`.** The cache was slower than
   rebuilding: measured on four repos with 15–50 MB indexes, loading with it took 20–150 ms
-  longer and, on CKB's own index, 64 MB more heap, because the protobuf parse it could not skip
+  longer and up to 64 MB more heap, because the protobuf parse it could not skip
   is most of the load. It was written in the background, so CLI processes that exited first
   left `scip_derived.gob.tmp.*` files of 40–70 MB behind. The cache, and any of those files,
   are deleted from `.ckb/` on the next index load.
@@ -252,7 +267,7 @@ for the tree-sitter parsers, so the glibc floor check stays.
   count), and the Cartographer entries in `ckb doctor` and `ckb status`.
 - **THIRD-PARTY-LICENSES lists what the binary actually links.** It held the 274 Rust crates
   of the Cartographer library and none of CKB's own Go modules (SQLite, cobra, tree-sitter
-  and its grammars, …). It now holds the license texts of the 43 Go modules linked on any
+  and its grammars, …). It now holds the license texts of the 44 Go modules linked on any
   release target plus the Go runtime, generated by `scripts/third-party-licenses.go`; CI
   fails when a dependency bump leaves it stale. It also ships now: in the release archives,
   the npm package and the Homebrew prefix, where LICENSE §4 says it is. Before, only README
@@ -487,7 +502,7 @@ data, in every build.
   3 commits yet. It is history, not code: a listed file may need nothing. Works for
   every language and for files that aren't code.
 - **`assessChange` is in the default preset,** and in every preset built on core,
-  so core goes from 25 tools to 26. The first 512 bytes of the MCP instructions now
+  so core goes from 25 tools to 26 (27 with `reindex`, below). The first 512 bytes of the MCP instructions now
   end on it.
 
 ### Added — TypeScript types that take their shape from a value
@@ -856,7 +871,7 @@ Claude Code mods, with no manifest anywhere.
 ### Added — MCP tool annotations
 
 - **Every MCP tool says whether it changes anything.** `tools/list` now carries
-  `annotations`: `readOnlyHint: true` on the 93 tools that only read the index, git and
+  `annotations`: `readOnlyHint: true` on the 88 tools that only read the index, git and
   the cache, so Claude Code runs them in parallel with other read-only calls instead of
   one after another. The 18 that change something say so, with `destructiveHint`,
   `idempotentHint` and `openWorldHint`: the index and `.ckb` database (`reindex`,
@@ -875,7 +890,7 @@ Claude Code mods, with no manifest anywhere.
   The server instructions tell the agent to call them around every edit; deferred
   behind tool search, they cost a search first.
 - **`doneCheck` and `coChangeCheck` come right after `summary`** in `assessChange` and
-  `analyzeChange`. They sat behind 63k characters of `changedSymbols` and
+  `analyzeChange`. They sat behind ~70k characters of `changedSymbols` and
   `affectedTests`, so a preview of a large result never reached them. Now they start
   at character 156.
 
