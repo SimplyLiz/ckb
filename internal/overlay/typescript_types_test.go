@@ -402,7 +402,7 @@ export function F() {
 // package call passing a repository value is unknown, not a package's type.
 func TestTSLayer2React(t *testing.T) {
 	root := t.TempDir()
-	for rel, text := range map[string]string{"src/lib.ts": tsReactLib, "src/use.tsx": tsReactUse} {
+	for rel, text := range map[string]string{"src/lib.ts": tsReactLib, "src/use.tsx": tsReactUse, "node_modules/@types/react/index.d.ts": "export {};\n"} {
 		p := filepath.Join(root, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
@@ -799,11 +799,26 @@ func tsL2Edges(t *testing.T, libText, useText string) (map[string]bool, int) {
 	return tsL2EdgesAt(t, libText, "src/use.ts", useText)
 }
 
+// tsTypedReact gives a fixture's react import types, as an installed
+// @types/react does; without it React's hooks are any.
+var tsTypedReact = map[string]string{"node_modules/@types/react/index.d.ts": "export {};\n"}
+
 // tsL2EdgesAt is tsL2Edges with use at useRel (a .tsx for JSX).
 func tsL2EdgesAt(t *testing.T, libText, useRel, useText string) (map[string]bool, int) {
 	t.Helper()
+	return tsL2EdgesWith(t, tsTypedReact, libText, useRel, useText)
+}
+
+// tsL2EdgesWith is tsL2EdgesAt with extra files in the repository (nil:
+// none, so no package has types).
+func tsL2EdgesWith(t *testing.T, extra map[string]string, libText, useRel, useText string) (map[string]bool, int) {
+	t.Helper()
 	root := t.TempDir()
-	for rel, text := range map[string]string{"src/lib.ts": libText, useRel: useText} {
+	files := map[string]string{"src/lib.ts": libText, useRel: useText}
+	for rel, text := range extra {
+		files[rel] = text
+	}
+	for rel, text := range files {
 		p := filepath.Join(root, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
@@ -962,5 +977,151 @@ export function g(event: Ev, meta: { usage: { input?: number } }) {
 		if strings.HasPrefix(k, "U#input.") {
 			t.Errorf("unexpected %s: a predicate's type that does not extend the declared one", k)
 		}
+	}
+}
+
+// TestTSLayer2UntypedReact: where react has no types (no node_modules, as in
+// a design folder never installed) its hooks are any to scip-typescript: a
+// setter's literal and a useMemo result's keys get no edge (kianu).
+func TestTSLayer2UntypedReact(t *testing.T) {
+	use := `import { useState, useMemo } from "react";
+import { S } from "./lib";
+export function F() {
+  const [st, setSt] = useState<S>({ a: 0, b: "" });
+  setSt((prev) => ({ ...prev, b: prev.b }));
+  const { a } = useMemo(() => { return { a: st.a }; }, []);
+  return a;
+}
+`
+	lib := "export interface S { a: number; b: string }\n"
+	typed, _ := tsL2EdgesWith(t, tsTypedReact, lib, "src/use.ts", use)
+	if !typed["S#b.@4 30 31"] {
+		t.Fatalf("typed react: missing S#b.@4 30 31 (got %v)", typed)
+	}
+	got, _ := tsL2EdgesWith(t, nil, lib, "src/use.ts", use)
+	for _, w := range []string{"S#a.@3 35 36", "S#b.@4 30 31", "S#b.@4 38 39"} {
+		if got[w] {
+			t.Errorf("untyped react: unexpected %s", w)
+		}
+	}
+}
+
+// TestTSLayer2RecordObjectMembers: under Record<string, V> a key spelled
+// like a member of Object.prototype has Object's method type, so the
+// literal at it defines its own keys (scip-typescript, checked).
+func TestTSLayer2RecordObjectMembers(t *testing.T) {
+	got, _ := tsL2Edges(t, "export interface Def { description: string }\n", `import { Def } from "./lib";
+export const T: Record<string, Def> = {
+  plain: { description: "a" },
+  toString: { description: "b" },
+  "valueOf": { description: "c" },
+};
+export const d = T.toString;
+`)
+	if !got["Def#description.@2 11 22"] {
+		t.Errorf("missing Def#description.@2 11 22 (got %v)", got)
+	}
+	for _, w := range []string{"Def#description.@3 14 25", "Def#description.@4 15 26"} {
+		if got[w] {
+			t.Errorf("unexpected %s", w)
+		}
+	}
+}
+
+// TestTSLayer2LibYear: an array method newer than the file's library is an
+// error, so any, to scip-typescript (checked: target ES2017 gives
+// xs.at(-1)?.a no occurrence, ES2022 does; findLast needs ES2023).
+func TestTSLayer2LibYear(t *testing.T) {
+	lib := "export interface E { a: number }\n"
+	use := `import { E } from "./lib";
+export function g(xs: E[]) {
+  const l = xs.at(-1)?.a;
+  const f = xs.findLast(() => true)?.a;
+  return [l, f];
+}
+`
+	at, last := "E#a.@2 23 24", "E#a.@3 37 38"
+	for _, c := range []struct {
+		cfg      string
+		at, last bool
+	}{
+		{`{"compilerOptions":{"target":"ES2017"}}`, false, false},
+		{`{"compilerOptions":{"target":"ES2022"}}`, true, false},
+		{`{"compilerOptions":{"target":"ES2017","lib":["dom","es2023"]}}`, true, true},
+		{`{"compilerOptions":{"lib":["ESNext"]}}`, true, true},
+		{`{}`, false, false},
+	} {
+		got, _ := tsL2EdgesWith(t, map[string]string{"tsconfig.json": c.cfg}, lib, "src/use.ts", use)
+		if got[at] != c.at || got[last] != c.last {
+			t.Errorf("%s: at %v findLast %v, want %v %v (got %v)", c.cfg, got[at], got[last], c.at, c.last, got)
+		}
+	}
+	if got, _ := tsL2Edges(t, lib, use); !got[at] || !got[last] {
+		t.Errorf("no tsconfig: want both (got %v)", got)
+	}
+}
+
+// TestTSLayer2UntypedReactSpread: with react untyped, useState's state is
+// any, so is an element of it, and so is a literal spreading that element:
+// u.a has no edge at the literal's key (kianu TodoView: { ...todo, urgent }
+// then updatedTodo.urgent, checked against scip-typescript). Typed, the key
+// the spread type lacks is the literal's own. Layer 1 does not write
+// counter-numbered properties, so the test adds a0:.
+func TestTSLayer2UntypedReactSpread(t *testing.T) {
+	const lib = "export interface S { b: string }\n"
+	const use = `import { useState } from "react";
+import { S } from "./lib";
+export function F() {
+  const [xs] = useState<S[]>([]);
+  const x = xs[0];
+  const u = { ...x, a: 1 };
+  return u.a;
+}
+`
+	edges := func(extra map[string]string) map[string]bool {
+		root := t.TempDir()
+		files := map[string]string{"src/lib.ts": lib, "src/use.ts": use}
+		for rel, text := range extra {
+			files[rel] = text
+		}
+		for rel, text := range files {
+			p := filepath.Join(root, rel)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		head := "scip-typescript npm app 1.0.0 "
+		useSym := head + "src/`use.ts`/"
+		seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+		base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+		ld, _ := tsNewDocument(base, "src/lib.ts", []byte(lib))
+		base = scip.PatchIndex(base, map[string]*scip.Document{"src/lib.ts": ld})
+		ud, _ := tsNewDocument(base, "src/use.ts", []byte(use))
+		ud.Occurrences = append(ud.Occurrences, &scip.Occurrence{Range: []int32{5, 20, 21}, Symbol: useSym + "a0:", SymbolRoles: scip.SymbolRoleDefinition})
+		r := newTSResolver(root, func(p string) *scip.Document {
+			if p == "src/use.ts" {
+				return ud
+			}
+			return base.DocumentsByPath[p]
+		})
+		tsLayer2(ud, "src/use.ts", []byte(use), allLines([]byte(use)), r)
+		r.close()
+		got := map[string]bool{}
+		for _, o := range ud.Occurrences {
+			if o.Source == scip.OccurrenceSourceOverlay && strings.HasPrefix(o.Symbol, useSym) {
+				got[strings.TrimPrefix(o.Symbol, useSym)+"@"+fmtRange(o)] = true
+			}
+		}
+		return got
+	}
+	const w = "a0:@6 11 12"
+	if got := edges(tsTypedReact); !got[w] {
+		t.Errorf("typed react: missing %s (got %v)", w, got)
+	}
+	if got := edges(nil); got[w] {
+		t.Errorf("untyped react: unexpected %s", w)
 	}
 }

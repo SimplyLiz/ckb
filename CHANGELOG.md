@@ -2,7 +2,9 @@
 
 All notable changes to CKB will be documented in this file.
 
-## [9.4.0] - 2026-11-19
+## [Unreleased]
+
+## [9.4.0] - 2026-11-20
 
 ### Added — the index overlay: fresh answers between reindexes
 
@@ -25,94 +27,109 @@ All notable changes to CKB will be documented in this file.
   identical, callers of the changed symbols found 768 of 797 (67 % with the line remap alone),
   and the analyzeImpact items within depth 2 that only the reference layer brings 956 of 962
   identical, the other 6 the same symbols reached transitively. Building the overlay takes
-  30–90 ms. `CKB_OVERLAY=0` turns it off. The CLI's `ckb impact` items now carry `source` too.
+  20–90 ms (median 39 ms). `CKB_OVERLAY=0` turns it off. The CLI's `ckb impact` items now carry `source` too.
 - **TypeScript has both layers too** (tree-sitter, UTF-16 columns as scip-typescript writes
-  them): declarations under scip-typescript's IDs, except the counter-numbered ones (object
-  literal properties, type-literal members), which keep their old IDs at definition and uses;
-  references through same-file names, imports, re-exports, dynamic `import("…")`, the
-  `tsconfig` paths `ckb index` makes scip-typescript use (the root project and the projects it
-  references, `extends` followed) and workspace packages (`exports`, `types`, `main`),
-  namespace imports, enum and static members and constructors, and members wherever the syntax
-  pins the type: annotations, initializers (`const x = await load()`), call results (also
-  inferred from `return` statements and `??`), `this`, destructured bindings, members inherited
-  through `extends`, callback parameters of array methods and of repository functions, and keys
-  of object literals typed by their context (a variable's annotation, an argument, a
-  constructor's parameter, a return type, an enclosing key, an array element, zustand's
-  `create<T>()`). Uses of a parameter get its symbol. A union's member is every remaining part's
-  declaration after narrowing (discriminants, truthiness, `in`, `typeof`, type guards, `if`,
-  `switch`, an earlier `return`) of an identifier that is not reassigned; property chains,
-  conditions not modeled (also one on a name destructured from it, `const { kind } = v`) and
-  overloads stay unresolved. `Pick`, `Omit`, `Partial`, `Readonly`
-  and intersections have their parts' members; React's `createContext`/`useContext`, `useState`,
-  `useRef`, `useMemo` and `useCallback` pass their types through, and any other package call
-  that passes a repository value counts as unresolved. Generators: a `yield` operand takes `T`
-  of the declared `Generator`/`AsyncGenerator<T, TReturn>`, a `return` takes `TReturn` (an
-  async generator's, like an async function's, defines its own keys), iterating a generator's
-  call gives `T`, and a function declared inside a body types its parameters. The members of
-  `x as { … }` are locals in the index, so they get no edge, but their types are followed:
-  `globalThis as unknown as { prisma: PrismaClient | undefined }` makes `prisma.user.find()` a
-  package's call instead of an unresolved one (nyxcore: 22,510 → 18,219 unresolved sites), and a
-  shorthand parameter in a package's object literal (`where: { tenantId }`) counts, because the
-  index writes `f().(tenantId)` there. zod's schemas are followed: a member of
-  `z.infer<typeof s>` (`z.input`, `z.output`, `s.parse()`) is the key of the `z.object({…})` literal
-  that declares it, through `extend`, `merge`, `pick`, `omit`, `partial`, `optional`, `default`,
-  `refine`, checks such as `.min()`, `z.array`, `z.record`, `z.preprocess`, a helper that returns a
-  schema and `transform(f)` with `f<P>(p: P): P`; anything else (other transforms, unions, `lazy`)
-  counts as unresolved instead of passing as a package's type, and so does `ReturnType<typeof f>`.
-  On Lebenslauf 2,178 references that went unnoticed are now written or counted. A local
-  `export { a, b as c }` points both the name and the alias at what the name stands for (a
-  declaration, an import's target, a namespace import's file), as do the aliases of
-  `import { x as y }` and `export … from`; a name that is a value and a type gets both symbols
-  (moltbot: 268 references that went unnoticed). A reference to a type parameter with a global
-  symbol (`f().[T]`, `C#[E]`) gets it, unless `infer T` or `[T in …]` in the same declaration may
-  shadow it; `[K in Keys]` no longer hides `Keys` (557 references on the eight repositories).
-  `T["k"]` points the string at `T`'s member and has that member's type (nested, through
-  `Partial`; a union of types or keys gets nothing, as in the index). A literal's context
-  `T | undefined` gives it its own keys only under `strictNullChecks`, read from the tsconfig
-  that governs the file; an async function's result does so under any tsconfig. A local member
-  (of a literal in a union) passes its type on to a destructured name and to a nested literal,
-  and the keys of a callback's result that spreads a repository value count. `new Map<K, V>()`
-  and `new Array<T>()` have their element type, so `m.set(k, { … })` points the keys at `V`'s
-  members; `Map.get`, `find`, `at`, `pop` and `shift` give `T | undefined`, which `x!` drops.
-  An object literal is a type: a function's inferred result, a variable's initializer or a
-  returned promise (not wrapped twice) gives `const { a } = f()`, `f().a` and `x.a` the
-  property scip-typescript defines at the literal's key; beside a spread that may hide the key
-  (the spread value has it, or is a package's or an unresolved import's type) it counts as
-  unresolved. On the eight repositories 407 references that went unnoticed are now written or
-  counted. Also followed: `typeof import("m").x`; constructor parameter properties
-  (`constructor(private opts: O)` types `this.opts`); `x instanceof C` and type predicates on a
-  binding that is not reassigned (an unmodeled guard on an open type counts as unresolved);
-  React state setters `set((prev) => …)`, JSX attribute values, `Ctx.Provider value` and
-  `createContext<T>(literal)`; `import("m").Name` in a type. `declare global` blocks are
-  declarations under `global/`, so Next.js' `.next/types/routes.d.ts` gives `RouteContext<"/x">`
-  the route's params; string-named members keep their quotes. `import * as ns` writes the
-  module symbol at the binding and every use, and its value is `m`'s namespace object, as is
-  `import("m")`'s (`ns.f()`, `const { a } = await import("m")`, `.then((m) => m.X)`; `then`,
-  `catch` and `finally` pass the promise's type on). Imports from `"m"` point at a
-  `declare module "m" { … }` block. Mapped types `{ [P in K]: V }` and `T[number]` have their
-  value types, and a type literal in a local variable's annotation has its members' types
-  followed like `as { … }`. On the eight repositories the references that went unnoticed fell
-  from 1,782 to 674, with no new wrong edge.
-  Where scip-typescript's contextual lookup finds no property, Layer 2
-  writes no edge either: a literal whose context is `T | undefined` (an optional or defaulted
-  parameter, a `T | null` return, an async function's return), and the value of a shorthand
-  property in a package's or a global's type. Lower-case JSX tags are intrinsic elements. JSX
-  attributes go through the component's first parameter. A type literal's members on new lines
-  (of a parameter, return type, constraint, alias, variable, interface property or type
-  argument) are defined with the number the base gave the same owner, else a placeholder until
-  the next reindex. Checked on Lebenslauf: 6,138 of 6,138 comparable definitions identical to
-  scip-typescript's at HEAD; over its last 30 small commits 2,573 of 2,573 overlay references
-  identical to a fresh index (counter numbers normalized), 1,141 of 1,166 impact items they bring
-  too, 1,768 of 1,846 changed symbols' references found (96 %), 18 of 30 commits without
-  a rebuild, overlay built in 71 ms (median). Layer 2 run over every line of
-  eight TypeScript repositories against their indexes (files whose source is the indexed one):
-  149,279 edges, every one identical except 41 in two repositories whose files changed after
-  indexing. The grammar's two gaps, `using` as an identifier and `typeof import("…")`, are
-  rewritten to same-length tokens before parsing (v0.23.2, the newest grammar, still rejects
-  both), and so is a bare `&` in JSX text (`<p>Account & preferences</p>`, which the grammar
-  reads as a character reference: 13 nyxcore files that failed to parse and asked for a rebuild
-  on every touch); all 547 Lebenslauf files parse. A file with a syntax error and a renamed TS file stay at
-  the line remap and ask for a rebuild.
+  them):
+  - Declarations and IDs: declarations under scip-typescript's IDs, except the counter-numbered
+    ones (object literal properties, type-literal members), which keep their old IDs at
+    definition and uses. A type literal's members on new lines (of a parameter, return type,
+    constraint, alias, variable, interface property or type argument) are defined with the
+    number the base gave the same owner, else a placeholder until the next reindex. `declare
+    global` blocks are declarations under `global/`, so Next.js' `.next/types/routes.d.ts`
+    gives `RouteContext<"/x">` the route's params; string-named members keep their quotes.
+    Uses of a parameter get its symbol.
+  - References resolve through same-file names, imports, re-exports, dynamic `import("…")`,
+    the `tsconfig` paths `ckb index` makes scip-typescript use (the root project and the projects
+    it references, `extends` followed) and workspace packages (`exports`, `types`, `main`),
+    namespace imports, enum and static members and constructors. A local `export { a, b as c }`
+    points both the name and the alias at what the name stands for (a declaration, an import's
+    target, a namespace import's file), as do the aliases of `import { x as y }` and
+    `export … from`; a name that is a value and a type gets both symbols. `import * as ns`
+    writes the module symbol at the binding and every use, and its value is `m`'s namespace
+    object, as is `import("m")`'s (`ns.f()`, `const { a } = await import("m")`,
+    `.then((m) => m.X)`; `then`, `catch` and `finally` pass the promise's type on). Imports
+    from `"m"` point at a `declare module "m" { … }` block. Also followed: `typeof
+    import("m").x` and `import("m").Name` in a type.
+  - Type parameters and indexed types: a reference to a type parameter with a global symbol
+    (`f().[T]`, `C#[E]`) gets it, unless `infer T` or `[T in …]` in the same declaration may
+    shadow it; `[K in Keys]` no longer hides `Keys`. `T["k"]` points the string at `T`'s
+    member and has that member's type (nested, through `Partial`; a union of types or keys
+    gets nothing, as in the index). Mapped types `{ [P in K]: V }` and `T[number]` have their
+    value types. `Pick`, `Omit`, `Partial`, `Readonly` and intersections have their parts'
+    members.
+  - Members wherever the syntax pins the type: annotations, initializers
+    (`const x = await load()`), call results (also inferred from `return` statements and `??`),
+    `this`, destructured bindings, members inherited through `extends`, callback parameters of
+    array methods and of repository functions, and constructor parameter properties
+    (`constructor(private opts: O)` types `this.opts`). A function declared inside a body
+    types its parameters. A type literal in a local variable's annotation has its members'
+    types followed like `as { … }`.
+  - Keys of object literals typed by their context: a variable's annotation, an argument, a
+    constructor's parameter, a return type, an enclosing key, an array element, zustand's
+    `create<T>()`. An object literal is a type: a function's inferred result, a variable's
+    initializer or a returned promise (not wrapped twice) gives `const { a } = f()`, `f().a`
+    and `x.a` the property scip-typescript defines at the literal's key; beside a spread that
+    may hide the key (the spread value has it, or is a package's or an unresolved import's
+    type) it counts as unresolved. A literal's context `T | undefined` gives it its own keys
+    only under `strictNullChecks`, read from the tsconfig that governs the file; an async
+    function's result does so under any tsconfig. A local member (of a literal in a union)
+    passes its type on to a destructured name and to a nested literal, and the keys of a
+    callback's result that spreads a repository value count. The members of `x as { … }` are
+    locals in the index, so they get no edge, but their types are followed:
+    `globalThis as unknown as { prisma: PrismaClient | undefined }` makes `prisma.user.find()`
+    a package's call instead of an unresolved one, and a shorthand parameter in a package's
+    object literal (`where: { tenantId }`) counts, because the index writes `f().(tenantId)`
+    there.
+  - Unions and narrowing: a union's member is every remaining part's declaration after
+    narrowing (discriminants, truthiness, `in`, `typeof`, type guards, `if`, `switch`, an
+    earlier `return`) of an identifier that is not reassigned; property chains, conditions not
+    modeled (also one on a name destructured from it, `const { kind } = v`) and overloads stay
+    unresolved. `x instanceof C` and type predicates are followed on a binding that is not
+    reassigned (an unmodeled guard on an open type counts as unresolved).
+  - Library models: React's `createContext`/`useContext`, `useState`, `useRef`, `useMemo` and
+    `useCallback` pass their types through, and any other package call that passes a
+    repository value counts as unresolved. React state setters `set((prev) => …)`, JSX
+    attribute values, `Ctx.Provider value` and `createContext<T>(literal)` are followed.
+    `new Map<K, V>()` and `new Array<T>()` have their element type, so `m.set(k, { … })`
+    points the keys at `V`'s members; `Map.get`, `find`, `at`, `pop` and `shift` give
+    `T | undefined`, which `x!` drops. Generators: a `yield` operand takes `T` of the declared
+    `Generator`/`AsyncGenerator<T, TReturn>`, a `return` takes `TReturn` (an async generator's,
+    like an async function's, defines its own keys), iterating a generator's call gives `T`.
+    zod's schemas are followed: a member of `z.infer<typeof s>` (`z.input`, `z.output`,
+    `s.parse()`) is the key of the `z.object({…})` literal that declares it, through `extend`,
+    `merge`, `pick`, `omit`, `partial`, `optional`, `default`, `refine`, checks such as
+    `.min()`, `z.array`, `z.record`, `z.preprocess`, a helper that returns a schema and
+    `transform(f)` with `f<P>(p: P): P`; anything else (other transforms, unions, `lazy`)
+    counts as unresolved instead of passing as a package's type, and so does
+    `ReturnType<typeof f>`.
+  - No edge written: where scip-typescript's contextual lookup finds no property,
+    Layer 2 writes no edge either: a literal whose context is `T | undefined` (an optional or
+    defaulted parameter, a `T | null` return, an async function's return), and the value of a
+    shorthand property in a package's or a global's type. Lower-case JSX tags are intrinsic
+    elements. JSX attributes go through the component's first parameter.
+  - Parsing: the grammar's two gaps, `using` as an identifier and `typeof import("…")`, are
+    rewritten to same-length tokens before parsing (v0.23.2, the newest grammar, still rejects
+    both), and so is a bare `&` in JSX text (`<p>Account & preferences</p>`, which the grammar
+    reads as a character reference: 13 nyxcore files that failed to parse and asked for a
+    rebuild on every touch). A file with a syntax error and a renamed TS file stay at the line
+    remap and ask for a rebuild.
+  - Measurements:
+    - Unresolved sites, nyxcore: 22,510 → 18,219 with the `as { … }` rule.
+    - References that went unnoticed, now written or counted: on Lebenslauf 2,178 (zod's
+      schemas); moltbot: 268 (local `export` and value-and-type names); 549 references on the
+      eight repositories (type parameters, `[K in Keys]`); on the eight repositories 407
+      (object literals as types, `Map`/`Array` element types); on the eight repositories they
+      fell from 1,782 to 674, with no new wrong edge (everything from `typeof import("m").x`
+      on: parameter properties, guards, setters and JSX, `declare global`, namespace imports,
+      `declare module`, mapped types).
+    - Lebenslauf: 6,262 of 6,262 comparable definitions identical to scip-typescript's at HEAD;
+      over its last 30 small commits 2,573 of 2,573 overlay references identical to a fresh
+      index (counter numbers normalized), 1,141 of 1,166 impact items they bring too, 1,768 of
+      1,846 changed symbols' references found (96 %), 18 of 30 commits without a rebuild,
+      overlay built in 71 ms (median). All 551 Lebenslauf files parse.
+    - Layer 2 run over every line of eight TypeScript repositories against their indexes
+      (files whose source is the indexed one): 149,279 edges, every one identical except 41 in
+      two repositories whose files changed after indexing.
 - **`indexFreshness`, `getStatus` and the session-start hook say what the overlay serves**:
   `overlay {files, covered, uncovered, layers, droppedOccurrences, unresolvedSites, rebuild}`,
   and the hint says a result's changed files are served from the overlay instead of asking for a
@@ -121,13 +138,27 @@ All notable changes to CKB will be documented in this file.
   background reindex runs on a commit or checkout, and for uncommitted edits only when the
   overlay reports what it could not do: 25 or more unresolved sites, a declaration line changed
   while unchanged files use it, a file it can only remap (a parse error, or a language without
-  the Go or TypeScript layers), or a new file it lacks. In the replay that left 17 of 30 commits without a
-  rebuild, each with 96 % or more of the changed symbols' references found. `--watch=false`
+  the Go or TypeScript layers), or a new file it lacks. In the Go replay and in the TypeScript one that left 18 of 30
+  commits each without a rebuild, every one with all of the changed symbols' references found. `--watch=false`
   turns it off; an explicit `--watch` keeps building a missing index in a repo without `.ckb`.
 - **An index built from uncommitted changes records them** (`index-meta.json` `worktreeTree`, a
   git tree written through a temporary git index; HEAD, the index and the working tree are not
   touched, untracked non-source files stay out), and the overlay diffs against it, so those
   edits are not applied a second time. `changedSinceIndex` lists against it as well.
+
+### Fixed — TypeScript Layer 2 on a held-out repository
+
+- **TypeScript Layer 2 on a repository it was not built on.** Run over kianu, outside the
+  eight repositories the TS rules were checked on, it wrote 12 wrong edges and 460 where the
+  index has none. React's hooks are now modeled only where react has types (the index shows
+  another file of the package using them, else node_modules has them): in a folder never
+  installed they are `any` to scip-typescript, and so is what they return, an element
+  destructured or indexed out of it, and an object literal spreading that. Under `Record<string, V>` a key spelled like a
+  member of `Object.prototype` (`toString`, `valueOf`, …) has Object's method type, so the
+  literal at it defines its own keys. `at` (ES2022) and `findLast`, `toSorted`, `toReversed`
+  (ES2023) are `any` where the tsconfig's library is older (from `lib`, else `target`, ES5
+  when unset). kianu: 12 → 0 wrong, 460 → 0 edges the index lacks, 58,735 matching
+  unchanged; on the eight repositories every edge is identical before and after.
 
 ### Added — mixed repos, scripts and data
 
@@ -192,7 +223,7 @@ All notable changes to CKB will be documented in this file.
 
 - **The SCIP index loads without `.ckb/scip_derived.gob`.** The cache was slower than
   rebuilding: measured on four repos with 15–50 MB indexes, loading with it took 20–150 ms
-  longer and, on CKB's own index, 64 MB more heap, because the protobuf parse it could not skip
+  longer and up to 64 MB more heap, because the protobuf parse it could not skip
   is most of the load. It was written in the background, so CLI processes that exited first
   left `scip_derived.gob.tmp.*` files of 40–70 MB behind. The cache, and any of those files,
   are deleted from `.ckb/` on the next index load.
@@ -208,7 +239,7 @@ for the tree-sitter parsers, so the glibc floor check stays.
 
 - **Bridges are computed by CKB, and the risk factor counts only real ones.** analyzeImpact
   multiplied the risk by 1 + Cartographer's betweenness/1000, which fired on nearly every
-  central file (96 of 618 files in a Next.js app were "bridges"). A bridge is now an
+  central file (96 files in a Next.js app were "bridges"). A bridge is now an
   articulation point of the file graph that cuts off at least 3 files
   (`internal/query/bridges.go`, ported from Cartographer aebfbd4): files are joined by
   cross-file SCIP references in any language and by TS/Python imports, lazy ones included;
@@ -252,7 +283,7 @@ for the tree-sitter parsers, so the glibc floor check stays.
   count), and the Cartographer entries in `ckb doctor` and `ckb status`.
 - **THIRD-PARTY-LICENSES lists what the binary actually links.** It held the 274 Rust crates
   of the Cartographer library and none of CKB's own Go modules (SQLite, cobra, tree-sitter
-  and its grammars, …). It now holds the license texts of the 43 Go modules linked on any
+  and its grammars, …). It now holds the license texts of the 44 Go modules linked on any
   release target plus the Go runtime, generated by `scripts/third-party-licenses.go`; CI
   fails when a dependency bump leaves it stale. It also ships now: in the release archives,
   the npm package and the Homebrew prefix, where LICENSE §4 says it is. Before, only README
@@ -482,7 +513,7 @@ data, in every build.
   3 commits yet. It is history, not code: a listed file may need nothing. Works for
   every language and for files that aren't code.
 - **`assessChange` is in the default preset,** and in every preset built on core,
-  so core goes from 25 tools to 26. The first 512 bytes of the MCP instructions now
+  so core goes from 25 tools to 26 (27 with `reindex`, below). The first 512 bytes of the MCP instructions now
   end on it.
 
 ### Added — TypeScript types that take their shape from a value
@@ -696,8 +727,8 @@ private, so only aggregates are here.
   transitive ones. On a fixture: 1 consumer before, 6 after; the done check's 4 open
   sites are the 4 lines mypy reports.
 - **A Go interface method's implementations count as its dependents.** analyzeImpact and
-  prepareChange saw only callers, so `Backend.Priority` (implemented 4 times, called
-  nowhere) read 0 dependents and low risk. They are now listed as `implements-interface`,
+  prepareChange saw only callers, so `Backend.Priority` (implemented by two adapters
+  and two test mocks, called nowhere) read 0 dependents and low risk. They are now listed as `implements-interface`,
   found by the done check's own lookup and read as of the indexed commit; test mocks go
   to the related tests. Renaming the method gets the 0.6 floor; deleting it or renaming
   the interface type breaks no implementation and doesn't. For a one-method interface,
@@ -851,7 +882,7 @@ Claude Code mods, with no manifest anywhere.
 ### Added — MCP tool annotations
 
 - **Every MCP tool says whether it changes anything.** `tools/list` now carries
-  `annotations`: `readOnlyHint: true` on the 93 tools that only read the index, git and
+  `annotations`: `readOnlyHint: true` on the 88 tools that only read the index, git and
   the cache, so Claude Code runs them in parallel with other read-only calls instead of
   one after another. The 18 that change something say so, with `destructiveHint`,
   `idempotentHint` and `openWorldHint`: the index and `.ckb` database (`reindex`,
@@ -870,9 +901,9 @@ Claude Code mods, with no manifest anywhere.
   The server instructions tell the agent to call them around every edit; deferred
   behind tool search, they cost a search first.
 - **`doneCheck` and `coChangeCheck` come right after `summary`** in `assessChange` and
-  `analyzeChange`. They sat behind 63k characters of `changedSymbols` and
+  `analyzeChange`. They sat behind ~70k characters of `changedSymbols` and
   `affectedTests`, so a preview of a large result never reached them. Now they start
-  at character 156.
+  within the first 150 characters.
 
 ### Added — MCP 2026-07-28
 
@@ -1097,7 +1128,7 @@ Three changes with known breakage, checked against the compiler: a new parameter
   them struct literals and 6 from one type rename; 14 commits `not_assessed`. After: 0
   open sites, 71 commits `clear`, 9 `not_assessed`, each for a file the Go index can't
   have (Python, TypeScript testdata, a `_windows.go` file). A literal is now read to
-  its end: the 2,799-line `[]Tool{...}` ran past the 300 lines it was followed and
+  its end: the 2,819-line `[]Tool{...}` ran past the 300 lines it was followed and
   counted as open. `scripts/eval-change/sweep.py` repeats the measurement.
 - **A declaration is read from the whole file, not only the hunks.** A constant moved
   out of a long `const (` block whose opening line the hunk doesn't reach was still
@@ -1456,7 +1487,7 @@ things in every language. Checked on this repo and on a Next.js app.
   is set in a literal or read through JSON, which the index does not record as a
   reference; an interface's method specification is a contract, not code. None of
   these are listed any more. Methods are matched against interfaces the way
-  `ckb unwired` does it: `Severity`, `Article` and `ID` of 770 compliance checks
+  `ckb unwired` does it: `Severity`, `Article` and `ID` of every compliance check
   were "dead" because `c.Severity()` references the interface's method.
 - **Numbers.** CKB: 1,723 findings all filed under one wrong path, now 339 with
   files and lines (`AcquireAdaptive`, `GetFileStatus`, `NewFileCursor`: exported,
@@ -1659,7 +1690,7 @@ CKB 1.x gets no web UI. Text first, evidence first. Three things instead:
   tier that names its reasons (no SCIP index, commits behind). This is
   `analyzeChange` grown up, not a third diff analysis: `analyzeChange` stays
   registered as a deprecated alias for two minor versions, and `ckb impact
-  diff` stays as an alias of `ckb changes`. Tool count is now 111.
+  diff` stays as an alias of `ckb changes`.
 - **Activity ledger**: every MCP tool call is recorded in a `tool_calls`
   table in `.ckb/ckb.db` (schema v12) — session (from `CLAUDE_CODE_SESSION_ID`
   when run under Claude Code), consumer (from the MCP `clientInfo` handshake),
@@ -1789,14 +1820,14 @@ npx fallback: they shell out to `ckb`, which users who set up via
 
 ### Changed
 
-- Go toolchain 1.26.6 → 1.26.10 (`go.mod`; CI and release builds read it via
+- Go toolchain 1.26.6 → 1.26.11 (`go.mod`; CI and release builds read it via
   `go-version-file`). Picks up the stdlib fixes in `net/http`, `net/textproto`,
   `crypto/tls` and `crypto/x509` that govulncheck flagged as reachable. The
   glibc floor (2.34, [#243](https://github.com/SimplyLiz/ckb/issues/243)) is
   unaffected: it comes from the pinned `ubuntu-22.04` runners, and
   `scripts/check-glibc-floor.go` still verifies every linux binary.
 - Dependencies with open HIGH advisories bumped: `github.com/klauspost/compress`
-  1.18.2 → 1.18.7, `golang.org/x/net` 0.58.0 → 0.60.0 (both DoS), and
+  1.18.2 → 1.20.2, `golang.org/x/net` 0.58.0 → 0.62.0 (both DoS), and
   `undici` 6.27.0 → 6.29.1 in the PR-analysis GitHub Action (bundle rebuilt).
 
 ### Changed — unresolved dependent names/symbolIds now serialize as `""`, not `"unknown"`
