@@ -1,6 +1,3 @@
 {
-  "_doc": "Response growth a change means to make. A scenario at or under maxBytes (and under its static max in internal/mcp/wide_result_budget_test.go) passes NFR Compare as ACCEPTED; above it fails as before. Entries are moot once the base branch has the growth; drop them then.",
-  "analyzeChange_small": {"maxBytes": 4774, "reason": "consumerFiles lists every consumer file (79008c7, 9.4.0)"},
-  "analyzeChange_medium": {"maxBytes": 45524, "reason": "consumerFiles lists every consumer file (79008c7, 9.4.0)"},
-  "analyzeChange_large": {"maxBytes": 203618, "reason": "consumerFiles lists every consumer file (79008c7, 9.4.0)"}
+  "_doc": "Response growth a change means to make. A scenario at or under maxBytes (and under its static max in internal/mcp/wide_result_budget_test.go) passes NFR Compare as ACCEPTED; above it fails as before. Entries are moot once the base branch has the growth; drop them then."
 }
