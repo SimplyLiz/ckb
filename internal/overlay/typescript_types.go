@@ -1642,6 +1642,8 @@ func (r *tsResolver) arrayElemType(m *tsModule, pat, id *sitter.Node, depth int)
 		return t.of()
 	case t.k == tyUnknown:
 		return tsUnknownTy
+	case t.k == tyOutside:
+		return tsOutsideTy // as a subscript of it: [a] = untypedHook()
 	}
 	return tsNoTy
 }
