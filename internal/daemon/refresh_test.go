@@ -468,6 +468,7 @@ func TestMockLogger_Concurrent(t *testing.T) {
 // =============================================================================
 
 func TestRefreshManager_RunFullReindex_ContextCancelled(t *testing.T) {
+	requireScipGo(t)
 	// Create a Go project so language detection succeeds
 	tmpDir := t.TempDir()
 	goMod := `module testproject
@@ -509,6 +510,7 @@ func main() {}
 }
 
 func TestRefreshManager_RunFullReindex_LockContention(t *testing.T) {
+	requireScipGo(t)
 	// Create a Go project
 	tmpDir := t.TempDir()
 	goMod := `module testproject
@@ -912,5 +914,15 @@ func TestRefreshManager_RootProject_StaysIncremental(t *testing.T) {
 	}
 	if result := rm.RunIncrementalRefresh(context.Background(), root); !result.Success || result.Type != "incremental" {
 		t.Errorf("refresh = %+v, want a successful incremental", result)
+	}
+}
+
+// requireScipGo skips a test that reaches the lock or the cancellation
+// check: both come after planning, which stops at a missing indexer (the
+// release runner has no scip-go, CI installs it).
+func requireScipGo(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("scip-go"); err != nil {
+		t.Skip("scip-go not on PATH: the reindex stops at planning")
 	}
 }
