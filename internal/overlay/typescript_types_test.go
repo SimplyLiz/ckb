@@ -1060,3 +1060,68 @@ export function g(xs: E[]) {
 		t.Errorf("no tsconfig: want both (got %v)", got)
 	}
 }
+
+// TestTSLayer2UntypedReactSpread: with react untyped, useState's state is
+// any, so is an element of it, and so is a literal spreading that element:
+// u.a has no edge at the literal's key (kianu TodoView: { ...todo, urgent }
+// then updatedTodo.urgent, checked against scip-typescript). Typed, the key
+// the spread type lacks is the literal's own. Layer 1 does not write
+// counter-numbered properties, so the test adds a0:.
+func TestTSLayer2UntypedReactSpread(t *testing.T) {
+	const lib = "export interface S { b: string }\n"
+	const use = `import { useState } from "react";
+import { S } from "./lib";
+export function F() {
+  const [xs] = useState<S[]>([]);
+  const x = xs[0];
+  const u = { ...x, a: 1 };
+  return u.a;
+}
+`
+	edges := func(extra map[string]string) map[string]bool {
+		root := t.TempDir()
+		files := map[string]string{"src/lib.ts": lib, "src/use.ts": use}
+		for rel, text := range extra {
+			files[rel] = text
+		}
+		for rel, text := range files {
+			p := filepath.Join(root, rel)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		head := "scip-typescript npm app 1.0.0 "
+		useSym := head + "src/`use.ts`/"
+		seed := &scip.Document{RelativePath: "src/seed.ts", Occurrences: []*scip.Occurrence{{Range: []int32{0, 0, 0}, Symbol: head + "src/`seed.ts`/", SymbolRoles: scip.SymbolRoleDefinition}}}
+		base := scip.PatchIndex(&scip.SCIPIndex{}, map[string]*scip.Document{"src/seed.ts": seed})
+		ld, _ := tsNewDocument(base, "src/lib.ts", []byte(lib))
+		base = scip.PatchIndex(base, map[string]*scip.Document{"src/lib.ts": ld})
+		ud, _ := tsNewDocument(base, "src/use.ts", []byte(use))
+		ud.Occurrences = append(ud.Occurrences, &scip.Occurrence{Range: []int32{5, 20, 21}, Symbol: useSym + "a0:", SymbolRoles: scip.SymbolRoleDefinition})
+		r := newTSResolver(root, func(p string) *scip.Document {
+			if p == "src/use.ts" {
+				return ud
+			}
+			return base.DocumentsByPath[p]
+		})
+		tsLayer2(ud, "src/use.ts", []byte(use), allLines([]byte(use)), r)
+		r.close()
+		got := map[string]bool{}
+		for _, o := range ud.Occurrences {
+			if o.Source == scip.OccurrenceSourceOverlay && strings.HasPrefix(o.Symbol, useSym) {
+				got[strings.TrimPrefix(o.Symbol, useSym)+"@"+fmtRange(o)] = true
+			}
+		}
+		return got
+	}
+	const w = "a0:@6 11 12"
+	if got := edges(tsTypedReact); !got[w] {
+		t.Errorf("typed react: missing %s (got %v)", w, got)
+	}
+	if got := edges(nil); got[w] {
+		t.Errorf("untyped react: unexpected %s", w)
+	}
+}

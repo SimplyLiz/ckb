@@ -7,15 +7,16 @@ All notable changes to CKB will be documented in this file.
 ### Fixed
 
 - **TypeScript Layer 2 on a repository it was not built on.** Run over kianu, outside the
-  eight repositories the TS rules were checked on, it wrote 12 wrong edges and 446 where the
+  eight repositories the TS rules were checked on, it wrote 12 wrong edges and 460 where the
   index has none. React's hooks are now modeled only where react has types (the index shows
   another file of the package using them, else node_modules has them): in a folder never
-  installed they are `any` to scip-typescript. Under `Record<string, V>` a key spelled like a
+  installed they are `any` to scip-typescript, and so is what they return, an element
+  destructured or indexed out of it, and an object literal spreading that. Under `Record<string, V>` a key spelled like a
   member of `Object.prototype` (`toString`, `valueOf`, …) has Object's method type, so the
   literal at it defines its own keys. `at` (ES2022) and `findLast`, `toSorted`, `toReversed`
   (ES2023) are `any` where the tsconfig's library is older (from `lib`, else `target`, ES5
-  when unset). kianu: 12 → 0 wrong, 460 → 3 edges the index lacks, 58,735 matching
-  unchanged; the eight repositories identical before and after.
+  when unset). kianu: 12 → 0 wrong, 460 → 0 edges the index lacks, 58,735 matching
+  unchanged; on the eight repositories every edge is identical before and after.
 
 ## [9.4.0] - 2026-11-19
 

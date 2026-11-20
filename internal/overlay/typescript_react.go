@@ -44,9 +44,14 @@ func tsSetterOf(t tsTy) tsTy {
 func (r *tsResolver) reactHook(m *tsModule, fn *sitter.Node) string {
 	if !r.packageTyped(m.file, "react") {
 		// No types for react where the file sits: its hooks are any to
-		// scip-typescript, and the rule for package calls applies.
+		// scip-typescript (reactCall).
 		return ""
 	}
+	return reactName(m, fn)
+}
+
+// reactName is the react export fn names, typed or not ("" for none).
+func reactName(m *tsModule, fn *sitter.Node) string {
 	switch fn.Type() {
 	case "identifier":
 		name := fn.Content(m.src)
@@ -79,6 +84,12 @@ func (r *tsResolver) reactCall(m *tsModule, call *sitter.Node, depth int) (tsTy,
 	}
 	hook := r.reactHook(m, fn)
 	if hook == "" {
+		if reactName(m, fn) != "" {
+			// react without types: every export is any, and so is what
+			// the call returns (useState<T[]>'s state too). An object
+			// literal spreading it is any as well: no edges at its keys.
+			return tsOutsideTy, true
+		}
 		return tsNoTy, false
 	}
 	var targ *sitter.Node
