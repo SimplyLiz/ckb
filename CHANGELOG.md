@@ -479,8 +479,8 @@ data, in every build.
   changed lists its literals, its patterns without `..` and calls of a macro-generated
   `new`. A retargeted type alias lists the uses of functions whose signature names it.
   A removed `pub use` lists the imports still going through it. Such a site has `via`,
-  saying why it is listed. Written from the Rust misses above and not yet measured: the
-  8/17 is from before it. Since measured on a holdout of 12 axum, helix and ripgrep
+  saying why it is listed. Written from Rust misses found on public repos, then
+  measured on a holdout of 12 axum, helix and ripgrep
   commits: no new file found (8/9 of what the compiler says broke, before and after, all
   from 3 axum commits, so recall is barely tested), and false alarms went up, from 343 to
   358 open uses, with one commit losing `clear`. All 17 sites it added were `-> &mut Foo {`
