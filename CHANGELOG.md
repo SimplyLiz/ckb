@@ -20,6 +20,13 @@ All notable changes to CKB will be documented in this file.
   changes nothing: the line was checked for the original name only. A name the file binds with
   `name as alias` (TypeScript, Python, Rust) counts as spelling it, and the use is classified
   through it (`[call]`).
+- **A Go package's references are no longer all stale.** `ckb refs` and `findReferences` on a
+  package looked for its import path in every line, so each use (`index.LoadMeta(…)`) was
+  `[stale]` with a reindex hint: 64 of 156 on `internal/index`, 0 now. Uses spell the package
+  name (the path's last element, before a `/v2` or `.v3`) or the alias an import gives it, and
+  the lines of an `import (…)` block count as imports instead of being listed as reads. A
+  TypeScript default import (`import Other from "./x"`) binds the symbol under the name the
+  index points at on the import line, so `Other(1)` is a `[call]`, not stale.
 - **The overlay's hint says what is actually missing.** Every answer served from the overlay,
   and the session-start hook, said the declarations and uses on changed lines "come in with a
   reindex", also for Go and TypeScript files whose reference layer had resolved them, which

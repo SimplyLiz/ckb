@@ -137,3 +137,70 @@ func TestReferenceLinesImportAlias(t *testing.T) {
 		t.Errorf("imports = %d, want 1", got.Imports)
 	}
 }
+
+// A Go package is named by its import path, and its uses spell the package name or
+// the alias an import gives it. The import block's lines are imports.
+func TestReferenceLinesGoPackage(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"a.go": "package a\n\nimport (\n\t\"fmt\"\n\t\"example.com/m/internal/index\"\n)\n\nfunc A() { fmt.Println(index.Load()) }\n",
+		"b.go": "package b\n\nimport (\n\tindexmeta \"example.com/m/internal/index\"\n)\n\nvar m = indexmeta.Load()\n",
+	}
+	for path, content := range files {
+		if err := os.WriteFile(filepath.Join(root, path), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	at := func(file string, line, col int) ReferenceInfo {
+		return ReferenceInfo{Location: &LocationInfo{FileId: file, StartLine: line, StartColumn: col}, Kind: "read"}
+	}
+	got := BuildReferenceLines(root, "scip-go gomod example.com/m abc `example.com/m/internal/index`/", &FindReferencesResponse{
+		TotalCount: 4, References: []ReferenceInfo{at("a.go", 5, 2), at("a.go", 8, 25), at("b.go", 4, 2), at("b.go", 7, 9)},
+	})
+	text := got.Text(false)
+	if got.Stale != 0 || got.Imports != 2 || got.Symbol != "index" {
+		t.Errorf("stale=%d imports=%d symbol=%q, text =\n%s", got.Stale, got.Imports, got.Symbol, text)
+	}
+	if !strings.Contains(text, "a.go:8: [read] func A() { fmt.Println(index.Load()) }") || !strings.Contains(text, "b.go:7: [read] var m = indexmeta.Load()") {
+		t.Errorf("uses =\n%s", text)
+	}
+}
+
+func TestGoPackageName(t *testing.T) {
+	for path, want := range map[string]string{
+		"example.com/m/internal/index": "index",
+		"github.com/x/redis/v9":        "redis",
+		"gopkg.in/yaml.v3":             "yaml",
+		"fmt":                          "fmt",
+	} {
+		if got := goPackageName(path); got != want {
+			t.Errorf("goPackageName(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+// A default import binds the symbol under the file's own name: its uses spell that
+// name. The binding is the token the index points at on the import line, so a
+// named import beside it does not become an alias.
+func TestReferenceLinesDefaultImport(t *testing.T) {
+	root := t.TempDir()
+	src := "import Panel, { show } from \"./panel\";\n\nexport const v = <Panel />;\nshow();\n"
+	if err := os.WriteFile(filepath.Join(root, "use.tsx"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	at := func(line, col int) ReferenceInfo {
+		return ReferenceInfo{Location: &LocationInfo{FileId: "use.tsx", StartLine: line, StartColumn: col}, Kind: "read"}
+	}
+	got := BuildReferenceLines(root, "scip-typescript npm m 1.0.0 `panel.tsx`/HyphenationPanel().", &FindReferencesResponse{
+		TotalCount: 2, References: []ReferenceInfo{at(1, 8), at(3, 19)},
+	})
+	if text := got.Text(false); got.Stale != 0 || !strings.Contains(text, "use.tsx:3: [read] export const v = <Panel />;") {
+		t.Errorf("stale=%d, text =\n%s", got.Stale, text)
+	}
+	show := BuildReferenceLines(root, "scip-typescript npm m 1.0.0 `panel.tsx`/show().", &FindReferencesResponse{
+		TotalCount: 2, References: []ReferenceInfo{at(1, 17), at(3, 19)},
+	})
+	if show.Stale != 1 {
+		t.Errorf("Panel is not an alias of show: stale=%d, text =\n%s", show.Stale, show.Text(false))
+	}
+}
