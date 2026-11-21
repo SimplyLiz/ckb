@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
@@ -65,6 +67,7 @@ func BuildReferenceLines(repoRoot, symbolID string, resp *FindReferencesResponse
 	}
 	isType := strings.HasSuffix(symbolID, "#")
 	files := make(map[string][]string)
+	aliases := make(map[string][]string)
 	seen := make(map[string]bool)
 	for _, r := range resp.References {
 		if r.Location == nil {
@@ -80,10 +83,25 @@ func BuildReferenceLines(repoRoot, symbolID string, resp *FindReferencesResponse
 		if !read {
 			if content, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(path))); err == nil {
 				lines = splitFileLines(string(content))
+				aliases[path] = importAliases(string(content), name)
 			}
 			files[path] = lines
 		}
-		use := diff.ReferenceUse(diff.TypeLanguage(path), lines, r.Location.StartLine, r.Location.StartColumn, name, isType, r.Kind == "definition")
+		code := ""
+		if r.Location.StartLine >= 1 && r.Location.StartLine <= len(lines) {
+			code = strings.TrimSpace(lines[r.Location.StartLine-1])
+		}
+		// A use through `import { name as alias }` spells the alias.
+		spelled := name
+		if !strings.Contains(code, name) {
+			for _, a := range aliases[path] {
+				if containsWord(code, a) {
+					spelled = a
+					break
+				}
+			}
+		}
+		use := diff.ReferenceUse(diff.TypeLanguage(path), lines, r.Location.StartLine, r.Location.StartColumn, spelled, isType, r.Kind == "definition")
 		if use == diff.RefImport {
 			out.Imports++
 			continue
@@ -91,12 +109,8 @@ func BuildReferenceLines(repoRoot, symbolID string, resp *FindReferencesResponse
 		if r.IsTest {
 			out.Tests++
 		}
-		code := ""
-		if r.Location.StartLine >= 1 && r.Location.StartLine <= len(lines) {
-			code = strings.TrimSpace(lines[r.Location.StartLine-1])
-		}
 		// The file moved on since the index was built: the line is no longer the use.
-		if lines != nil && !strings.Contains(code, name) && !(r.Kind == "definition" && strings.Contains(code, declared)) {
+		if lines != nil && !strings.Contains(code, spelled) && !(r.Kind == "definition" && strings.Contains(code, declared)) {
 			use = refStale
 			out.Stale++
 		}
@@ -191,4 +205,39 @@ func (e *Engine) FilesOutsideIndex(symbolID string) []string {
 		return index.GetDocument(path) != nil
 	})
 	return outside
+}
+
+// importAliases are the names a file gives name with `name as alias`: an import or
+// export renaming in TypeScript and Python, a `use` in Rust.
+func importAliases(content, name string) []string {
+	if name == "" || !strings.Contains(content, name) {
+		return nil
+	}
+	re := regexp.MustCompile(`(?:^|[^\w$])` + regexp.QuoteMeta(name) + `\s+as\s+([A-Za-z_$][\w$]*)`)
+	var out []string
+	for _, m := range re.FindAllStringSubmatch(content, -1) {
+		if a := m[1]; a != name && !slices.Contains(out, a) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// containsWord reports whether word appears in text as a whole identifier.
+func containsWord(text, word string) bool {
+	isIdent := func(c byte) bool {
+		return c == '_' || c == '$' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+	}
+	for i := 0; ; {
+		j := strings.Index(text[i:], word)
+		if j < 0 {
+			return false
+		}
+		j += i
+		end := j + len(word)
+		if (j == 0 || !isIdent(text[j-1])) && (end == len(text) || !isIdent(text[end])) {
+			return true
+		}
+		i = j + 1
+	}
 }

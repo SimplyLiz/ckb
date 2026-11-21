@@ -110,3 +110,30 @@ func TestReferenceLinesText_OutsideIndex(t *testing.T) {
 		t.Errorf("text:\n%s", got)
 	}
 }
+
+// A use through `import { name as alias }` spells the alias: it is a call, not a
+// stale line that asks for a reindex. A line that names neither still is stale.
+func TestReferenceLinesImportAlias(t *testing.T) {
+	root := t.TempDir()
+	src := "import { wordAt as at } from \"@/lib/marks\";\n\nconst w = at(text, 0);\nconst data = load();\n"
+	if err := os.WriteFile(filepath.Join(root, "probe.ts"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	at := func(line int) ReferenceInfo {
+		return ReferenceInfo{Location: &LocationInfo{FileId: "probe.ts", StartLine: line}, Kind: "read"}
+	}
+	got := BuildReferenceLines(root, "scip-typescript npm m 1.0.0 lib/`marks.ts`/wordAt().", &FindReferencesResponse{
+		TotalCount: 3, References: []ReferenceInfo{at(1), at(3), at(4)},
+	})
+	text := got.Text(false)
+	if !strings.Contains(text, "probe.ts:3: [call] const w = at(text, 0);") {
+		t.Errorf("aliased call =\n%s", text)
+	}
+	// "data" contains "at" but not as a word: that line is still stale.
+	if got.Stale != 1 || !strings.Contains(text, "probe.ts:4: [stale]") {
+		t.Errorf("stale = %d, text =\n%s", got.Stale, text)
+	}
+	if got.Imports != 1 {
+		t.Errorf("imports = %d, want 1", got.Imports)
+	}
+}

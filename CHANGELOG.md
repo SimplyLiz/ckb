@@ -15,6 +15,11 @@ All notable changes to CKB will be documented in this file.
   where its kind said "call", which SCIP never does, so every function had "0 callers" next to
   its references. Each line is now classified the way `ckb refs` does it (`majorMinor`: 0 → 2,
   `CountCommitsBetween`: 0 → 3); the golden fixtures had the zeros written down.
+- **A use through an import alias is not stale.** `ckb refs` and `findReferences` marked
+  `at(text, 0)` after `import { wordAt as at }` as `[stale]` and asked for `ckb index`, which
+  changes nothing: the line was checked for the original name only. A name the file binds with
+  `name as alias` (TypeScript, Python, Rust) counts as spelling it, and the use is classified
+  through it (`[call]`).
 
 ## [9.4.0] - 2026-11-20
 
