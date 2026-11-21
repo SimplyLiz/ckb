@@ -11,6 +11,10 @@ All notable changes to CKB will be documented in this file.
   results may be stale" and lowered the confidence by 0.1, though those edits are the diff it
   reads against the index on purpose. Only an index behind HEAD counts now; one at a commit
   outside HEAD's history says so instead of "0 commit(s) behind".
+- **`explainSymbol` and `understand` count callers.** They took a reference for a call only
+  where its kind said "call", which SCIP never does, so every function had "0 callers" next to
+  its references. Each line is now classified the way `ckb refs` does it (`majorMinor`: 0 → 2,
+  `CountCommitsBetween`: 0 → 3); the golden fixtures had the zeros written down.
 
 ## [9.4.0] - 2026-11-20
 

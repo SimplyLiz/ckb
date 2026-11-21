@@ -8,13 +8,13 @@
     },
     "usage": {
       "calleeCount": 1,
-      "callerCount": 0,
+      "callerCount": 3,
       "referenceCount": 4
     }
   },
   "summary": {
     "identity": "function FormatOutput in module internal",
-    "tldr": "function FormatOutput in module internal – 0 callers, 4 references across 3 modules",
-    "usage": "0 callers, 4 references across 3 modules"
+    "tldr": "function FormatOutput in module internal – 3 callers, 4 references across 3 modules",
+    "usage": "3 callers, 4 references across 3 modules"
   }
 }

@@ -8,13 +8,13 @@
     },
     "usage": {
       "calleeCount": 1,
-      "callerCount": 0,
+      "callerCount": 2,
       "referenceCount": 4
     }
   },
   "summary": {
     "identity": "function newHandler in module src/pkg",
-    "tldr": "function newHandler in module src/pkg – 0 callers, 4 references across 1 modules",
-    "usage": "0 callers, 4 references across 1 modules"
+    "tldr": "function newHandler in module src/pkg – 2 callers, 4 references across 1 modules",
+    "usage": "2 callers, 4 references across 1 modules"
   }
 }
