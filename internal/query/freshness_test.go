@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	indexmeta "github.com/SimplyLiz/CodeMCP/internal/index"
+	"github.com/SimplyLiz/CodeMCP/internal/overlay"
 )
 
 func gitT(t *testing.T, dir string, args ...string) string {
@@ -149,5 +150,34 @@ func TestChangedSetSinceSnapshot(t *testing.T) {
 	// A vanished snapshot falls back to the commit.
 	if n := len(loadChangedSet(dir, a, "0000000000000000000000000000000000000000").files); n != 3 {
 		t.Fatalf("missing snapshot: %d files, want 3", n)
+	}
+}
+
+// The overlay hint says what is missing for the files it served: with the
+// reference layer only the unresolved sites, at the line remap everything on the
+// changed lines. A file listed twice in a result is one file.
+func TestApplyOverlayHint_ByLayer(t *testing.T) {
+	hint := func(covered map[string]overlay.FileInfo, files ...string) string {
+		f := &IndexFreshness{AffectsResult: true, ChangedSinceIndex: []string{"a.go", "b.go", "c.py", "d.go"}, Overlay: &OverlayFreshness{Covered: len(covered)}}
+		applyOverlayHint("/r", f, covered, files)
+		return f.Hint
+	}
+	full := overlay.FileInfo{Path: "a.go", State: overlay.StateRemapped, Layers: []int{0, 1, 2}}
+	if got := hint(map[string]overlay.FileInfo{"a.go": full}, "a.go", "a.go"); !strings.HasPrefix(got, "1 result file(s)") ||
+		!strings.HasSuffix(got, "declarations and uses on the changed lines are read from the source") {
+		t.Errorf("layers 0-2: %q", got)
+	}
+	open := full
+	open.Unresolved = 3
+	if got := hint(map[string]overlay.FileInfo{"a.go": open}, "a.go"); !strings.Contains(got, "except 3 use(s) it could not resolve") {
+		t.Errorf("unresolved sites: %q", got)
+	}
+	py := overlay.FileInfo{Path: "c.py", State: overlay.StateRemapped, Layers: []int{0}}
+	if got := hint(map[string]overlay.FileInfo{"a.go": full, "c.py": py}, "a.go", "c.py"); !strings.Contains(got, "in 1 of them (e.g. c.py) declarations and uses on the changed lines come in with a reindex") {
+		t.Errorf("layer 0 only: %q", got)
+	}
+	if got := hint(map[string]overlay.FileInfo{"a.go": full}, "a.go", "d.go"); !strings.Contains(got, "1 served from the overlay (positions current; declarations") ||
+		!strings.Contains(got, "1 not covered") {
+		t.Errorf("one not covered: %q", got)
 	}
 }

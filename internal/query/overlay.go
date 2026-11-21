@@ -151,18 +151,19 @@ func (e *Engine) OverlayFreshness() *OverlayFreshness {
 	return f
 }
 
-// coveredByOverlay returns the paths the current overlay serves.
-func (e *Engine) coveredByOverlay() map[string]bool {
+// coveredByOverlay returns what the current overlay did for each path it
+// serves, under the old path of a rename too.
+func (e *Engine) coveredByOverlay() map[string]overlay.FileInfo {
 	info := e.OverlayInfo()
 	if info == nil {
 		return nil
 	}
-	out := map[string]bool{}
+	out := map[string]overlay.FileInfo{}
 	for _, fi := range info.Files {
 		if fi.State != overlay.StateUncovered {
-			out[fi.Path] = true
+			out[fi.Path] = fi
 			if fi.OldPath != "" {
-				out[fi.OldPath] = true
+				out[fi.OldPath] = fi
 			}
 		}
 	}

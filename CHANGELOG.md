@@ -20,6 +20,12 @@ All notable changes to CKB will be documented in this file.
   changes nothing: the line was checked for the original name only. A name the file binds with
   `name as alias` (TypeScript, Python, Rust) counts as spelling it, and the use is classified
   through it (`[call]`).
+- **The overlay's hint says what is actually missing.** Every answer served from the overlay,
+  and the session-start hook, said the declarations and uses on changed lines "come in with a
+  reindex", also for Go and TypeScript files whose reference layer had resolved them, which
+  told agents to distrust a current answer. The hint now depends on each served file's layers:
+  read from the source, read except N unresolved uses, or (a file left at the line remap)
+  missing until a reindex. A file listed twice in a result is counted once.
 
 ## [9.4.0] - 2026-11-20
 
