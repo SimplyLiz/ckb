@@ -66,12 +66,12 @@ jobs:
       total_findings: ${{ steps.summary.outputs.total }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # ==================== Go Setup (if needed) ====================
       - name: Set up Go
         if: inputs.has_go && (inputs.scan_govulncheck || inputs.scan_trivy)
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -79,7 +79,7 @@ jobs:
       # ==================== Trivy ====================
       - name: Setup Trivy
         if: inputs.scan_trivy
-        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.2.3
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
         with:
           cache: true
           version: latest
