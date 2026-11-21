@@ -4,6 +4,14 @@ All notable changes to CKB will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed — found in the 9.4.0 test drive
+
+- **`assessChange` and `ckb changes` no longer call an index at HEAD stale for the working
+  tree's edits.** Every run over uncommitted changes said "index is 0 commit(s) behind —
+  results may be stale" and lowered the confidence by 0.1, though those edits are the diff it
+  reads against the index on purpose. Only an index behind HEAD counts now; one at a commit
+  outside HEAD's history says so instead of "0 commit(s) behind".
+
 ## [9.4.0] - 2026-11-20
 
 ### Added — the index overlay: fresh answers between reindexes

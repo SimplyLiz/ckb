@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	"github.com/SimplyLiz/CodeMCP/internal/impact"
+	"github.com/SimplyLiz/CodeMCP/internal/repostate"
 )
 
 // --- Decisions dedup ---
@@ -218,6 +220,36 @@ func TestBuildChangeConfidence_StaleIndexReason(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected a staleness reason mentioning commits behind, got %+v", conf.Reasons)
+	}
+}
+
+// The uncommitted changes are the change set itself: an index at HEAD is not
+// stale for it, and nothing says "0 commit(s) behind".
+func TestChangeSetStaleness_DirtyTreeAtHeadIsFresh(t *testing.T) {
+	f := scip.ComputeIndexFreshness("abc", &repostate.RepoState{HeadCommit: "abc", Dirty: true}, t.TempDir())
+	if !f.IsStale() {
+		t.Fatal("precondition: a dirty tree makes the index stale for queries")
+	}
+	s := changeSetStaleness(f, "abc", "abc")
+	if s.IsStale || s.StalenessMessage != "" {
+		t.Errorf("change set over a dirty tree at HEAD: got stale=%v message=%q", s.IsStale, s.StalenessMessage)
+	}
+	conf := (&Engine{}).buildChangeConfidence(CompletenessInfo{Score: 0.9, Reason: "scip-available"}, s, 0, 0)
+	for _, r := range conf.Reasons {
+		if strings.Contains(r, "behind") {
+			t.Errorf("unexpected staleness reason %q", r)
+		}
+	}
+}
+
+func TestChangeSetStaleness_BehindHeadStaysStale(t *testing.T) {
+	f := &scip.IndexFreshness{StaleAgainstHead: true, StaleAgainstRepoState: true, CommitsBehindHead: 2}
+	s := changeSetStaleness(f, "old", "new")
+	if !s.IsStale || s.CommitsBehind != 2 {
+		t.Fatalf("got %+v", s)
+	}
+	if strings.Contains(s.StalenessMessage, "uncommitted") || !strings.Contains(s.StalenessMessage, "2 commit(s) behind") {
+		t.Errorf("message %q", s.StalenessMessage)
 	}
 }
 

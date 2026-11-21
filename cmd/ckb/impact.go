@@ -1063,8 +1063,12 @@ func formatImpactMarkdown(resp *ChangeSetResponseCLI) string {
 
 	// Index staleness warning
 	if resp.IndexStaleness != nil && resp.IndexStaleness.IsStale {
-		b.WriteString(fmt.Sprintf("> ⚠️ **Index is %d commit(s) behind HEAD.** Results may be incomplete.\n\n",
-			resp.IndexStaleness.CommitsBehind))
+		if resp.IndexStaleness.CommitsBehind > 0 {
+			b.WriteString(fmt.Sprintf("> ⚠️ **Index is %d commit(s) behind HEAD.** Results may be incomplete.\n\n",
+				resp.IndexStaleness.CommitsBehind))
+		} else {
+			b.WriteString("> ⚠️ **Index is not at HEAD's history.** Results may be incomplete.\n\n")
+		}
 	}
 
 	// Footer
