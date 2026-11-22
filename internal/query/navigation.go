@@ -14,6 +14,7 @@ import (
 	"github.com/SimplyLiz/CodeMCP/internal/backends"
 	"github.com/SimplyLiz/CodeMCP/internal/backends/git"
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
+	"github.com/SimplyLiz/CodeMCP/internal/diff"
 	"github.com/SimplyLiz/CodeMCP/internal/output"
 	"github.com/SimplyLiz/CodeMCP/internal/pathclass"
 	"github.com/SimplyLiz/CodeMCP/internal/version"
@@ -282,26 +283,38 @@ func (e *Engine) ExplainSymbol(ctx context.Context, opts ExplainSymbolOptions) (
 	// Collect reference data for usage/callers
 	refResp, err := e.FindReferences(ctx, FindReferencesOptions{SymbolId: opts.SymbolId, IncludeTests: true, Limit: 200})
 	if err == nil && refResp != nil {
-		callers := make([]ExplainCaller, 0, len(refResp.References))
 		moduleSet := map[string]struct{}{}
 		hasTests := false
 
 		for _, ref := range refResp.References {
-			moduleName := topLevelModule(ref.Location.FileId)
-			moduleSet[moduleName] = struct{}{}
-			isCall := strings.Contains(strings.ToLower(ref.Kind), "call")
-			if isCall {
-				callers = append(callers, ExplainCaller{
-					FileId:  ref.Location.FileId,
-					Line:    ref.Location.StartLine,
-					Kind:    ref.Kind,
-					IsTest:  ref.IsTest,
-					Context: ref.Context,
-				})
+			if ref.Location == nil {
+				continue
 			}
+			moduleSet[topLevelModule(ref.Location.FileId)] = struct{}{}
 			if ref.IsTest {
 				hasTests = true
 			}
+		}
+
+		// SCIP has no call role, so every call arrives as a read: what the line
+		// does with the symbol says whether it is a call, as in `ckb refs`.
+		symbolId := opts.SymbolId
+		if symbolResp.Symbol != nil && symbolResp.Symbol.StableId != "" {
+			symbolId = symbolResp.Symbol.StableId
+		}
+		lines := BuildReferenceLines(e.repoRoot, symbolId, refResp)
+		callers := make([]ExplainCaller, 0, len(lines.Lines))
+		for _, l := range lines.Lines {
+			if l.Use != diff.RefCall {
+				continue
+			}
+			callers = append(callers, ExplainCaller{
+				FileId:  l.File,
+				Line:    l.Line,
+				Kind:    l.Use,
+				IsTest:  l.IsTest,
+				Context: l.Code,
+			})
 		}
 
 		facts.Callers = callers

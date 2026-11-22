@@ -58,11 +58,7 @@ func ComputeIndexFreshness(indexedCommit string, repoState *repostate.RepoState,
 			freshness.CommitsBehindHead = commitsBehind
 		}
 
-		if freshness.CommitsBehindHead > 0 {
-			freshness.Warning = fmt.Sprintf("SCIP index is %d commit(s) behind HEAD. Consider regenerating the index.", freshness.CommitsBehindHead)
-		} else {
-			freshness.Warning = "SCIP index is not at HEAD commit. Consider regenerating the index."
-		}
+		freshness.Warning = freshness.HeadWarning()
 	}
 
 	// Check if there are uncommitted changes
@@ -81,6 +77,20 @@ func ComputeIndexFreshness(indexedCommit string, repoState *repostate.RepoState,
 // IsStale returns true if the index is considered stale
 func (f *IndexFreshness) IsStale() bool {
 	return f.StaleAgainstHead || f.StaleAgainstRepoState
+}
+
+// HeadWarning is the warning about the index's commit alone, without the
+// uncommitted changes: for a caller that reads the working tree's diff against
+// the index on purpose, where those changes are the subject, not staleness.
+// Empty while the index is at HEAD.
+func (f *IndexFreshness) HeadWarning() string {
+	if !f.StaleAgainstHead {
+		return ""
+	}
+	if f.CommitsBehindHead > 0 {
+		return fmt.Sprintf("SCIP index is %d commit(s) behind HEAD. Consider regenerating the index.", f.CommitsBehindHead)
+	}
+	return "SCIP index is not at HEAD commit. Consider regenerating the index."
 }
 
 // IsSignificantlyStale returns true if the index is significantly out of date

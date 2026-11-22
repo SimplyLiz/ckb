@@ -36,6 +36,8 @@ Risk now catches every breaking commit, but 7 of the 12 non-breaking ones are `h
 | Found, all languages | 2/7 | 7/7 | 6/7 |
 | Predicted test files, for that | 6 | 15 | 10 |
 
+The done check is further down, under "Done check: results".
+
 How far to trust it:
 
 - **All numbers are small, and precision is pooled over few files.** At most 2 non-test
@@ -139,6 +141,9 @@ Written and committed before the first run, on the same sample with the same com
   come, `not_assessed` included.
 
 ### Done check: results, Go, this repo only
+
+The 8 commits of this repo. The private TS and Rust repos weren't rerun, as their samples
+aren't in this checkout.
 
 | Only the defining file applied, against the compiler | Recall | Precision |
 |---|---|---|
@@ -341,6 +346,13 @@ The TS and Rust rows are from two private repos, as aggregates only.
 
 ## Rust gaps: rules fixed before the fix
 
+An earlier run on commits from public Rust repos (ruff, cargo; not kept in this repo) found
+the Rust misses, so it can't also judge the fix. Written and committed before the fix,
+along with the sample:
+
+- **Holdout:** `samples/rust-holdout/`, 4 commits each from axum, helix and ripgrep, none of
+  them from that run, picked by `select` with the seed and pinned heads as committed. Rust only,
+  because the fix is Rust only.
 - **Both binaries, same commits:** db89a5b (before) and the fixed one. Neither is run on it
   until the fix is finished, so it isn't tuned against: whatever it shows is reported, and a
   further fix needs another sample.
@@ -349,7 +361,9 @@ The TS and Rust rows are from two private repos, as aggregates only.
 
 ### Rust gaps: what the fix has shown so far
 
-The first-run truth's 9 missed files come from three commits, read from their patches and
+This part was written before the holdout ran; its result is in the next section.
+
+The 9 files the earlier run missed come from three commits, read from their patches and
 indexes:
 
 | Commit | Missed | Why |
@@ -365,6 +379,9 @@ On those three, using the indexes built at the parents, with `ckb changes` only:
 | ruff-21445 | 4 of 4 | 19 / 19 |
 | ruff-19884 | 4 of 4 | 5 / 7 |
 | cargo-2bab011 | 1 of 1 | 2 / 2 |
+
+This is the sample the fix was written from, so it only says the fix does what it was written
+to do.
 
 ### Rust gaps: holdout results
 

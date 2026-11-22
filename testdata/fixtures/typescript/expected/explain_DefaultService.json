@@ -8,13 +8,13 @@
     },
     "usage": {
       "calleeCount": 10,
-      "callerCount": 0,
+      "callerCount": 1,
       "referenceCount": 3
     }
   },
   "summary": {
     "identity": "class DefaultService in module src/pkg",
-    "tldr": "class DefaultService in module src/pkg – 0 callers, 3 references across 1 modules",
-    "usage": "0 callers, 3 references across 1 modules"
+    "tldr": "class DefaultService in module src/pkg – 1 callers, 3 references across 1 modules",
+    "usage": "1 callers, 3 references across 1 modules"
   }
 }

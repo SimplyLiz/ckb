@@ -1509,6 +1509,19 @@ type IndexStalenessInfo struct {
 	StalenessMessage string `json:"stalenessMessage,omitempty"`
 }
 
+// changeSetStaleness is the index's staleness for a change set. Only the commit
+// counts: the uncommitted changes are the diff AnalyzeChangeSet reads against the
+// base index (PinBase), the subject of the answer, not a gap in it.
+func changeSetStaleness(f *scip.IndexFreshness, indexedCommit, head string) *IndexStalenessInfo {
+	return &IndexStalenessInfo{
+		IsStale:          f.StaleAgainstHead,
+		CommitsBehind:    f.CommitsBehindHead,
+		IndexedCommit:    indexedCommit,
+		HeadCommit:       head,
+		StalenessMessage: f.HeadWarning(),
+	}
+}
+
 // AnalyzeChangeSet analyzes the impact of a set of code changes (from git diff).
 func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOptions) (*AnalyzeChangeSetResponse, error) {
 	// The diff is read against the index it was taken from: the base, never
@@ -1537,13 +1550,7 @@ func (e *Engine) AnalyzeChangeSet(ctx context.Context, opts AnalyzeChangeSetOpti
 	if e.scipAdapter != nil && e.scipAdapter.IsAvailable() {
 		indexInfo := e.scipAdapter.GetIndexInfo()
 		if indexInfo != nil && indexInfo.Freshness != nil {
-			indexStaleness = &IndexStalenessInfo{
-				IsStale:          indexInfo.Freshness.IsStale(),
-				CommitsBehind:    indexInfo.Freshness.CommitsBehindHead,
-				IndexedCommit:    indexInfo.IndexedCommit,
-				HeadCommit:       repoState.HeadCommit,
-				StalenessMessage: indexInfo.Freshness.Warning,
-			}
+			indexStaleness = changeSetStaleness(indexInfo.Freshness, indexInfo.IndexedCommit, repoState.HeadCommit)
 			if opts.Strict && indexStaleness.IsStale {
 				return nil, errors.NewCkbError(
 					errors.IndexStale,
@@ -2210,7 +2217,11 @@ func (e *Engine) buildChangeConfidence(
 
 	if staleness != nil && staleness.IsStale {
 		score -= 0.1
-		reasons = append(reasons, fmt.Sprintf("index is %d commit(s) behind", staleness.CommitsBehind))
+		if staleness.CommitsBehind > 0 {
+			reasons = append(reasons, fmt.Sprintf("index is %d commit(s) behind", staleness.CommitsBehind))
+		} else {
+			reasons = append(reasons, "index is not at HEAD's history")
+		}
 		factors = append(factors, ChangeConfidenceFactor{Factor: "index_freshness", Status: "stale", Impact: -0.1})
 	} else if hasSCIP {
 		factors = append(factors, ChangeConfidenceFactor{Factor: "index_freshness", Status: "fresh", Impact: 0.0})

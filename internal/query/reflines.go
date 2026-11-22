@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
@@ -63,8 +65,42 @@ func BuildReferenceLines(repoRoot, symbolID string, resp *FindReferencesResponse
 	if class := scip.ConstructorType(symbolID); class != "" {
 		name, declared = class, "constructor"
 	}
+	// A Go package is named by its import path; its uses spell the package name.
+	importPath := ""
+	if strings.HasSuffix(symbolID, "/") && strings.Contains(name, "/") {
+		importPath, name = name, goPackageName(name)
+		out.Symbol, declared = name, name
+	}
 	isType := strings.HasSuffix(symbolID, "#")
 	files := make(map[string][]string)
+	aliases := make(map[string][]string)
+	read := func(path string) []string {
+		lines, ok := files[path]
+		if !ok {
+			if content, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(path))); err == nil {
+				lines = splitFileLines(string(content))
+				aliases[path] = importAliases(string(content), name, importPath)
+			}
+			files[path] = lines
+		}
+		return lines
+	}
+	// The binding an import line gives the symbol, where it is another name:
+	// `import Foo from`, `import { a as b }`, `from m import a as b`. The index
+	// points at it, so the token there is the name the file's uses spell.
+	for _, r := range resp.References {
+		if r.Location == nil || r.Kind == "definition" {
+			continue
+		}
+		path := r.Location.FileId
+		lines := read(path)
+		if diff.ReferenceUse(diff.TypeLanguage(path), lines, r.Location.StartLine, r.Location.StartColumn, name, isType, false) != diff.RefImport {
+			continue
+		}
+		if b := identifierAt(lines, r.Location.StartLine, r.Location.StartColumn); b != "" && b != name && !slices.Contains(aliases[path], b) {
+			aliases[path] = append(aliases[path], b)
+		}
+	}
 	seen := make(map[string]bool)
 	for _, r := range resp.References {
 		if r.Location == nil {
@@ -76,14 +112,22 @@ func BuildReferenceLines(repoRoot, symbolID string, resp *FindReferencesResponse
 			continue // Twice on one line is one line to read
 		}
 		seen[key] = true
-		lines, read := files[path]
-		if !read {
-			if content, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(path))); err == nil {
-				lines = splitFileLines(string(content))
-			}
-			files[path] = lines
+		lines := read(path)
+		code := ""
+		if r.Location.StartLine >= 1 && r.Location.StartLine <= len(lines) {
+			code = strings.TrimSpace(lines[r.Location.StartLine-1])
 		}
-		use := diff.ReferenceUse(diff.TypeLanguage(path), lines, r.Location.StartLine, r.Location.StartColumn, name, isType, r.Kind == "definition")
+		// A use through `import { name as alias }` spells the alias.
+		spelled := name
+		if !strings.Contains(code, name) {
+			for _, a := range aliases[path] {
+				if containsWord(code, a) {
+					spelled = a
+					break
+				}
+			}
+		}
+		use := diff.ReferenceUse(diff.TypeLanguage(path), lines, r.Location.StartLine, r.Location.StartColumn, spelled, isType, r.Kind == "definition")
 		if use == diff.RefImport {
 			out.Imports++
 			continue
@@ -91,12 +135,8 @@ func BuildReferenceLines(repoRoot, symbolID string, resp *FindReferencesResponse
 		if r.IsTest {
 			out.Tests++
 		}
-		code := ""
-		if r.Location.StartLine >= 1 && r.Location.StartLine <= len(lines) {
-			code = strings.TrimSpace(lines[r.Location.StartLine-1])
-		}
 		// The file moved on since the index was built: the line is no longer the use.
-		if lines != nil && !strings.Contains(code, name) && !(r.Kind == "definition" && strings.Contains(code, declared)) {
+		if lines != nil && !strings.Contains(code, spelled) && !(r.Kind == "definition" && strings.Contains(code, declared)) {
 			use = refStale
 			out.Stale++
 		}
@@ -191,4 +231,81 @@ func (e *Engine) FilesOutsideIndex(symbolID string) []string {
 		return index.GetDocument(path) != nil
 	})
 	return outside
+}
+
+// importAliases are the names a file gives name with `name as alias` (an import or
+// export renaming in TypeScript and Python, a `use` in Rust) and, for a Go package,
+// with `alias "importPath"`.
+func importAliases(content, name, importPath string) []string {
+	var out []string
+	add := func(re *regexp.Regexp) {
+		for _, m := range re.FindAllStringSubmatch(content, -1) {
+			if a := m[1]; a != name && a != "_" && !slices.Contains(out, a) {
+				out = append(out, a)
+			}
+		}
+	}
+	if name != "" && strings.Contains(content, name) {
+		add(regexp.MustCompile(`(?:^|[^\w$])` + regexp.QuoteMeta(name) + `\s+as\s+([A-Za-z_$][\w$]*)`))
+	}
+	if importPath != "" && strings.Contains(content, importPath) {
+		add(regexp.MustCompile(`(?m)(?:^|[\s(])([A-Za-z_]\w*)\s+"` + regexp.QuoteMeta(importPath) + `"`))
+	}
+	return out
+}
+
+// goPackageName is the name a Go import path's package is used by without an
+// alias: its last element, the one before a major version (`…/v2`), and
+// gopkg.in's `yaml.v3` without the version.
+func goPackageName(importPath string) string {
+	parts := strings.Split(strings.TrimSuffix(importPath, "/"), "/")
+	last := parts[len(parts)-1]
+	if len(parts) > 1 && goMajorVersion.MatchString(last) {
+		last = parts[len(parts)-2]
+	}
+	if i := strings.Index(last, ".v"); i > 0 && goMajorVersion.MatchString(last[i+1:]) {
+		last = last[:i]
+	}
+	return last
+}
+
+var goMajorVersion = regexp.MustCompile(`^v[0-9]+$`)
+
+// identifierAt is the identifier at a 1-based line and column, or "".
+func identifierAt(lines []string, line, column int) string {
+	if line < 1 || line > len(lines) || column < 1 {
+		return ""
+	}
+	text := lines[line-1]
+	isIdent := func(c byte) bool {
+		return c == '_' || c == '$' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+	}
+	start := column - 1
+	if start >= len(text) || !isIdent(text[start]) {
+		return ""
+	}
+	end := start
+	for end < len(text) && isIdent(text[end]) {
+		end++
+	}
+	return text[start:end]
+}
+
+// containsWord reports whether word appears in text as a whole identifier.
+func containsWord(text, word string) bool {
+	isIdent := func(c byte) bool {
+		return c == '_' || c == '$' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+	}
+	for i := 0; ; {
+		j := strings.Index(text[i:], word)
+		if j < 0 {
+			return false
+		}
+		j += i
+		end := j + len(word)
+		if (j == 0 || !isIdent(text[j-1])) && (end == len(text) || !isIdent(text[end])) {
+			return true
+		}
+		i = j + 1
+	}
 }

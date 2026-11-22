@@ -1520,7 +1520,7 @@ func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 			resp.TestGaps.UntestedConsumers))
 	}
 	if resp.IndexStaleness != nil && resp.IndexStaleness.IsStale {
-		issues = append(issues, fmt.Sprintf("index is %d commit(s) behind — results may be stale", resp.IndexStaleness.CommitsBehind))
+		issues = append(issues, staleIndexIssue(resp.IndexStaleness.CommitsBehind))
 	}
 	if len(issues) > 0 {
 		b.WriteString("Potential issues\n")
@@ -1546,4 +1546,13 @@ func formatChangesHuman(resp *ChangeSetResponseCLI, verbose bool) string {
 	}
 
 	return b.String()
+}
+
+// staleIndexIssue names how far the index is behind HEAD, or that it was built
+// at a commit HEAD does not descend from, where there is no count to give.
+func staleIndexIssue(behind int) string {
+	if behind > 0 {
+		return fmt.Sprintf("index is %d commit(s) behind — results may be stale", behind)
+	}
+	return "index is not at HEAD's history — results may be stale"
 }

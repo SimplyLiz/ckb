@@ -363,7 +363,7 @@ func importStatement(lines []string, line int) (string, bool) {
 	if hasImportPrefix(text) {
 		return text, true
 	}
-	if entry := importListEntry(text); !bareListEntry.MatchString(entry) && !isUseTreeLine(entry) {
+	if entry := importListEntry(text); !bareListEntry.MatchString(entry) && !isUseTreeLine(entry) && !goImportSpec.MatchString(entry) {
 		return "", false
 	}
 	for current := line - 1; current >= 1 && current >= line-maxCallSpan; current-- {
@@ -375,12 +375,16 @@ func importStatement(lines []string, line int) (string, bool) {
 				strings.Count(previous, "(") > strings.Count(previous, ")")
 			return previous, open
 		}
-		if previous != "" && !isUseTreeLine(importListEntry(previous)) {
+		if previous != "" && !isUseTreeLine(importListEntry(previous)) && !goImportSpec.MatchString(importListEntry(previous)) {
 			return "", false
 		}
 	}
 	return "", false
 }
+
+// goImportSpec is a line of a Go `import (...)` block: a quoted path, after an
+// alias, `_` or `.` where there is one.
+var goImportSpec = regexp.MustCompile(`^(?:[A-Za-z_]\w*\s+|\.\s+)?"[^"\s]+"$`)
 
 // importListEntry is a line of an import list without what may follow its names: a
 // trailing comment (`# noqa: E402`, `// why`) and the `)` closing a Python list.

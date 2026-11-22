@@ -164,7 +164,8 @@ func indexFreshnessLine(root, ckbDir string, meta *index.IndexMeta) string {
 	if f.HasUncommitted && f.CommitsBehind == 0 {
 		if overlayEnabled() {
 			return fmt.Sprintf("CKB: the SCIP index matches commit %s; uncommitted changes are served from an overlay of the diff: "+
-				"positions in changed files are current, declarations and uses on the changed lines come in with a reindex.", orIndexBuild(shortCommit(f.IndexedCommit)))
+				"positions in changed files are current, and in Go and TypeScript files so are the declarations and the uses it can resolve "+
+				"on the changed lines; in other languages those come in with a reindex. Each answer's indexFreshness says which.", orIndexBuild(shortCommit(f.IndexedCommit)))
 		}
 		return fmt.Sprintf("CKB: the SCIP index matches commit %s; uncommitted changes are not in it. "+
 			"Call the reindex tool after larger edits, before relying on impact or references for them.", orIndexBuild(shortCommit(f.IndexedCommit)))

@@ -160,6 +160,36 @@ All notable changes to CKB will be documented in this file.
   when unset). kianu: 12 → 0 wrong, 460 → 0 edges the index lacks, 58,735 matching
   unchanged; on the eight repositories every edge is identical before and after.
 
+### Fixed — current answers that looked stale or empty
+
+- **`assessChange` and `ckb changes` no longer call an index at HEAD stale for the working
+  tree's edits.** Every run over uncommitted changes said "index is 0 commit(s) behind —
+  results may be stale" and lowered the confidence by 0.1, though those edits are the diff it
+  reads against the index on purpose. Only an index behind HEAD counts now; one at a commit
+  outside HEAD's history says so instead of "0 commit(s) behind".
+- **`explainSymbol` and `understand` count callers.** They took a reference for a call only
+  where its kind said "call", which SCIP never does, so every function had "0 callers" next to
+  its references. Each line is now classified the way `ckb refs` does it (`majorMinor`: 0 → 2,
+  `CountCommitsBetween`: 0 → 3); the golden fixtures had the zeros written down.
+- **A use through an import alias is not stale.** `ckb refs` and `findReferences` marked
+  `at(text, 0)` after `import { wordAt as at }` as `[stale]` and asked for `ckb index`, which
+  changes nothing: the line was checked for the original name only. A name the file binds with
+  `name as alias` (TypeScript, Python, Rust) counts as spelling it, and the use is classified
+  through it (`[call]`).
+- **A Go package's references are no longer all stale.** `ckb refs` and `findReferences` on a
+  package looked for its import path in every line, so each use (`index.LoadMeta(…)`) was
+  `[stale]` with a reindex hint: 64 of 156 on `internal/index`, 0 now. Uses spell the package
+  name (the path's last element, before a `/v2` or `.v3`) or the alias an import gives it, and
+  the lines of an `import (…)` block count as imports instead of being listed as reads. A
+  TypeScript default import (`import Other from "./x"`) binds the symbol under the name the
+  index points at on the import line, so `Other(1)` is a `[call]`, not stale.
+- **The overlay's hint says what is actually missing.** Every answer served from the overlay,
+  and the session-start hook, said the declarations and uses on changed lines "come in with a
+  reindex", also for Go and TypeScript files whose reference layer had resolved them, which
+  told agents to distrust a current answer. The hint now depends on each served file's layers:
+  read from the source, read except N unresolved uses, or (a file left at the line remap)
+  missing until a reindex. A file listed twice in a result is counted once.
+
 ### Added — mixed repos, scripts and data
 
 - **`ckb index` builds one index for all of a repo's languages.** In a Go + Python or Go +
@@ -479,8 +509,8 @@ data, in every build.
   changed lists its literals, its patterns without `..` and calls of a macro-generated
   `new`. A retargeted type alias lists the uses of functions whose signature names it.
   A removed `pub use` lists the imports still going through it. Such a site has `via`,
-  saying why it is listed. Written from the Rust misses above and not yet measured: the
-  8/17 is from before it. Since measured on a holdout of 12 axum, helix and ripgrep
+  saying why it is listed. Written from Rust misses found on public repos, then
+  measured on a holdout of 12 axum, helix and ripgrep
   commits: no new file found (8/9 of what the compiler says broke, before and after, all
   from 3 axum commits, so recall is barely tested), and false alarms went up, from 343 to
   358 open uses, with one commit losing `clear`. All 17 sites it added were `-> &mut Foo {`

@@ -8,13 +8,13 @@
     },
     "usage": {
       "calleeCount": 0,
-      "callerCount": 0,
+      "callerCount": 2,
       "referenceCount": 5
     }
   },
   "summary": {
     "identity": "function FormatOutput in module src/internal",
-    "tldr": "function FormatOutput in module src/internal – 0 callers, 5 references across 1 modules",
-    "usage": "0 callers, 5 references across 1 modules"
+    "tldr": "function FormatOutput in module src/internal – 2 callers, 5 references across 1 modules",
+    "usage": "2 callers, 5 references across 1 modules"
   }
 }

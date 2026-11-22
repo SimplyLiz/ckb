@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/SimplyLiz/CodeMCP/internal/backends/scip"
 	indexmeta "github.com/SimplyLiz/CodeMCP/internal/index"
+	"github.com/SimplyLiz/CodeMCP/internal/overlay"
 )
 
 const (
@@ -74,41 +76,62 @@ func (e *Engine) IndexFreshnessFor(ctx context.Context, files []string) *IndexFr
 }
 
 // applyOverlayHint rewrites the hint when the overlay serves the result's
-// changed files: their positions are current, and what is missing is what
-// sits on the changed lines themselves.
-func applyOverlayHint(repoRoot string, f *IndexFreshness, covered map[string]bool, resultFiles []string) {
+// changed files: their positions are current, and what is missing depends on
+// the layers each file got. With the declaration and reference layers (Go,
+// TypeScript) only the sites they could not resolve are; a file left at the
+// line remap misses everything on its changed lines.
+func applyOverlayHint(repoRoot string, f *IndexFreshness, covered map[string]overlay.FileInfo, resultFiles []string) {
 	if !f.AffectsResult || len(covered) == 0 {
 		if !f.AffectsResult && f.Overlay.Covered > 0 && f.Hint != "" {
 			f.Hint += fmt.Sprintf("; %d of them served from the overlay", f.Overlay.Covered)
 		}
 		return
 	}
-	served, other := 0, 0
+	served, other, unresolved := 0, 0, 0
+	var remapOnly []string
 	changed := map[string]bool{}
 	for _, p := range f.ChangedSinceIndex {
 		changed[p] = true
 	}
+	counted := map[string]bool{}
 	for _, p := range resultFiles {
 		p = normalizeResultPath(repoRoot, p)
-		if !changed[p] {
+		if !changed[p] || counted[p] {
 			continue
 		}
-		if covered[p] {
-			served++
-		} else {
+		counted[p] = true
+		fi, ok := covered[p]
+		if !ok {
 			other++
+			continue
+		}
+		served++
+		switch {
+		case fi.State == overlay.StateDeleted:
+		case slices.Contains(fi.Layers, 2):
+			unresolved += fi.Unresolved
+		default:
+			remapOnly = append(remapOnly, p)
 		}
 	}
 	if served == 0 {
 		return
 	}
+	var missing string
+	switch {
+	case len(remapOnly) > 0:
+		missing = fmt.Sprintf("in %d of them (e.g. %s) declarations and uses on the changed lines come in with a reindex", len(remapOnly), remapOnly[0])
+	case unresolved > 0:
+		missing = fmt.Sprintf("declarations and uses on the changed lines are read from the source, except %d use(s) it could not resolve, which come in with a reindex", unresolved)
+	default:
+		missing = "declarations and uses on the changed lines are read from the source"
+	}
 	if other == 0 {
-		f.Hint = fmt.Sprintf("%d result file(s) changed since indexing, served from the overlay: positions are current; "+
-			"declarations and uses on the changed lines come in with a reindex", served)
+		f.Hint = fmt.Sprintf("%d result file(s) changed since indexing, served from the overlay: positions are current; %s", served, missing)
 		return
 	}
-	f.Hint = fmt.Sprintf("%d result file(s) changed since indexing: %d served from the overlay (positions current, changed lines missing), "+
-		"%d not covered — call reindex for exact results", served+other, served, other)
+	f.Hint = fmt.Sprintf("%d result file(s) changed since indexing: %d served from the overlay (positions current; %s), "+
+		"%d not covered — call reindex for exact results", served+other, served, missing, other)
 }
 
 // indexSnapshot is the working-tree snapshot the index at commit was built
