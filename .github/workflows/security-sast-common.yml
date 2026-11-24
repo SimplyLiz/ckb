@@ -36,7 +36,7 @@ jobs:
       medium: ${{ steps.scan.outputs.medium }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Run Semgrep
         id: scan
